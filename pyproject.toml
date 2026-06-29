@@ -1,0 +1,55 @@
+[project]
+name = "guru-alt"
+version = "0.1.0"
+description = "Guru — AI-first personalized learning platform"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "asyncpg>=0.31.0",
+    "beartype>=0.22.9",
+    "fastapi>=0.138.2",
+    "greenlet>=3.5.3",
+    "psycopg[binary]>=3.3.4",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.2",
+    "sqlalchemy>=2.0.51",
+    "structlog>=26.1.0",
+    "uvicorn>=0.49.0",
+]
+
+[dependency-groups]
+dev = [
+    "alembic>=1.18.5",
+    "httpx>=0.28.1",
+    "poethepoet>=0.47.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.15.20",
+    "ty>=0.0.55",
+]
+
+[tool.poe.tasks]
+dev = "uvicorn app.main:app --reload"
+test = "pytest -v"
+test-watch = "pytest -v --tb=short -x"
+type-check = "ty check"
+lint = "ruff check ."
+format = "ruff format ."
+format-check = "ruff format --check ."
+db-upgrade = "alembic upgrade head"
+db-downgrade = "alembic downgrade -1"
+check.sequence = ["lint", "type-check", "test"]
+check.help = "Run lint, type-check, and tests (the green gate)"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "RUF"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
