@@ -126,23 +126,31 @@ Ollama) with a `poe eval` runner.
 **Goal:** real teaching material — ingested from any source, reusable, grounded, cost-controlled.
 
 **Scope**
-- ☐ **Ingestion source adapters** normalize into one `document → chunks → embeddings + provenance`
-  pipeline, run as Redis-backed background jobs — shipped in two waves (4a then 4b).
-- ☐ **4a (text-first):** office docs — PDF, PPTX, DOCX, XLSX, TXT — + **public weblinks**
-  (fetch + readability extraction).
+- ☑ **Ingestion source adapters** normalize into one `document → chunks → embeddings + provenance`
+  pipeline, run as Redis-backed background jobs (**taskiq**) — shipped in two waves (4a then 4b).
+- ☑ **4a (text-first):** office docs — PDF, PPTX, DOCX, XLSX, TXT — + **public weblinks**
+  (fetch + readability extraction, robots-aware).
 - ☐ **4b (heavier modalities):** **handwritten notes via vision-LLM OCR**; **audio/video via ASR**
   (Whisper; video → demux audio, optional keyframes for slides).
-- ☐ Content building blocks (lessons, brief + comprehensive wikis, question banks): AI-generated,
-  **KC-tagged**, cached/reusable, **assembled + personalized** per learner.
-- ☐ **Hybrid retrieval** (pgvector HNSW + tsvector/GIN + metadata filter); grounded generation with
+- ☑ Content building blocks (lessons, brief + comprehensive wikis, question banks): AI-generated,
+  **KC-tagged**, cached/reusable, **assembled** per learner. *(Profile-driven personalization → Phase 5.)*
+- ☑ **Hybrid retrieval** (pgvector HNSW + tsvector/GIN + metadata filter); grounded generation with
   provenance/citations.
-- ☐ Embeddings via the `EMBED` role; ingestion + content pre-generation on the queue.
+- ☑ Embeddings via the `EMBED` role; ingestion + content pre-generation on the queue.
 
 **DoD:** a learner can upload a PDF, a handwritten photo, an audio file, and paste a URL — all become
 retrievable, provenance-tagged chunks; a learner goal yields assembled, KC-tagged lessons/wikis
 grounded in retrieved knowledge with citations; generation reuses cached blocks where possible.
 
 > Sequence 4a before 4b: ship text/doc/web ingestion first (covers most value), then add OCR/ASR.
+>
+> **4a done.** Object storage behind a `BlobStore` seam (S3/MinIO + in-memory); taskiq broker seam
+> (Redis prod, in-memory tests); per-format adapters (PyMuPDF/python-docx/python-pptx/openpyxl/
+> trafilatura) with page/slide/paragraph/sheet locators; idempotent extract→normalize→chunk→embed→store
+> pipeline; `Source`/`Chunk` (`Vector(768)` HNSW + generated `tsvector` GIN) and `ContentBlock`
+> (migrations 0007–0008); RRF hybrid retrieval with learner/subject/topic/source scope; cached,
+> cited content engine. Eval harness extended with retrieval-recall + grounding-citation suites.
+> **4b (vision OCR + ASR) and per-chunk KC auto-tagging remain.**
 
 ---
 

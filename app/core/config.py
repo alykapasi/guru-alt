@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     # Redis — declared now, used from Phase 4 (background jobs).
     redis_url: str = "redis://localhost:6379/0"
 
+    # Object storage (S3-compatible) — raw uploaded files. Dev defaults target the
+    # MinIO docker-compose service; prod overrides via GURU_BLOB_* env vars.
+    blob_endpoint_url: str = "http://localhost:9000"
+    blob_bucket: str = "guru-uploads"
+    blob_access_key: str = "minioadmin"
+    blob_secret_key: str = "minioadmin"
+    blob_region: str = "us-east-1"
+
     # Logging
     log_level: str = "INFO"
     log_json: bool = False  # False = human-friendly console; set True in prod.
@@ -50,6 +58,10 @@ class Settings(BaseSettings):
     model_smart: str = "ollama:llama3.2"
     model_genius: str = "ollama:llama3.2"
     model_embed: str = "ollama:nomic-embed-text"
+
+    # Embedding vector dimension — must match the EMBED model's output (nomic = 768) and
+    # the pgvector column. Changing the EMBED model's dim is a schema migration.
+    embed_dim: int = 768
 
     ollama_base_url: str = "http://localhost:11434/v1"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"

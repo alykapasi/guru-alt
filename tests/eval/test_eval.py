@@ -8,11 +8,12 @@ when no local Ollama chat model is available (same pattern as test_ollama_integr
 import harness  # sibling module in tests/eval/ (pytest prepend mode puts it on sys.path)
 import httpx
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.llm import LLMClient, ModelRole
 from app.llm.providers.openai_compat import OpenAICompatProvider
-from app.llm.registry import ModelSpec
+from app.llm.registry import ModelSpec, fake_llm_client
 
 _OLLAMA = get_settings().ollama_base_url
 _CHAT_PREFIXES = ("phi3", "phi4", "llama3", "qwen", "mistral", "gemma3", "granite", "deepseek")
@@ -51,6 +52,24 @@ def test_grading_eval_gate() -> None:
 def test_tracer_eval_gate() -> None:
     report = harness.score_tracer(harness.load_tracer_cases())
     assert report.total >= 5
+    assert report.pass_rate == 1.0, [r.detail for r in report.results if not r.passed]
+
+
+async def test_retrieval_eval_gate(db_session: AsyncSession) -> None:
+    # Recall@k over self-contained golden corpora. Deterministic via the lexical path + RRF,
+    # so it gates in CI (DB-backed, no live model).
+    report = await harness.score_retrieval(
+        db_session, fake_llm_client(), harness.load_retrieval_cases()
+    )
+    assert report.total >= 4
+    assert report.pass_rate == 1.0, [r.detail for r in report.results if not r.passed]
+
+
+async def test_grounding_eval_gate(db_session: AsyncSession) -> None:
+    # The citation contract: a generated block cites only real retrieved chunks, dropping
+    # out-of-range/duplicate indices. Scripted model ⇒ deterministic, CI-gated.
+    report = await harness.score_grounding(db_session, harness.load_grounding_cases())
+    assert report.total >= 4
     assert report.pass_rate == 1.0, [r.detail for r in report.results if not r.passed]
 
 
