@@ -1,0 +1,77 @@
+[
+  {
+    "id": "mcq-correct",
+    "item_type": "mcq",
+    "answer_key": {"choices": ["3", "4", "5"], "correct": 1},
+    "response": {"choice": 1},
+    "expected_score": 1.0
+  },
+  {
+    "id": "mcq-wrong",
+    "item_type": "mcq",
+    "answer_key": {"choices": ["3", "4", "5"], "correct": 1},
+    "response": {"choice": 0},
+    "expected_score": 0.0
+  },
+  {
+    "id": "mcq-no-answer",
+    "item_type": "mcq",
+    "answer_key": {"choices": ["3", "4", "5"], "correct": 1},
+    "response": {},
+    "expected_score": 0.0
+  },
+  {
+    "id": "cloze-all-correct",
+    "item_type": "cloze",
+    "answer_key": {"blanks": ["mitochondria", "ATP", "respiration"]},
+    "response": {"blanks": ["mitochondria", "ATP", "respiration"]},
+    "expected_score": 1.0
+  },
+  {
+    "id": "cloze-partial-two-thirds",
+    "item_type": "cloze",
+    "answer_key": {"blanks": ["mitochondria", "ATP", "respiration"]},
+    "response": {"blanks": ["mitochondria", "ATP", "glycolysis"]},
+    "expected_score": 0.667,
+    "tolerance": 0.01
+  },
+  {
+    "id": "cloze-case-insensitive",
+    "item_type": "cloze",
+    "answer_key": {"blanks": ["Mitochondria"]},
+    "response": {"blanks": ["  mitochondria "]},
+    "expected_score": 1.0
+  },
+  {
+    "id": "fill-blank-alternative-accepted",
+    "item_type": "fill_blank",
+    "answer_key": {"blanks": [["color", "colour"]]},
+    "response": {"blanks": ["colour"]},
+    "expected_score": 1.0
+  },
+  {
+    "id": "fill-blank-missing-half",
+    "item_type": "fill_blank",
+    "answer_key": {"blanks": ["a", "b"]},
+    "response": {"blanks": ["a"]},
+    "expected_score": 0.5
+  },
+  {
+    "id": "flashcard-easy",
+    "item_type": "flashcard",
+    "response": {"rating": 4},
+    "expected_score": 1.0
+  },
+  {
+    "id": "flashcard-again",
+    "item_type": "flashcard",
+    "response": {"rating": 1},
+    "expected_score": 0.2
+  },
+  {
+    "id": "flashcard-recalled",
+    "item_type": "flashcard",
+    "response": {"recalled": true},
+    "expected_score": 0.8
+  }
+]

@@ -8,7 +8,7 @@ that later feeds the tracer, the learner profile, and (eventually) DKT.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -28,8 +28,13 @@ class LearnerKCState(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     kc_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("kcs.id", ondelete="CASCADE"), index=True)
     ability: Mapped[float] = mapped_column(default=0.0)
     uncertainty: Mapped[float] = mapped_column(default=1.0)
-    last_seen_at: Mapped[datetime | None] = mapped_column(default=None)
-    due_at: Mapped[datetime | None] = mapped_column(default=None)
+    # Real UTC instants — the tracer does elapsed-time math (decay, FSRS) on these.
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None, index=True
+    )
+    # Opaque serialized FSRS card (stability/difficulty/state) — see app.learning.scheduler.
+    fsrs_card: Mapped[dict | None] = mapped_column(JSONB, default=None)
 
 
 class LearningEvent(UUIDPrimaryKeyMixin, Base):

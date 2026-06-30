@@ -1,0 +1,58 @@
+[
+  {
+    "id": "single-correct-raises-ability",
+    "kind": "sequence",
+    "property": "ability_up",
+    "steps": [{"score": 1.0}]
+  },
+  {
+    "id": "single-wrong-lowers-ability",
+    "kind": "sequence",
+    "property": "ability_down",
+    "steps": [{"score": 0.0}]
+  },
+  {
+    "id": "evidence-shrinks-uncertainty",
+    "kind": "sequence",
+    "property": "uncertainty_down",
+    "steps": [{"score": 1.0}, {"score": 0.0}, {"score": 1.0}]
+  },
+  {
+    "id": "repeated-correct-converges-high",
+    "kind": "sequence",
+    "property": "ability_at_least",
+    "threshold": 1.0,
+    "steps": [
+      {"score": 1.0}, {"score": 1.0}, {"score": 1.0}, {"score": 1.0}, {"score": 1.0},
+      {"score": 1.0}, {"score": 1.0}, {"score": 1.0}, {"score": 1.0}, {"score": 1.0}
+    ]
+  },
+  {
+    "id": "repeated-wrong-converges-low",
+    "kind": "sequence",
+    "property": "ability_at_most",
+    "threshold": -1.0,
+    "steps": [
+      {"score": 0.0}, {"score": 0.0}, {"score": 0.0}, {"score": 0.0}, {"score": 0.0},
+      {"score": 0.0}, {"score": 0.0}, {"score": 0.0}, {"score": 0.0}, {"score": 0.0}
+    ]
+  },
+  {
+    "id": "rollup-mean-within-children",
+    "kind": "rollup",
+    "property": "ability_between",
+    "children": [
+      {"ability": 1.5, "uncertainty": 0.3},
+      {"ability": -0.5, "uncertainty": 0.3}
+    ]
+  },
+  {
+    "id": "rollup-untested-child-widens",
+    "kind": "rollup",
+    "property": "uncertainty_widened",
+    "children": [
+      {"ability": 1.0, "uncertainty": 0.2},
+      {"ability": 0.0, "uncertainty": 1.0}
+    ]
+  }
+]
