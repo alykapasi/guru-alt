@@ -22,6 +22,7 @@ dev = [
     "alembic>=1.18.5",
     "httpx>=0.28.1",
     "poethepoet>=0.47.0",
+    "pre-commit>=4.6.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.15.20",
@@ -38,6 +39,8 @@ format = "ruff format ."
 format-check = "ruff format --check ."
 db-upgrade = "alembic upgrade head"
 db-downgrade = "alembic downgrade -1"
+hooks-install = "pre-commit install"
+hooks = "pre-commit run --all-files"
 check.sequence = ["lint", "type-check", "test"]
 check.help = "Run lint, type-check, and tests (the green gate)"
 
