@@ -67,13 +67,13 @@ round-trips down/up).
 **Goal:** talk to a guru through a provider-agnostic, role-based, testable LLM layer.
 
 **Scope**
-- ☐ `app/llm/` provider-agnostic interface; unified message + tool schema; embeddings method.
-- ☐ **Model-role registry**: `FAST` / `SMART` / `GENIUS` / `EMBED` → `(provider, model)` resolved
+- ☑ `app/llm/` provider-agnostic interface; unified message + tool schema; embeddings method.
+- ☑ **Model-role registry**: `FAST` / `SMART` / `GENIUS` / `EMBED` → `(provider, model)` resolved
   from config **per environment**. Code references roles only.
-- ☐ Providers: **Ollama** (local dev), **OpenRouter** (cloud/prod), `AnthropicProvider`, and
+- ☑ Providers: **Ollama** (local dev), **OpenRouter** (cloud/prod), `AnthropicProvider`, and
   `FakeProvider` (deterministic tests). Dev maps `FAST`→Ollama, `SMART`/`GENIUS`→cheap OpenRouter.
-- ☐ SSE streaming chat endpoint with a tutor persona; persisted `Conversation` / `Message`.
-- ☐ Per-call **token & cost logging** (tagged by role + model).
+- ☑ SSE streaming chat endpoint with a tutor persona; persisted `Conversation` / `Message`.
+- ☑ Per-call **token & cost logging** (tagged by role + model).
 
 **DoD:** streaming chat works end-to-end via the registry against a real model; switching a role's
 model is a config change with no code edits; unit tests run offline on `FakeProvider`; an Ollama
@@ -82,6 +82,11 @@ integration test exercises real local generation; token/cost recorded per call.
 > Use the `claude-api` skill when implementing the Anthropic provider. Prod role map (example):
 > `SMART`=`claude-sonnet-4-6`, `GENIUS`=`claude-opus-4-8`, `FAST`=cheap OSS/Haiku. Concrete model
 > names are config values (see TECHNICAL_DESIGN).
+
+> Done. `OpenAICompatProvider` serves Ollama + OpenRouter; `AnthropicProvider` uses the native SDK
+> (model-agnostic, no sampling params). SSE tutor chat at `POST /api/v1/conversations/{id}/messages`
+> streams tokens and persists `Conversation`/`Message`/`LLMCall` (token+cost per call). Offline tests
+> on `FakeProvider`; a skippable Ollama integration test exercises real local generation.
 
 ---
 
