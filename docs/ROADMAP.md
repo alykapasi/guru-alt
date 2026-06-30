@@ -95,20 +95,29 @@ integration test exercises real local generation; token/cost recorded per call.
 **Goal:** the engine that makes Guru adaptive — minimal but end-to-end.
 
 **Scope**
-- ☐ `KnowledgeTracer` interface: `estimate / update / due_reviews`.
-- ☐ Continuous **Elo/Glicko** estimator per KC with **uncertainty**; online updates.
-- ☐ **Hierarchical roll-up** KC → Topic → Subject (weighted, uncertainty propagated); multi-KC
+- ☑ `KnowledgeTracer` interface: `estimate / update / due_reviews`.
+- ☑ Continuous **Elo/Glicko** estimator per KC with **uncertainty**; online updates.
+- ☑ **Hierarchical roll-up** KC → Topic → Subject (weighted, uncertainty propagated); multi-KC
   credit apportioning.
-- ☐ Assessment item models (MCQ, cloze, short, long) + per-KC rubrics.
-- ☐ Auto-grading + **LLM rubric grading → graded/partial-credit** observations.
-- ☐ **FSRS** scheduler for reviews.
-- ☐ KC-tagged `LearningEvent` logging on every interaction (also the substrate the **learner
+- ☑ Assessment item models (MCQ, cloze, short, long) + per-KC rubrics.
+- ☑ Auto-grading + **LLM rubric grading → graded/partial-credit** observations.
+- ☑ **FSRS** scheduler for reviews.
+- ☑ KC-tagged `LearningEvent` logging on every interaction (also the substrate the **learner
   profile** estimators consume in Phase 5 — capture latency, hints, correctness richly now).
-- ☐ Seed of the **eval harness** (grading reliability + tracer sanity).
+- ☑ Seed of the **eval harness** (grading reliability + tracer sanity).
 
 **DoD:** answering items updates per-KC ability + uncertainty, rolls up to subject, schedules
 reviews via FSRS, and writes a replayable event; rubric grading yields partial credit; tests +
 first eval cases pass.
+
+**Done.** Tracer is a Glicko-style estimator on the logit scale (`E = sigmoid(θ − d)`, precision-
+weighted Bayesian update, `√(RD² + c²·t)` decay) behind a swappable `MasteryEstimator`; the DB-backed
+`KnowledgeTracer` (`GlickoTracer` + `DEFAULT_TRACER`) wraps it with persistence, multi-KC apportioning,
+roll-up, and FSRS. Grading dispatches auto (MCQ/cloze/fill-blank) · LLM rubric (short/long, SMART
+role) · self (flashcard → FSRS rating); the answer endpoint commits grade + per-KC state + events
+atomically. FSRS state is stored opaquely as a serialized card; `GET /reviews/due` lists due KCs.
+Eval harness seeds `tests/eval/` (golden grading + tracer suites gate CI; live rubric suite runs on
+Ollama) with a `poe eval` runner.
 
 ---
 

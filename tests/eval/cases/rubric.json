@@ -1,0 +1,26 @@
+[
+  {
+    "id": "photosynthesis-strong",
+    "stem": "In one or two sentences, explain how photosynthesis produces energy for a plant.",
+    "criteria": {"points": ["light is absorbed", "converted to chemical energy", "glucose/sugar produced"]},
+    "response": {"text": "Chlorophyll absorbs sunlight, which the plant uses to convert carbon dioxide and water into glucose, storing the light energy as chemical energy."},
+    "expected_score": 0.95,
+    "tolerance": 0.25
+  },
+  {
+    "id": "photosynthesis-partial",
+    "stem": "In one or two sentences, explain how photosynthesis produces energy for a plant.",
+    "criteria": {"points": ["light is absorbed", "converted to chemical energy", "glucose/sugar produced"]},
+    "response": {"text": "Plants use sunlight to make food."},
+    "expected_score": 0.5,
+    "tolerance": 0.3
+  },
+  {
+    "id": "photosynthesis-off-topic",
+    "stem": "In one or two sentences, explain how photosynthesis produces energy for a plant.",
+    "criteria": {"points": ["light is absorbed", "converted to chemical energy", "glucose/sugar produced"]},
+    "response": {"text": "Plants have roots that absorb water from the soil."},
+    "expected_score": 0.1,
+    "tolerance": 0.3
+  }
+]
