@@ -7,7 +7,9 @@
       "Bash(uv run *)",
       "Bash(mkdir -p /Users/alykapasi/Desktop/projects/guru-alt/docs)",
       "Bash(docker exec *)",
-      "Bash(gh auth *)"
+      "Bash(gh auth *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
     ],
     "additionalDirectories": [
       "/Users/alykapasi/Desktop/projects/guru-alt"
