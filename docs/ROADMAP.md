@@ -28,11 +28,16 @@
 - ☑ Alembic initialized under `db/migrations/`; first migration enables `vector` + `pg_trgm`.
 - ☑ `docker-compose.yml` — Postgres (pgvector, host **5433**) + Redis for local dev.
 - ☑ `poe check` aggregate task = `lint` + `type-check` + `test`.
+- ☑ **GitHub Actions CI** (`.github/workflows/ci.yml`) — format-check, lint, type-check, test, and a
+  migration-apply check against a pgvector service. *CD deferred to Phase 8 (no deploy target yet).*
+- ☐ Pre-commit hooks (ruff format/lint, etc.) — follow-up.
 
 **DoD:** ✅ `uv run poe check` passes · ✅ `uv run poe dev` boots, `GET /health` returns ok ·
-✅ `docker compose up` brings up Postgres+pgvector · ✅ first migration applies extensions cleanly.
+✅ `docker compose up` brings up Postgres+pgvector · ✅ first migration applies extensions cleanly ·
+✅ CI workflow valid (lockfile frozen-ready).
 
 > Done. Note: host Postgres port is **5433** (5432 was occupied); `greenlet` added for SQLAlchemy async.
+> CI runs once the repo is pushed to GitHub (not yet a git repo).
 
 ---
 

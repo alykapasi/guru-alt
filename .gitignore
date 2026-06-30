@@ -20,8 +20,10 @@ MANIFEST
 *~
 .DS_Store
 
-# Testing
+# Testing & tool caches
 .pytest_cache/
+.ruff_cache/
+.ty_cache/
 .coverage
 htmlcov/
 

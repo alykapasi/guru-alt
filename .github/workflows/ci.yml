@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: lint · type-check · test · migrate
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: guru
+          POSTGRES_PASSWORD: guru
+          POSTGRES_DB: guru
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U guru -d guru"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Format check
+        run: uv run poe format-check
+
+      - name: Lint
+        run: uv run poe lint
+
+      - name: Type-check
+        run: uv run poe type-check
+
+      - name: Test
+        run: uv run poe test
+
+      - name: Verify migrations apply
+        env:
+          # CI Postgres is on localhost:5432 (service port). Overrides the 5433 dev default.
+          GURU_DATABASE_URL: postgresql+asyncpg://guru:guru@localhost:5432/guru
+        run: uv run alembic upgrade head
