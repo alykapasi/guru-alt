@@ -5,6 +5,8 @@ single dev learner. Real auth (Phase 8) swaps only this function — every route
 receives a ``Learner`` / ``learner_id``.
 """
 
+import uuid
+from collections.abc import Awaitable, Callable
 from functools import lru_cache
 from typing import Annotated
 
@@ -16,6 +18,7 @@ from app.core.config import get_settings
 from app.core.db import get_session
 from app.llm import LLMClient, build_llm_client
 from app.models.learner import Learner
+from app.storage import BlobStore, build_blob_store
 
 DEV_LEARNER_HANDLE = "dev"
 
@@ -33,6 +36,35 @@ def get_llm_client() -> LLMClient:
 
 
 LLMClientDep = Annotated[LLMClient, Depends(get_llm_client)]
+
+
+@lru_cache
+def _blob_store() -> BlobStore:
+    return build_blob_store(get_settings())
+
+
+def get_blob_store() -> BlobStore:
+    """The process-wide object store. Overridden in tests with an in-memory store."""
+    return _blob_store()
+
+
+BlobStoreDep = Annotated[BlobStore, Depends(get_blob_store)]
+
+IngestionEnqueuer = Callable[[uuid.UUID], Awaitable[None]]
+
+
+async def _enqueue_ingestion(source_id: uuid.UUID) -> None:
+    from app.workers.tasks import ingest_source_task  # lazy: avoids an import cycle
+
+    await ingest_source_task.kiq(str(source_id))
+
+
+def get_ingestion_enqueuer() -> IngestionEnqueuer:
+    """Returns the callable that queues an ingestion job. Overridden in tests."""
+    return _enqueue_ingestion
+
+
+IngestionEnqueuerDep = Annotated[IngestionEnqueuer, Depends(get_ingestion_enqueuer)]
 
 
 async def get_current_learner(session: SessionDep) -> Learner:

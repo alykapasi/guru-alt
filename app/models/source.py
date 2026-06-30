@@ -1,0 +1,93 @@
+"""Ingestion sources and their derived chunks (see docs/TECHNICAL_DESIGN §6, §7.1).
+
+A ``Source`` is one uploaded file or URL; ingestion runs it through the pipeline and writes
+``Chunk`` rows — each carrying the embedded text, a generated full-text vector, and
+**provenance** (source id, locator, extraction method, confidence) for grounded, citable
+retrieval. The raw bytes live in object storage (``blob_key``); the DB holds only metadata.
+"""
+
+import uuid
+from enum import StrEnum
+from typing import Any
+
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import Computed, ForeignKey, Index, Text
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.config import get_settings
+from app.core.db import Base
+from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
+
+_EMBED_DIM = get_settings().embed_dim
+
+
+class SourceKind(StrEnum):
+    FILE = "file"
+    URL = "url"
+
+
+class SourceStatus(StrEnum):
+    """Ingestion lifecycle — drives idempotent, resumable jobs."""
+
+    PENDING = "pending"
+    PROCESSING = "processing"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class Source(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One ingestible artifact (a file or a URL) and its ingestion status."""
+
+    __tablename__ = "sources"
+
+    learner_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("learners.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(index=True)  # SourceKind
+    origin: Mapped[str]  # filename or URL
+    blob_key: Mapped[str | None] = mapped_column(default=None)  # object-store key for raw bytes
+    content_type: Mapped[str | None] = mapped_column(default=None)
+    status: Mapped[str] = mapped_column(index=True, default=SourceStatus.PENDING)
+    error: Mapped[str | None] = mapped_column(Text, default=None)
+    # Optional upload-time scope, inherited by chunks for metadata filtering.
+    subject_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("subjects.id", ondelete="SET NULL"), index=True, default=None
+    )
+    topic_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("topics.id", ondelete="SET NULL"), index=True, default=None
+    )
+    meta: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    chunks: Mapped[list["Chunk"]] = relationship(
+        back_populates="source", cascade="all, delete-orphan"
+    )
+
+
+class Chunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A retrievable text span: embedding + full-text vector + provenance."""
+
+    __tablename__ = "chunks"
+    __table_args__ = (
+        Index(
+            "ix_chunks_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+        Index("ix_chunks_tsv", "tsv", postgresql_using="gin"),
+    )
+
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sources.id", ondelete="CASCADE"), index=True
+    )
+    ordinal: Mapped[int]  # position within the source
+    text: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[Any] = mapped_column(Vector(_EMBED_DIM))
+    # Generated full-text vector for hybrid keyword retrieval (GIN-indexed above).
+    tsv: Mapped[Any] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', text)", persisted=True)
+    )
+    provenance: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    source: Mapped["Source"] = relationship(back_populates="chunks")

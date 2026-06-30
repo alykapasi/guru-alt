@@ -1,0 +1,35 @@
+[
+  {
+    "id": "cites-real-chunks",
+    "kc_name": "Photosynthesis",
+    "corpus": [
+      "Photosynthesis converts light energy into glucose inside chloroplasts.",
+      "Chlorophyll is the pigment that absorbs light to power photosynthesis."
+    ],
+    "cite": [0, 1]
+  },
+  {
+    "id": "drops-out-of-range-citation",
+    "kc_name": "Mitochondria",
+    "corpus": [
+      "Mitochondria produce ATP through cellular respiration."
+    ],
+    "cite": [0, 7]
+  },
+  {
+    "id": "no-citations-when-model-cites-none",
+    "kc_name": "Osmosis",
+    "corpus": [
+      "Osmosis is the diffusion of water across a semipermeable membrane."
+    ],
+    "cite": []
+  },
+  {
+    "id": "deduplicates-repeated-citation",
+    "kc_name": "Inertia",
+    "corpus": [
+      "Inertia is the resistance of an object to a change in its motion."
+    ],
+    "cite": [0, 0]
+  }
+]

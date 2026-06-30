@@ -3,6 +3,7 @@
 import hashlib
 from collections.abc import AsyncIterator, Sequence
 
+from app.core.config import get_settings
 from app.llm.types import ChatChunk, ChatMessage, ChatResponse, Usage
 
 
@@ -43,9 +44,11 @@ class FakeProvider:
         yield ChatChunk(usage=self._usage(messages))
 
     async def embed(self, *, model: str, texts: Sequence[str]) -> list[list[float]]:
-        return [self._vec(t) for t in texts]
+        # Match the configured embedding dim so fake vectors fit the pgvector column.
+        dim = get_settings().embed_dim
+        return [self._vec(t, dim) for t in texts]
 
     @staticmethod
-    def _vec(text: str, dim: int = 8) -> list[float]:
+    def _vec(text: str, dim: int) -> list[float]:
         digest = hashlib.sha256(text.encode()).digest()
         return [digest[i % len(digest)] / 255.0 for i in range(dim)]

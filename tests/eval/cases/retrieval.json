@@ -1,0 +1,46 @@
+[
+  {
+    "id": "photosynthesis-over-distractors",
+    "query": "photosynthesis chlorophyll light",
+    "corpus": [
+      {"id": "photo", "text": "Photosynthesis uses chlorophyll to convert light into chemical energy stored as glucose."},
+      {"id": "mito", "text": "Mitochondria are the powerhouse of the cell, producing ATP by respiration."},
+      {"id": "rivers", "text": "Rivers transport sediment from the mountains down to the sea over geological time."}
+    ],
+    "expect_top": ["photo"],
+    "k": 1
+  },
+  {
+    "id": "newton-second-law",
+    "query": "newton second law force acceleration",
+    "corpus": [
+      {"id": "newton", "text": "Newton's second law states that force equals mass times acceleration."},
+      {"id": "thermo", "text": "The first law of thermodynamics is a statement of conservation of energy."},
+      {"id": "cells", "text": "Eukaryotic cells contain a membrane-bound nucleus holding their DNA."}
+    ],
+    "expect_top": ["newton"],
+    "k": 1
+  },
+  {
+    "id": "supply-and-demand",
+    "query": "supply and demand market price equilibrium",
+    "corpus": [
+      {"id": "econ", "text": "In a market, the equilibrium price is set where supply and demand intersect."},
+      {"id": "grammar", "text": "A transitive verb takes a direct object to complete its meaning."},
+      {"id": "tides", "text": "Ocean tides are driven mainly by the gravitational pull of the moon."}
+    ],
+    "expect_top": ["econ"],
+    "k": 1
+  },
+  {
+    "id": "integral-calculus-top-2",
+    "query": "integral calculus",
+    "corpus": [
+      {"id": "integral", "text": "A definite integral in calculus gives the area under a curve between two bounds."},
+      {"id": "antideriv", "text": "An antiderivative underlies integral calculus and reverses differentiation."},
+      {"id": "weather", "text": "Cumulonimbus clouds are associated with thunderstorms and heavy rain."}
+    ],
+    "expect_top": ["integral", "antideriv"],
+    "k": 2
+  }
+]

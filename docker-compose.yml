@@ -29,6 +29,32 @@ services:
       timeout: 3s
       retries: 10
 
+  # S3-compatible object store for raw uploads (Phase 4). Console on :9001.
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+
+  # One-shot: create the uploads bucket, retrying until MinIO is reachable.
+  minio-bootstrap:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 1; done &&
+      mc mb --ignore-existing local/guru-uploads &&
+      echo 'minio bucket ready'
+      "
+
 volumes:
   pgdata:
   redisdata:
+  miniodata:
