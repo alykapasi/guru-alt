@@ -14,6 +14,11 @@ jobs:
     name: lint · type-check · test · migrate
     runs-on: ubuntu-latest
 
+    env:
+      GURU_ENV: test
+      # CI Postgres is on the service's localhost:5432 (overrides the 5433 dev default).
+      GURU_DATABASE_URL: postgresql+asyncpg://guru:guru@localhost:5432/guru
+
     services:
       postgres:
         image: pgvector/pgvector:pg17
@@ -50,11 +55,8 @@ jobs:
       - name: Type-check
         run: uv run poe type-check
 
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+
       - name: Test
         run: uv run poe test
-
-      - name: Verify migrations apply
-        env:
-          # CI Postgres is on localhost:5432 (service port). Overrides the 5433 dev default.
-          GURU_DATABASE_URL: postgresql+asyncpg://guru:guru@localhost:5432/guru
-        run: uv run alembic upgrade head

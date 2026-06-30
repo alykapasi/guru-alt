@@ -46,15 +46,19 @@
 **Goal:** the backbone data model exists and is queryable.
 
 **Scope**
-- ☐ ORM models: `Learner` (stub identity), `Subject`, `Topic`, `KC`, prerequisite edges,
-  `LearnerKCState`, `LearningEvent`.
-- ☐ Pydantic schemas + CRUD for the knowledge graph.
-- ☐ Stub auth dependency (`get_current_learner`) returning a dev learner; `learner_id` threaded
-  through every endpoint from the start.
-- ☐ Alembic migration for the schema. Unit + light integration tests.
+- ☑ ORM models: `Learner` (stub identity), `Subject`, `Topic`, `KC`, prerequisite edges (`KCEdge`),
+  `LearnerKCState`, `LearningEvent` (`app/models/`, UUID PKs + timestamp mixins).
+- ☑ Pydantic schemas + CRUD for the knowledge graph (`app/schemas/`, `app/services/`, `app/api/v1/`).
+- ☑ Stub auth dependency (`get_current_learner`) creating a dev learner on first use; `learner_id`
+  threaded through every endpoint from the start (`app/api/deps.py`).
+- ☑ Alembic migration `0002_knowledge_core`. Service + API integration tests with transactional
+  rollback isolation (`tests/conftest.py`).
 
-**DoD:** can create a Subject→Topic→KC graph with prerequisites via the API and read it back;
-tests cover model + CRUD; migration applies.
+**DoD:** ✅ build a Subject→Topic→KC graph with prerequisites via the API and read it back (covered by
+`tests/test_knowledge.py`) · ✅ tests cover model + CRUD (13 tests) · ✅ migration applies (and
+round-trips down/up).
+
+> Done. Endpoints under `/api/v1` (subjects/topics/kcs/prerequisites); 404/409/400/422 handled.
 
 ---
 

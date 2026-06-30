@@ -1,0 +1,104 @@
+"""CRUD over the knowledge graph.
+
+Functions own their transactions (commit + refresh). Existence checks for clean 404s
+live in the router; uniqueness/constraint violations surface as ``IntegrityError`` for
+the router to translate into 409s.
+"""
+
+import uuid
+from collections.abc import Sequence
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.knowledge import KC, KCEdge, Subject, Topic
+from app.schemas.knowledge import KCCreate, SubjectCreate, TopicCreate
+
+# --- Subjects ---------------------------------------------------------------
+
+
+async def create_subject(session: AsyncSession, data: SubjectCreate) -> Subject:
+    subject = Subject(slug=data.slug, name=data.name, description=data.description)
+    session.add(subject)
+    await session.commit()
+    await session.refresh(subject)
+    return subject
+
+
+async def list_subjects(session: AsyncSession) -> Sequence[Subject]:
+    result = await session.scalars(select(Subject).order_by(Subject.slug))
+    return result.all()
+
+
+async def get_subject(session: AsyncSession, subject_id: uuid.UUID) -> Subject | None:
+    return await session.get(Subject, subject_id)
+
+
+# --- Topics -----------------------------------------------------------------
+
+
+async def create_topic(session: AsyncSession, subject_id: uuid.UUID, data: TopicCreate) -> Topic:
+    topic = Topic(
+        subject_id=subject_id,
+        slug=data.slug,
+        name=data.name,
+        description=data.description,
+    )
+    session.add(topic)
+    await session.commit()
+    await session.refresh(topic)
+    return topic
+
+
+async def list_topics(session: AsyncSession, subject_id: uuid.UUID) -> Sequence[Topic]:
+    result = await session.scalars(
+        select(Topic).where(Topic.subject_id == subject_id).order_by(Topic.slug)
+    )
+    return result.all()
+
+
+async def get_topic(session: AsyncSession, topic_id: uuid.UUID) -> Topic | None:
+    return await session.get(Topic, topic_id)
+
+
+# --- KCs --------------------------------------------------------------------
+
+
+async def create_kc(session: AsyncSession, topic_id: uuid.UUID, data: KCCreate) -> KC:
+    kc = KC(
+        topic_id=topic_id,
+        slug=data.slug,
+        name=data.name,
+        description=data.description,
+    )
+    session.add(kc)
+    await session.commit()
+    await session.refresh(kc)
+    return kc
+
+
+async def list_kcs(session: AsyncSession, topic_id: uuid.UUID) -> Sequence[KC]:
+    result = await session.scalars(select(KC).where(KC.topic_id == topic_id).order_by(KC.slug))
+    return result.all()
+
+
+async def get_kc(session: AsyncSession, kc_id: uuid.UUID) -> KC | None:
+    return await session.get(KC, kc_id)
+
+
+# --- Prerequisite edges -----------------------------------------------------
+
+
+async def add_prerequisite(
+    session: AsyncSession, kc_id: uuid.UUID, prereq_kc_id: uuid.UUID, weight: float
+) -> KCEdge:
+    edge = KCEdge(kc_id=kc_id, prereq_kc_id=prereq_kc_id, weight=weight)
+    session.add(edge)
+    await session.commit()
+    await session.refresh(edge)
+    return edge
+
+
+async def list_prerequisites(session: AsyncSession, kc_id: uuid.UUID) -> Sequence[KCEdge]:
+    result = await session.scalars(select(KCEdge).where(KCEdge.kc_id == kc_id))
+    return result.all()
