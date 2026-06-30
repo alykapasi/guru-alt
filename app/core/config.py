@@ -43,6 +43,22 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = False  # False = human-friendly console; set True in prod.
 
+    # LLM — code references *roles*; each role maps to "provider:model" per env.
+    # Providers: ollama (local), openrouter (cloud), anthropic. Dev defaults to
+    # Ollama so chat works offline; prod overrides via GURU_MODEL_* env vars.
+    model_fast: str = "ollama:llama3.2"
+    model_smart: str = "ollama:llama3.2"
+    model_genius: str = "ollama:llama3.2"
+    model_embed: str = "ollama:nomic-embed-text"
+
+    ollama_base_url: str = "http://localhost:11434/v1"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_api_key: str = ""
+    anthropic_api_key: str = ""
+
+    # Default cap on assistant output tokens for a chat turn.
+    chat_max_tokens: int = 2048
+
     @property
     def runtime_typecheck(self) -> bool:
         """Whether beartype runtime checks should be active (dev/test only)."""
