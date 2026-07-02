@@ -1,5 +1,6 @@
 """Adapter registry — dispatch a content type to the adapter that handles it."""
 
+from app.rag.adapters.audio import AudioAdapter
 from app.rag.adapters.base import Adapter, ExtractContext, ExtractedUnit
 from app.rag.adapters.docx import DocxAdapter
 from app.rag.adapters.epub import EpubAdapter
@@ -19,6 +20,7 @@ _ADAPTERS: list[Adapter] = [
     XlsxAdapter(),
     HtmlAdapter(),
     EpubAdapter(),
+    AudioAdapter(),
     ImageOcrAdapter(),
 ]
 

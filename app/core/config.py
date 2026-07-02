@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     embed_batch_size: int = 128
     embed_concurrency: int = 4
 
+    # Audio/video ASR (Phase 4b). Transcription runs on faster-whisper (optional dep — install
+    # the ``asr`` extra); these pick the model size + runtime. Defaults are CPU-friendly.
+    asr_model: str = "base"
+    asr_device: str = "cpu"
+    asr_compute_type: str = "int8"
+
     # Logging
     log_level: str = "INFO"
     log_json: bool = False  # False = human-friendly console; set True in prod.

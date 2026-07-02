@@ -21,6 +21,7 @@ from app.models.source import Chunk, Source
 from app.rag.adapters import ExtractContext, select_adapter
 from app.rag.chunking import chunk_units
 from app.rag.concurrency import gather_bounded
+from app.rag.transcription import Transcriber
 from app.services.llm_log import log_llm_call
 from app.storage import BlobStore
 
@@ -54,7 +55,14 @@ class EmptyExtraction(IngestionError):
     """Extraction yielded no usable text."""
 
 
-async def run(session: AsyncSession, blobstore: BlobStore, llm: LLMClient, source: Source) -> int:
+async def run(
+    session: AsyncSession,
+    blobstore: BlobStore,
+    llm: LLMClient,
+    source: Source,
+    *,
+    transcriber: Transcriber | None = None,
+) -> int:
     """Ingest one source into chunks. Returns the chunk count. Flushes; caller commits."""
     if not source.blob_key:
         raise IngestionError("source has no stored blob")
@@ -67,6 +75,7 @@ async def run(session: AsyncSession, blobstore: BlobStore, llm: LLMClient, sourc
         content_type=source.content_type or "",
         origin=source.origin,
         llm=llm,
+        transcriber=transcriber,
         ocr_concurrency=settings.ocr_concurrency,
     )
     fd, tmp_name = tempfile.mkstemp(dir=settings.ingest_tmp_dir)

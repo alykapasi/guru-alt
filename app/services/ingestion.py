@@ -16,6 +16,7 @@ from app.llm import LLMClient
 from app.models.source import Source, SourceKind, SourceStatus
 from app.rag import pipeline
 from app.rag.fetch import Fetcher, default_fetch
+from app.rag.transcription import Transcriber
 from app.storage import DEFAULT_CONTENT_TYPE, BlobStore
 
 _HASH_CHUNK = 1024 * 1024  # 1 MiB — stream large files past the hasher without buffering them
@@ -103,12 +104,14 @@ async def ingest_source(
     llm: LLMClient,
     source_id: uuid.UUID,
     *,
+    transcriber: Transcriber | None = None,
     fetch: Fetcher = default_fetch,
 ) -> Source:
     """Run the pipeline for ``source_id``, recording DONE or FAILED.
 
     For an un-fetched URL source, fetch the page (robots-aware) into the blob store first;
-    a re-ingest reuses the stored bytes rather than re-hitting the URL.
+    a re-ingest reuses the stored bytes rather than re-hitting the URL. ``transcriber`` is
+    used by the audio/video path (built by the worker; None when no audio is expected).
     """
     source = await session.get(Source, source_id)
     if source is None:
@@ -119,7 +122,7 @@ async def ingest_source(
     try:
         if source.kind == SourceKind.URL and not source.blob_key:
             await _fetch_into_blob(session, blobstore, source, fetch)
-        count = await pipeline.run(session, blobstore, llm, source)
+        count = await pipeline.run(session, blobstore, llm, source, transcriber=transcriber)
     except Exception as exc:
         await session.rollback()  # discard partial chunk writes + the PROCESSING flag
         return await _mark_failed(session, source_id, exc)
