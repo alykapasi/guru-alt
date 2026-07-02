@@ -47,6 +47,19 @@ class Settings(BaseSettings):
     blob_secret_key: str = "minioadmin"
     blob_region: str = "us-east-1"
 
+    # Ingestion: cap uploads (streamed to disk, so this bounds disk not RAM) and choose where
+    # the pipeline spools blobs. Default cap 1 GiB; None tmp dir = the system default.
+    max_upload_bytes: int = 1_073_741_824
+    ingest_tmp_dir: str | None = None
+
+    # Ingestion concurrency/batching (Phase A large-doc speed). Scanned-PDF pages are OCR'd
+    # with at most ``ocr_concurrency`` vision calls in flight; chunk embeddings are sent in
+    # batches of ``embed_batch_size`` with at most ``embed_concurrency`` batches in flight.
+    # DB writes stay serialized regardless — only the network/CPU work is parallel.
+    ocr_concurrency: int = 5
+    embed_batch_size: int = 128
+    embed_concurrency: int = 4
+
     # Logging
     log_level: str = "INFO"
     log_json: bool = False  # False = human-friendly console; set True in prod.

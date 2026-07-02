@@ -1,6 +1,6 @@
 """PPTX adapter — one located unit per slide (python-pptx)."""
 
-import io
+from pathlib import Path
 
 from pptx import Presentation
 
@@ -15,8 +15,8 @@ class PptxAdapter:
     def handles(self, content_type: str) -> bool:
         return content_type == _CONTENT_TYPE
 
-    async def extract(self, data: bytes, *, meta: dict, ctx: ExtractContext) -> list[ExtractedUnit]:
-        presentation = Presentation(io.BytesIO(data))
+    async def extract(self, path: Path, *, meta: dict, ctx: ExtractContext) -> list[ExtractedUnit]:
+        presentation = Presentation(str(path))
         units: list[ExtractedUnit] = []
         for index, slide in enumerate(presentation.slides):
             lines = [

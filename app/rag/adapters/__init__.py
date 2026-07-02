@@ -2,6 +2,7 @@
 
 from app.rag.adapters.base import Adapter, ExtractContext, ExtractedUnit
 from app.rag.adapters.docx import DocxAdapter
+from app.rag.adapters.epub import EpubAdapter
 from app.rag.adapters.html import HtmlAdapter
 from app.rag.adapters.image import ImageOcrAdapter
 from app.rag.adapters.pdf import PdfAdapter
@@ -17,6 +18,7 @@ _ADAPTERS: list[Adapter] = [
     PptxAdapter(),
     XlsxAdapter(),
     HtmlAdapter(),
+    EpubAdapter(),
     ImageOcrAdapter(),
 ]
 

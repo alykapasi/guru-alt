@@ -4,13 +4,15 @@ Each adapter handles one family of content types and extracts coarse **units** (
 page, a slide, the whole text file) carrying a provenance ``locator``. Chunking then
 subdivides units; the pipeline embeds and stores.
 
-Adapters are **async** and receive an :class:`ExtractContext` carrying the source descriptor
-plus optional capabilities (an LLM client for vision-OCR, a transcriber for ASR, …). Plain
-text/doc adapters ignore the context; modality adapters use it. Any I/O on the *source*
-(fetching a URL) is still the pipeline's job — every adapter takes bytes.
+Adapters are **async** and receive the source as a **local file path** (the pipeline streams
+the blob to a temp file, so even huge files never sit in memory — PDF/EPUB open lazily) plus an
+:class:`ExtractContext` carrying the source descriptor and optional capabilities (an LLM client
+for vision-OCR, a transcriber for ASR, …). Plain text/doc adapters ignore the context; modality
+adapters use it.
 """
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
@@ -19,10 +21,16 @@ from app.llm import LLMClient, ModelRole, Usage
 
 
 class ExtractedUnit(BaseModel):
-    """A span of extracted text plus where it came from (page/slide/url/timestamp/…)."""
+    """A span of extracted text plus where it came from (page/slide/url/timestamp/…).
+
+    ``method`` overrides the adapter's default extraction method for this unit — used when a
+    single adapter mixes methods (e.g. a PDF with born-digital *and* OCR'd pages, or a video
+    with ASR transcript *and* keyframe-OCR units). ``None`` means "use the adapter's name".
+    """
 
     text: str
     locator: dict = Field(default_factory=dict)
+    method: str | None = None
 
 
 @dataclass
@@ -30,12 +38,15 @@ class ExtractContext:
     """What an adapter needs beyond the raw bytes: source descriptor + capabilities.
 
     ``llm`` is present for adapters that call a model (vision-OCR). Adapters record any
-    model usage via :meth:`record_usage` so the pipeline can log its cost.
+    model usage via :meth:`record_usage` so the pipeline can log its cost. ``ocr_concurrency``
+    caps how many vision-OCR calls an adapter runs at once (the pipeline sets it from config;
+    the default matches ``Settings.ocr_concurrency`` for direct/standalone use).
     """
 
     content_type: str = ""
     origin: str = ""  # filename or URL — used as a provenance locator
     llm: LLMClient | None = None
+    ocr_concurrency: int = 5
     usage_log: list[tuple[ModelRole, Usage]] = field(default_factory=list)
 
     @property
@@ -58,6 +69,6 @@ class Adapter(Protocol):
         """Whether this adapter can extract the given content type."""
         ...
 
-    async def extract(self, data: bytes, *, meta: dict, ctx: ExtractContext) -> list[ExtractedUnit]:
-        """Extract located text units from ``data``."""
+    async def extract(self, path: Path, *, meta: dict, ctx: ExtractContext) -> list[ExtractedUnit]:
+        """Extract located text units from the file at ``path``."""
         ...

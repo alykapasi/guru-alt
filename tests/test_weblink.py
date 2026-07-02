@@ -2,6 +2,7 @@
 
 import uuid
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
@@ -70,19 +71,20 @@ def test_robots_allows_blocks_disallowed_path() -> None:
 # --- HTML extraction --------------------------------------------------------
 
 
-async def test_html_adapter_extracts_main_content() -> None:
-    units = await HtmlAdapter().extract(_HTML, meta={"url": URL}, ctx=ExtractContext())
+async def test_html_adapter_extracts_main_content(tmp_path: Path) -> None:
+    page = tmp_path / "page.html"
+    page.write_bytes(_HTML)
+    units = await HtmlAdapter().extract(page, meta={"url": URL}, ctx=ExtractContext())
     assert len(units) == 1
     assert units[0].locator == {"url": URL}
     assert "mitochondrion" in units[0].text.lower()
     assert "About Contact" not in units[0].text  # nav stripped
 
 
-async def test_html_adapter_empty_on_no_content() -> None:
-    assert (
-        await HtmlAdapter().extract(b"<html><body></body></html>", meta={}, ctx=ExtractContext())
-        == []
-    )
+async def test_html_adapter_empty_on_no_content(tmp_path: Path) -> None:
+    empty = tmp_path / "empty.html"
+    empty.write_bytes(b"<html><body></body></html>")
+    assert await HtmlAdapter().extract(empty, meta={}, ctx=ExtractContext()) == []
 
 
 # --- URL ingestion job ------------------------------------------------------

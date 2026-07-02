@@ -1,6 +1,8 @@
 """Ingestion endpoints: upload a source, then poll its status / inspect its chunks."""
 
+import tempfile
 import uuid
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
@@ -12,6 +14,7 @@ from app.api.deps import (
     IngestionEnqueuerDep,
     LLMClientDep,
     SessionDep,
+    SettingsDep,
 )
 from app.models.source import Chunk, Source, SourceKind
 from app.rag import retrieval
@@ -21,6 +24,8 @@ from app.services import ingestion as svc
 
 router = APIRouter(tags=["sources"])
 
+_UPLOAD_CHUNK = 1024 * 1024  # 1 MiB — stream the upload to disk without buffering it in RAM
+
 
 @router.post("/sources/upload", response_model=SourceRead, status_code=status.HTTP_202_ACCEPTED)
 async def upload_source(
@@ -28,25 +33,41 @@ async def upload_source(
     learner: CurrentLearner,
     blobstore: BlobStoreDep,
     enqueue: IngestionEnqueuerDep,
+    settings: SettingsDep,
     file: Annotated[UploadFile, File()],
     subject_id: Annotated[uuid.UUID | None, Form()] = None,
     topic_id: Annotated[uuid.UUID | None, Form()] = None,
 ):
-    """Store an uploaded file, create a pending source, and queue ingestion."""
-    data = await file.read()
-    if not data:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "empty upload")
-    source = await svc.create_source(
-        session,
-        blobstore,
-        learner_id=learner.id,
-        kind=SourceKind.FILE,
-        origin=file.filename or "upload",
-        content_type=file.content_type,
-        data=data,
-        subject_id=subject_id,
-        topic_id=topic_id,
-    )
+    """Stream an upload to a temp file (size-capped), store it, and queue ingestion.
+
+    The file is streamed to disk in chunks so an arbitrarily large upload never sits in
+    memory; it is rejected with 413 the moment it exceeds ``max_upload_bytes``.
+    """
+    tmp = tempfile.NamedTemporaryFile(dir=settings.ingest_tmp_dir, delete=False)
+    tmp_path = Path(tmp.name)
+    try:
+        size = 0
+        with tmp:
+            while chunk := await file.read(_UPLOAD_CHUNK):
+                size += len(chunk)
+                if size > settings.max_upload_bytes:
+                    raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "file too large")
+                tmp.write(chunk)
+        if size == 0:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "empty upload")
+        source = await svc.create_source(
+            session,
+            blobstore,
+            learner_id=learner.id,
+            kind=SourceKind.FILE,
+            origin=file.filename or "upload",
+            content_type=file.content_type,
+            data=tmp_path,
+            subject_id=subject_id,
+            topic_id=topic_id,
+        )
+    finally:
+        tmp_path.unlink(missing_ok=True)
     await enqueue(source.id)
     return source
 

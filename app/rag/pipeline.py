@@ -1,20 +1,45 @@
 """The ingestion pipeline: extract → normalize → chunk → embed → store.
 
-One pure-ish async function over a `Source`'s stored bytes. **Idempotent** — it deletes a
-source's existing chunks before writing new ones, so a re-ingest replaces rather than
-duplicates. The caller (ingestion service / worker) owns the transaction and the source's
-status; the pipeline only flushes.
+One pure-ish async function over a `Source`'s stored blob. The blob is **streamed to a temp
+file** so even a large source never sits in memory; adapters open it from a path (PDF/EPUB
+lazily). **Idempotent** — it deletes a source's existing chunks before writing new ones, so a
+re-ingest replaces rather than duplicates. The caller (ingestion service / worker) owns the
+transaction and the source's status; the pipeline only flushes.
 """
+
+import os
+import tempfile
+from collections.abc import Sequence
+from pathlib import Path
 
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.llm import LLMClient, ModelRole
 from app.models.source import Chunk, Source
 from app.rag.adapters import ExtractContext, select_adapter
 from app.rag.chunking import chunk_units
+from app.rag.concurrency import gather_bounded
 from app.services.llm_log import log_llm_call
 from app.storage import BlobStore
+
+
+async def embed_in_batches(
+    llm: LLMClient, texts: Sequence[str], *, batch_size: int, concurrency: int
+) -> list[list[float]]:
+    """Embed ``texts`` in batches of ``batch_size``, at most ``concurrency`` batches in flight.
+
+    Returns one vector per text, **in input order**. Splitting a large document's chunks keeps
+    each embed request bounded and lets batches overlap instead of one giant serial call.
+    """
+    if not texts:
+        return []
+    batches = [texts[i : i + batch_size] for i in range(0, len(texts), batch_size)]
+    results = await gather_bounded(
+        [llm.embed(ModelRole.EMBED, batch) for batch in batches], concurrency
+    )
+    return [vector for batch_vectors in results for vector in batch_vectors]
 
 
 class IngestionError(RuntimeError):
@@ -37,9 +62,22 @@ async def run(session: AsyncSession, blobstore: BlobStore, llm: LLMClient, sourc
     if adapter is None:
         raise UnsupportedContentType(f"no adapter for content type {source.content_type!r}")
 
-    data = await blobstore.get(source.blob_key)
-    ctx = ExtractContext(content_type=source.content_type or "", origin=source.origin, llm=llm)
-    chunks = chunk_units(await adapter.extract(data, meta=source.meta, ctx=ctx))
+    settings = get_settings()
+    ctx = ExtractContext(
+        content_type=source.content_type or "",
+        origin=source.origin,
+        llm=llm,
+        ocr_concurrency=settings.ocr_concurrency,
+    )
+    fd, tmp_name = tempfile.mkstemp(dir=settings.ingest_tmp_dir)
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        await blobstore.download(source.blob_key, tmp_path)  # stream: constant memory
+        units = await adapter.extract(tmp_path, meta=source.meta, ctx=ctx)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    chunks = chunk_units(units)
     if not chunks:
         raise EmptyExtraction("no text extracted from source")
 
@@ -49,7 +87,12 @@ async def run(session: AsyncSession, blobstore: BlobStore, llm: LLMClient, sourc
             session, learner_id=source.learner_id, role=str(role), spec=llm.spec(role), usage=usage
         )
 
-    vectors = await llm.embed(ModelRole.EMBED, [c.text for c in chunks])
+    vectors = await embed_in_batches(
+        llm,
+        [c.text for c in chunks],
+        batch_size=settings.embed_batch_size,
+        concurrency=settings.embed_concurrency,
+    )
 
     # Idempotent: replace any prior chunks for this source.
     await session.execute(delete(Chunk).where(Chunk.source_id == source.id))
@@ -63,7 +106,7 @@ async def run(session: AsyncSession, blobstore: BlobStore, llm: LLMClient, sourc
                 provenance={
                     **unit.locator,
                     "source_id": str(source.id),
-                    "method": adapter.name,
+                    "method": unit.method or adapter.name,
                     "confidence": 1.0,
                 },
             )

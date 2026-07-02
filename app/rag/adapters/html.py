@@ -4,6 +4,8 @@ Strips nav/boilerplate, keeping the article text. The source URL (passed via ``m
 becomes the provenance locator for citations.
 """
 
+from pathlib import Path
+
 import trafilatura
 
 from app.rag.adapters.base import ExtractContext, ExtractedUnit
@@ -15,8 +17,8 @@ class HtmlAdapter:
     def handles(self, content_type: str) -> bool:
         return content_type in {"text/html", "application/xhtml+xml"}
 
-    async def extract(self, data: bytes, *, meta: dict, ctx: ExtractContext) -> list[ExtractedUnit]:
-        text = trafilatura.extract(data.decode("utf-8", errors="replace")) or ""
+    async def extract(self, path: Path, *, meta: dict, ctx: ExtractContext) -> list[ExtractedUnit]:
+        text = trafilatura.extract(path.read_text(encoding="utf-8", errors="replace")) or ""
         if not text.strip():
             return []
         url = meta.get("url")

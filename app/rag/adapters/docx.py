@@ -4,7 +4,7 @@ Word documents are flow text with no native page boundaries, so we join paragrap
 chunking window the result; provenance records the method + char offsets.
 """
 
-import io
+from pathlib import Path
 
 from docx import Document
 
@@ -19,7 +19,7 @@ class DocxAdapter:
     def handles(self, content_type: str) -> bool:
         return content_type == _CONTENT_TYPE
 
-    async def extract(self, data: bytes, *, meta: dict, ctx: ExtractContext) -> list[ExtractedUnit]:
-        document = Document(io.BytesIO(data))
+    async def extract(self, path: Path, *, meta: dict, ctx: ExtractContext) -> list[ExtractedUnit]:
+        document = Document(str(path))
         text = "\n".join(p.text for p in document.paragraphs if p.text.strip())
         return [ExtractedUnit(text=text)] if text.strip() else []

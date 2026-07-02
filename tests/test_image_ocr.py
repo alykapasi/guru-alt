@@ -7,6 +7,7 @@ skipped when none is available (same pattern as the Ollama/rubric integration te
 
 import base64
 import uuid
+from pathlib import Path
 
 import httpx
 import pytest
@@ -39,20 +40,24 @@ async def test_ocr_image_returns_text_and_usage() -> None:
     assert usage.total_tokens > 0
 
 
-async def test_image_adapter_extracts_ocr_unit() -> None:
+async def test_image_adapter_extracts_ocr_unit(tmp_path: Path) -> None:
+    img = tmp_path / "note.png"
+    img.write_bytes(_PNG)
     ctx = ExtractContext(
         content_type="image/jpeg", origin="note.jpg", llm=fake_llm_client("my notes")
     )
-    units = await ImageOcrAdapter().extract(_PNG, meta={}, ctx=ctx)
+    units = await ImageOcrAdapter().extract(img, meta={}, ctx=ctx)
     assert len(units) == 1
     assert units[0].text == "my notes"
     assert units[0].locator == {"image": "note.jpg"}
     assert len(ctx.usage_log) == 1  # the VISION call was recorded for cost logging
 
 
-async def test_image_adapter_requires_llm() -> None:
+async def test_image_adapter_requires_llm(tmp_path: Path) -> None:
+    img = tmp_path / "note.png"
+    img.write_bytes(_PNG)
     with pytest.raises(ValueError, match="requires an LLM"):
-        await ImageOcrAdapter().extract(_PNG, meta={}, ctx=ExtractContext(content_type="image/png"))
+        await ImageOcrAdapter().extract(img, meta={}, ctx=ExtractContext(content_type="image/png"))
 
 
 def test_registry_dispatches_images_to_ocr() -> None:

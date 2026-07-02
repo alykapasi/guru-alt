@@ -1,17 +1,55 @@
 """Ingestion pipeline + service: extract → chunk → embed → store, with status machine."""
 
 import uuid
+from collections.abc import Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.llm.registry import fake_llm_client
+from app.llm import ModelRole
+from app.llm.providers import FakeProvider
+from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
 from app.models.learner import Learner
 from app.models.source import Chunk, SourceKind, SourceStatus
 from app.rag.adapters.base import ExtractedUnit
 from app.rag.chunking import chunk_units, normalize
+from app.rag.pipeline import embed_in_batches
 from app.services import ingestion
 from app.storage import InMemoryBlobStore
+
+
+class _CountingEmbedProvider(FakeProvider):
+    """A fake embed provider that records how many embed calls it received and their sizes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+        self.batch_sizes: list[int] = []
+
+    async def embed(self, *, model: str, texts: Sequence[str]) -> list[list[float]]:
+        self.calls += 1
+        self.batch_sizes.append(len(texts))
+        return await super().embed(model=model, texts=texts)
+
+
+async def test_embed_in_batches_splits_into_ceil_batches_and_preserves_order() -> None:
+    provider = _CountingEmbedProvider()
+    client = LLMClient({"fake": provider}, {r: ModelSpec("fake", "fake-1") for r in ModelRole})
+    texts = [f"chunk number {i}" for i in range(5)]
+
+    vectors = await embed_in_batches(client, texts, batch_size=2, concurrency=4)
+
+    assert provider.calls == 3  # ceil(5 / 2)
+    assert provider.batch_sizes == [2, 2, 1]
+    # Batched embedding equals one big embed — same vectors, same order.
+    assert vectors == await fake_llm_client().embed(ModelRole.EMBED, texts)
+
+
+async def test_embed_in_batches_empty_makes_no_calls() -> None:
+    provider = _CountingEmbedProvider()
+    client = LLMClient({"fake": provider}, {r: ModelSpec("fake", "fake-1") for r in ModelRole})
+    assert await embed_in_batches(client, [], batch_size=2, concurrency=4) == []
+    assert provider.calls == 0
 
 
 async def _make_source(
