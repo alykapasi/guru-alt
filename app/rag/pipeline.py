@@ -11,8 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm import LLMClient, ModelRole
 from app.models.source import Chunk, Source
-from app.rag.adapters import select_adapter
+from app.rag.adapters import ExtractContext, select_adapter
 from app.rag.chunking import chunk_units
+from app.services.llm_log import log_llm_call
 from app.storage import BlobStore
 
 
@@ -37,9 +38,16 @@ async def run(session: AsyncSession, blobstore: BlobStore, llm: LLMClient, sourc
         raise UnsupportedContentType(f"no adapter for content type {source.content_type!r}")
 
     data = await blobstore.get(source.blob_key)
-    chunks = chunk_units(adapter.extract(data, meta=source.meta))
+    ctx = ExtractContext(content_type=source.content_type or "", origin=source.origin, llm=llm)
+    chunks = chunk_units(await adapter.extract(data, meta=source.meta, ctx=ctx))
     if not chunks:
         raise EmptyExtraction("no text extracted from source")
+
+    # Log any model calls extraction made (vision-OCR); embeddings carry no usage to log.
+    for role, usage in ctx.usage_log:
+        await log_llm_call(
+            session, learner_id=source.learner_id, role=str(role), spec=llm.spec(role), usage=usage
+        )
 
     vectors = await llm.embed(ModelRole.EMBED, [c.text for c in chunks])
 

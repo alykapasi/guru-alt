@@ -8,7 +8,7 @@ import io
 
 from docx import Document
 
-from app.rag.adapters.base import ExtractedUnit
+from app.rag.adapters.base import ExtractContext, ExtractedUnit
 
 _CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
@@ -19,7 +19,7 @@ class DocxAdapter:
     def handles(self, content_type: str) -> bool:
         return content_type == _CONTENT_TYPE
 
-    def extract(self, data: bytes, *, meta: dict) -> list[ExtractedUnit]:
+    async def extract(self, data: bytes, *, meta: dict, ctx: ExtractContext) -> list[ExtractedUnit]:
         document = Document(io.BytesIO(data))
         text = "\n".join(p.text for p in document.paragraphs if p.text.strip())
         return [ExtractedUnit(text=text)] if text.strip() else []

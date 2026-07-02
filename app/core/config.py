@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     model_fast: str = "ollama:llama3.2"
     model_smart: str = "ollama:llama3.2"
     model_genius: str = "ollama:llama3.2"
+    # VISION must resolve to a *multimodal* model (image input). Dev: an Ollama vision
+    # model (pull `llama3.2-vision`); prod maps to a multimodal Claude.
+    model_vision: str = "ollama:llama3.2-vision"
     model_embed: str = "ollama:nomic-embed-text"
 
     # Embedding vector dimension — must match the EMBED model's output (nomic = 768) and

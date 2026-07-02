@@ -4,12 +4,13 @@ Both speak the OpenAI Chat Completions + Embeddings API, so a single implementat
 configured with a different ``base_url`` covers both.
 """
 
+import base64
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, cast
 
 from openai import AsyncOpenAI
 
-from app.llm.types import ChatChunk, ChatMessage, ChatResponse, Usage
+from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ImagePart, TextPart, Usage
 
 
 class OpenAICompatProvider:
@@ -19,11 +20,26 @@ class OpenAICompatProvider:
         self._client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed")
 
     @staticmethod
-    def _payload(messages: Sequence[ChatMessage], system: str | None) -> list[dict[str, str]]:
-        out: list[dict[str, str]] = []
+    def _content(content: str | list) -> str | list[dict[str, Any]]:
+        """Translate message content to OpenAI shape: a string, or text/image_url parts."""
+        if isinstance(content, str):
+            return content
+        out: list[dict[str, Any]] = []
+        for part in content:
+            if isinstance(part, TextPart):
+                out.append({"type": "text", "text": part.text})
+            elif isinstance(part, ImagePart):
+                b64 = base64.b64encode(part.data).decode()
+                url = f"data:{part.media_type};base64,{b64}"
+                out.append({"type": "image_url", "image_url": {"url": url}})
+        return out
+
+    @classmethod
+    def _payload(cls, messages: Sequence[ChatMessage], system: str | None) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
         if system:
             out.append({"role": "system", "content": system})
-        out.extend({"role": m.role.value, "content": m.content} for m in messages)
+        out.extend({"role": m.role.value, "content": cls._content(m.content)} for m in messages)
         return out
 
     async def complete(

@@ -6,7 +6,7 @@ becomes the provenance locator for citations.
 
 import trafilatura
 
-from app.rag.adapters.base import ExtractedUnit
+from app.rag.adapters.base import ExtractContext, ExtractedUnit
 
 
 class HtmlAdapter:
@@ -15,7 +15,7 @@ class HtmlAdapter:
     def handles(self, content_type: str) -> bool:
         return content_type in {"text/html", "application/xhtml+xml"}
 
-    def extract(self, data: bytes, *, meta: dict) -> list[ExtractedUnit]:
+    async def extract(self, data: bytes, *, meta: dict, ctx: ExtractContext) -> list[ExtractedUnit]:
         text = trafilatura.extract(data.decode("utf-8", errors="replace")) or ""
         if not text.strip():
             return []

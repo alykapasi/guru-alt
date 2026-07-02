@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.llm.registry import fake_llm_client
 from app.models.learner import Learner
 from app.models.source import Chunk, SourceKind, SourceStatus
-from app.rag.adapters import select_adapter
+from app.rag.adapters import ExtractContext, select_adapter
 from app.rag.adapters.docx import DocxAdapter
 from app.rag.adapters.pdf import PdfAdapter
 from app.rag.adapters.pptx import PptxAdapter
@@ -75,28 +75,36 @@ def _xlsx(title: str, rows: list[list[object]]) -> bytes:
 # --- extraction -------------------------------------------------------------
 
 
-def test_pdf_adapter_extracts_one_unit_per_page() -> None:
-    units = PdfAdapter().extract(_pdf(["Hello from page one", "Second page content"]), meta={})
+async def test_pdf_adapter_extracts_one_unit_per_page() -> None:
+    units = await PdfAdapter().extract(
+        _pdf(["Hello from page one", "Second page content"]), meta={}, ctx=ExtractContext()
+    )
     assert len(units) == 2
     assert units[0].locator == {"page": 1} and "page one" in units[0].text
     assert units[1].locator == {"page": 2} and "Second page" in units[1].text
 
 
-def test_docx_adapter_joins_paragraphs() -> None:
-    units = DocxAdapter().extract(_docx(["First paragraph.", "Second paragraph."]), meta={})
+async def test_docx_adapter_joins_paragraphs() -> None:
+    units = await DocxAdapter().extract(
+        _docx(["First paragraph.", "Second paragraph."]), meta={}, ctx=ExtractContext()
+    )
     assert len(units) == 1
     assert "First paragraph" in units[0].text and "Second paragraph" in units[0].text
 
 
-def test_pptx_adapter_extracts_one_unit_per_slide() -> None:
-    units = PptxAdapter().extract(_pptx(["Slide one bullet", "Slide two bullet"]), meta={})
+async def test_pptx_adapter_extracts_one_unit_per_slide() -> None:
+    units = await PptxAdapter().extract(
+        _pptx(["Slide one bullet", "Slide two bullet"]), meta={}, ctx=ExtractContext()
+    )
     assert len(units) == 2
     assert units[0].locator == {"slide": 1} and "Slide one" in units[0].text
     assert units[1].locator == {"slide": 2}
 
 
-def test_xlsx_adapter_extracts_one_unit_per_sheet() -> None:
-    units = XlsxAdapter().extract(_xlsx("Scores", [["Name", "Score"], ["Alice", 90]]), meta={})
+async def test_xlsx_adapter_extracts_one_unit_per_sheet() -> None:
+    units = await XlsxAdapter().extract(
+        _xlsx("Scores", [["Name", "Score"], ["Alice", 90]]), meta={}, ctx=ExtractContext()
+    )
     assert len(units) == 1
     assert units[0].locator == {"sheet": "Scores"}
     assert "Alice" in units[0].text and "90" in units[0].text

@@ -4,11 +4,15 @@ import hashlib
 from collections.abc import AsyncIterator, Sequence
 
 from app.core.config import get_settings
-from app.llm.types import ChatChunk, ChatMessage, ChatResponse, Usage
+from app.llm.types import ChatChunk, ChatMessage, ChatResponse, Usage, text_of
 
 
 class FakeProvider:
-    """Echoes a canned reply, word by word. No network, fully deterministic."""
+    """Echoes a canned reply, word by word. No network, fully deterministic.
+
+    Accepts multimodal messages (images) and still returns its canned reply — this is what
+    lets vision-OCR paths be exercised offline.
+    """
 
     name = "fake"
 
@@ -17,7 +21,7 @@ class FakeProvider:
 
     def _usage(self, messages: Sequence[ChatMessage]) -> Usage:
         return Usage(
-            input_tokens=sum(len(m.content.split()) for m in messages),
+            input_tokens=sum(len(text_of(m.content).split()) for m in messages),
             output_tokens=len(self._reply.split()),
         )
 

@@ -4,7 +4,7 @@ import io
 
 from openpyxl import load_workbook
 
-from app.rag.adapters.base import ExtractedUnit
+from app.rag.adapters.base import ExtractContext, ExtractedUnit
 
 _CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -15,7 +15,7 @@ class XlsxAdapter:
     def handles(self, content_type: str) -> bool:
         return content_type == _CONTENT_TYPE
 
-    def extract(self, data: bytes, *, meta: dict) -> list[ExtractedUnit]:
+    async def extract(self, data: bytes, *, meta: dict, ctx: ExtractContext) -> list[ExtractedUnit]:
         workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
         try:
             units: list[ExtractedUnit] = []

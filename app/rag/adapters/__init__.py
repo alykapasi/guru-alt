@@ -1,8 +1,9 @@
 """Adapter registry — dispatch a content type to the adapter that handles it."""
 
-from app.rag.adapters.base import Adapter, ExtractedUnit
+from app.rag.adapters.base import Adapter, ExtractContext, ExtractedUnit
 from app.rag.adapters.docx import DocxAdapter
 from app.rag.adapters.html import HtmlAdapter
+from app.rag.adapters.image import ImageOcrAdapter
 from app.rag.adapters.pdf import PdfAdapter
 from app.rag.adapters.pptx import PptxAdapter
 from app.rag.adapters.text import TextAdapter
@@ -16,6 +17,7 @@ _ADAPTERS: list[Adapter] = [
     PptxAdapter(),
     XlsxAdapter(),
     HtmlAdapter(),
+    ImageOcrAdapter(),
 ]
 
 
@@ -33,4 +35,10 @@ def register_adapter(adapter: Adapter) -> None:
     _ADAPTERS.append(adapter)
 
 
-__all__ = ["Adapter", "ExtractedUnit", "register_adapter", "select_adapter"]
+__all__ = [
+    "Adapter",
+    "ExtractContext",
+    "ExtractedUnit",
+    "register_adapter",
+    "select_adapter",
+]

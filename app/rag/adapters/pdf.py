@@ -2,7 +2,7 @@
 
 import pymupdf
 
-from app.rag.adapters.base import ExtractedUnit
+from app.rag.adapters.base import ExtractContext, ExtractedUnit
 
 
 class PdfAdapter:
@@ -11,7 +11,7 @@ class PdfAdapter:
     def handles(self, content_type: str) -> bool:
         return content_type == "application/pdf"
 
-    def extract(self, data: bytes, *, meta: dict) -> list[ExtractedUnit]:
+    async def extract(self, data: bytes, *, meta: dict, ctx: ExtractContext) -> list[ExtractedUnit]:
         units: list[ExtractedUnit] = []
         with pymupdf.open(stream=data, filetype="pdf") as doc:
             for index, page in enumerate(doc):

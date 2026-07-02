@@ -4,7 +4,7 @@ import io
 
 from pptx import Presentation
 
-from app.rag.adapters.base import ExtractedUnit
+from app.rag.adapters.base import ExtractContext, ExtractedUnit
 
 _CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
@@ -15,7 +15,7 @@ class PptxAdapter:
     def handles(self, content_type: str) -> bool:
         return content_type == _CONTENT_TYPE
 
-    def extract(self, data: bytes, *, meta: dict) -> list[ExtractedUnit]:
+    async def extract(self, data: bytes, *, meta: dict, ctx: ExtractContext) -> list[ExtractedUnit]:
         presentation = Presentation(io.BytesIO(data))
         units: list[ExtractedUnit] = []
         for index, slide in enumerate(presentation.slides):
