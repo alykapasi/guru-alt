@@ -15,9 +15,10 @@ from pathlib import Path
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
+from app.learning.kc_tagging import TAGGING_ROLE, load_candidate_kcs, tag_chunk
 from app.llm import LLMClient, ModelRole
-from app.models.source import Chunk, Source
+from app.models.source import Chunk, ChunkKC, Source
 from app.rag.adapters import ExtractContext, select_adapter
 from app.rag.chunking import chunk_units
 from app.rag.concurrency import gather_bounded
@@ -106,22 +107,61 @@ async def run(
         concurrency=settings.embed_concurrency,
     )
 
-    # Idempotent: replace any prior chunks for this source.
+    # Idempotent: replace any prior chunks for this source (their KC tags cascade away with them).
     await session.execute(delete(Chunk).where(Chunk.source_id == source.id))
+    rows: list[Chunk] = []
     for ordinal, (unit, vector) in enumerate(zip(chunks, vectors, strict=True)):
-        session.add(
-            Chunk(
-                source_id=source.id,
-                ordinal=ordinal,
-                text=unit.text,
-                embedding=vector,
-                provenance={
-                    **unit.locator,
-                    "source_id": str(source.id),
-                    "method": unit.method or adapter.name,
-                    "confidence": 1.0,
-                },
-            )
+        row = Chunk(
+            source_id=source.id,
+            ordinal=ordinal,
+            text=unit.text,
+            embedding=vector,
+            provenance={
+                **unit.locator,
+                "source_id": str(source.id),
+                "method": unit.method or adapter.name,
+                "confidence": 1.0,
+            },
         )
-    await session.flush()
+        session.add(row)
+        rows.append(row)
+    await session.flush()  # assign chunk ids so KC tags can reference them
+
+    await _tag_chunks(session, llm, source, rows, settings)
     return len(chunks)
+
+
+async def _tag_chunks(
+    session: AsyncSession,
+    llm: LLMClient,
+    source: Source,
+    rows: Sequence[Chunk],
+    settings: Settings,
+) -> None:
+    """Auto-tag each chunk with the KCs it teaches (scoped to the source's subject/topic).
+
+    Best-effort enrichment: no candidate KCs ⇒ nothing to do. Tagging calls fan out with bounded
+    concurrency; the resulting ``ChunkKC`` writes stay serialized on this session.
+    """
+    candidates = await load_candidate_kcs(session, source)
+    if not candidates:
+        return
+    results = await gather_bounded(
+        [
+            tag_chunk(llm, row.text, candidates, min_confidence=settings.kc_tag_min_confidence)
+            for row in rows
+        ],
+        settings.kc_tag_concurrency,
+    )
+    for row, (tags, usage) in zip(rows, results, strict=True):
+        for tag in tags:
+            session.add(ChunkKC(chunk_id=row.id, kc_id=tag.kc_id, confidence=tag.confidence))
+        if usage.input_tokens or usage.output_tokens:
+            await log_llm_call(
+                session,
+                learner_id=source.learner_id,
+                role=str(TAGGING_ROLE),
+                spec=llm.spec(TAGGING_ROLE),
+                usage=usage,
+            )
+    await session.flush()

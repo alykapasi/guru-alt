@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     ffprobe_bin: str = "ffprobe"
     video_max_keyframes: int = 20
 
+    # Per-chunk KC auto-tagging (Phase 4b). After chunking, the FAST model tags each chunk with the
+    # KCs it teaches, scoped to the source's subject/topic. Tags below the confidence floor are
+    # dropped; at most ``kc_tag_concurrency`` tagging calls run at once (DB writes stay serialized).
+    kc_tag_min_confidence: float = 0.5
+    kc_tag_concurrency: int = 5
+
     # Logging
     log_level: str = "INFO"
     log_json: bool = False  # False = human-friendly console; set True in prod.

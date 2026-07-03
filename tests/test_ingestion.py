@@ -6,11 +6,13 @@ from collections.abc import Sequence
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.llm import ModelRole
+from app.learning.kc_tagging import load_candidate_kcs
+from app.llm import ChatMessage, ChatResponse, ModelRole
 from app.llm.providers import FakeProvider
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
+from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
-from app.models.source import Chunk, SourceKind, SourceStatus
+from app.models.source import Chunk, ChunkKC, Source, SourceKind, SourceStatus
 from app.rag.adapters.base import ExtractedUnit
 from app.rag.chunking import chunk_units, normalize
 from app.rag.pipeline import embed_in_batches
@@ -158,3 +160,153 @@ async def test_ingest_unsupported_type_fails(db_session: AsyncSession) -> None:
     assert result.status == SourceStatus.FAILED
     assert "adapter" in (result.error or "").lower()
     assert await _chunk_count(db_session, source.id) == 0
+
+
+# --- per-chunk KC auto-tagging (DB) -----------------------------------------
+
+
+class _CountingCompleteProvider(FakeProvider):
+    """A fake provider that records how many completion (tagging) calls it received."""
+
+    def __init__(self, reply: str = "{}") -> None:
+        super().__init__(reply=reply)
+        self.complete_calls = 0
+
+    async def complete(
+        self,
+        *,
+        model: str,
+        messages: Sequence[ChatMessage],
+        system: str | None = None,
+        max_tokens: int = 1024,
+    ) -> ChatResponse:
+        self.complete_calls += 1
+        return await super().complete(
+            model=model, messages=messages, system=system, max_tokens=max_tokens
+        )
+
+
+async def _kc_graph(session: AsyncSession) -> tuple[Subject, Topic, KC, KC]:
+    """A tiny Subject → Topic → {kc_a, kc_b} graph. ``kc_a.slug`` sorts first (candidate #1)."""
+    subject = Subject(slug=f"bio-{uuid.uuid4().hex[:6]}", name="Biology")
+    session.add(subject)
+    await session.flush()
+    topic = Topic(subject_id=subject.id, slug="a-cells", name="Cells")
+    session.add(topic)
+    await session.flush()
+    kc_a = KC(topic_id=topic.id, slug="atp", name="ATP synthesis", description="How cells make ATP")
+    kc_b = KC(topic_id=topic.id, slug="cell-theory", name="Cell theory")
+    session.add_all([kc_a, kc_b])
+    await session.flush()
+    return subject, topic, kc_a, kc_b
+
+
+async def _scoped_source(
+    session: AsyncSession,
+    store: InMemoryBlobStore,
+    *,
+    data: bytes,
+    subject_id: uuid.UUID | None = None,
+    topic_id: uuid.UUID | None = None,
+):
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    session.add(learner)
+    await session.flush()
+    return await ingestion.create_source(
+        session,
+        store,
+        learner_id=learner.id,
+        kind=SourceKind.FILE,
+        origin="notes.txt",
+        content_type="text/plain",
+        data=data,
+        subject_id=subject_id,
+        topic_id=topic_id,
+    )
+
+
+async def _chunk_kc_count(session: AsyncSession, source_id: uuid.UUID) -> int:
+    return (
+        await session.scalar(
+            select(func.count())
+            .select_from(ChunkKC)
+            .join(Chunk, ChunkKC.chunk_id == Chunk.id)
+            .where(Chunk.source_id == source_id)
+        )
+    ) or 0
+
+
+async def test_ingest_tags_chunks_with_subject_scoped_kcs(db_session: AsyncSession) -> None:
+    store = InMemoryBlobStore()
+    subject, _topic, kc_a, _kc_b = await _kc_graph(db_session)
+    source = await _scoped_source(
+        db_session, store, subject_id=subject.id, data=b"The mitochondrion makes ATP for the cell."
+    )
+    # The model tags every chunk to candidate #1 (the lowest-slug KC = kc_a "atp").
+    client = fake_llm_client('{"tags": [{"kc": 1, "confidence": 0.9}]}')
+
+    result = await ingestion.ingest_source(db_session, store, client, source.id)
+    assert result.status == SourceStatus.DONE
+
+    links = (
+        await db_session.scalars(
+            select(ChunkKC)
+            .join(Chunk, ChunkKC.chunk_id == Chunk.id)
+            .where(Chunk.source_id == source.id)
+        )
+    ).all()
+    assert links  # chunks were tagged
+    assert all(link.kc_id == kc_a.id for link in links)  # index #1 mapped to the right KC
+    assert all(link.confidence == 0.9 for link in links)
+
+
+async def test_ingest_unscoped_source_skips_kc_tagging(db_session: AsyncSession) -> None:
+    store = InMemoryBlobStore()
+    await _kc_graph(db_session)  # KCs exist, but this source isn't scoped to them
+    provider = _CountingCompleteProvider(reply='{"tags": [{"kc": 1, "confidence": 0.9}]}')
+    client = LLMClient({"fake": provider}, {r: ModelSpec("fake", "fake-1") for r in ModelRole})
+    source = await _make_source(db_session, store, data=b"Unrelated notes about cooking pasta.")
+
+    result = await ingestion.ingest_source(db_session, store, client, source.id)
+
+    assert result.status == SourceStatus.DONE
+    assert provider.complete_calls == 0  # no candidate KCs ⇒ the tagger is never consulted
+    assert await _chunk_kc_count(db_session, source.id) == 0
+
+
+async def test_reingest_replaces_kc_tags(db_session: AsyncSession) -> None:
+    store = InMemoryBlobStore()
+    subject, _topic, _kc_a, _kc_b = await _kc_graph(db_session)
+    source = await _scoped_source(
+        db_session, store, subject_id=subject.id, data=b"Cells respire to release energy."
+    )
+    client = fake_llm_client('{"tags": [{"kc": 1, "confidence": 0.8}]}')
+
+    await ingestion.ingest_source(db_session, store, client, source.id)
+    first = await _chunk_kc_count(db_session, source.id)
+    await ingestion.ingest_source(db_session, store, client, source.id)
+    second = await _chunk_kc_count(db_session, source.id)
+
+    assert first > 0
+    assert first == second  # tags cascade away with the replaced chunks, not duplicated
+
+
+async def test_load_candidate_kcs_scopes_to_topic_then_subject(db_session: AsyncSession) -> None:
+    subject, topic, kc_a, kc_b = await _kc_graph(db_session)
+    topic2 = Topic(subject_id=subject.id, slug="z-genetics", name="Genetics")
+    db_session.add(topic2)
+    await db_session.flush()
+    kc_c = KC(topic_id=topic2.id, slug="alleles", name="Alleles")
+    db_session.add(kc_c)
+    await db_session.flush()
+
+    def _src(**scope: uuid.UUID) -> Source:
+        return Source(learner_id=uuid.uuid4(), kind=SourceKind.FILE, origin="x", **scope)
+
+    subject_scoped = await load_candidate_kcs(db_session, _src(subject_id=subject.id))
+    topic_scoped = await load_candidate_kcs(db_session, _src(topic_id=topic.id))
+    unscoped = await load_candidate_kcs(db_session, _src())
+
+    assert {c.id for c in subject_scoped} == {kc_a.id, kc_b.id, kc_c.id}  # whole subject
+    assert {c.id for c in topic_scoped} == {kc_a.id, kc_b.id}  # just that topic
+    assert unscoped == []  # no scope ⇒ no candidates
