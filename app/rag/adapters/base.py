@@ -18,6 +18,7 @@ from typing import Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 from app.llm import LLMClient, ModelRole, Usage
+from app.rag.demux import MediaDemuxer
 from app.rag.transcription import Transcriber
 
 
@@ -39,16 +40,17 @@ class ExtractContext:
     """What an adapter needs beyond the raw bytes: source descriptor + capabilities.
 
     ``llm`` is present for adapters that call a model (vision-OCR); ``transcriber`` for adapters
-    that do speech-to-text (audio/video). Adapters record any model usage via
-    :meth:`record_usage` so the pipeline can log its cost. ``ocr_concurrency`` caps how many
-    vision-OCR calls an adapter runs at once (the pipeline sets it from config; the default
-    matches ``Settings.ocr_concurrency`` for direct/standalone use).
+    that do speech-to-text (audio/video); ``demuxer`` for video (splits it into an audio track +
+    keyframes). Adapters record any model usage via :meth:`record_usage` so the pipeline can log
+    its cost. ``ocr_concurrency`` caps how many vision-OCR calls an adapter runs at once (the
+    pipeline sets it from config; the default matches ``Settings.ocr_concurrency``).
     """
 
     content_type: str = ""
     origin: str = ""  # filename or URL — used as a provenance locator
     llm: LLMClient | None = None
     transcriber: Transcriber | None = None
+    demuxer: MediaDemuxer | None = None
     ocr_concurrency: int = 5
     usage_log: list[tuple[ModelRole, Usage]] = field(default_factory=list)
 

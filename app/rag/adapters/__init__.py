@@ -9,6 +9,7 @@ from app.rag.adapters.image import ImageOcrAdapter
 from app.rag.adapters.pdf import PdfAdapter
 from app.rag.adapters.pptx import PptxAdapter
 from app.rag.adapters.text import TextAdapter
+from app.rag.adapters.video import VideoAdapter
 from app.rag.adapters.xlsx import XlsxAdapter
 
 # Order matters only if content-type ranges overlap; today they don't.
@@ -21,6 +22,7 @@ _ADAPTERS: list[Adapter] = [
     HtmlAdapter(),
     EpubAdapter(),
     AudioAdapter(),
+    VideoAdapter(),
     ImageOcrAdapter(),
 ]
 

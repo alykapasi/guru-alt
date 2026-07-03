@@ -21,6 +21,7 @@ from app.models.source import Chunk, Source
 from app.rag.adapters import ExtractContext, select_adapter
 from app.rag.chunking import chunk_units
 from app.rag.concurrency import gather_bounded
+from app.rag.demux import MediaDemuxer
 from app.rag.transcription import Transcriber
 from app.services.llm_log import log_llm_call
 from app.storage import BlobStore
@@ -62,6 +63,7 @@ async def run(
     source: Source,
     *,
     transcriber: Transcriber | None = None,
+    demuxer: MediaDemuxer | None = None,
 ) -> int:
     """Ingest one source into chunks. Returns the chunk count. Flushes; caller commits."""
     if not source.blob_key:
@@ -76,6 +78,7 @@ async def run(
         origin=source.origin,
         llm=llm,
         transcriber=transcriber,
+        demuxer=demuxer,
         ocr_concurrency=settings.ocr_concurrency,
     )
     fd, tmp_name = tempfile.mkstemp(dir=settings.ingest_tmp_dir)

@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     asr_device: str = "cpu"
     asr_compute_type: str = "int8"
 
+    # Video demux (Phase 4b). The ffmpeg/ffprobe binaries (system tools, not a Python dep) split
+    # a video into its audio track (→ ASR) and up to ``video_max_keyframes`` evenly-spaced frames
+    # (→ vision-OCR). Point the *_bin settings at non-default paths if not on PATH.
+    ffmpeg_bin: str = "ffmpeg"
+    ffprobe_bin: str = "ffprobe"
+    video_max_keyframes: int = 20
+
     # Logging
     log_level: str = "INFO"
     log_json: bool = False  # False = human-friendly console; set True in prod.
