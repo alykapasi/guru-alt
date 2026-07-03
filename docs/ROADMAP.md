@@ -130,8 +130,8 @@ Ollama) with a `poe eval` runner.
   pipeline, run as Redis-backed background jobs (**taskiq**) — shipped in two waves (4a then 4b).
 - ☑ **4a (text-first):** office docs — PDF, PPTX, DOCX, XLSX, TXT — + **public weblinks**
   (fetch + readability extraction, robots-aware).
-- ☐ **4b (heavier modalities):** **handwritten notes via vision-LLM OCR**; **audio/video via ASR**
-  (Whisper; video → demux audio, optional keyframes for slides).
+- ☑ **4b (heavier modalities):** **handwritten notes via vision-LLM OCR**; **audio/video via ASR**
+  (Whisper; video → demux audio + keyframe OCR); **per-chunk KC auto-tagging**.
 - ☑ Content building blocks (lessons, brief + comprehensive wikis, question banks): AI-generated,
   **KC-tagged**, cached/reusable, **assembled** per learner. *(Profile-driven personalization → Phase 5.)*
 - ☑ **Hybrid retrieval** (pgvector HNSW + tsvector/GIN + metadata filter); grounded generation with
@@ -150,7 +150,13 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 > pipeline; `Source`/`Chunk` (`Vector(768)` HNSW + generated `tsvector` GIN) and `ContentBlock`
 > (migrations 0007–0008); RRF hybrid retrieval with learner/subject/topic/source scope; cached,
 > cited content engine. Eval harness extended with retrieval-recall + grounding-citation suites.
-> **4b (vision OCR + ASR) and per-chunk KC auto-tagging remain.**
+>
+> **4b done.** Vision-capable LLM layer (`VISION` role) + image/scanned-PDF vision-OCR; large-document
+> ingestion (streaming blob I/O at constant memory, bounded-concurrency OCR + batched embeds, EPUB);
+> audio ASR behind a `Transcriber` seam (faster-whisper, optional `asr` extra); video behind a
+> `MediaDemuxer` seam (ffmpeg demux → audio-track ASR + evenly-sampled keyframe OCR); per-chunk KC
+> auto-tagging (`ChunkKC` + migration 0009 — FAST model tags each chunk against subject/topic-scoped
+> candidate KCs). Eval harness extended with a live-model KC-tagging suite. **Phase 4 complete.**
 
 ---
 
