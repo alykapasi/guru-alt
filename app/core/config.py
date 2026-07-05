@@ -47,6 +47,38 @@ class Settings(BaseSettings):
     blob_secret_key: str = "minioadmin"
     blob_region: str = "us-east-1"
 
+    # Ingestion: cap uploads (streamed to disk, so this bounds disk not RAM) and choose where
+    # the pipeline spools blobs. Default cap 1 GiB; None tmp dir = the system default.
+    max_upload_bytes: int = 1_073_741_824
+    ingest_tmp_dir: str | None = None
+
+    # Ingestion concurrency/batching (Phase A large-doc speed). Scanned-PDF pages are OCR'd
+    # with at most ``ocr_concurrency`` vision calls in flight; chunk embeddings are sent in
+    # batches of ``embed_batch_size`` with at most ``embed_concurrency`` batches in flight.
+    # DB writes stay serialized regardless — only the network/CPU work is parallel.
+    ocr_concurrency: int = 5
+    embed_batch_size: int = 128
+    embed_concurrency: int = 4
+
+    # Audio/video ASR (Phase 4b). Transcription runs on faster-whisper (optional dep — install
+    # the ``asr`` extra); these pick the model size + runtime. Defaults are CPU-friendly.
+    asr_model: str = "base"
+    asr_device: str = "cpu"
+    asr_compute_type: str = "int8"
+
+    # Video demux (Phase 4b). The ffmpeg/ffprobe binaries (system tools, not a Python dep) split
+    # a video into its audio track (→ ASR) and up to ``video_max_keyframes`` evenly-spaced frames
+    # (→ vision-OCR). Point the *_bin settings at non-default paths if not on PATH.
+    ffmpeg_bin: str = "ffmpeg"
+    ffprobe_bin: str = "ffprobe"
+    video_max_keyframes: int = 20
+
+    # Per-chunk KC auto-tagging (Phase 4b). After chunking, the FAST model tags each chunk with the
+    # KCs it teaches, scoped to the source's subject/topic. Tags below the confidence floor are
+    # dropped; at most ``kc_tag_concurrency`` tagging calls run at once (DB writes stay serialized).
+    kc_tag_min_confidence: float = 0.5
+    kc_tag_concurrency: int = 5
+
     # Logging
     log_level: str = "INFO"
     log_json: bool = False  # False = human-friendly console; set True in prod.
@@ -57,6 +89,9 @@ class Settings(BaseSettings):
     model_fast: str = "ollama:llama3.2"
     model_smart: str = "ollama:llama3.2"
     model_genius: str = "ollama:llama3.2"
+    # VISION must resolve to a *multimodal* model (image input). Dev: an Ollama vision
+    # model (pull `llama3.2-vision`); prod maps to a multimodal Claude.
+    model_vision: str = "ollama:llama3.2-vision"
     model_embed: str = "ollama:nomic-embed-text"
 
     # Embedding vector dimension — must match the EMBED model's output (nomic = 768) and

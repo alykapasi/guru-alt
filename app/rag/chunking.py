@@ -26,7 +26,13 @@ def chunk_units(
     out: list[ExtractedUnit] = []
     for unit in units:
         for start, piece in _windows(normalize(unit.text), size=size, overlap=overlap):
-            out.append(ExtractedUnit(text=piece, locator={**unit.locator, "char_start": start}))
+            out.append(
+                ExtractedUnit(
+                    text=piece,
+                    locator={**unit.locator, "char_start": start},
+                    method=unit.method,  # keep the unit's extraction method (e.g. OCR)
+                )
+            )
     return out
 
 

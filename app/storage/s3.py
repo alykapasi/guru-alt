@@ -5,6 +5,7 @@ the running event loop, so this keeps the store loop-agnostic and safe to share.
 4a's modest upload volume; a pooled client is a later optimization if it matters.
 """
 
+from pathlib import Path
 from typing import Any
 
 import aioboto3
@@ -46,6 +47,24 @@ class S3BlobStore:
             async with resp["Body"] as body:
                 data: bytes = await body.read()
                 return data
+
+    async def upload(self, key: str, src: Path, *, content_type: str = DEFAULT_CONTENT_TYPE) -> str:
+        async with self._session.client(**self._kwargs) as s3:
+            with open(src, "rb") as fileobj:
+                await s3.upload_fileobj(
+                    fileobj, self._bucket, key, ExtraArgs={"ContentType": content_type}
+                )
+        return f"s3://{self._bucket}/{key}"
+
+    async def download(self, key: str, dest: Path) -> None:
+        async with self._session.client(**self._kwargs) as s3:
+            try:
+                with open(dest, "wb") as fileobj:
+                    await s3.download_fileobj(self._bucket, key, fileobj)
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") in _MISSING_CODES:
+                    raise BlobNotFound(key) from exc
+                raise
 
     async def delete(self, key: str) -> None:
         async with self._session.client(**self._kwargs) as s3:

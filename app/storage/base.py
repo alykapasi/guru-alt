@@ -1,11 +1,13 @@
 """The object-storage seam: a minimal blob interface for raw uploaded files.
 
-Application code stores and fetches raw bytes by **key** through :class:`BlobStore`; the
-backend (S3-compatible in dev/prod via MinIO/S3/R2, in-memory in tests) is a config swap.
-4a uploads are small and app-proxied (``put`` takes bytes); streaming + presigned direct
-upload arrive with 4b's large media.
+Application code stores and fetches blobs by **key** through :class:`BlobStore`; the backend
+(S3-compatible in dev/prod via MinIO/S3/R2, in-memory in tests) is a config swap. Small blobs
+(URL pages, OCR images) use the bytes methods (``put``/``get``); large media use the **streaming**
+methods (``upload``/``download``) that move data via a local file so neither side holds the whole
+blob in memory.
 """
 
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 DEFAULT_CONTENT_TYPE = "application/octet-stream"
@@ -17,7 +19,7 @@ class BlobNotFound(KeyError):
 
 @runtime_checkable
 class BlobStore(Protocol):
-    """Store/fetch raw bytes by key. Keys are caller-chosen (see the project key scheme)."""
+    """Store/fetch blobs by key. Keys are caller-chosen (see the project key scheme)."""
 
     async def put(self, key: str, data: bytes, *, content_type: str = DEFAULT_CONTENT_TYPE) -> str:
         """Store ``data`` at ``key``; return a backend URI. Overwrites an existing key."""
@@ -25,6 +27,14 @@ class BlobStore(Protocol):
 
     async def get(self, key: str) -> bytes:
         """Return the bytes at ``key`` or raise :class:`BlobNotFound`."""
+        ...
+
+    async def upload(self, key: str, src: Path, *, content_type: str = DEFAULT_CONTENT_TYPE) -> str:
+        """Stream a local file to ``key`` (bounded memory); return a backend URI."""
+        ...
+
+    async def download(self, key: str, dest: Path) -> None:
+        """Stream the blob at ``key`` to a local file (bounded memory) or raise BlobNotFound."""
         ...
 
     async def delete(self, key: str) -> None:

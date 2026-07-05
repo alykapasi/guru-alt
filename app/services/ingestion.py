@@ -8,14 +8,28 @@ error it rolls back the partial write and records the failure.
 
 import hashlib
 import uuid
+from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm import LLMClient
 from app.models.source import Source, SourceKind, SourceStatus
 from app.rag import pipeline
+from app.rag.demux import MediaDemuxer
 from app.rag.fetch import Fetcher, default_fetch
+from app.rag.transcription import Transcriber
 from app.storage import DEFAULT_CONTENT_TYPE, BlobStore
+
+_HASH_CHUNK = 1024 * 1024  # 1 MiB — stream large files past the hasher without buffering them
+
+
+def _digest_path(path: Path) -> str:
+    """SHA-256 of a file, read in chunks (bounded memory)."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while chunk := handle.read(_HASH_CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 async def create_source(
@@ -26,12 +40,16 @@ async def create_source(
     kind: SourceKind,
     origin: str,
     content_type: str | None,
-    data: bytes,
+    data: bytes | Path,
     subject_id: uuid.UUID | None = None,
     topic_id: uuid.UUID | None = None,
     meta: dict | None = None,
 ) -> Source:
-    """Persist a pending source and upload its bytes. Caller then enqueues ingestion."""
+    """Persist a pending source and store its blob. Caller then enqueues ingestion.
+
+    ``data`` is either bytes (small, in-memory) or a local file ``Path`` (large uploads,
+    streamed to the store without buffering). Either way the blob key is content-addressed.
+    """
     source = Source(
         learner_id=learner_id,
         kind=kind,
@@ -45,9 +63,13 @@ async def create_source(
     session.add(source)
     await session.flush()  # assign source.id
 
-    digest = hashlib.sha256(data).hexdigest()
-    key = f"{learner_id}/{source.id}/{digest}"
-    await blobstore.put(key, data, content_type=content_type or DEFAULT_CONTENT_TYPE)
+    ctype = content_type or DEFAULT_CONTENT_TYPE
+    if isinstance(data, Path):
+        key = f"{learner_id}/{source.id}/{_digest_path(data)}"
+        await blobstore.upload(key, data, content_type=ctype)
+    else:
+        key = f"{learner_id}/{source.id}/{hashlib.sha256(data).hexdigest()}"
+        await blobstore.put(key, data, content_type=ctype)
     source.blob_key = key
     await session.commit()
     return source
@@ -83,12 +105,16 @@ async def ingest_source(
     llm: LLMClient,
     source_id: uuid.UUID,
     *,
+    transcriber: Transcriber | None = None,
+    demuxer: MediaDemuxer | None = None,
     fetch: Fetcher = default_fetch,
 ) -> Source:
     """Run the pipeline for ``source_id``, recording DONE or FAILED.
 
     For an un-fetched URL source, fetch the page (robots-aware) into the blob store first;
-    a re-ingest reuses the stored bytes rather than re-hitting the URL.
+    a re-ingest reuses the stored bytes rather than re-hitting the URL. ``transcriber`` (ASR)
+    and ``demuxer`` (video → audio track + keyframes) are used by the media path — built by the
+    worker; None when no audio/video is expected.
     """
     source = await session.get(Source, source_id)
     if source is None:
@@ -99,7 +125,9 @@ async def ingest_source(
     try:
         if source.kind == SourceKind.URL and not source.blob_key:
             await _fetch_into_blob(session, blobstore, source, fetch)
-        count = await pipeline.run(session, blobstore, llm, source)
+        count = await pipeline.run(
+            session, blobstore, llm, source, transcriber=transcriber, demuxer=demuxer
+        )
     except Exception as exc:
         await session.rollback()  # discard partial chunk writes + the PROCESSING flag
         return await _mark_failed(session, source_id, exc)

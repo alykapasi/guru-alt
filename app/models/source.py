@@ -11,7 +11,7 @@ from enum import StrEnum
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Computed, ForeignKey, Index, Text
+from sqlalchemy import Computed, ForeignKey, Index, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -91,3 +91,25 @@ class Chunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     provenance: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     source: Mapped["Source"] = relationship(back_populates="chunks")
+    kc_links: Mapped[list["ChunkKC"]] = relationship(
+        back_populates="chunk", cascade="all, delete-orphan"
+    )
+
+
+class ChunkKC(UUIDPrimaryKeyMixin, Base):
+    """Join row tagging a chunk to a KC it teaches, with the auto-tagger's confidence (§6, §7).
+
+    Written during ingestion by per-chunk KC auto-tagging. Deleting a chunk cascades its tags,
+    so a re-ingest (which replaces a source's chunks) naturally replaces their KC links too.
+    """
+
+    __tablename__ = "chunk_kcs"
+    __table_args__ = (UniqueConstraint("chunk_id", "kc_id"),)
+
+    chunk_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("chunks.id", ondelete="CASCADE"), index=True
+    )
+    kc_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("kcs.id", ondelete="CASCADE"), index=True)
+    confidence: Mapped[float] = mapped_column(default=1.0)
+
+    chunk: Mapped["Chunk"] = relationship(back_populates="kc_links")

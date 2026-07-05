@@ -9,10 +9,18 @@
       "Bash(docker exec *)",
       "Bash(gh auth *)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(git checkout *)",
+      "Bash(git pull *)",
+      "Bash(uv pip *)",
+      "Bash(gh pr *)",
+      "Bash(echo \"EXIT=$?\")",
+      "Read(//tmp/**)",
+      "Bash(uv lock *)"
     ],
     "additionalDirectories": [
-      "/Users/alykapasi/Desktop/projects/guru-alt"
+      "/Users/alykapasi/Desktop/projects/guru-alt",
+      "/Users/alykapasi/Desktop/projects/guru-alt/.github/workflows"
     ]
   }
 }

@@ -83,3 +83,33 @@ async def test_rubric_eval_runs_against_live_model() -> None:
     # small local model is too noisy to gate on.
     assert report.total == 3
     assert all(r.detail for r in report.results)
+
+
+async def test_kc_tagging_eval_scores_predictions_deterministically() -> None:
+    # A scripted model that always picks candidate #1 proves the scorer's set-match logic
+    # (one hit, one miss) without a live model — the tagging *contract*, not model quality.
+    client = fake_llm_client('{"tags": [{"kc": 1, "confidence": 0.9}]}')
+    cases = [
+        harness.KCTaggingCase(
+            id="hit", text="A passage about A.", candidates=["A", "B"], expect=[1]
+        ),
+        harness.KCTaggingCase(
+            id="miss", text="A passage about B.", candidates=["A", "B"], expect=[2]
+        ),
+    ]
+    report = await harness.score_kc_tagging(client, cases)
+
+    assert report.total == 2
+    assert report.passed == 1
+    assert {r.case_id for r in report.results if r.passed} == {"hit"}
+
+
+@pytest.mark.skipif(_MODEL is None, reason="Ollama not running or no model pulled")
+async def test_kc_tagging_eval_runs_against_live_model() -> None:
+    assert _MODEL is not None  # narrow for the type checker; skipif guarantees it
+    report = await harness.score_kc_tagging(_ollama_client(_MODEL), harness.load_kc_tagging_cases())
+    # Seed level (like rubric): prove per-chunk KC tagging runs end-to-end against a real model
+    # and yields one result per case. Accuracy gating waits for a calibrated FAST model + a
+    # larger labeled set (Phase 8 / DSPy) — a small local model is too noisy to gate on.
+    assert report.total >= 4
+    assert all(r.detail for r in report.results)

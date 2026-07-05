@@ -10,11 +10,12 @@ from app.models.content import ContentBlock, ContentType
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
-from app.models.source import Chunk, Source, SourceKind, SourceStatus
+from app.models.source import Chunk, ChunkKC, Source, SourceKind, SourceStatus
 
 __all__ = [
     "KC",
     "Chunk",
+    "ChunkKC",
     "ContentBlock",
     "ContentType",
     "Conversation",

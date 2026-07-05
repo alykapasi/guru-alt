@@ -14,7 +14,7 @@ from fastapi import Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.db import get_session
 from app.llm import LLMClient, build_llm_client
 from app.models.learner import Learner
@@ -23,6 +23,14 @@ from app.storage import BlobStore, build_blob_store
 DEV_LEARNER_HANDLE = "dev"
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+
+
+def get_app_settings() -> Settings:
+    """The process-wide settings. Overridden in tests (e.g. to shrink the upload cap)."""
+    return get_settings()
+
+
+SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 
 
 @lru_cache

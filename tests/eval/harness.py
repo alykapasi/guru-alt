@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning.grading import auto_grade, grade_flashcard
+from app.learning.kc_tagging import KCCandidate, tag_chunk
 from app.learning.rubric_grading import RubricGradingError, grade_open
 from app.learning.tracer import (
     DEFAULT_ABILITY,
@@ -124,6 +125,19 @@ class GroundingCase(BaseModel):
     cite: list[int]
 
 
+class KCTaggingCase(BaseModel):
+    """A golden KC-tagging case: ``text`` should be tagged with the ``expect`` candidate KC(s).
+
+    ``candidates`` are KC names shown to the tagger in order; ``expect`` holds the 1-based
+    indices of the KC(s) the passage actually teaches (empty ⇒ it teaches none of them).
+    """
+
+    id: str
+    text: str
+    candidates: list[str]
+    expect: list[int] = Field(default_factory=list)
+
+
 class CaseResult(BaseModel):
     case_id: str
     passed: bool
@@ -180,6 +194,10 @@ def load_retrieval_cases() -> list[RetrievalCase]:
 
 def load_grounding_cases() -> list[GroundingCase]:
     return _load("grounding.json", GroundingCase)
+
+
+def load_kc_tagging_cases() -> list[KCTaggingCase]:
+    return _load("kc_tagging.json", KCTaggingCase)
 
 
 # --- scorers ----------------------------------------------------------------
@@ -295,6 +313,32 @@ async def score_grounding(session: AsyncSession, cases: Sequence[GroundingCase])
             )
         )
     return EvalReport(suite="grounding", results=results)
+
+
+async def score_kc_tagging(
+    client: LLMClient, cases: Sequence[KCTaggingCase], *, min_confidence: float = 0.5
+) -> EvalReport:
+    """Score per-chunk KC auto-tagging against golden labels — needs a live model.
+
+    For each case the candidate names become KCs, the passage is tagged, and the predicted KC
+    set (as 1-based indices) is compared to the expected one. Passes on an exact set match. No
+    DB: the tagger is pure over the candidate list.
+    """
+    results: list[CaseResult] = []
+    for case in cases:
+        candidates = [KCCandidate(id=uuid.uuid4(), name=name) for name in case.candidates]
+        index_of = {c.id: i + 1 for i, c in enumerate(candidates)}
+        tags, _usage = await tag_chunk(client, case.text, candidates, min_confidence=min_confidence)
+        predicted = {index_of[t.kc_id] for t in tags}
+        expected = set(case.expect)
+        results.append(
+            CaseResult(
+                case_id=case.id,
+                passed=predicted == expected,
+                detail=f"predicted {sorted(predicted)}, want {sorted(expected)}",
+            )
+        )
+    return EvalReport(suite="kc_tagging", results=results)
 
 
 async def _seed_corpus(

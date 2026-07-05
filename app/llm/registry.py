@@ -89,6 +89,7 @@ def build_llm_client(settings: Settings) -> LLMClient:
         ModelRole.FAST: _parse_spec(settings.model_fast),
         ModelRole.SMART: _parse_spec(settings.model_smart),
         ModelRole.GENIUS: _parse_spec(settings.model_genius),
+        ModelRole.VISION: _parse_spec(settings.model_vision),
         ModelRole.EMBED: _parse_spec(settings.model_embed),
     }
     return LLMClient(providers, roles)

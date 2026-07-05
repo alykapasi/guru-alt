@@ -1,0 +1,26 @@
+[
+  {
+    "id": "photosynthesis-single-kc",
+    "text": "Photosynthesis converts light energy into chemical energy: chlorophyll in the chloroplasts absorbs sunlight, which drives the reactions that build glucose from carbon dioxide and water, releasing oxygen.",
+    "candidates": ["Photosynthesis", "Cellular respiration", "Plate tectonics"],
+    "expect": [1]
+  },
+  {
+    "id": "newton-second-law-single-kc",
+    "text": "Newton's second law of motion states that the net force on an object equals its mass times its acceleration, so a heavier object needs a larger force to reach the same acceleration.",
+    "candidates": ["Newton's laws of motion", "Thermodynamics", "Wave optics"],
+    "expect": [1]
+  },
+  {
+    "id": "calculus-two-kcs",
+    "text": "Differentiation gives the instantaneous rate of change of a function, and integration reverses it to recover the accumulated area under the curve; together they are tied by the fundamental theorem of calculus.",
+    "candidates": ["Differentiation", "Integration", "Linear algebra"],
+    "expect": [1, 2]
+  },
+  {
+    "id": "distractor-teaches-none",
+    "text": "To fold a fitted bedsheet, tuck each corner into the next, smooth out the elastic edge, and fold the resulting rectangle into thirds before stacking it in the closet.",
+    "candidates": ["Organic chemistry", "Photosynthesis", "Roman history"],
+    "expect": []
+  }
+]

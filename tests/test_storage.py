@@ -1,6 +1,7 @@
 """Object-storage seam + taskiq broker seam (unit; S3 path skipped without MinIO)."""
 
 import uuid
+from pathlib import Path
 
 import httpx
 import pytest
@@ -44,6 +45,20 @@ async def test_in_memory_overwrites_and_missing_delete_is_noop() -> None:
     await store.delete("missing")  # no raise
 
 
+async def test_in_memory_upload_download_roundtrip(tmp_path: Path) -> None:
+    store = InMemoryBlobStore()
+    src = tmp_path / "in.bin"
+    src.write_bytes(b"streamed content")
+    uri = await store.upload("learner/source/x", src, content_type="application/pdf")
+    assert uri == "memory://learner/source/x"
+
+    dest = tmp_path / "out.bin"
+    await store.download("learner/source/x", dest)
+    assert dest.read_bytes() == b"streamed content"
+    with pytest.raises(BlobNotFound):
+        await store.download("missing", tmp_path / "nope.bin")
+
+
 # --- broker seam ------------------------------------------------------------
 
 
@@ -71,3 +86,19 @@ async def test_s3_blob_store_roundtrip() -> None:
     await store.delete(key)
     with pytest.raises(BlobNotFound):
         await store.get(key)
+
+
+@pytest.mark.skipif(not _MINIO, reason="MinIO not running")
+async def test_s3_streaming_upload_download(tmp_path: Path) -> None:
+    store = S3BlobStore(get_settings())
+    key = f"test/{uuid.uuid4()}"
+    src = tmp_path / "in.bin"
+    src.write_bytes(b"streamed to minio")
+    await store.upload(key, src, content_type="application/pdf")
+
+    dest = tmp_path / "out.bin"
+    await store.download(key, dest)
+    assert dest.read_bytes() == b"streamed to minio"
+    await store.delete(key)
+    with pytest.raises(BlobNotFound):
+        await store.download(key, tmp_path / "missing.bin")

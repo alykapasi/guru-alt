@@ -6,15 +6,30 @@ Application code talks to :class:`~app.llm.registry.LLMClient` by **role**
 """
 
 from app.llm.registry import LLMClient, build_llm_client
-from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ChatRole, ModelRole, Usage
+from app.llm.types import (
+    ChatChunk,
+    ChatMessage,
+    ChatResponse,
+    ChatRole,
+    ContentPart,
+    ImagePart,
+    ModelRole,
+    TextPart,
+    Usage,
+    text_of,
+)
 
 __all__ = [
     "ChatChunk",
     "ChatMessage",
     "ChatResponse",
     "ChatRole",
+    "ContentPart",
+    "ImagePart",
     "LLMClient",
     "ModelRole",
+    "TextPart",
     "Usage",
     "build_llm_client",
+    "text_of",
 ]

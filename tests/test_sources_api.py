@@ -7,7 +7,8 @@ import pytest
 from httpx import AsyncClient, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_blob_store, get_ingestion_enqueuer
+from app.api.deps import get_app_settings, get_blob_store, get_ingestion_enqueuer
+from app.core.config import Settings
 from app.llm.registry import fake_llm_client
 from app.main import app
 from app.models.source import Source
@@ -59,6 +60,15 @@ async def test_upload_creates_pending_source_and_enqueues(
 async def test_upload_empty_file_400(api_client: AsyncClient, fake_ingest) -> None:
     r = await _upload(api_client, b"")
     assert r.status_code == 400
+
+
+async def test_upload_rejects_oversize_file(api_client: AsyncClient, fake_ingest) -> None:
+    app.dependency_overrides[get_app_settings] = lambda: Settings(max_upload_bytes=8)
+    try:
+        r = await _upload(api_client, b"way more than eight bytes")
+        assert r.status_code == 413, r.text
+    finally:
+        app.dependency_overrides.pop(get_app_settings, None)
 
 
 async def test_get_source_status(api_client: AsyncClient, fake_ingest) -> None:
