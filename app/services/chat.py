@@ -1,8 +1,7 @@
 """Conversation CRUD + helpers for the chat turn.
 
-Mutators here ``flush`` (so ids are assigned) but do not ``commit`` — the endpoint
-controls commit boundaries around streaming. ``create_conversation`` is standalone and
-commits itself.
+Mutators here ``flush`` (so ids are assigned) but do not ``commit`` — ``create_conversation``
+and ``run_tutor_turn`` own their own commit boundaries around streaming.
 """
 
 import uuid

@@ -5,14 +5,11 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
-import structlog
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
 from app.core.config import get_settings
-from app.llm.pricing import cost_usd
-from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.schemas.chat import (
     ChatTurnRequest,
     ConversationCreate,
@@ -22,7 +19,6 @@ from app.schemas.chat import (
 from app.services import chat as svc
 
 router = APIRouter(tags=["chat"])
-log = structlog.get_logger(__name__)
 
 
 def _sse(obj: dict[str, Any]) -> str:
@@ -63,69 +59,33 @@ async def send_message(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
 
     history = await svc.list_messages(session, conversation_id)
-    chat_messages = svc.to_chat_messages(history)
-    chat_messages.append(ChatMessage(role=ChatRole.USER, content=data.content))
-    await svc.add_message(session, conversation_id, ChatRole.USER.value, data.content)
-    await session.commit()
-
-    spec = llm.spec(ModelRole.SMART)
     max_tokens = get_settings().chat_max_tokens
 
     async def event_stream() -> AsyncIterator[str]:
-        parts: list[str] = []
-        usage = Usage()
-        try:
-            async for chunk in llm.stream(
-                ModelRole.SMART,
-                chat_messages,
-                system=svc.TUTOR_SYSTEM_PROMPT,
-                max_tokens=max_tokens,
-            ):
-                if chunk.text:
-                    parts.append(chunk.text)
-                    yield _sse({"type": "token", "text": chunk.text})
-                if chunk.usage is not None:
-                    usage = chunk.usage
-        except Exception as exc:
-            log.error("chat.stream_failed", error=str(exc), model=spec.model)
-            yield _sse({"type": "error", "detail": "generation failed"})
-            return
-
-        content = "".join(parts)
-        assistant = await svc.add_message(
-            session, conversation_id, ChatRole.ASSISTANT.value, content, model=spec.model
-        )
-        cost = cost_usd(spec.model, usage)
-        await svc.record_llm_call(
+        async for ev in svc.run_tutor_turn(
             session,
+            llm,
             learner_id=learner.id,
             conversation_id=conversation_id,
-            role=ModelRole.SMART.value,
-            provider=spec.provider,
-            model=spec.model,
-            usage=usage,
-            cost_usd=cost,
-        )
-        await session.commit()
-        log.info(
-            "llm.call",
-            role=ModelRole.SMART.value,
-            provider=spec.provider,
-            model=spec.model,
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            cost_usd=cost,
-        )
-        yield _sse(
-            {
-                "type": "done",
-                "message_id": str(assistant.id),
-                "usage": {
-                    "input_tokens": usage.input_tokens,
-                    "output_tokens": usage.output_tokens,
-                },
-                "cost_usd": cost,
-            }
-        )
+            history=history,
+            user_content=data.content,
+            max_tokens=max_tokens,
+        ):
+            if ev.type == "token":
+                yield _sse({"type": "token", "text": ev.text})
+            elif ev.type == "error":
+                yield _sse({"type": "error", "detail": ev.detail})
+            elif ev.type == "done":
+                yield _sse(
+                    {
+                        "type": "done",
+                        "message_id": ev.message_id,
+                        "usage": {
+                            "input_tokens": ev.usage.input_tokens,
+                            "output_tokens": ev.usage.output_tokens,
+                        },
+                        "cost_usd": ev.cost_usd,
+                    }
+                )
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
