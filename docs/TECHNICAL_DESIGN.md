@@ -102,10 +102,13 @@ placeholders set in config.
 
 ### 3.3 LangGraph compatibility & cost
 
-LangGraph nodes consume models by role. The registry returns a **LangChain-compatible chat model**
-(or a thin adapter implementing the same interface) so graphs stay provider-agnostic. Every call
-records `usage` (prompt/completion tokens) + computed cost, tagged by `(role, model, request_id,
-graph_node)`, into a `llm_calls` log → powers cost dashboards and per-feature cost analysis.
+LangGraph nodes consume models **by role through our existing `LLMClient`** — our client
+*is* the adapter; we do not introduce LangChain chat models. Nodes are plain async functions
+that call `llm.stream(ModelRole.SMART, …)` / `llm.complete(…)`, so graphs stay
+provider-agnostic and there is a single model abstraction. Token streaming is surfaced with
+LangGraph's **custom stream writer** (`get_stream_writer()`; `stream_mode="custom"`), not
+`stream_mode="messages"`. Every call records `usage` + computed cost, tagged by `(role,
+model, request_id, graph_node)`, into a `llm_calls` log → cost dashboards.
 
 ---
 
@@ -124,6 +127,12 @@ checkpointing for **human-in-the-loop (HITL)** interrupts.
   content blocks → personalize framing.
 - **Grading** — item + response → auto-grade or LLM rubric-grade → graded observation → tracer.
 - **Content assembly** — fetch reusable KC blocks → re-sequence/scaffold/re-frame for the learner.
+
+**State & persistence:** graph state must be checkpoint-serializable (for HITL interrupts),
+so the `AsyncSession` never lives in state — turn persistence (user/assistant messages,
+`LLMCall`) is orchestrated in a thin service wrapper (`run_tutor_turn`) around the graph.
+Nodes that need the session later (e.g. tracer-update) receive it via LangGraph runtime
+context, not state.
 
 **Streaming:** node token streams are surfaced over **SSE** to the client; HITL interrupts surface as
 events the client answers, resuming the graph from its checkpoint.

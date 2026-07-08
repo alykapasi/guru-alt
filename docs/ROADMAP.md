@@ -181,6 +181,12 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 - ☐ Study aids: flashcards, spaced-repetition surfacing (FSRS due reviews), fill-in-the-blank.
 - ☐ Per-user **memory** subsystem wired into sessions (facts, preferences, summarization, write-back).
 
+> **Substrate landed.** LangGraph introduced behind `app/agent/`; the tutor turn now runs as
+> a single-node state graph (`build_tutor_graph`) driven by a `run_tutor_turn` service that
+> owns persistence, with byte-identical SSE. Nodes call our role-based `LLMClient` (no
+> LangChain models); token streaming rides the custom stream writer. Refinement gate,
+> retrieve/tracer nodes, and lesson-generation graphs are the next Phase 5 slices.
+
 **DoD:** a new learner co-constructs a goal through the interactive gate, is placed, gets an adaptive
 plan whose pacing/challenge demonstrably shift with profile values (e.g. faster pace → larger steps),
 runs LangGraph-orchestrated sessions with study aids and surfaced reviews, and the experience reflects
