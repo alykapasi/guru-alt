@@ -167,6 +167,52 @@ async def record_observation(
     return updated
 
 
+async def seed_prior(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    kc_id: uuid.UUID,
+    estimate: Estimate,
+    *,
+    source: str = "placement",
+) -> LearnerKCState | None:
+    """Set an initial ability/uncertainty for a KC that has no evidence yet.
+
+    Unlike ``record_observation``, this sets a state directly rather than Bayesian-updating
+    a prior — there's no real interaction to weigh, just a soft signal (e.g. placement
+    inference). Only writes if the learner has no existing state for this KC, so it never
+    overwrites real evidence (from an answered item or an earlier seed). Logs a
+    ``LearningEvent`` like any other tracer write, for replayability.
+    """
+    existing = await session.scalar(
+        select(LearnerKCState).where(
+            LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id == kc_id
+        )
+    )
+    if existing is not None:
+        return None
+    state = LearnerKCState(
+        learner_id=learner_id,
+        kc_id=kc_id,
+        ability=estimate.ability,
+        uncertainty=estimate.uncertainty,
+    )
+    session.add(state)
+    session.add(
+        LearningEvent(
+            learner_id=learner_id,
+            kc_id=kc_id,
+            event_type="placement_seed",
+            payload={
+                "ability": estimate.ability,
+                "uncertainty": estimate.uncertainty,
+                "source": source,
+            },
+        )
+    )
+    await session.flush()
+    return state
+
+
 async def due_reviews(
     session: AsyncSession,
     learner_id: uuid.UUID,

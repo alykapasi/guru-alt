@@ -86,6 +86,35 @@ async def get_kc(session: AsyncSession, kc_id: uuid.UUID) -> KC | None:
     return await session.get(KC, kc_id)
 
 
+async def list_kcs_for_subject(session: AsyncSession, subject_id: uuid.UUID) -> Sequence[KC]:
+    """Every KC across a subject's topics (placement's candidate pool)."""
+    result = await session.scalars(
+        select(KC)
+        .join(Topic, KC.topic_id == Topic.id)
+        .where(Topic.subject_id == subject_id)
+        .order_by(Topic.slug, KC.slug)
+    )
+    return result.all()
+
+
+async def list_root_kcs(session: AsyncSession, subject_id: uuid.UUID) -> Sequence[KC]:
+    """KCs in a subject with no prerequisite from another KC in the same subject.
+
+    The highest-leverage, most-foundational sample for a placement light test.
+    """
+    subject_kc_ids = (
+        select(KC.id).join(Topic, KC.topic_id == Topic.id).where(Topic.subject_id == subject_id)
+    )
+    dependent_ids = select(KCEdge.kc_id).where(KCEdge.prereq_kc_id.in_(subject_kc_ids))
+    result = await session.scalars(
+        select(KC)
+        .join(Topic, KC.topic_id == Topic.id)
+        .where(Topic.subject_id == subject_id, KC.id.notin_(dependent_ids))
+        .order_by(Topic.slug, KC.slug)
+    )
+    return result.all()
+
+
 # --- Prerequisite edges -----------------------------------------------------
 
 

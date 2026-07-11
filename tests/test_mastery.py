@@ -70,6 +70,38 @@ async def test_wrong_answer_lowers_ability(db_session: AsyncSession) -> None:
     assert state.ability < 0.0
 
 
+# --- seed_prior ---------------------------------------------------------
+
+
+async def test_seed_prior_writes_when_absent(db_session: AsyncSession) -> None:
+    learner, _, _, (kc,) = await _seed(db_session)
+    estimate = Estimate(ability=1.75, uncertainty=0.6)
+    state = await mastery.seed_prior(db_session, learner.id, kc.id, estimate)
+
+    assert state is not None
+    assert state.ability == 1.75
+    assert state.uncertainty == 0.6
+    (event,) = await _events_for(db_session, kc.id)
+    assert event.event_type == "placement_seed"
+    assert event.payload["source"] == "placement"
+
+
+async def test_seed_prior_noops_when_state_exists(db_session: AsyncSession) -> None:
+    learner, _, _, (kc,) = await _seed(db_session)
+    obs = Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=1.0)
+    (real,) = await mastery.record_observation(db_session, obs)
+
+    result = await mastery.seed_prior(db_session, learner.id, kc.id, Estimate(ability=1.75))
+
+    assert result is None
+    # The real evidence is untouched.
+    current = await db_session.scalar(
+        select(mastery.LearnerKCState).where(mastery.LearnerKCState.id == real.id)
+    )
+    assert current is not None
+    assert current.ability == real.ability
+
+
 async def test_estimate_unseen_kc_is_prior(db_session: AsyncSession) -> None:
     learner, _, _, (kc,) = await _seed(db_session)
     est = await mastery.estimate_kc(db_session, learner.id, kc.id)
