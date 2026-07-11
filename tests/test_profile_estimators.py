@@ -15,13 +15,19 @@ from app.learning.profile_estimators import (
     EstimatorContext,
     _cluster_sessions,
     _estimate_cognitive_load_tolerance,
+    _estimate_engagement,
+    _estimate_error_type,
+    _estimate_goal_orientation,
+    _estimate_help_seeking,
     _estimate_optimal_challenge,
     _estimate_pace,
+    _estimate_persistence,
 )
-from app.learning.profile_estimators import _estimate_error_type as estimate_error_type
 from app.llm import LLMClient
 from app.llm.registry import fake_llm_client
 from app.models.assessment import Item, ItemType
+from app.models.chat import Conversation
+from app.models.learner import Learner
 from app.models.learning import LearningEvent
 
 
@@ -41,6 +47,7 @@ def _obs(
     score: float = 1.0,
     difficulty: float = 0.0,
     latency_ms: int | None = None,
+    hints_used: int | None = None,
     item_id: uuid.UUID | None = None,
     response: dict | None = None,
     minutes_offset: int = 0,
@@ -54,6 +61,7 @@ def _obs(
             "score": score,
             "difficulty": difficulty,
             "latency_ms": latency_ms,
+            "hints_used": hints_used,
             "item_id": str(item_id) if item_id else None,
             "response": response,
         },
@@ -62,11 +70,15 @@ def _obs(
 
 
 def _ctx(
-    session: AsyncSession, events: list[LearningEvent], *, llm: LLMClient | None = None
+    session: AsyncSession,
+    events: list[LearningEvent],
+    *,
+    llm: LLMClient | None = None,
+    learner_id: uuid.UUID | None = None,
 ) -> EstimatorContext:
     return EstimatorContext(
         session=session,
-        learner_id=uuid.uuid4(),
+        learner_id=learner_id or uuid.uuid4(),
         events=events,
         messages=[],
         llm=llm or fake_llm_client(),
@@ -182,7 +194,7 @@ async def test_estimate_cognitive_load_tolerance_detects_accuracy_drop(
 
 async def test_estimate_error_type_below_threshold_returns_none(db_session: AsyncSession) -> None:
     events = [_obs(score=0.0, item_id=uuid.uuid4())]
-    estimate, usage = await estimate_error_type(_ctx(db_session, events))
+    estimate, usage = await _estimate_error_type(_ctx(db_session, events))
     assert estimate is None
     assert usage.total_tokens == 0
 
@@ -211,7 +223,7 @@ async def test_estimate_error_type_classifies_via_one_batched_call(
         }
     )
     ctx = _ctx(db_session, events, llm=fake_llm_client(reply))
-    estimate, usage = await estimate_error_type(ctx)
+    estimate, usage = await _estimate_error_type(ctx)
     assert estimate is not None
     assert estimate.value["conceptual"] == pytest.approx(2 / 3, abs=0.01)
     assert usage.output_tokens > 0
@@ -229,6 +241,144 @@ async def test_estimate_error_type_tolerates_unparseable_reply(
         await db_session.flush()
         events.append(_obs(score=0.0, item_id=item.id, minutes_offset=i))
     ctx = _ctx(db_session, events, llm=fake_llm_client("not json"))
-    estimate, usage = await estimate_error_type(ctx)
+    estimate, usage = await _estimate_error_type(ctx)
     assert estimate is None
     assert usage.total_tokens > 0  # the call happened; it just didn't parse
+
+
+# --- help_seeking ----------------------------------------------------------
+
+
+async def test_estimate_help_seeking_below_threshold_returns_none(db_session: AsyncSession) -> None:
+    events = [_obs(hints_used=1), _obs(hints_used=2)]
+    estimate, usage = await _estimate_help_seeking(_ctx(db_session, events))
+    assert estimate is None
+    assert usage.total_tokens == 0
+
+
+async def test_estimate_help_seeking_computes_mean(db_session: AsyncSession) -> None:
+    events = [_obs(hints_used=0), _obs(hints_used=2), _obs(hints_used=4)]
+    estimate, _ = await _estimate_help_seeking(_ctx(db_session, events))
+    assert estimate is not None
+    assert estimate.value == pytest.approx(2.0)
+
+
+async def test_estimate_help_seeking_ignores_events_without_hints(
+    db_session: AsyncSession,
+) -> None:
+    events = [_obs(hints_used=None), _obs(hints_used=None), _obs(hints_used=1)]
+    estimate, _ = await _estimate_help_seeking(_ctx(db_session, events))
+    assert estimate is None
+
+
+# --- persistence -------------------------------------------------------
+
+
+async def test_estimate_persistence_below_threshold_returns_none(db_session: AsyncSession) -> None:
+    item_id = uuid.uuid4()
+    events = [
+        _obs(score=0.0, item_id=item_id, minutes_offset=0),
+        _obs(score=1.0, item_id=item_id, minutes_offset=1),
+    ]
+    estimate, usage = await _estimate_persistence(_ctx(db_session, events))
+    assert estimate is None  # only one qualifying item, need >= 2
+    assert usage.total_tokens == 0
+
+
+async def test_estimate_persistence_computes_bounce_back_rate(db_session: AsyncSession) -> None:
+    item_a, item_b = uuid.uuid4(), uuid.uuid4()
+    events = [
+        _obs(score=0.0, item_id=item_a, minutes_offset=0),
+        _obs(score=1.0, item_id=item_a, minutes_offset=1),  # bounced back
+        _obs(score=0.0, item_id=item_b, minutes_offset=2),
+        _obs(score=0.0, item_id=item_b, minutes_offset=3),  # gave up
+    ]
+    estimate, _ = await _estimate_persistence(_ctx(db_session, events))
+    assert estimate is not None
+    assert estimate.value == pytest.approx(0.5)
+
+
+async def test_estimate_persistence_ignores_single_attempt_items(
+    db_session: AsyncSession,
+) -> None:
+    events = [_obs(score=0.0, item_id=uuid.uuid4()) for _ in range(5)]
+    estimate, _ = await _estimate_persistence(_ctx(db_session, events))
+    assert estimate is None
+
+
+# --- engagement ----------------------------------------------------------
+
+
+async def test_estimate_engagement_no_events_returns_none(db_session: AsyncSession) -> None:
+    estimate, usage = await _estimate_engagement(_ctx(db_session, []))
+    assert estimate is None
+    assert usage.total_tokens == 0
+
+
+async def test_estimate_engagement_penalizes_error_streaks(db_session: AsyncSession) -> None:
+    events = [
+        _obs(score=1.0, minutes_offset=0),
+        _obs(score=0.0, minutes_offset=1),
+        _obs(score=0.0, minutes_offset=2),
+        _obs(score=0.0, minutes_offset=3),
+    ]
+    estimate, _ = await _estimate_engagement(_ctx(db_session, events))
+    assert estimate is not None
+    assert estimate.value == pytest.approx(0.25)  # 1 - (streak of 3 / 4 events)
+
+
+async def test_estimate_engagement_only_considers_most_recent_session(
+    db_session: AsyncSession,
+) -> None:
+    events = [
+        _obs(score=0.0, minutes_offset=0),
+        _obs(score=0.0, minutes_offset=1),
+        _obs(score=0.0, minutes_offset=2),
+        _obs(score=1.0, minutes_offset=1000),
+        _obs(score=1.0, minutes_offset=1001),
+        _obs(score=1.0, minutes_offset=1002),
+    ]
+    estimate, _ = await _estimate_engagement(_ctx(db_session, events))
+    assert estimate is not None
+    assert estimate.value == pytest.approx(1.0)
+
+
+# --- goal_orientation ------------------------------------------------------
+
+
+async def test_estimate_goal_orientation_no_goals_returns_none(db_session: AsyncSession) -> None:
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+    ctx = _ctx(db_session, [], learner_id=learner.id)
+    estimate, usage = await _estimate_goal_orientation(ctx)
+    assert estimate is None
+    assert usage.total_tokens == 0
+
+
+async def test_estimate_goal_orientation_classifies_via_llm(db_session: AsyncSession) -> None:
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+    db_session.add(Conversation(learner_id=learner.id, goal="I want to truly understand calculus"))
+    await db_session.flush()
+    reply = json.dumps({"orientation": "mastery", "confidence": 0.8})
+    ctx = _ctx(db_session, [], llm=fake_llm_client(reply), learner_id=learner.id)
+    estimate, usage = await _estimate_goal_orientation(ctx)
+    assert estimate is not None
+    assert estimate.value == {"orientation": "mastery", "confidence": 0.8}
+    assert usage.output_tokens > 0
+
+
+async def test_estimate_goal_orientation_tolerates_unparseable_reply(
+    db_session: AsyncSession,
+) -> None:
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+    db_session.add(Conversation(learner_id=learner.id, goal="ace the exam"))
+    await db_session.flush()
+    ctx = _ctx(db_session, [], llm=fake_llm_client("garbage"), learner_id=learner.id)
+    estimate, usage = await _estimate_goal_orientation(ctx)
+    assert estimate is None
+    assert usage.total_tokens > 0

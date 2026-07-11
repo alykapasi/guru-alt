@@ -22,7 +22,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import get_settings
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
 from app.models.assessment import Item, ItemType
-from app.models.chat import Message
+from app.models.chat import Conversation, Message
 from app.models.learning import LearningEvent
 
 PROFILE_LLM_ROLE = ModelRole.FAST
@@ -287,6 +287,123 @@ async def _estimate_error_type(
     return DimensionEstimate(value=distribution, uncertainty=_uncertainty(total)), completion.usage
 
 
+# --- Metacognition & self-regulation ---------------------------------------
+
+HELP_SEEKING_MIN_EVENTS = 3
+PERSISTENCE_MIN_ITEMS = 2
+
+
+async def _estimate_help_seeking(ctx: EstimatorContext) -> tuple[DimensionEstimate | None, Usage]:
+    hints = [
+        e.payload["hints_used"]
+        for e in _observations(ctx.events)
+        if isinstance(e.payload.get("hints_used"), int)
+    ]
+    if len(hints) < HELP_SEEKING_MIN_EVENTS:
+        return None, Usage()
+    value = round(statistics.mean(hints), 2)
+    return DimensionEstimate(value=value, uncertainty=_uncertainty(len(hints))), Usage()
+
+
+async def _estimate_persistence(ctx: EstimatorContext) -> tuple[DimensionEstimate | None, Usage]:
+    by_item: dict[str, list[LearningEvent]] = {}
+    for e in _observations(ctx.events):
+        item_id = e.payload.get("item_id")
+        if item_id:
+            by_item.setdefault(item_id, []).append(e)
+    qualifying = [
+        attempts
+        for attempts in by_item.values()
+        if len(attempts) >= 2 and attempts[0].payload.get("score", 1.0) < 0.5
+    ]
+    if len(qualifying) < PERSISTENCE_MIN_ITEMS:
+        return None, Usage()
+    bounced = sum(
+        1
+        for attempts in qualifying
+        if any(a.payload.get("score", 0.0) >= 0.5 for a in attempts[1:])
+    )
+    value = round(bounced / len(qualifying), 2)
+    return DimensionEstimate(value=value, uncertainty=_uncertainty(len(qualifying))), Usage()
+
+
+# --- Motivation & affect ----------------------------------------------------
+
+ENGAGEMENT_MIN_SESSION_EVENTS = 3
+GOAL_ORIENTATIONS = ("mastery", "performance")
+
+_GOAL_ORIENTATION_SYSTEM_PROMPT = (
+    "A learner stated one or more goals for what they want to learn. Classify their "
+    'predominant orientation: "mastery" (focused on understanding and skill for its own '
+    'sake) or "performance" (focused on grades, scores, or proving ability to others). '
+    'Respond with ONLY a JSON object {"orientation": "mastery"|"performance", "confidence": '
+    "<0.0-1.0>} and nothing else."
+)
+
+
+async def _estimate_engagement(ctx: EstimatorContext) -> tuple[DimensionEstimate | None, Usage]:
+    sessions = _cluster_sessions(
+        _observations(ctx.events), gap_minutes=get_settings().profile_session_gap_minutes
+    )
+    if not sessions:
+        return None, Usage()
+    latest = sessions[-1]
+    if len(latest) < ENGAGEMENT_MIN_SESSION_EVENTS:
+        return None, Usage()
+    longest_streak = current = 0
+    for e in latest:
+        if e.payload.get("score", 1.0) < 0.5:
+            current += 1
+            longest_streak = max(longest_streak, current)
+        else:
+            current = 0
+    value = round(1.0 - min(1.0, longest_streak / len(latest)), 2)
+    return DimensionEstimate(value=value, uncertainty=_uncertainty(len(latest))), Usage()
+
+
+def _parse_goal_orientation(content: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(_extract_json(content))
+        orientation = str(data["orientation"])
+        confidence = float(data.get("confidence", 0.5))
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+    if orientation not in GOAL_ORIENTATIONS:
+        return None
+    return {"orientation": orientation, "confidence": max(0.0, min(1.0, confidence))}
+
+
+async def _estimate_goal_orientation(
+    ctx: EstimatorContext,
+) -> tuple[DimensionEstimate | None, Usage]:
+    goals = [
+        g
+        for g in (
+            await ctx.session.scalars(
+                select(Conversation.goal)
+                .where(Conversation.learner_id == ctx.learner_id, Conversation.goal.is_not(None))
+                .order_by(Conversation.created_at.desc())
+                .limit(5)
+            )
+        ).all()
+        if g
+    ]
+    if not goals:
+        return None, Usage()
+    prompt = "Learner's stated goals:\n" + "\n".join(f"- {g}" for g in goals)
+    completion = await ctx.llm.complete(
+        PROFILE_LLM_ROLE,
+        [ChatMessage(role=ChatRole.USER, content=prompt)],
+        system=_GOAL_ORIENTATION_SYSTEM_PROMPT,
+        max_tokens=128,
+    )
+    parsed = _parse_goal_orientation(completion.content)
+    if parsed is None:
+        return None, completion.usage
+    uncertainty = max(0.15, 1.0 - parsed["confidence"])
+    return DimensionEstimate(value=parsed, uncertainty=uncertainty), completion.usage
+
+
 DIMENSION_SPECS: list[DimensionSpec] = [
     DimensionSpec(key="pace", kind="trait", source="behavioral", estimate=_estimate_pace),
     DimensionSpec(
@@ -303,6 +420,21 @@ DIMENSION_SPECS: list[DimensionSpec] = [
         kind="trait",
         source="behavioral",
         estimate=_estimate_cognitive_load_tolerance,
+    ),
+    DimensionSpec(
+        key="help_seeking", kind="trait", source="behavioral", estimate=_estimate_help_seeking
+    ),
+    DimensionSpec(
+        key="persistence", kind="trait", source="behavioral", estimate=_estimate_persistence
+    ),
+    DimensionSpec(
+        key="engagement", kind="state", source="behavioral", estimate=_estimate_engagement
+    ),
+    DimensionSpec(
+        key="goal_orientation",
+        kind="trait",
+        source="self_report",
+        estimate=_estimate_goal_orientation,
     ),
 ]
 """The dimension catalog. Populated incrementally (see the learner-profile plan's commit
