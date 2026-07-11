@@ -174,7 +174,7 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 - ☑ **Learner profile**: `LearnerProfile` interface + behavior-first estimators reading the event
   log; trait/state + uncertainty; cold-start from intake + refinement gate + placement; learner
   view/reset.
-- ☐ Adaptive **lesson-plan generator/policy** reading mastery **and** profile: objectives →
+- ☑ Adaptive **lesson-plan generator/policy** reading mastery **and** profile: objectives →
   prerequisite-ordered KCs, scaffolding by tier, **profile-driven** step size / challenge / hint
   policy / example selection; revised on evidence.
 - ☐ Session runner that follows/updates the plan.
@@ -241,6 +241,40 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 > EWMA blending in v1, since full recompute is cheap at this data scale. Learner view/reset:
 > `GET /profile`, `POST /profile/{key}/reset`. Lesson-plan policy, session runner, study aids,
 > and memory are the remaining Phase 5 slices.
+>
+> **Lesson-plan policy landed** — designed as a genuinely dynamic policy, not a document
+> regenerated only on request. `LessonPlan` (`app/models/lesson_plan.py`, one row per
+> `(learner_id, subject_id)`) stores `steps` carrying per-step **status**
+> (`pending`/`active`/`done`), so the plan itself is a live record of what will be learned and
+> what already has been — not just a fixed sequence. Generation is split into two tiers by cost:
+> `generate_lesson_plan` (`app/services/lesson_plan.py`) is the expensive, on-demand path — one
+> FAST-role objective-selection call over a numbered KC candidate list (same shape as
+> placement/KC-tagging; a malformed/no-goal reply falls back to targeting the whole subject),
+> prerequisite-closure (BFS) + topo-sort (Kahn's algorithm) over the KC DAG; `revise_plan` is the
+> cheap, **auto-triggered** path — no LLM call, no topo-sort recompute, just a pure re-derivation
+> (`revise_steps` in `app/learning/lesson_plan.py`) of status/order/hints over the *existing*
+> step list. `revise_plan` runs automatically after every graded answer
+> (`assessment.answer_item`, scoped to the touched KCs' subject) and after every profile refresh
+> (`profile.refresh_profile`, across every plan the learner has) — both no-op if the learner has
+> no plan for that subject yet. This is "revised on evidence" (TECHNICAL_DESIGN §7.7) taken
+> literally: a mastered KC's step one-way-ratchets to `done`; a KC coming due for FSRS review
+> gets inserted as a `review` step ahead of new material (soonest-due first) and flips to `done`
+> once no longer due; `optimal_challenge`/`help_seeking`+`persistence`/`format_effectiveness`
+> refresh every non-done step's `target_difficulty`/`hint_density`/`preferred_item_type`, while
+> `pace`/`interests`/`reading_level` refresh the plan-level `pacing`/`example_tags`/
+> `reading_level_hint` — every hint degrading to `None`/a neutral default if its source profile
+> dimension hasn't been computed yet. The tutor conversation graph now **reads the plan**:
+> `run_tutor_turn` folds the learner's active step (KC, target difficulty, hint density,
+> preferred item type) into the system prompt the same way `Conversation.goal` already does — no
+> `TutorState` schema change, no new graph node — so the plan actually drives generation instead
+> of sitting beside it. Endpoints: `POST`/`GET /subjects/{id}/lesson-plan`. **Known v1
+> simplifications:** "well mastered" (`ability >= 1.0, uncertainty <= 0.5`) is an arbitrary
+> threshold, same spirit as placement's level→estimate mapping; "scaffolding by tier" collapses
+> to one tier (adult-only MVP), so the profile is the whole adaptive lever for now; tutor-turn
+> grounding uses the learner's **most-recently-updated plan** across all subjects, since
+> conversations aren't subject-scoped yet — revisit when the session runner needs tighter
+> per-conversation scoping. Full step-advancement through live conversation (marking a step done
+> because a session covered it) is the session runner's job, next.
 
 **DoD:** a new learner co-constructs a goal through the interactive gate, is placed, gets an adaptive
 plan whose pacing/challenge demonstrably shift with profile values (e.g. faster pace → larger steps),
