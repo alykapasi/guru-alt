@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     # sessions — shared by every profile estimator that reasons about session-scoped behavior.
     profile_session_gap_minutes: int = 30
 
+    # Cap on how many KCs a generated lesson plan targets at once — cost/UX bound on a
+    # runaway subject graph. Review steps (due retention) are added on top, uncapped.
+    lesson_plan_max_steps: int = 20
+
     @property
     def runtime_typecheck(self) -> bool:
         """Whether beartype runtime checks should be active (dev/test only)."""

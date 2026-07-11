@@ -6,7 +6,7 @@ the router to translate into 409s.
 """
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -131,3 +131,29 @@ async def add_prerequisite(
 async def list_prerequisites(session: AsyncSession, kc_id: uuid.UUID) -> Sequence[KCEdge]:
     result = await session.scalars(select(KCEdge).where(KCEdge.kc_id == kc_id))
     return result.all()
+
+
+async def list_edges_for_subject(session: AsyncSession, subject_id: uuid.UUID) -> Sequence[KCEdge]:
+    """Every prerequisite edge within a subject — the lesson plan's in-memory closure/topo-sort
+    needs the whole edge set at once rather than one KC at a time."""
+    result = await session.scalars(
+        select(KCEdge)
+        .join(KC, KCEdge.kc_id == KC.id)
+        .join(Topic, KC.topic_id == Topic.id)
+        .where(Topic.subject_id == subject_id)
+    )
+    return result.all()
+
+
+async def subjects_for_kcs(session: AsyncSession, kc_ids: Iterable[uuid.UUID]) -> set[uuid.UUID]:
+    """Distinct subject ids that own any of ``kc_ids`` (KC -> Topic -> Subject)."""
+    kc_ids = list(kc_ids)
+    if not kc_ids:
+        return set()
+    result = await session.scalars(
+        select(Topic.subject_id)
+        .join(KC, KC.topic_id == Topic.id)
+        .where(KC.id.in_(kc_ids))
+        .distinct()
+    )
+    return set(result.all())
