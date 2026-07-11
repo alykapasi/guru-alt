@@ -2,7 +2,9 @@
 
 ``answer_item`` is the heart of the adaptive loop: grade the response, fold the result
 into the tracer for every tagged KC, and commit grade + state updates + the event log in
-one transaction so an interaction is recorded atomically.
+one transaction so an interaction is recorded atomically. It also cheaply revises any
+lesson plan touching the graded KCs (``lesson_plan.revise_plan`` — DB-only, no LLM call) so
+a plan's step statuses/reviews stay current without waiting for a manual regenerate.
 """
 
 import uuid
@@ -27,6 +29,8 @@ from app.models.assessment import (
 )
 from app.models.learning import LearnerKCState
 from app.schemas.assessment import AnswerSubmit, ItemCreate
+from app.services import knowledge as knowledge_svc
+from app.services import lesson_plan as lesson_plan_svc
 from app.services.llm_log import log_llm_call
 
 
@@ -79,6 +83,10 @@ async def answer_item(
     )
     states = await mastery.DEFAULT_TRACER.update(session, observation)
     await session.commit()
+    # Mastery is ground truth and must land regardless; the plan is a derived projection, so
+    # this revises *after* that commit rather than folding it into the same transaction.
+    for subject_id in await knowledge_svc.subjects_for_kcs(session, observation.kc_weights):
+        await lesson_plan_svc.revise_plan(session, learner_id=learner_id, subject_id=subject_id)
     return result, states
 
 

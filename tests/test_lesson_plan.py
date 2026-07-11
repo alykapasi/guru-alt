@@ -8,11 +8,15 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm.registry import fake_llm_client
+from app.models.assessment import Item, ItemKC, ItemType
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
-from app.models.learning import LearnerKCState
+from app.models.learning import LearnerKCState, LearningEvent
 from app.models.profile import ProfileDimension
+from app.schemas.assessment import AnswerSubmit
+from app.services import assessment as assessment_svc
 from app.services import lesson_plan as svc
+from app.services import profile as profile_svc
 
 API = "/api/v1"
 
@@ -220,6 +224,95 @@ async def test_get_active_step_context_reflects_the_active_step(db_session: Asyn
     assert context.subject_name == subject.name
     assert context.kc_name == root.name
     assert context.target_difficulty == 0.5
+
+
+# --- auto-revision wiring (answer_item / refresh_profile) --------------------
+
+
+async def _mcq_item(session: AsyncSession, kc_id: uuid.UUID) -> Item:
+    item = Item(
+        item_type=ItemType.MCQ,
+        stem="Q",
+        answer_key={"choices": ["a", "b"], "correct": 0},
+        kc_links=[ItemKC(kc_id=kc_id, weight=1.0)],
+    )
+    session.add(item)
+    await session.flush()
+    return item
+
+
+async def test_answer_item_auto_revises_a_due_review_step_to_done(
+    db_session: AsyncSession,
+) -> None:
+    learner, subject, root, _dependent = await _graph(db_session)
+    await _due_review_state(db_session, learner.id, root.id)
+    plan = await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+    assert plan.steps[0]["step_type"] == "review"
+    assert plan.steps[0]["status"] == "active"
+
+    item = await _mcq_item(db_session, root.id)
+    await assessment_svc.answer_item(
+        db_session, learner.id, item, AnswerSubmit(response={"choice": 0}), llm=fake_llm_client()
+    )
+
+    # Answering advances FSRS's due_at into the future, so the review is no longer due —
+    # revise_plan ran automatically inside answer_item and marked it done, with no explicit
+    # call to svc.revise_plan or the lesson-plan endpoint. (root also keeps a separate "new"
+    # step — not yet past the mastery threshold — since being due for review and not yet
+    # mastered are independent facts about a KC.)
+    revised = await svc.get_lesson_plan(db_session, learner.id, subject.id)
+    assert revised is not None
+    review_step = next(
+        s for s in revised.steps if s["kc_id"] == str(root.id) and s["step_type"] == "review"
+    )
+    assert review_step["status"] == "done"
+
+
+async def test_answer_item_does_not_create_a_plan_that_never_existed(
+    db_session: AsyncSession,
+) -> None:
+    learner, subject, root, _dependent = await _graph(db_session)
+    item = await _mcq_item(db_session, root.id)
+    await assessment_svc.answer_item(
+        db_session, learner.id, item, AnswerSubmit(response={"choice": 0}), llm=fake_llm_client()
+    )
+    assert await svc.get_lesson_plan(db_session, learner.id, subject.id) is None
+
+
+async def test_refresh_profile_auto_revises_existing_plan_hints(db_session: AsyncSession) -> None:
+    learner, subject, _root, _dependent = await _graph(db_session)
+    plan = await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+    assert plan.steps[0]["target_difficulty"] is None
+
+    # Enough graded evidence for optimal_challenge (>= OPTIMAL_CHALLENGE_MIN_EVENTS=3, all in
+    # the 0.4-0.8 "productive struggle" band) to compute a concrete value.
+    for _ in range(3):
+        db_session.add(
+            LearningEvent(
+                learner_id=learner.id,
+                event_type="observation",
+                payload={"score": 0.6, "difficulty": 0.75, "item_id": None, "response": None},
+            )
+        )
+    await db_session.flush()
+
+    await profile_svc.refresh_profile(db_session, learner.id, fake_llm_client())
+
+    revised = await svc.get_lesson_plan(db_session, learner.id, subject.id)
+    assert revised is not None
+    assert revised.steps[0]["target_difficulty"] == 0.75
+
+
+async def test_refresh_profile_does_not_create_a_plan_that_never_existed(
+    db_session: AsyncSession,
+) -> None:
+    learner, subject, _root, _dependent = await _graph(db_session)
+    await profile_svc.refresh_profile(db_session, learner.id, fake_llm_client())
+    assert await svc.get_lesson_plan(db_session, learner.id, subject.id) is None
 
 
 # --- HTTP level -----------------------------------------------------------

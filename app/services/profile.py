@@ -26,6 +26,7 @@ from app.learning.profile_estimators import (
 from app.llm import LLMClient
 from app.models.chat import Conversation, Message
 from app.models.learning import LearningEvent
+from app.models.lesson_plan import LessonPlan
 from app.models.profile import LearnerProfile, ProfileDimension
 from app.services.llm_log import log_llm_call
 
@@ -124,7 +125,27 @@ async def refresh_profile(
         if result is not None:
             await _upsert_dimension(session, learner_id, spec, result)
     await session.commit()
+    await _revise_lesson_plans(session, learner_id)
     return await get_snapshot(session, learner_id)
+
+
+async def _revise_lesson_plans(session: AsyncSession, learner_id: uuid.UUID) -> None:
+    """Refresh hints/pacing on every existing plan now that the profile changed — the
+    "profile shifts" revision trigger (TECHNICAL_DESIGN §7.7).
+
+    Lazy import: ``app.services.lesson_plan`` imports this module (to read the snapshot for
+    scaffolding), so a top-level import here would be a real circular import. This is the
+    deliberate back-edge.
+    """
+    from app.services import lesson_plan as lesson_plan_svc
+
+    subject_ids = (
+        await session.scalars(
+            select(LessonPlan.subject_id).where(LessonPlan.learner_id == learner_id)
+        )
+    ).all()
+    for subject_id in subject_ids:
+        await lesson_plan_svc.revise_plan(session, learner_id=learner_id, subject_id=subject_id)
 
 
 async def get_snapshot(session: AsyncSession, learner_id: uuid.UUID) -> list[ProfileDimension]:
