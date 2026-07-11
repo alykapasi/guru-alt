@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     # Number of light-test items a placement run administers (the cost/UX tuning knob).
     placement_light_test_size: int = 3
 
+    # Gap (minutes) beyond which two consecutive learning events are treated as different
+    # sessions — shared by every profile estimator that reasons about session-scoped behavior.
+    profile_session_gap_minutes: int = 30
+
     @property
     def runtime_typecheck(self) -> bool:
         """Whether beartype runtime checks should be active (dev/test only)."""
