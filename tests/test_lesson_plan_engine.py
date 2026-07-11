@@ -5,8 +5,12 @@ import uuid
 
 from app.learning.lesson_plan import (
     Edge,
+    ScaffoldingHints,
+    StepDict,
     build_initial_steps,
     prerequisite_closure,
+    revise_steps,
+    scaffolding_from_profile,
     select_objectives,
     topo_sort,
 )
@@ -148,3 +152,180 @@ async def test_select_objectives_empty_kcs_list_is_valid() -> None:
     reply = json.dumps({"kcs": []})
     kcs, _ = await select_objectives(fake_llm_client(reply), "vague goal", candidates)
     assert kcs == []
+
+
+# --- scaffolding_from_profile ---------------------------------------------------
+
+
+def test_scaffolding_from_profile_empty_snapshot_is_all_defaults() -> None:
+    hints = scaffolding_from_profile({})
+    assert hints == ScaffoldingHints()
+
+
+def test_scaffolding_from_profile_maps_every_dimension() -> None:
+    values = {
+        "optimal_challenge": 0.62,
+        "help_seeking": 0.3,
+        "persistence": 0.8,
+        "format_effectiveness": {
+            "mcq": {"mean_score": 0.7, "mean_difficulty": 0.5, "n": 5},
+            "cloze": {"mean_score": 0.9, "mean_difficulty": 0.5, "n": 5},
+        },
+        "pace": {"median_seconds": 12.0, "trend": "speeding_up"},
+        "interests": ["basketball", "cooking"],
+        "reading_level": 8.5,
+    }
+    hints = scaffolding_from_profile(values)
+    assert hints.target_difficulty == 0.62
+    assert hints.hint_density == "low"  # low help-seeking + high persistence
+    assert hints.preferred_item_type == "cloze"  # higher mean_score
+    assert hints.pacing == "brisk"
+    assert hints.example_tags == ["basketball", "cooking"]
+    assert hints.reading_level_hint == 8.5
+
+
+def test_scaffolding_from_profile_partial_snapshot_defaults_the_rest() -> None:
+    hints = scaffolding_from_profile({"optimal_challenge": 0.5})
+    assert hints.target_difficulty == 0.5
+    assert hints.hint_density is None
+    assert hints.preferred_item_type is None
+    assert hints.pacing == "standard"
+    assert hints.example_tags == []
+    assert hints.reading_level_hint is None
+
+
+def test_scaffolding_from_profile_hint_density_high_for_high_help_seeking_low_persistence() -> None:
+    hints = scaffolding_from_profile({"help_seeking": 2.0, "persistence": 0.1})
+    assert hints.hint_density == "high"
+
+
+def test_scaffolding_from_profile_hint_density_medium_for_ambiguous_combo() -> None:
+    hints = scaffolding_from_profile({"help_seeking": 0.3, "persistence": 0.1})
+    assert hints.hint_density == "medium"
+
+
+def test_scaffolding_from_profile_pace_slowing_down_maps_to_unhurried() -> None:
+    hints = scaffolding_from_profile({"pace": {"median_seconds": 30.0, "trend": "slowing_down"}})
+    assert hints.pacing == "unhurried"
+
+
+# --- revise_steps ----------------------------------------------------------------
+
+
+def _step(kc_id: uuid.UUID, order: int, *, step_type="new", status="pending") -> StepDict:
+    return StepDict(
+        kc_id=str(kc_id),
+        order=order,
+        step_type=step_type,
+        status=status,
+        target_difficulty=None,
+        hint_density=None,
+        preferred_item_type=None,
+    )
+
+
+def test_revise_steps_marks_mastered_new_step_done_and_advances_active() -> None:
+    a, b = _uuids(2)
+    steps = [_step(a, 0, status="active"), _step(b, 1, status="pending")]
+    result = revise_steps(
+        steps, mastered_kc_ids={a}, due_review_kc_ids=[], scaffolding=ScaffoldingHints()
+    )
+    by_kc = {s["kc_id"]: s for s in result}
+    assert by_kc[str(a)]["status"] == "done"
+    assert by_kc[str(b)]["status"] == "active"
+
+
+def test_revise_steps_mastery_ratchet_does_not_un_mark_done() -> None:
+    a = uuid.uuid4()
+    steps = [_step(a, 0, status="active")]
+    once = revise_steps(
+        steps, mastered_kc_ids={a}, due_review_kc_ids=[], scaffolding=ScaffoldingHints()
+    )
+    assert once[0]["status"] == "done"
+    # kc_id no longer reported mastered — done must not revert.
+    twice = revise_steps(
+        once, mastered_kc_ids=set(), due_review_kc_ids=[], scaffolding=ScaffoldingHints()
+    )
+    assert twice[0]["status"] == "done"
+
+
+def test_revise_steps_inserts_due_review_ahead_of_new_steps() -> None:
+    new_kc, review_kc = _uuids(2)
+    steps = [_step(new_kc, 0, status="active")]
+    result = revise_steps(
+        steps,
+        mastered_kc_ids=set(),
+        due_review_kc_ids=[review_kc],
+        scaffolding=ScaffoldingHints(),
+    )
+    assert [s["kc_id"] for s in result] == [str(review_kc), str(new_kc)]
+    assert result[0]["step_type"] == "review"
+    assert result[0]["status"] == "active"  # first non-done step
+    assert result[1]["status"] == "pending"  # demoted from active
+
+
+def test_revise_steps_satisfied_review_becomes_done_and_is_not_reinserted() -> None:
+    kc = uuid.uuid4()
+    steps = [_step(kc, 0, step_type="review", status="active")]
+    result = revise_steps(
+        steps, mastered_kc_ids=set(), due_review_kc_ids=[], scaffolding=ScaffoldingHints()
+    )
+    assert len(result) == 1
+    assert result[0]["status"] == "done"
+
+    # Re-running with the KC due again inserts a *fresh* review step (history preserved).
+    again = revise_steps(
+        result, mastered_kc_ids=set(), due_review_kc_ids=[kc], scaffolding=ScaffoldingHints()
+    )
+    assert len(again) == 2
+    statuses = sorted(s["status"] for s in again)
+    assert statuses == ["active", "done"]
+
+
+def test_revise_steps_orders_reviews_soonest_due_first() -> None:
+    soon, later, new_kc = _uuids(3)
+    steps = [_step(new_kc, 0, status="active")]
+    result = revise_steps(
+        steps,
+        mastered_kc_ids=set(),
+        due_review_kc_ids=[soon, later],  # ordered soonest-due first
+        scaffolding=ScaffoldingHints(),
+    )
+    assert [s["kc_id"] for s in result[:2]] == [str(soon), str(later)]
+
+
+def test_revise_steps_refreshes_scaffolding_on_non_done_but_not_done_steps() -> None:
+    active_kc, done_kc = _uuids(2)
+    steps = [
+        _step(active_kc, 0, status="active"),
+        StepDict(
+            kc_id=str(done_kc),
+            order=1,
+            step_type="new",
+            status="done",
+            target_difficulty=0.1,
+            hint_density="low",
+            preferred_item_type="mcq",
+        ),
+    ]
+    hints = ScaffoldingHints(
+        target_difficulty=0.7, hint_density="high", preferred_item_type="cloze"
+    )
+    result = revise_steps(steps, mastered_kc_ids=set(), due_review_kc_ids=[], scaffolding=hints)
+    by_kc = {s["kc_id"]: s for s in result}
+    assert by_kc[str(active_kc)]["target_difficulty"] == 0.7
+    assert by_kc[str(active_kc)]["hint_density"] == "high"
+    assert by_kc[str(active_kc)]["preferred_item_type"] == "cloze"
+    # Done step keeps its historical hints, untouched by the new scaffolding.
+    assert by_kc[str(done_kc)]["target_difficulty"] == 0.1
+    assert by_kc[str(done_kc)]["hint_density"] == "low"
+    assert by_kc[str(done_kc)]["preferred_item_type"] == "mcq"
+
+
+def test_revise_steps_fully_done_plan_has_no_active_step() -> None:
+    kc = uuid.uuid4()
+    steps = [_step(kc, 0, status="done")]
+    result = revise_steps(
+        steps, mastered_kc_ids=set(), due_review_kc_ids=[], scaffolding=ScaffoldingHints()
+    )
+    assert all(s["status"] != "active" for s in result)
