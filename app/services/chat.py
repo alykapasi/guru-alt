@@ -16,6 +16,7 @@ from app.llm.pricing import cost_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.models.chat import Conversation, Message
+from app.services.lesson_plan import PlanGroundingContext, get_active_step_context
 from app.services.turn_common import TurnEvent, add_message, record_llm_call, to_chat_messages
 
 log = structlog.get_logger(__name__)
@@ -25,6 +26,19 @@ TUTOR_SYSTEM_PROMPT = (
     "concisely, check the learner's understanding with questions, and prefer worked "
     "examples over lecturing. Adapt to the learner's level."
 )
+
+
+def _plan_grounding_note(context: PlanGroundingContext) -> str:
+    parts = [
+        f"The learner's current lesson-plan focus in {context.subject_name}: {context.kc_name}."
+    ]
+    if context.target_difficulty is not None:
+        parts.append(f"Target difficulty: {context.target_difficulty:.2f}.")
+    if context.hint_density is not None:
+        parts.append(f"Hint density: {context.hint_density}.")
+    if context.preferred_item_type is not None:
+        parts.append(f"Preferred item type: {context.preferred_item_type}.")
+    return " ".join(parts)
 
 
 async def create_conversation(
@@ -77,7 +91,9 @@ async def run_tutor_turn(
     """Persist the user turn, stream the tutor's reply through the graph, then persist it.
 
     ``goal`` is the conversation's committed goal from the refinement gate (if any) —
-    folded into the system prompt so generation stays grounded in it.
+    folded into the system prompt so generation stays grounded in it. The learner's active
+    lesson-plan step (if any) is folded in the same way, so the plan actually drives the
+    conversation rather than sitting beside it — see ``lesson_plan.get_active_step_context``.
     """
     messages = to_chat_messages(history)
     messages.append(ChatMessage(role=ChatRole.USER, content=user_content))
@@ -87,6 +103,9 @@ async def run_tutor_turn(
     system = TUTOR_SYSTEM_PROMPT
     if goal:
         system = f"{TUTOR_SYSTEM_PROMPT}\n\nThe learner's stated goal for this conversation: {goal}"
+    plan_context = await get_active_step_context(session, learner_id)
+    if plan_context is not None:
+        system = f"{system}\n\n{_plan_grounding_note(plan_context)}"
 
     spec = llm.spec(ModelRole.SMART)
     initial: TutorState = {
