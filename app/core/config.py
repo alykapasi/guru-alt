@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     # Default cap on assistant output tokens for a chat turn.
     chat_max_tokens: int = 2048
 
+    # Max negotiation rounds for the refinement gate before it auto-commits the latest proposal.
+    refinement_max_rounds: int = 3
+
     @property
     def runtime_typecheck(self) -> bool:
         """Whether beartype runtime checks should be active (dev/test only)."""

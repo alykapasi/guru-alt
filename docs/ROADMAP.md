@@ -165,9 +165,9 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 **Goal:** the guided, personalized journey comes together on a real orchestration substrate.
 
 **Scope**
-- ☐ Introduce **LangGraph** as the orchestration substrate; migrate the tutoring turn + lesson
+- ☑ Introduce **LangGraph** as the orchestration substrate; migrate the tutoring turn + lesson
   generation into stateful graphs (nodes pull models by role from the registry).
-- ☐ **Interactive prompt-refinement gate** (HITL subgraph): co-constructs the learner's goal/prompt
+- ☑ **Interactive prompt-refinement gate** (HITL subgraph): co-constructs the learner's goal/prompt
   in a loop — propose → learner feedback → refine — **until the learner is satisfied**, then commits
   to generation. Doubles as a placement/metacognition moment + profile cold-start signal.
 - ☐ Placement diagnostic (light test + inference + asking) → seed KC priors.
@@ -184,8 +184,20 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 > **Substrate landed.** LangGraph introduced behind `app/agent/`; the tutor turn now runs as
 > a single-node state graph (`build_tutor_graph`) driven by a `run_tutor_turn` service that
 > owns persistence, with byte-identical SSE. Nodes call our role-based `LLMClient` (no
-> LangChain models); token streaming rides the custom stream writer. Refinement gate,
-> retrieve/tracer nodes, and lesson-generation graphs are the next Phase 5 slices.
+> LangChain models); token streaming rides the custom stream writer.
+>
+> **Refinement gate landed.** A second graph (`build_refinement_graph`, `app/agent/refinement.py`)
+> implements `propose → ask_learner (HITL interrupt) → satisfied?/max-rounds → commit`, compiled
+> with an `InMemorySaver` checkpointer so the pause/resume survives across HTTP requests within a
+> process. No new endpoint: `POST /conversations/{id}/messages` (`app/api/v1/chat.py`) dispatches
+> per call — goal-less + no history → start the gate; goal-less + mid-flight (checkpoint paused) →
+> resume it; goal committed → plain tutor turn, now grounded by `Conversation.goal` in the system
+> prompt. If checkpoint state is lost (process restart) mid-gate on a conversation with history,
+> it degrades to plain chat rather than re-prompting for a goal. **Known limitation:** the
+> checkpointer is process-local — not durable across restarts, not multi-worker-safe; fine for
+> single-process Phase 5, revisit with a Postgres-backed saver before Phase 8 scaling. Placement,
+> profile, lesson-plan policy, session runner, study aids, and memory are the remaining Phase 5
+> slices.
 
 **DoD:** a new learner co-constructs a goal through the interactive gate, is placed, gets an adaptive
 plan whose pacing/challenge demonstrably shift with profile values (e.g. faster pace → larger steps),

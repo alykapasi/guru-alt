@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_llm_client
 from app.llm.registry import fake_llm_client
 from app.main import app
-from app.models.chat import LLMCall, Message
+from app.models.chat import Conversation, LLMCall, Message
 
 API = "/api/v1"
 REPLY = "Let us explore this together."
@@ -35,6 +35,13 @@ async def test_chat_streams_and_persists(
     r = await api_client.post(f"{API}/conversations", json={"title": "Calc help"})
     assert r.status_code == 201, r.text
     conversation_id = r.json()["id"]
+
+    # A message to a goal-less, history-less conversation triggers the refinement gate
+    # (see tests/test_refinement.py). Set a goal directly to exercise plain generation here.
+    conversation = await db_session.get(Conversation, uuid.UUID(conversation_id))
+    assert conversation is not None
+    conversation.goal = "Understand derivatives"
+    await db_session.commit()
 
     r = await api_client.post(
         f"{API}/conversations/{conversation_id}/messages",

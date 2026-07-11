@@ -1,18 +1,25 @@
-"""Refinement-gate service layer: persistence orchestration around the gate graph."""
+"""Refinement-gate service + HTTP-level tests: persistence orchestration around the gate graph."""
 
+import json
 import uuid
+from collections.abc import Iterator
 
+import pytest
+from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_llm_client
 from app.llm.providers import FakeProvider
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
 from app.llm.types import ChatChunk, ModelRole
+from app.main import app
 from app.models.chat import Conversation, LLMCall, Message
 from app.models.learner import Learner
 from app.services.refinement import run_refinement_turn
 from app.services.turn_common import TurnEvent
 
+API = "/api/v1"
 REPLY = "Sounds like light reactions."
 
 
@@ -160,3 +167,64 @@ async def test_stream_failure_persists_user_only(db_session: AsyncSession) -> No
     ).all()
     assert [m.role for m in messages] == ["user"]
     assert (await db_session.scalars(select(LLMCall))).all() == []
+
+
+# --- HTTP-level: the router's dispatch between the gate and plain chat ---
+
+
+@pytest.fixture
+def fake_llm() -> Iterator[None]:
+    app.dependency_overrides[get_llm_client] = lambda: fake_llm_client(REPLY)
+    yield
+    app.dependency_overrides.pop(get_llm_client, None)
+
+
+def _parse_sse(text: str) -> list[dict]:
+    return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: ")]
+
+
+async def test_dispatch_gate_then_plain_chat(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+) -> None:
+    r = await api_client.post(f"{API}/conversations", json={})
+    conversation_id = r.json()["id"]
+
+    # First message on a fresh conversation -> the gate, not plain generation.
+    r = await api_client.post(
+        f"{API}/conversations/{conversation_id}/messages",
+        json={"content": "I want to learn photosynthesis"},
+    )
+    events = _parse_sse(r.text)
+    assert "".join(e["text"] for e in events if e["type"] == "token") == REPLY
+    awaiting = next(e for e in events if e["type"] == "awaiting_reply")
+    assert awaiting["detail"] == "round 1"
+    assert not any(e["type"] == "done" for e in events)
+
+    conversation = await db_session.get(Conversation, uuid.UUID(conversation_id))
+    assert conversation is not None and conversation.goal is None
+
+    # Accept the proposal -> the gate commits, still no plain-generation "done" event.
+    r = await api_client.post(
+        f"{API}/conversations/{conversation_id}/messages",
+        json={"content": "yes exactly", "satisfied": True},
+    )
+    events = _parse_sse(r.text)
+    committed = next(e for e in events if e["type"] == "committed")
+    assert committed["goal"] == REPLY
+    assert not any(e["type"] in ("token", "done") for e in events)
+
+    await db_session.refresh(conversation)
+    assert conversation.goal == REPLY
+
+    # A third, ordinary message now flows through plain generation.
+    r = await api_client.post(
+        f"{API}/conversations/{conversation_id}/messages",
+        json={"content": "let's begin"},
+    )
+    events = _parse_sse(r.text)
+    assert "".join(e["text"] for e in events if e["type"] == "token") == REPLY
+    done = next(e for e in events if e["type"] == "done")
+    assert done["usage"]["output_tokens"] == len(REPLY.split())
+
+    calls = (await db_session.scalars(select(LLMCall))).all()
+    assert sorted(c.role for c in calls) == ["fast", "smart"]
