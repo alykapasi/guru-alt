@@ -171,9 +171,9 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
   in a loop — propose → learner feedback → refine — **until the learner is satisfied**, then commits
   to generation. Doubles as a placement/metacognition moment + profile cold-start signal.
 - ☑ Placement diagnostic (light test + inference + asking) → seed KC priors.
-- ☐ **Learner profile**: `LearnerProfile` interface + first behavior-first estimators (pace,
-  optimal-challenge, error-type, help-seeking, calibration, interests) reading the event log; trait/
-  state + uncertainty; cold-start from intake + refinement gate + placement; learner view/reset.
+- ☑ **Learner profile**: `LearnerProfile` interface + behavior-first estimators reading the event
+  log; trait/state + uncertainty; cold-start from intake + refinement gate + placement; learner
+  view/reset.
 - ☐ Adaptive **lesson-plan generator/policy** reading mastery **and** profile: objectives →
   prerequisite-ordered KCs, scaffolding by tier, **profile-driven** step size / challenge / hint
   policy / example selection; revised on evidence.
@@ -209,8 +209,38 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 > the Phase 4 "question bank" content has no answer key/`Item` link) and persisted into the
 > shared, learner-unscoped item bank, so later placements/lessons for that KC reuse them instead
 > of regenerating. **Known limitation:** the `"some"`/`"strong"` → ability/uncertainty mapping is
-> a reasonable-but-arbitrary v1 placeholder, not calibrated against real outcome data. Profile,
-> lesson-plan policy, session runner, study aids, and memory are the remaining Phase 5 slices.
+> a reasonable-but-arbitrary v1 placeholder, not calibrated against real outcome data.
+>
+> **Learner profile landed.** EAV-shaped `learner_profiles`/`profile_dimensions`
+> (`app/models/profile.py`) so the dimension catalog lives entirely in code
+> (`DIMENSION_SPECS` in `app/learning/profile_estimators.py`) — adding or dropping a dimension
+> is a code change, never a migration, which matters because the catalog is expected to be
+> pruned once real usage data shows which dimensions are actually predictive. Twelve dimensions
+> shipped across all four MASTERPLAN families, all backed by real estimators over data already
+> captured (no new capture surfaces): *cognitive & pace* — `pace` (median latency + speed
+> trend), `optimal_challenge` (productive-struggle difficulty band), `error_type` (one batched
+> FAST-model call classifying wrong answers conceptual/procedural/careless), `cognitive_load_tolerance`
+> (within-session accuracy drop); *metacognition* — `help_seeking` (mean hints/item),
+> `persistence` (bounce-back rate after a wrong answer); *motivation & affect* — `engagement`
+> (state; error-streak proxy over the most recent session only), `goal_orientation` (one FAST
+> call classifying `Conversation.goal` as mastery- vs performance-oriented — the refinement
+> gate's cold-start signal flows in with no extra wiring); *context & preferences* — `interests`
+> (FAST-extracted topic tags from the learner's own messages), `reading_level` (pure
+> Flesch-Kincaid-style grade level, no LLM call), `session_logistics` (typical session length +
+> preferred hour from gap-clustered sessions), and `format_effectiveness` (score/difficulty by
+> `Item.item_type` — the outcome-linked "which assessment format actually works for this
+> learner" signal that future generation/format-selection decisions consume). Deliberately
+> **not** shipped: `calibration` and `confidence` (MASTERPLAN-named, but no self-prediction or
+> real affect signal exists yet to compute them honestly) and true delivery-modality VARK
+> (visual/auditory/kinesthetic — no content-format tracking on interactions exists yet); all
+> three are additions the catalog can absorb later with zero schema change. Refresh is
+> **on-demand** (`POST /profile/refresh`), not triggered on every graded answer — recomputing a
+> dozen dimensions (three of which call an LLM) after every item would be wasteful;
+> `assessment.answer_item` stays untouched. Trait dimensions read a learner's full event
+> history, state dimensions (`engagement`) read only the most recent session — no incremental
+> EWMA blending in v1, since full recompute is cheap at this data scale. Learner view/reset:
+> `GET /profile`, `POST /profile/{key}/reset`. Lesson-plan policy, session runner, study aids,
+> and memory are the remaining Phase 5 slices.
 
 **DoD:** a new learner co-constructs a goal through the interactive gate, is placed, gets an adaptive
 plan whose pacing/challenge demonstrably shift with profile values (e.g. faster pace → larger steps),
