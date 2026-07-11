@@ -7,17 +7,26 @@ single source of truth for the dimension catalog — adding or dropping a dimens
 to this list only, never a migration (see ``app/models/profile.py``).
 """
 
+import json
+import statistics
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any, Literal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.llm import LLMClient
+from app.core.config import get_settings
+from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
+from app.models.assessment import Item, ItemType
 from app.models.chat import Message
 from app.models.learning import LearningEvent
+
+PROFILE_LLM_ROLE = ModelRole.FAST
+"""Every LLM-backed profile estimator is a cheap classification task — the FAST tier."""
 
 Kind = Literal["trait", "state"]
 Source = Literal["behavioral", "self_report"]
@@ -48,7 +57,9 @@ class EstimatorContext:
     llm: LLMClient
 
 
-EstimatorFn = Callable[[EstimatorContext], Awaitable[DimensionEstimate | None]]
+EstimatorFn = Callable[[EstimatorContext], Awaitable[tuple[DimensionEstimate | None, Usage]]]
+"""Every estimator returns its ``Usage`` alongside the estimate (zero for non-LLM estimators)
+so the orchestrator can log LLM cost uniformly — same shape as ``kc_tagging.tag_chunk`` etc."""
 
 
 @dataclass(frozen=True)
@@ -59,11 +70,6 @@ class DimensionSpec:
     kind: Kind
     source: Source
     estimate: EstimatorFn
-
-
-DIMENSION_SPECS: list[DimensionSpec] = []
-"""The dimension catalog. Populated incrementally (see commits 2-4 of the learner-profile
-slice) — each family's estimators are appended here as they're implemented."""
 
 
 def _uncertainty(n: int, *, floor: float = 0.15) -> float:
@@ -90,3 +96,214 @@ def _cluster_sessions(
             sessions.append([])
         sessions[-1].append(curr)
     return sessions
+
+
+def _observations(events: Sequence[LearningEvent]) -> list[LearningEvent]:
+    """Graded interactions only — excludes ``placement_seed`` rows, which carry a different
+    payload shape (ability/uncertainty, not score/difficulty/latency)."""
+    return [e for e in events if e.event_type == "observation"]
+
+
+# --- Cognitive & pace -----------------------------------------------------
+
+PACE_MIN_EVENTS = 3
+OPTIMAL_CHALLENGE_MIN_EVENTS = 3
+COGNITIVE_LOAD_MIN_SESSION_EVENTS = 4
+ERROR_TYPE_MIN_INCORRECT = 3
+ERROR_TYPE_MAX_SAMPLE = 10
+
+_ERROR_TYPES = ("conceptual", "procedural", "careless")
+
+_ERROR_TYPE_SYSTEM_PROMPT = (
+    "A learner answered several questions incorrectly. You are given a numbered list of "
+    "attempts (the question, what they answered, and the correct answer or grading "
+    'criteria). Classify each as the most likely cause: "conceptual" (misunderstood the '
+    'underlying idea), "procedural" (understood the idea but made a process/method error), '
+    'or "careless" (right idea and method, wrong execution — looks like a slip). Respond '
+    'with ONLY a JSON object {"classifications": [{"item": <number>, "type": "conceptual"|'
+    '"procedural"|"careless"}]} and nothing else.'
+)
+
+
+async def _estimate_pace(ctx: EstimatorContext) -> tuple[DimensionEstimate | None, Usage]:
+    seconds = [
+        e.payload["latency_ms"] / 1000.0
+        for e in _observations(ctx.events)
+        if isinstance(e.payload.get("latency_ms"), int | float)
+    ]
+    if len(seconds) < PACE_MIN_EVENTS:
+        return None, Usage()
+    mid = len(seconds) // 2
+    first_med = statistics.median(seconds[:mid])
+    second_med = statistics.median(seconds[mid:])
+    if second_med < first_med * 0.9:
+        trend = "speeding_up"
+    elif second_med > first_med * 1.1:
+        trend = "slowing_down"
+    else:
+        trend = "stable"
+    value = {"median_seconds": round(statistics.median(seconds), 1), "trend": trend}
+    return DimensionEstimate(value=value, uncertainty=_uncertainty(len(seconds))), Usage()
+
+
+async def _estimate_optimal_challenge(
+    ctx: EstimatorContext,
+) -> tuple[DimensionEstimate | None, Usage]:
+    graded = _observations(ctx.events)
+    if len(graded) < OPTIMAL_CHALLENGE_MIN_EVENTS:
+        return None, Usage()
+    band = [e for e in graded if 0.4 <= e.payload.get("score", 0.0) <= 0.8]
+    if len(band) >= OPTIMAL_CHALLENGE_MIN_EVENTS:
+        difficulty = statistics.mean(e.payload.get("difficulty", 0.0) for e in band)
+        uncertainty = _uncertainty(len(band))
+    else:
+        difficulty = statistics.mean(e.payload.get("difficulty", 0.0) for e in graded)
+        uncertainty = min(1.0, _uncertainty(len(graded)) + 0.2)  # fallback: wider uncertainty
+    return DimensionEstimate(value=round(difficulty, 2), uncertainty=uncertainty), Usage()
+
+
+async def _estimate_cognitive_load_tolerance(
+    ctx: EstimatorContext,
+) -> tuple[DimensionEstimate | None, Usage]:
+    sessions = _cluster_sessions(
+        _observations(ctx.events), gap_minutes=get_settings().profile_session_gap_minutes
+    )
+    deltas = []
+    for session_events in sessions:
+        if len(session_events) < COGNITIVE_LOAD_MIN_SESSION_EVENTS:
+            continue
+        mid = len(session_events) // 2
+        first_acc = statistics.mean(e.payload.get("score", 0.0) for e in session_events[:mid])
+        second_acc = statistics.mean(e.payload.get("score", 0.0) for e in session_events[mid:])
+        deltas.append(second_acc - first_acc)
+    if not deltas:
+        return None, Usage()
+    value = round(statistics.mean(deltas), 3)
+    return DimensionEstimate(value=value, uncertainty=_uncertainty(len(deltas))), Usage()
+
+
+def _describe_answer(item: Item, response: dict | None) -> str:
+    response = response or {}
+    item_type = ItemType(item.item_type)
+    answer_key = item.answer_key or {}
+    if item_type is ItemType.MCQ and answer_key:
+        choices = answer_key.get("choices", [])
+        correct_idx, chosen_idx = answer_key.get("correct"), response.get("choice")
+        correct_text = (
+            choices[correct_idx]
+            if isinstance(correct_idx, int) and correct_idx < len(choices)
+            else "?"
+        )
+        chosen_text = (
+            choices[chosen_idx]
+            if isinstance(chosen_idx, int) and 0 <= chosen_idx < len(choices)
+            else "?"
+        )
+        return f"answered {chosen_text!r}, correct answer was {correct_text!r}"
+    if item_type in (ItemType.CLOZE, ItemType.FILL_BLANK) and answer_key:
+        return (
+            f"answered {response.get('blanks')!r}, correct blanks were {answer_key.get('blanks')!r}"
+        )
+    if item.rubric is not None and item.rubric.criteria:
+        return f"answered {response.get('text', '')!r}; graded against criteria {item.rubric.criteria!r}"
+    return f"answered {response!r} (no fixed answer key)"
+
+
+def _build_error_type_prompt(candidates: Sequence[tuple[LearningEvent, Item]]) -> str:
+    numbered = "\n".join(
+        f"{i}. Question: {item.stem}\n   {_describe_answer(item, e.payload.get('response'))}"
+        for i, (e, item) in enumerate(candidates, start=1)
+    )
+    return f"Incorrect attempts:\n{numbered}"
+
+
+def _parse_error_types(content: str, n_candidates: int) -> dict[str, int]:
+    counts = dict.fromkeys(_ERROR_TYPES, 0)
+    try:
+        raw = json.loads(_extract_json(content))["classifications"]
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return counts
+    if not isinstance(raw, list):
+        return counts
+    seen: set[int] = set()
+    for entry in raw:
+        try:
+            index = int(entry["item"])
+            label = str(entry["type"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not 1 <= index <= n_candidates or label not in _ERROR_TYPES or index in seen:
+            continue
+        seen.add(index)
+        counts[label] += 1
+    return counts
+
+
+def _extract_json(content: str) -> str:
+    start, end = content.find("{"), content.rfind("}")
+    if start == -1 or end < start:
+        raise ValueError("no JSON object in reply")
+    return content[start : end + 1]
+
+
+async def _estimate_error_type(
+    ctx: EstimatorContext,
+) -> tuple[DimensionEstimate | None, Usage]:
+    incorrect = [
+        e
+        for e in _observations(ctx.events)
+        if e.payload.get("score", 1.0) < 0.5 and e.payload.get("item_id")
+    ]
+    if len(incorrect) < ERROR_TYPE_MIN_INCORRECT:
+        return None, Usage()
+    sample = incorrect[-ERROR_TYPE_MAX_SAMPLE:]
+    item_ids = {uuid.UUID(e.payload["item_id"]) for e in sample}
+    items = {
+        item.id: item
+        for item in (
+            await ctx.session.scalars(
+                select(Item).where(Item.id.in_(item_ids)).options(selectinload(Item.rubric))
+            )
+        ).all()
+    }
+    candidates = [
+        (e, items[uuid.UUID(e.payload["item_id"])])
+        for e in sample
+        if uuid.UUID(e.payload["item_id"]) in items
+    ]
+    if len(candidates) < ERROR_TYPE_MIN_INCORRECT:
+        return None, Usage()
+    completion = await ctx.llm.complete(
+        PROFILE_LLM_ROLE,
+        [ChatMessage(role=ChatRole.USER, content=_build_error_type_prompt(candidates))],
+        system=_ERROR_TYPE_SYSTEM_PROMPT,
+        max_tokens=512,
+    )
+    counts = _parse_error_types(completion.content, len(candidates))
+    total = sum(counts.values())
+    if total == 0:
+        return None, completion.usage
+    distribution = {k: round(v / total, 2) for k, v in counts.items()}
+    return DimensionEstimate(value=distribution, uncertainty=_uncertainty(total)), completion.usage
+
+
+DIMENSION_SPECS: list[DimensionSpec] = [
+    DimensionSpec(key="pace", kind="trait", source="behavioral", estimate=_estimate_pace),
+    DimensionSpec(
+        key="optimal_challenge",
+        kind="trait",
+        source="behavioral",
+        estimate=_estimate_optimal_challenge,
+    ),
+    DimensionSpec(
+        key="error_type", kind="trait", source="behavioral", estimate=_estimate_error_type
+    ),
+    DimensionSpec(
+        key="cognitive_load_tolerance",
+        kind="trait",
+        source="behavioral",
+        estimate=_estimate_cognitive_load_tolerance,
+    ),
+]
+"""The dimension catalog. Populated incrementally (see the learner-profile plan's commit
+sequence) — each family's estimators are added here as they're implemented."""

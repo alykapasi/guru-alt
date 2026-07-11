@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning.profile_estimators import (
     DIMENSION_SPECS,
+    PROFILE_LLM_ROLE,
     DimensionEstimate,
     DimensionSpec,
     EstimatorContext,
@@ -26,6 +27,7 @@ from app.llm import LLMClient
 from app.models.chat import Conversation, Message
 from app.models.learning import LearningEvent
 from app.models.profile import LearnerProfile, ProfileDimension
+from app.services.llm_log import log_llm_call
 
 
 async def _load_events(session: AsyncSession, learner_id: uuid.UUID) -> list[LearningEvent]:
@@ -110,7 +112,15 @@ async def refresh_profile(
         llm=llm,
     )
     for spec in DIMENSION_SPECS:
-        result = await spec.estimate(context)
+        result, usage = await spec.estimate(context)
+        if usage.total_tokens:
+            await log_llm_call(
+                session,
+                learner_id=learner_id,
+                role=PROFILE_LLM_ROLE.value,
+                spec=llm.spec(PROFILE_LLM_ROLE),
+                usage=usage,
+            )
         if result is not None:
             await _upsert_dimension(session, learner_id, spec, result)
     await session.commit()
