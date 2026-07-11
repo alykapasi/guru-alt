@@ -404,6 +404,149 @@ async def _estimate_goal_orientation(
     return DimensionEstimate(value=parsed, uncertainty=uncertainty), completion.usage
 
 
+# --- Context & preferences --------------------------------------------------
+
+INTERESTS_MAX_MESSAGES = 20
+INTERESTS_MAX_CHARS_PER_MESSAGE = 500
+INTERESTS_MAX_TAGS = 5
+READING_LEVEL_MIN_WORDS = 30
+SESSION_LOGISTICS_MIN_SESSIONS = 2
+FORMAT_EFFECTIVENESS_MIN_TYPES = 2
+FORMAT_EFFECTIVENESS_MIN_PER_TYPE = 3
+
+_INTERESTS_SYSTEM_PROMPT = (
+    "A learner's own chat messages are shown below. Extract up to 5 short topics or "
+    "interests that could be used to pick relatable examples and analogies when teaching "
+    'them (e.g. "basketball", "cooking", "video games"). Only include things the messages '
+    "actually give evidence for — do not guess. Respond with ONLY a JSON object "
+    '{"interests": ["<topic>", ...]} and nothing else. If nothing applies, return an empty list.'
+)
+
+
+def _parse_interests(content: str) -> list[str]:
+    try:
+        raw = json.loads(_extract_json(content))["interests"]
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    tags: list[str] = []
+    for item in raw:
+        text = str(item).strip()
+        if text and text not in tags:
+            tags.append(text)
+        if len(tags) >= INTERESTS_MAX_TAGS:
+            break
+    return tags
+
+
+async def _estimate_interests(ctx: EstimatorContext) -> tuple[DimensionEstimate | None, Usage]:
+    own_messages = [m.content for m in ctx.messages if m.content.strip()]
+    if not own_messages:
+        return None, Usage()
+    sample = own_messages[-INTERESTS_MAX_MESSAGES:]
+    text = "\n".join(m[:INTERESTS_MAX_CHARS_PER_MESSAGE] for m in sample)
+    completion = await ctx.llm.complete(
+        PROFILE_LLM_ROLE,
+        [ChatMessage(role=ChatRole.USER, content=f"Learner's messages:\n{text}")],
+        system=_INTERESTS_SYSTEM_PROMPT,
+        max_tokens=128,
+    )
+    interests = _parse_interests(completion.content)
+    if not interests:
+        return None, completion.usage
+    return (
+        DimensionEstimate(value=interests, uncertainty=_uncertainty(len(sample))),
+        completion.usage,
+    )
+
+
+def _syllable_count(word: str) -> int:
+    word = word.lower().strip(".,!?;:\"'()")
+    if not word:
+        return 0
+    vowels = "aeiouy"
+    count = 0
+    prev_was_vowel = False
+    for ch in word:
+        is_vowel = ch in vowels
+        if is_vowel and not prev_was_vowel:
+            count += 1
+        prev_was_vowel = is_vowel
+    if word.endswith("e") and count > 1:
+        count -= 1
+    return max(count, 1)
+
+
+async def _estimate_reading_level(
+    ctx: EstimatorContext,
+) -> tuple[DimensionEstimate | None, Usage]:
+    text = " ".join(m.content for m in ctx.messages if m.content.strip())
+    words = text.split()
+    if len(words) < READING_LEVEL_MIN_WORDS:
+        return None, Usage()
+    sentences = max(1, sum(text.count(c) for c in ".!?"))
+    syllables = sum(_syllable_count(w) for w in words)
+    grade = 0.39 * (len(words) / sentences) + 11.8 * (syllables / len(words)) - 15.59
+    value = max(0.0, round(grade, 1))
+    return DimensionEstimate(value=value, uncertainty=_uncertainty(len(words) // 10)), Usage()
+
+
+async def _estimate_session_logistics(
+    ctx: EstimatorContext,
+) -> tuple[DimensionEstimate | None, Usage]:
+    sessions = _cluster_sessions(
+        _observations(ctx.events), gap_minutes=get_settings().profile_session_gap_minutes
+    )
+    if len(sessions) < SESSION_LOGISTICS_MIN_SESSIONS:
+        return None, Usage()
+    durations, hours = [], []
+    for session_events in sessions:
+        start, end = session_events[0].created_at, session_events[-1].created_at
+        durations.append(max(1.0, (end - start).total_seconds() / 60.0))
+        hours.append(start.hour)
+    value = {
+        "typical_session_minutes": round(statistics.median(durations), 1),
+        "preferred_hour_utc": statistics.mode(hours),
+    }
+    return DimensionEstimate(value=value, uncertainty=_uncertainty(len(sessions))), Usage()
+
+
+async def _estimate_format_effectiveness(
+    ctx: EstimatorContext,
+) -> tuple[DimensionEstimate | None, Usage]:
+    graded = [e for e in _observations(ctx.events) if e.payload.get("item_id")]
+    if not graded:
+        return None, Usage()
+    item_ids = {uuid.UUID(e.payload["item_id"]) for e in graded}
+    items = {
+        item.id: item
+        for item in (await ctx.session.scalars(select(Item).where(Item.id.in_(item_ids)))).all()
+    }
+    by_type: dict[str, list[LearningEvent]] = {}
+    for e in graded:
+        item = items.get(uuid.UUID(e.payload["item_id"]))
+        if item is not None:
+            by_type.setdefault(item.item_type, []).append(e)
+    qualifying = {
+        t: evs for t, evs in by_type.items() if len(evs) >= FORMAT_EFFECTIVENESS_MIN_PER_TYPE
+    }
+    if len(qualifying) < FORMAT_EFFECTIVENESS_MIN_TYPES:
+        return None, Usage()
+    value = {
+        t: {
+            "mean_score": round(statistics.mean(e.payload.get("score", 0.0) for e in evs), 2),
+            "mean_difficulty": round(
+                statistics.mean(e.payload.get("difficulty", 0.0) for e in evs), 2
+            ),
+            "n": len(evs),
+        }
+        for t, evs in qualifying.items()
+    }
+    total = sum(len(evs) for evs in qualifying.values())
+    return DimensionEstimate(value=value, uncertainty=_uncertainty(total)), Usage()
+
+
 DIMENSION_SPECS: list[DimensionSpec] = [
     DimensionSpec(key="pace", kind="trait", source="behavioral", estimate=_estimate_pace),
     DimensionSpec(
@@ -435,6 +578,22 @@ DIMENSION_SPECS: list[DimensionSpec] = [
         kind="trait",
         source="self_report",
         estimate=_estimate_goal_orientation,
+    ),
+    DimensionSpec(key="interests", kind="trait", source="behavioral", estimate=_estimate_interests),
+    DimensionSpec(
+        key="reading_level", kind="trait", source="behavioral", estimate=_estimate_reading_level
+    ),
+    DimensionSpec(
+        key="session_logistics",
+        kind="trait",
+        source="behavioral",
+        estimate=_estimate_session_logistics,
+    ),
+    DimensionSpec(
+        key="format_effectiveness",
+        kind="trait",
+        source="behavioral",
+        estimate=_estimate_format_effectiveness,
     ),
 ]
 """The dimension catalog. Populated incrementally (see the learner-profile plan's commit

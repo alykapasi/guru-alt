@@ -17,16 +17,20 @@ from app.learning.profile_estimators import (
     _estimate_cognitive_load_tolerance,
     _estimate_engagement,
     _estimate_error_type,
+    _estimate_format_effectiveness,
     _estimate_goal_orientation,
     _estimate_help_seeking,
+    _estimate_interests,
     _estimate_optimal_challenge,
     _estimate_pace,
     _estimate_persistence,
+    _estimate_reading_level,
+    _estimate_session_logistics,
 )
 from app.llm import LLMClient
 from app.llm.registry import fake_llm_client
 from app.models.assessment import Item, ItemType
-from app.models.chat import Conversation
+from app.models.chat import Conversation, Message
 from app.models.learner import Learner
 from app.models.learning import LearningEvent
 
@@ -69,18 +73,23 @@ def _obs(
     )
 
 
+def _msg(content: str) -> Message:
+    return Message(id=uuid.uuid4(), conversation_id=uuid.uuid4(), role="user", content=content)
+
+
 def _ctx(
     session: AsyncSession,
     events: list[LearningEvent],
     *,
     llm: LLMClient | None = None,
     learner_id: uuid.UUID | None = None,
+    messages: list[Message] | None = None,
 ) -> EstimatorContext:
     return EstimatorContext(
         session=session,
         learner_id=learner_id or uuid.uuid4(),
         events=events,
-        messages=[],
+        messages=messages or [],
         llm=llm or fake_llm_client(),
     )
 
@@ -382,3 +391,111 @@ async def test_estimate_goal_orientation_tolerates_unparseable_reply(
     estimate, usage = await _estimate_goal_orientation(ctx)
     assert estimate is None
     assert usage.total_tokens > 0
+
+
+# --- interests ------------------------------------------------------------
+
+
+async def test_estimate_interests_no_messages_returns_none(db_session: AsyncSession) -> None:
+    estimate, usage = await _estimate_interests(_ctx(db_session, [], messages=[]))
+    assert estimate is None
+    assert usage.total_tokens == 0
+
+
+async def test_estimate_interests_extracts_and_dedupes_via_llm(db_session: AsyncSession) -> None:
+    messages = [_msg("I love playing basketball on weekends")]
+    reply = json.dumps({"interests": ["basketball", "basketball"]})
+    ctx = _ctx(db_session, [], messages=messages, llm=fake_llm_client(reply))
+    estimate, usage = await _estimate_interests(ctx)
+    assert estimate is not None
+    assert estimate.value == ["basketball"]
+    assert usage.output_tokens > 0
+
+
+async def test_estimate_interests_empty_list_returns_none(db_session: AsyncSession) -> None:
+    messages = [_msg("hello")]
+    reply = json.dumps({"interests": []})
+    ctx = _ctx(db_session, [], messages=messages, llm=fake_llm_client(reply))
+    estimate, usage = await _estimate_interests(ctx)
+    assert estimate is None
+    assert usage.total_tokens > 0
+
+
+# --- reading_level -------------------------------------------------------
+
+
+async def test_estimate_reading_level_below_word_threshold_returns_none(
+    db_session: AsyncSession,
+) -> None:
+    messages = [_msg("too short")]
+    estimate, usage = await _estimate_reading_level(_ctx(db_session, [], messages=messages))
+    assert estimate is None
+    assert usage.total_tokens == 0
+
+
+async def test_estimate_reading_level_simpler_text_scores_lower(db_session: AsyncSession) -> None:
+    simple = _msg("The cat sat on the mat. " * 10)
+    complex_ = _msg(
+        "The multifaceted epistemological ramifications necessitate comprehensive "
+        "interdisciplinary consideration. " * 10
+    )
+    simple_estimate, _ = await _estimate_reading_level(_ctx(db_session, [], messages=[simple]))
+    complex_estimate, _ = await _estimate_reading_level(_ctx(db_session, [], messages=[complex_]))
+    assert simple_estimate is not None
+    assert complex_estimate is not None
+    assert simple_estimate.value < complex_estimate.value
+
+
+# --- session_logistics ----------------------------------------------------
+
+
+async def test_estimate_session_logistics_below_threshold_returns_none(
+    db_session: AsyncSession,
+) -> None:
+    events = [_obs(minutes_offset=0), _obs(minutes_offset=5)]  # only one session
+    estimate, usage = await _estimate_session_logistics(_ctx(db_session, events))
+    assert estimate is None
+    assert usage.total_tokens == 0
+
+
+async def test_estimate_session_logistics_computes_typical_length(
+    db_session: AsyncSession,
+) -> None:
+    events = [
+        _obs(minutes_offset=0),
+        _obs(minutes_offset=10),  # session 1: 10 minutes
+        _obs(minutes_offset=1000),
+        _obs(minutes_offset=1020),  # session 2: 20 minutes
+    ]
+    estimate, _ = await _estimate_session_logistics(_ctx(db_session, events))
+    assert estimate is not None
+    assert estimate.value["typical_session_minutes"] == pytest.approx(15.0)
+
+
+# --- format_effectiveness --------------------------------------------------
+
+
+async def test_estimate_format_effectiveness_needs_at_least_two_formats(
+    db_session: AsyncSession,
+) -> None:
+    item = Item(item_type=ItemType.MCQ, stem="Q", answer_key={"choices": ["A"], "correct": 0})
+    db_session.add(item)
+    await db_session.flush()
+    events = [_obs(score=1.0, item_id=item.id, minutes_offset=i) for i in range(5)]
+    estimate, usage = await _estimate_format_effectiveness(_ctx(db_session, events))
+    assert estimate is None
+    assert usage.total_tokens == 0
+
+
+async def test_estimate_format_effectiveness_compares_formats(db_session: AsyncSession) -> None:
+    mcq = Item(item_type=ItemType.MCQ, stem="Q1", answer_key={"choices": ["A"], "correct": 0})
+    cloze = Item(item_type=ItemType.CLOZE, stem="Q2", answer_key={"blanks": ["x"]})
+    db_session.add_all([mcq, cloze])
+    await db_session.flush()
+    events = [_obs(score=1.0, item_id=mcq.id, minutes_offset=i) for i in range(3)] + [
+        _obs(score=0.0, item_id=cloze.id, minutes_offset=10 + i) for i in range(3)
+    ]
+    estimate, _ = await _estimate_format_effectiveness(_ctx(db_session, events))
+    assert estimate is not None
+    assert estimate.value["mcq"]["mean_score"] == pytest.approx(1.0)
+    assert estimate.value["cloze"]["mean_score"] == pytest.approx(0.0)
