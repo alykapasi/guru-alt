@@ -170,7 +170,7 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 - ☑ **Interactive prompt-refinement gate** (HITL subgraph): co-constructs the learner's goal/prompt
   in a loop — propose → learner feedback → refine — **until the learner is satisfied**, then commits
   to generation. Doubles as a placement/metacognition moment + profile cold-start signal.
-- ☐ Placement diagnostic (light test + inference + asking) → seed KC priors.
+- ☑ Placement diagnostic (light test + inference + asking) → seed KC priors.
 - ☐ **Learner profile**: `LearnerProfile` interface + first behavior-first estimators (pace,
   optimal-challenge, error-type, help-seeking, calibration, interests) reading the event log; trait/
   state + uncertainty; cold-start from intake + refinement gate + placement; learner view/reset.
@@ -195,9 +195,22 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 > prompt. If checkpoint state is lost (process restart) mid-gate on a conversation with history,
 > it degrades to plain chat rather than re-prompting for a goal. **Known limitation:** the
 > checkpointer is process-local — not durable across restarts, not multi-worker-safe; fine for
-> single-process Phase 5, revisit with a Postgres-backed saver before Phase 8 scaling. Placement,
-> profile, lesson-plan policy, session runner, study aids, and memory are the remaining Phase 5
-> slices.
+> single-process Phase 5, revisit with a Postgres-backed saver before Phase 8 scaling.
+>
+> **Placement diagnostic landed.** No new graph — a plain two-endpoint flow (`app/api/v1/placement.py`):
+> `GET /subjects/{id}/placement/prompt` returns a fixed background question, `POST
+> /subjects/{id}/placement` (`app/services/placement.py`) infers rough per-KC starting levels
+> from the learner's free-text answer (`app/learning/placement_inference.py`, FAST role,
+> KC-tagging-style numbered-candidate JSON prompt), seeds `LearnerKCState` only for KCs with no
+> existing state (`mastery.seed_prior` — never overwrites real evidence), and surfaces a light
+> test of up to `placement_light_test_size` root KCs (no incoming prerequisite) for the learner
+> to answer through the existing, unchanged `/items/{id}/answer` endpoint. Items are generated
+> on demand (`app/learning/item_generation.py`, FAST-role MCQ generation — new capability, since
+> the Phase 4 "question bank" content has no answer key/`Item` link) and persisted into the
+> shared, learner-unscoped item bank, so later placements/lessons for that KC reuse them instead
+> of regenerating. **Known limitation:** the `"some"`/`"strong"` → ability/uncertainty mapping is
+> a reasonable-but-arbitrary v1 placeholder, not calibrated against real outcome data. Profile,
+> lesson-plan policy, session runner, study aids, and memory are the remaining Phase 5 slices.
 
 **DoD:** a new learner co-constructs a goal through the interactive gate, is placed, gets an adaptive
 plan whose pacing/challenge demonstrably shift with profile values (e.g. faster pace → larger steps),

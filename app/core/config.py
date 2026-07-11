@@ -109,6 +109,9 @@ class Settings(BaseSettings):
     # Max negotiation rounds for the refinement gate before it auto-commits the latest proposal.
     refinement_max_rounds: int = 3
 
+    # Number of light-test items a placement run administers (the cost/UX tuning knob).
+    placement_light_test_size: int = 3
+
     @property
     def runtime_typecheck(self) -> bool:
         """Whether beartype runtime checks should be active (dev/test only)."""
