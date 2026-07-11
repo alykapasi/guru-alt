@@ -10,6 +10,7 @@ from app.models.content import ContentBlock, ContentType
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
+from app.models.lesson_plan import LessonPlan
 from app.models.profile import LearnerProfile, ProfileDimension
 from app.models.source import Chunk, ChunkKC, Source, SourceKind, SourceStatus
 
@@ -28,6 +29,7 @@ __all__ = [
     "LearnerKCState",
     "LearnerProfile",
     "LearningEvent",
+    "LessonPlan",
     "Message",
     "ProfileDimension",
     "Rubric",
