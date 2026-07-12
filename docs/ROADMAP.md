@@ -177,7 +177,7 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 - ☑ Adaptive **lesson-plan generator/policy** reading mastery **and** profile: objectives →
   prerequisite-ordered KCs, scaffolding by tier, **profile-driven** step size / challenge / hint
   policy / example selection; revised on evidence.
-- ☐ Session runner that follows/updates the plan.
+- ☑ Session runner that follows/updates the plan.
 - ☐ Study aids: flashcards, spaced-repetition surfacing (FSRS due reviews), fill-in-the-blank.
 - ☐ Per-user **memory** subsystem wired into sessions (facts, preferences, summarization, write-back).
 
@@ -275,6 +275,35 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 > conversations aren't subject-scoped yet — revisit when the session runner needs tighter
 > per-conversation scoping. Full step-advancement through live conversation (marking a step done
 > because a session covered it) is the session runner's job, next.
+>
+> **Session runner landed.** No new `Session` model and no new LangGraph graph/interrupt —
+> "session" stays a derived concept (same spirit as the profile's `session_logistics`), and the
+> runner is a small addition on top of the substrate that already existed: `Conversation` gains
+> an optional `subject_id` (`app/models/chat.py`, set once at creation, never changed), which
+> turns the previous slice's "most-recently-updated plan" heuristic in
+> `lesson_plan.get_active_step_context` into an exact `(learner, subject)` lookup whenever a
+> conversation is scoped to one — the heuristic itself is untouched and still the fallback for
+> subject-less conversations. `app/services/session_runner.py::next_item` is the one new piece:
+> it resolves the plan's active step and turns it into an actual practice item — reusing a bank
+> item for the KC if one exists (`assessment.find_item_for_kc`), generating one (FAST role) only
+> if the bank is empty, and working identically for `"new"` and `"review"` steps, so FSRS-due
+> reviews surfaced by the plan get served as practice for free. `run_tutor_turn` calls it for
+> subject-scoped conversations and attaches the result to the `done` SSE frame as a new optional
+> `item` field — resolved fresh every turn, not tracked as "already served," since it's a
+> separate structured field rather than something spliced into conversation history. Critically,
+> **"updates the plan" adds no new mechanism**: the item is answered through the existing,
+> unchanged `POST /items/{id}/answer` endpoint, which already runs the tracer and
+> auto-`revise_plan` (previous slice) — the tracer stays the only thing that moves mastery, on
+> purpose, rather than a second "the conversation seemed to cover this" signal running in
+> parallel. Verified live end-to-end against real Postgres + Ollama: a served item answered
+> through the real endpoint flipped its step to `done` and the very next turn's item correctly
+> disappeared, all without a single lesson-plan endpoint call. **Known v1 simplifications:** the
+> active step's `target_difficulty`/`preferred_item_type` hints are not yet applied to item
+> selection — the plan drives *which* KC gets practiced, not yet *what difficulty/format* it's
+> practiced at; `subject_id` is set API-first with no caller yet (no frontend exists before
+> Phase 7) — a future "continue subject X" entry point is expected to populate it, same
+> bootstrapping pattern every other Phase 5 endpoint has shipped under. Study aids and memory are
+> the remaining Phase 5 slices.
 
 **DoD:** a new learner co-constructs a goal through the interactive gate, is placed, gets an adaptive
 plan whose pacing/challenge demonstrably shift with profile values (e.g. faster pace → larger steps),
