@@ -1,10 +1,18 @@
-"""Chat endpoints: conversations + an SSE streaming tutor turn."""
+"""Chat endpoints: conversations + an SSE streaming tutor turn.
+
+``send_message`` dispatches each turn to one of two LangGraph flows: the interactive
+refinement gate (while the conversation has no committed ``goal`` yet) or the plain tutor
+turn (once a goal is committed, or the gate was never entered). See
+``app/services/refinement.py`` for the gate's persistence orchestration and its dispatch
+edge cases (e.g. a lost in-memory checkpoint degrading gracefully to plain chat).
+"""
 
 import json
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 
@@ -17,6 +25,10 @@ from app.schemas.chat import (
     MessageRead,
 )
 from app.services import chat as svc
+from app.services import knowledge as knowledge_svc
+from app.services import refinement as refinement_svc
+
+log = structlog.get_logger(__name__)
 
 router = APIRouter(tags=["chat"])
 
@@ -29,7 +41,10 @@ def _sse(obj: dict[str, Any]) -> str:
 async def create_conversation(
     data: ConversationCreate, session: SessionDep, learner: CurrentLearner
 ):
-    return await svc.create_conversation(session, learner.id, data.title)
+    if data.subject_id is not None:
+        if await knowledge_svc.get_subject(session, data.subject_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
+    return await svc.create_conversation(session, learner.id, data.title, data.subject_id)
 
 
 @router.get("/conversations", response_model=list[ConversationRead])
@@ -59,18 +74,64 @@ async def send_message(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
 
     history = await svc.list_messages(session, conversation_id)
-    max_tokens = get_settings().chat_max_tokens
+    settings = get_settings()
 
-    async def event_stream() -> AsyncIterator[str]:
-        async for ev in svc.run_tutor_turn(
+    turn: AsyncIterator[Any]
+    if conversation.goal is not None:
+        turn = svc.run_tutor_turn(
             session,
             llm,
             learner_id=learner.id,
             conversation_id=conversation_id,
             history=history,
             user_content=data.content,
-            max_tokens=max_tokens,
-        ):
+            max_tokens=settings.chat_max_tokens,
+            goal=conversation.goal,
+            subject_id=conversation.subject_id,
+        )
+    elif await refinement_svc.is_awaiting_reply(llm, conversation_id):
+        turn = refinement_svc.run_refinement_turn(
+            session,
+            llm,
+            learner_id=learner.id,
+            conversation=conversation,
+            user_content=data.content,
+            satisfied=data.satisfied,
+            max_tokens=settings.chat_max_tokens,
+            max_rounds=settings.refinement_max_rounds,
+            resume=True,
+        )
+    elif not history:
+        turn = refinement_svc.run_refinement_turn(
+            session,
+            llm,
+            learner_id=learner.id,
+            conversation=conversation,
+            user_content=data.content,
+            satisfied=data.satisfied,
+            max_tokens=settings.chat_max_tokens,
+            max_rounds=settings.refinement_max_rounds,
+            resume=False,
+        )
+    else:
+        # Goal never committed, gate not mid-flight, but the conversation already has
+        # history — the gate's in-memory checkpoint was lost (e.g. a restart) or this
+        # conversation predates the gate. Degrade to plain chat rather than re-asking
+        # "what do you want to learn?" mid-conversation.
+        log.warning("refinement.gate_state_lost", conversation_id=str(conversation_id))
+        turn = svc.run_tutor_turn(
+            session,
+            llm,
+            learner_id=learner.id,
+            conversation_id=conversation_id,
+            history=history,
+            user_content=data.content,
+            max_tokens=settings.chat_max_tokens,
+            subject_id=conversation.subject_id,
+        )
+
+    async def event_stream() -> AsyncIterator[str]:
+        async for ev in turn:
             if ev.type == "token":
                 yield _sse({"type": "token", "text": ev.text})
             elif ev.type == "error":
@@ -85,7 +146,12 @@ async def send_message(
                             "output_tokens": ev.usage.output_tokens,
                         },
                         "cost_usd": ev.cost_usd,
+                        "item": ev.item.model_dump(mode="json") if ev.item else None,
                     }
                 )
+            elif ev.type == "awaiting_reply":
+                yield _sse({"type": "awaiting_reply", "text": ev.text, "detail": ev.detail})
+            elif ev.type == "committed":
+                yield _sse({"type": "committed", "goal": ev.text, "detail": ev.detail})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

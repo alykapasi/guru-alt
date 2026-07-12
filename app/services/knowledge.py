@@ -6,7 +6,7 @@ the router to translate into 409s.
 """
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -86,6 +86,35 @@ async def get_kc(session: AsyncSession, kc_id: uuid.UUID) -> KC | None:
     return await session.get(KC, kc_id)
 
 
+async def list_kcs_for_subject(session: AsyncSession, subject_id: uuid.UUID) -> Sequence[KC]:
+    """Every KC across a subject's topics (placement's candidate pool)."""
+    result = await session.scalars(
+        select(KC)
+        .join(Topic, KC.topic_id == Topic.id)
+        .where(Topic.subject_id == subject_id)
+        .order_by(Topic.slug, KC.slug)
+    )
+    return result.all()
+
+
+async def list_root_kcs(session: AsyncSession, subject_id: uuid.UUID) -> Sequence[KC]:
+    """KCs in a subject with no prerequisite from another KC in the same subject.
+
+    The highest-leverage, most-foundational sample for a placement light test.
+    """
+    subject_kc_ids = (
+        select(KC.id).join(Topic, KC.topic_id == Topic.id).where(Topic.subject_id == subject_id)
+    )
+    dependent_ids = select(KCEdge.kc_id).where(KCEdge.prereq_kc_id.in_(subject_kc_ids))
+    result = await session.scalars(
+        select(KC)
+        .join(Topic, KC.topic_id == Topic.id)
+        .where(Topic.subject_id == subject_id, KC.id.notin_(dependent_ids))
+        .order_by(Topic.slug, KC.slug)
+    )
+    return result.all()
+
+
 # --- Prerequisite edges -----------------------------------------------------
 
 
@@ -102,3 +131,29 @@ async def add_prerequisite(
 async def list_prerequisites(session: AsyncSession, kc_id: uuid.UUID) -> Sequence[KCEdge]:
     result = await session.scalars(select(KCEdge).where(KCEdge.kc_id == kc_id))
     return result.all()
+
+
+async def list_edges_for_subject(session: AsyncSession, subject_id: uuid.UUID) -> Sequence[KCEdge]:
+    """Every prerequisite edge within a subject — the lesson plan's in-memory closure/topo-sort
+    needs the whole edge set at once rather than one KC at a time."""
+    result = await session.scalars(
+        select(KCEdge)
+        .join(KC, KCEdge.kc_id == KC.id)
+        .join(Topic, KC.topic_id == Topic.id)
+        .where(Topic.subject_id == subject_id)
+    )
+    return result.all()
+
+
+async def subjects_for_kcs(session: AsyncSession, kc_ids: Iterable[uuid.UUID]) -> set[uuid.UUID]:
+    """Distinct subject ids that own any of ``kc_ids`` (KC -> Topic -> Subject)."""
+    kc_ids = list(kc_ids)
+    if not kc_ids:
+        return set()
+    result = await session.scalars(
+        select(Topic.subject_id)
+        .join(KC, KC.topic_id == Topic.id)
+        .where(KC.id.in_(kc_ids))
+        .distinct()
+    )
+    return set(result.all())

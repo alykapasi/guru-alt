@@ -5,6 +5,7 @@ import uuid
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.schemas.knowledge import SubjectCreate
 from app.services import knowledge as svc
 
@@ -19,6 +20,41 @@ async def test_service_create_and_list_subject(db_session: AsyncSession) -> None
     assert created.id is not None
     subjects = await svc.list_subjects(db_session)
     assert [s.slug for s in subjects] == ["algebra"]
+
+
+async def test_list_kcs_for_subject_spans_topics(db_session: AsyncSession) -> None:
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="S")
+    db_session.add(subject)
+    await db_session.flush()
+    t1 = Topic(subject_id=subject.id, slug="t1", name="T1")
+    t2 = Topic(subject_id=subject.id, slug="t2", name="T2")
+    db_session.add_all([t1, t2])
+    await db_session.flush()
+    kc1 = KC(topic_id=t1.id, slug="a", name="A")
+    kc2 = KC(topic_id=t2.id, slug="b", name="B")
+    db_session.add_all([kc1, kc2])
+    await db_session.flush()
+
+    kcs = await svc.list_kcs_for_subject(db_session, subject.id)
+    assert {kc.slug for kc in kcs} == {"a", "b"}
+
+
+async def test_list_root_kcs_excludes_dependents(db_session: AsyncSession) -> None:
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="S")
+    db_session.add(subject)
+    await db_session.flush()
+    topic = Topic(subject_id=subject.id, slug="t", name="T")
+    db_session.add(topic)
+    await db_session.flush()
+    root = KC(topic_id=topic.id, slug="root", name="Root")
+    dependent = KC(topic_id=topic.id, slug="dependent", name="Dependent")
+    db_session.add_all([root, dependent])
+    await db_session.flush()
+    db_session.add(KCEdge(kc_id=dependent.id, prereq_kc_id=root.id))
+    await db_session.flush()
+
+    roots = await svc.list_root_kcs(db_session, subject.id)
+    assert [kc.slug for kc in roots] == ["root"]
 
 
 # --- API: happy path through the whole graph --------------------------------

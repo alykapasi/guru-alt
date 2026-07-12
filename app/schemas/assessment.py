@@ -72,11 +72,17 @@ class GradeRead(BaseModel):
 
 
 class ReviewItemRead(BaseModel):
-    """A KC whose FSRS review is due (the review-queue projection)."""
+    """A KC whose FSRS review is due (the review-queue projection).
 
-    model_config = ConfigDict(from_attributes=True)
+    ``item`` is an answerable practice item resolved for the KC (typically a flashcard —
+    see ``session_runner.due_review_items``), or ``None`` past the request's item-resolution
+    cap (``reviews_due_item_limit``) — the due list itself is bounded separately (much more
+    generously, see ``mastery.due_reviews``'s ``due_reviews_limit``), only item resolution
+    beyond ``reviews_due_item_limit`` is skipped.
+    """
 
     kc_id: uuid.UUID
     due_at: datetime
     ability: float
     uncertainty: float
+    item: ItemRead | None = None

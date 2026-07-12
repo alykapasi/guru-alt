@@ -16,7 +16,15 @@
       "Bash(gh pr *)",
       "Bash(echo \"EXIT=$?\")",
       "Read(//tmp/**)",
-      "Bash(uv lock *)"
+      "Bash(uv lock *)",
+      "Bash(echo \"=== ledger ===\" && cat \"$\\(git rev-parse --show-toplevel\\)/.superpowers/sdd/progress.md\" 2>/dev/null || echo \"\\(no ledger yet\\)\" && echo \"\" && echo \"=== BASE \\(HEAD before Task 1\\) ===\" && git rev-parse --short HEAD && echo \"\" && echo \"=== skill scripts ===\" && ls -la \"/Users/alykapasi/.claude/plugins/cache/claude-plugins-official/superpowers/f268f7c95374/skills/subagent-driven-development/scripts/\" 2>/dev/null || echo \"\\(no scripts dir\\)\")",
+      "Read(//Users/alykapasi/.claude/plugins/cache/claude-plugins-official/superpowers/f268f7c95374/skills/subagent-driven-development/scripts/**)",
+      "Read(//Users/alykapasi/.claude/plugins/cache/claude-plugins-official/superpowers/f268f7c95374/skills/subagent-driven-development/**)",
+      "Bash(docker compose *)",
+      "Bash(docker info *)",
+      "Bash(awk '{ if \\(length\\($0\\) > 100\\) print NR\": \"length\\($0\\) }' /Users/alykapasi/Desktop/projects/guru-alt/app/services/chat.py)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ],
     "additionalDirectories": [
       "/Users/alykapasi/Desktop/projects/guru-alt",

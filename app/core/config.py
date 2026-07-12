@@ -106,6 +106,38 @@ class Settings(BaseSettings):
     # Default cap on assistant output tokens for a chat turn.
     chat_max_tokens: int = 2048
 
+    # Max negotiation rounds for the refinement gate before it auto-commits the latest proposal.
+    refinement_max_rounds: int = 3
+
+    # Number of light-test items a placement run administers (the cost/UX tuning knob).
+    placement_light_test_size: int = 3
+
+    # Gap (minutes) beyond which two consecutive learning events are treated as different
+    # sessions — shared by every profile estimator that reasons about session-scoped behavior.
+    profile_session_gap_minutes: int = 30
+
+    # Cap on how many KCs a generated lesson plan targets at once — cost/UX bound on a
+    # runaway subject graph. Review steps (due retention) are added on top, uncapped.
+    lesson_plan_max_steps: int = 20
+
+    # How many of the (soonest-due-first) due reviews GET /reviews/due eagerly resolves an
+    # answerable item for — bounds worst-case LLM calls per request; the due list itself is
+    # bounded separately (see due_reviews_limit), only item resolution beyond this is skipped.
+    reviews_due_item_limit: int = 10
+
+    # Hard cap on the due-reviews query itself (mastery.due_reviews) — deliberately much larger
+    # than reviews_due_item_limit; a real (not "unbounded") bound so a learner with a huge
+    # backlog can't pull unbounded rows in one request.
+    due_reviews_limit: int = 200
+
+    # Memory write-back (Phase 5). How many of a conversation's most recent messages get fed to
+    # extraction — cost/UX bound, same idiom as placement_light_test_size. A candidate memory is
+    # skipped as a near-duplicate if its cosine distance to an existing same-(learner, kind)
+    # memory is at or below this threshold. How many memories a tutor turn retrieves for context.
+    memory_extraction_window: int = 20
+    memory_dedup_max_distance: float = 0.05
+    memory_retrieval_limit: int = 5
+
     @property
     def runtime_typecheck(self) -> bool:
         """Whether beartype runtime checks should be active (dev/test only)."""

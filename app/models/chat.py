@@ -19,6 +19,13 @@ class Conversation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("learners.id", ondelete="CASCADE"), index=True
     )
     title: Mapped[str | None] = mapped_column(default=None)
+    # Set once the refinement gate commits; grounds subsequent tutor turns. NULL until then.
+    goal: Mapped[str | None] = mapped_column(Text, default=None)
+    # Set once at creation, never changed. Scopes tutor-turn plan grounding + the session
+    # runner's item to an exact (learner, subject) plan instead of a cross-subject heuristic.
+    subject_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("subjects.id", ondelete="SET NULL"), index=True, default=None
+    )
 
     messages: Mapped[list["Message"]] = relationship(
         back_populates="conversation",

@@ -165,30 +165,264 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 **Goal:** the guided, personalized journey comes together on a real orchestration substrate.
 
 **Scope**
-- ☐ Introduce **LangGraph** as the orchestration substrate; migrate the tutoring turn + lesson
+- ☑ Introduce **LangGraph** as the orchestration substrate; migrate the tutoring turn + lesson
   generation into stateful graphs (nodes pull models by role from the registry).
-- ☐ **Interactive prompt-refinement gate** (HITL subgraph): co-constructs the learner's goal/prompt
+- ☑ **Interactive prompt-refinement gate** (HITL subgraph): co-constructs the learner's goal/prompt
   in a loop — propose → learner feedback → refine — **until the learner is satisfied**, then commits
   to generation. Doubles as a placement/metacognition moment + profile cold-start signal.
-- ☐ Placement diagnostic (light test + inference + asking) → seed KC priors.
-- ☐ **Learner profile**: `LearnerProfile` interface + first behavior-first estimators (pace,
-  optimal-challenge, error-type, help-seeking, calibration, interests) reading the event log; trait/
-  state + uncertainty; cold-start from intake + refinement gate + placement; learner view/reset.
-- ☐ Adaptive **lesson-plan generator/policy** reading mastery **and** profile: objectives →
+- ☑ Placement diagnostic (light test + inference + asking) → seed KC priors.
+- ☑ **Learner profile**: `LearnerProfile` interface + behavior-first estimators reading the event
+  log; trait/state + uncertainty; cold-start from intake + refinement gate + placement; learner
+  view/reset.
+- ☑ Adaptive **lesson-plan generator/policy** reading mastery **and** profile: objectives →
   prerequisite-ordered KCs, scaffolding by tier, **profile-driven** step size / challenge / hint
   policy / example selection; revised on evidence.
-- ☐ Session runner that follows/updates the plan.
-- ☐ Study aids: flashcards, spaced-repetition surfacing (FSRS due reviews), fill-in-the-blank.
-- ☐ Per-user **memory** subsystem wired into sessions (facts, preferences, summarization, write-back).
+- ☑ Session runner that follows/updates the plan.
+- ☑ Study aids: flashcards, spaced-repetition surfacing (FSRS due reviews), fill-in-the-blank.
+- ☑ Per-user **memory** subsystem wired into sessions (facts, preferences, summarization, write-back).
 
 > **Substrate landed.** LangGraph introduced behind `app/agent/`; the tutor turn now runs as
 > a single-node state graph (`build_tutor_graph`) driven by a `run_tutor_turn` service that
 > owns persistence, with byte-identical SSE. Nodes call our role-based `LLMClient` (no
-> LangChain models); token streaming rides the custom stream writer. Refinement gate,
-> retrieve/tracer nodes, and lesson-generation graphs are the next Phase 5 slices.
+> LangChain models); token streaming rides the custom stream writer.
+>
+> **Refinement gate landed.** A second graph (`build_refinement_graph`, `app/agent/refinement.py`)
+> implements `propose → ask_learner (HITL interrupt) → satisfied?/max-rounds → commit`, compiled
+> with an `InMemorySaver` checkpointer so the pause/resume survives across HTTP requests within a
+> process. No new endpoint: `POST /conversations/{id}/messages` (`app/api/v1/chat.py`) dispatches
+> per call — goal-less + no history → start the gate; goal-less + mid-flight (checkpoint paused) →
+> resume it; goal committed → plain tutor turn, now grounded by `Conversation.goal` in the system
+> prompt. If checkpoint state is lost (process restart) mid-gate on a conversation with history,
+> it degrades to plain chat rather than re-prompting for a goal. **Known limitation:** the
+> checkpointer is process-local — not durable across restarts, not multi-worker-safe; fine for
+> single-process Phase 5, revisit with a Postgres-backed saver before Phase 8 scaling.
+>
+> **Placement diagnostic landed.** No new graph — a plain two-endpoint flow (`app/api/v1/placement.py`):
+> `GET /subjects/{id}/placement/prompt` returns a fixed background question, `POST
+> /subjects/{id}/placement` (`app/services/placement.py`) infers rough per-KC starting levels
+> from the learner's free-text answer (`app/learning/placement_inference.py`, FAST role,
+> KC-tagging-style numbered-candidate JSON prompt), seeds `LearnerKCState` only for KCs with no
+> existing state (`mastery.seed_prior` — never overwrites real evidence), and surfaces a light
+> test of up to `placement_light_test_size` root KCs (no incoming prerequisite) for the learner
+> to answer through the existing, unchanged `/items/{id}/answer` endpoint. Items are generated
+> on demand (`app/learning/item_generation.py`, FAST-role MCQ generation — new capability, since
+> the Phase 4 "question bank" content has no answer key/`Item` link) and persisted into the
+> shared, learner-unscoped item bank, so later placements/lessons for that KC reuse them instead
+> of regenerating. **Known limitation:** the `"some"`/`"strong"` → ability/uncertainty mapping is
+> a reasonable-but-arbitrary v1 placeholder, not calibrated against real outcome data.
+>
+> **Learner profile landed.** EAV-shaped `learner_profiles`/`profile_dimensions`
+> (`app/models/profile.py`) so the dimension catalog lives entirely in code
+> (`DIMENSION_SPECS` in `app/learning/profile_estimators.py`) — adding or dropping a dimension
+> is a code change, never a migration, which matters because the catalog is expected to be
+> pruned once real usage data shows which dimensions are actually predictive. Twelve dimensions
+> shipped across all four MASTERPLAN families, all backed by real estimators over data already
+> captured (no new capture surfaces): *cognitive & pace* — `pace` (median latency + speed
+> trend), `optimal_challenge` (productive-struggle difficulty band), `error_type` (one batched
+> FAST-model call classifying wrong answers conceptual/procedural/careless), `cognitive_load_tolerance`
+> (within-session accuracy drop); *metacognition* — `help_seeking` (mean hints/item),
+> `persistence` (bounce-back rate after a wrong answer); *motivation & affect* — `engagement`
+> (state; error-streak proxy over the most recent session only), `goal_orientation` (one FAST
+> call classifying `Conversation.goal` as mastery- vs performance-oriented — the refinement
+> gate's cold-start signal flows in with no extra wiring); *context & preferences* — `interests`
+> (FAST-extracted topic tags from the learner's own messages), `reading_level` (pure
+> Flesch-Kincaid-style grade level, no LLM call), `session_logistics` (typical session length +
+> preferred hour from gap-clustered sessions), and `format_effectiveness` (score/difficulty by
+> `Item.item_type` — the outcome-linked "which assessment format actually works for this
+> learner" signal that future generation/format-selection decisions consume). Deliberately
+> **not** shipped: `calibration` and `confidence` (MASTERPLAN-named, but no self-prediction or
+> real affect signal exists yet to compute them honestly) and true delivery-modality VARK
+> (visual/auditory/kinesthetic — no content-format tracking on interactions exists yet); all
+> three are additions the catalog can absorb later with zero schema change. Refresh is
+> **on-demand** (`POST /profile/refresh`), not triggered on every graded answer — recomputing a
+> dozen dimensions (three of which call an LLM) after every item would be wasteful;
+> `assessment.answer_item` stays untouched. Trait dimensions read a learner's full event
+> history, state dimensions (`engagement`) read only the most recent session — no incremental
+> EWMA blending in v1, since full recompute is cheap at this data scale. Learner view/reset:
+> `GET /profile`, `POST /profile/{key}/reset`. Memory is the remaining Phase 5 slice.
+>
+> **Lesson-plan policy landed** — designed as a genuinely dynamic policy, not a document
+> regenerated only on request. `LessonPlan` (`app/models/lesson_plan.py`, one row per
+> `(learner_id, subject_id)`) stores `steps` carrying per-step **status**
+> (`pending`/`active`/`done`), so the plan itself is a live record of what will be learned and
+> what already has been — not just a fixed sequence. Generation is split into two tiers by cost:
+> `generate_lesson_plan` (`app/services/lesson_plan.py`) is the expensive, on-demand path — one
+> FAST-role objective-selection call over a numbered KC candidate list (same shape as
+> placement/KC-tagging; a malformed/no-goal reply falls back to targeting the whole subject),
+> prerequisite-closure (BFS) + topo-sort (Kahn's algorithm) over the KC DAG; `revise_plan` is the
+> cheap, **auto-triggered** path — no LLM call, no topo-sort recompute, just a pure re-derivation
+> (`revise_steps` in `app/learning/lesson_plan.py`) of status/order/hints over the *existing*
+> step list. `revise_plan` runs automatically after every graded answer
+> (`assessment.answer_item`, scoped to the touched KCs' subject) and after every profile refresh
+> (`profile.refresh_profile`, across every plan the learner has) — both no-op if the learner has
+> no plan for that subject yet. This is "revised on evidence" (TECHNICAL_DESIGN §7.7) taken
+> literally: a mastered KC's step one-way-ratchets to `done`; a KC coming due for FSRS review
+> gets inserted as a `review` step ahead of new material (soonest-due first) and flips to `done`
+> once no longer due; `optimal_challenge`/`help_seeking`+`persistence`/`format_effectiveness`
+> refresh every non-done step's `target_difficulty`/`hint_density`/`preferred_item_type`, while
+> `pace`/`interests`/`reading_level` refresh the plan-level `pacing`/`example_tags`/
+> `reading_level_hint` — every hint degrading to `None`/a neutral default if its source profile
+> dimension hasn't been computed yet. The tutor conversation graph now **reads the plan**:
+> `run_tutor_turn` folds the learner's active step (KC, target difficulty, hint density,
+> preferred item type) into the system prompt the same way `Conversation.goal` already does — no
+> `TutorState` schema change, no new graph node — so the plan actually drives generation instead
+> of sitting beside it. Endpoints: `POST`/`GET /subjects/{id}/lesson-plan`. **Known v1
+> simplifications:** "well mastered" (`ability >= 1.0, uncertainty <= 0.5`) is an arbitrary
+> threshold, same spirit as placement's level→estimate mapping; "scaffolding by tier" collapses
+> to one tier (adult-only MVP), so the profile is the whole adaptive lever for now; tutor-turn
+> grounding uses the learner's **most-recently-updated plan** across all subjects, since
+> conversations aren't subject-scoped yet — revisit when the session runner needs tighter
+> per-conversation scoping. Full step-advancement through live conversation (marking a step done
+> because a session covered it) is the session runner's job, next. **Correction (Phase 5
+> review):** the plan-level `pacing`/`example_tags`/`reading_level_hint` hints are computed and
+> stored correctly (and test-asserted to shift with `pace`/`interests`/`reading_level`), but nothing
+> downstream — no generation path, no prompt — actually reads them yet; only the per-step
+> `target_difficulty`/`hint_density`/`preferred_item_type` hints are consumed (the last
+> structurally, via `session_runner`; the first two as advisory tutor-prompt text). There is no
+> "step size" concept anywhere in the codebase. A future slice that wants pacing to visibly affect
+> the session (e.g. how many new KCs per sitting) has a real, tested signal to build on — it just
+> isn't wired to anything yet.
+>
+> **Session runner landed.** No new `Session` model and no new LangGraph graph/interrupt —
+> "session" stays a derived concept (same spirit as the profile's `session_logistics`), and the
+> runner is a small addition on top of the substrate that already existed: `Conversation` gains
+> an optional `subject_id` (`app/models/chat.py`, set once at creation, never changed), which
+> turns the previous slice's "most-recently-updated plan" heuristic in
+> `lesson_plan.get_active_step_context` into an exact `(learner, subject)` lookup whenever a
+> conversation is scoped to one — the heuristic itself is untouched and still the fallback for
+> subject-less conversations. `app/services/session_runner.py::next_item` is the one new piece:
+> it resolves the plan's active step and turns it into an actual practice item — reusing a bank
+> item for the KC if one exists (`assessment.find_item_for_kc`), generating one (FAST role) only
+> if the bank is empty, and working identically for `"new"` and `"review"` steps, so FSRS-due
+> reviews surfaced by the plan get served as practice for free. `run_tutor_turn` calls it for
+> subject-scoped conversations and attaches the result to the `done` SSE frame as a new optional
+> `item` field — resolved fresh every turn, not tracked as "already served," since it's a
+> separate structured field rather than something spliced into conversation history. Critically,
+> **"updates the plan" adds no new mechanism**: the item is answered through the existing,
+> unchanged `POST /items/{id}/answer` endpoint, which already runs the tracer and
+> auto-`revise_plan` (previous slice) — the tracer stays the only thing that moves mastery, on
+> purpose, rather than a second "the conversation seemed to cover this" signal running in
+> parallel. Verified live end-to-end against real Postgres + Ollama: a served item answered
+> through the real endpoint flipped its step to `done` and the very next turn's item correctly
+> disappeared, all without a single lesson-plan endpoint call. **Known v1 simplifications:** the
+> active step's `target_difficulty` hint is not yet applied to item selection (see the study-aids
+> note below for `preferred_item_type`, which now is) — the plan drives *which* KC gets
+> practiced, not yet *what difficulty* it's practiced at; `subject_id` is set API-first with no
+> caller yet (no frontend exists before Phase 7) — a future "continue subject X" entry point is
+> expected to populate it, same bootstrapping pattern every other Phase 5 endpoint has shipped
+> under.
+>
+> **Study aids landed.** No new mutation surface here either — this slice only widens *what*
+> `session_runner` can serve. `app/learning/item_generation.py` gained
+> `generate_fill_blank_item`/`generate_flashcard_item` (same FAST-role JSON-prompt shape as the
+> existing MCQ generator) plus a `GENERATORS` dispatch map. `session_runner.item_for_kc` replaces
+> the previous slice's untyped reuse-then-generate-MCQ with an order that closes the
+> `preferred_item_type` gap flagged above: reuse a bank item of the plan's preferred type (a free
+> win even for types with no generator, e.g. `cloze`) → generate that type if a generator exists
+> → reuse any type → generate MCQ. Steps with no explicit preference default to `"new"` → no
+> preference, `"review"` → flashcard, pairing the roadmap's "flashcards" and "spaced-repetition
+> surfacing" into one default. `GET /reviews/due` now resolves an answerable flashcard per due KC
+> (`session_runner.due_review_items`) instead of returning KC metadata alone — a
+> plan-independent review queue, since clearing a spaced-repetition backlog shouldn't require
+> being mid-lesson. Resolution is capped at `reviews_due_item_limit` (soonest-due first); the due
+> list itself is bounded separately and much more generously (`due_reviews_limit`, see the Phase
+> 5 review note below — this doc originally and inaccurately called it untruncated). This is the
+> first GET endpoint in the codebase with a
+> generation side effect (every other generation call site sits behind a POST) — accepted on the
+> same reuse-then-generate-forever economics as everywhere else, now bounded by that cap. **Known
+> v1 gaps:** flashcards store the generated answer (`answer_key={"back": ...}`) but nothing
+> reveals it to the learner before self-rating yet — self-graded recall is fully trust-the-learner,
+> a pre-existing gap this slice scales into the default review experience rather than
+> introduces; cloze has no generator (only fill-in-the-blank does), so a profile preference for
+> cloze can only ever be served from the bank, never freshly generated; `target_difficulty`
+> remains unapplied.
+>
+> **Memory landed.** Greenfield — `app/memory/` (extraction + vector-only retrieval) plus
+> `app/services/memory.py` (write-back/dedup/view/erase), mirroring the closest existing analogs
+> end-to-end rather than inventing new patterns: `Memory(learner_id, conversation_id, kind,
+> content, embedding)` mirrors `Chunk`'s `Vector(768)` + HNSW shape (no `tsv` column — the
+> TECHNICAL_DESIGN §7.1 schema sketch omits one, so retrieval is vector-only for v1, unlike
+> RAG's hybrid RRF); `extract_memories` (FAST role, JSON-only) mirrors `kc_tagging.py`'s
+> tolerant-parse-or-empty idiom. **Retrieval is what "wires memory into sessions"**: every tutor
+> turn embeds the learner's message and folds the top `memory_retrieval_limit` hits into the
+> system prompt as a third context note (after goal and plan-grounding), learner-global rather
+> than gated behind `subject_id`. **Write-back is separate and on-demand**
+> (`POST /conversations/{id}/memory/write-back`, 202, queued via `memory_write_back_task` —
+> mirrors the ingestion enqueuer seam byte-for-byte) rather than firing per-turn, since
+> extraction costs a real FAST call for no accumulated benefit if run on every message (same
+> reasoning as `POST /profile/refresh` staying on-demand). Candidate memories are deduped before
+> persisting via cosine distance to an existing same-`(learner, kind)` memory
+> (`memory_dedup_max_distance`), reusing the storage primitive rather than a new subsystem —
+> meaningfully better than exact-string dedup, since wording drift across extraction calls would
+> make that fire almost never. `GET /memory` (view) and both `DELETE /memory/{id}` and bulk
+> `DELETE /memory` (erase) ship now rather than later: the NFR's "learner-controllable
+> view/reset" bar, stated about the profile, applies at least as strongly to discrete personal
+> facts. Verified live end-to-end against real Postgres + Ollama: a fact revealed in one
+> conversation, written back, then surfaced unprompted in a *second*, unrelated conversation's
+> system prompt — the literal Phase 5 DoD bar. **Known v1 gaps:** deletion has no tombstone — a
+> later write-back over overlapping conversation history can re-extract a fact the learner just
+> deleted (the capped extraction window ages the overlap out over time, but doesn't prevent it);
+> no `source` column distinguishing extraction origin (YAGNI — every row comes from conversation
+> extraction today; `conversation_id`'s nullability is the future signal if a second source
+> shows up). This closes out Phase 5 — every scope item above is now landed.
+>
+> **Phase 5 review.** Before closing the phase, every slice above was independently re-checked
+> against its own landed-note claims (two parallel reviews covering placement+profile and
+> lesson-plan+session-runner+study-aids, plus a direct pass over the substrate/refinement-gate/
+> memory code) — not a re-read of this document, a re-check of the actual code and tests. Two real
+> bugs turned up and were fixed, both with new regression tests (`uv run poe check`: 382 passed,
+> 1 skipped):
+>
+> - **A live-breaking taskiq bug, root-caused.** `POST /sources/upload|link` and
+>   `POST /conversations/{id}/memory/write-back` 500'd on any real `uv run poe dev`/`uvicorn`
+>   process — `AttributeError: 'function' object has no attribute 'kiq'` — because beartype's
+>   package-wide import hook (`beartype_this_package`, `app/__init__.py`) rewrites every function
+>   *definition* it sees, and `@broker.task` sitting directly in that same decorator stack made
+>   beartype decorate the resulting `AsyncTaskiqDecoratedTask` *instance* rather than the function
+>   — since it can only meaningfully wrap `.__call__`, the module-level task name got rebound to a
+>   plain proxy function, silently losing `.kiq()` and every other task method. No test ever caught
+>   it because every enqueuer-dependent test overrides the enqueuer to bypass the broker (by
+>   design). Fixed in `app/workers/tasks.py` by applying `broker.task(...)` as a plain call after
+>   the `async def`, not as decorator syntax — beartype's claw hook only rewrites `def`/`async def`
+>   nodes, never plain assignments, so this sidesteps the interaction entirely. `tests/test_workers.py`
+>   now asserts both tasks are real dispatchable task objects.
+> - **A profile-corrupting multi-KC bug in `persistence`.** A single graded answer to a
+>   multi-KC item (`POST /items` accepts `kcs` with no max) fans out into one `LearningEvent` row
+>   per tagged KC, all sharing the same `created_at` (`mastery.record_observation`). The
+>   `_estimate_persistence` estimator (`app/learning/profile_estimators.py`) grouped events by
+>   `item_id` and treated list length as attempt count, so a *single* wrong multi-KC answer alone
+>   satisfied its "≥2 attempts" retry check and, since the duplicate rows share one score, always
+>   counted as "gave up" — corrupting the persistence rate with zero real retry evidence. Fixed by
+>   collapsing same-`(item_id, created_at)` rows into one attempt before counting; regression test
+>   added. (The same fan-out mildly inflates the *evidence count* — not the value — of `pace`,
+>   `help_seeking`, and `format_effectiveness`, and duplicates a question in `error_type`'s LLM
+>   prompt; lower severity, left as a known v1 characteristic rather than fixed everywhere, since
+>   generated content is always single-KC and only manually-tagged multi-KC items exercise it.)
+>
+> One doc/code mismatch was also fixed rather than just noted: `mastery.due_reviews` had a
+> hardcoded `limit=50` with no way to override it, contradicting this document's and
+> `ReviewItemRead`'s claim that "the due list itself is never truncated." Promoted to a real,
+> documented, configurable cap (`due_reviews_limit`, default 200) — distinct from and much larger
+> than `reviews_due_item_limit`, which separately bounds item *resolution*. A test gap was also
+> closed: `tests/test_chat.py` gained an end-to-end test that answers a served item through the
+> real `POST /items/{id}/answer` endpoint (not a direct service call) and confirms the *next* chat
+> turn's plan has genuinely advanced — the two halves of "session runner follows/updates the plan"
+> were previously only proven separately (unit tests) or manually (live smoke test), never joined
+> through the real HTTP endpoints in one automated test.
+>
+> Everything else held up: per-dimension profile claims spot-checked against code (8 of 12
+> estimators verified line-by-line), placement's `seed_prior` scoping, the prerequisite BFS +
+> topo-sort, `revise_steps`'s one-way `done` ratchet, `item_for_kc`'s fallback-tier order, the
+> refinement gate's resume/degrade-gracefully paths, and the memory subsystem's dedup/retrieval —
+> all matched their documented behavior with no further bugs found. The one substantive gap left
+> undone by choice (not oversight) is the DoD wording fix above: `pacing` is real and tested but
+> unconsumed — flagged rather than papered over with a new "step size" mechanic that wasn't part of
+> this review's scope.
 
 **DoD:** a new learner co-constructs a goal through the interactive gate, is placed, gets an adaptive
-plan whose pacing/challenge demonstrably shift with profile values (e.g. faster pace → larger steps),
+plan whose pacing/challenge demonstrably shift with profile values (e.g. `optimal_challenge` raises
+or lowers a step's `target_difficulty`; `format_effectiveness` picks the item type that scores best
+for this learner — both concretely tested off real profile rows, see the Phase 5 review note below),
 runs LangGraph-orchestrated sessions with study aids and surfaced reviews, and the experience reflects
 persistent memory across sessions.
 

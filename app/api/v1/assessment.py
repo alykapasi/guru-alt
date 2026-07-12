@@ -6,37 +6,25 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
-from app.learning import mastery
+from app.core.config import get_settings
 from app.learning.grading import SelfGradeError
 from app.learning.rubric_grading import RubricGradingError
-from app.models.assessment import AUTO_GRADABLE, RUBRIC_GRADABLE, SELF_GRADABLE, Item, ItemType
+from app.models.assessment import AUTO_GRADABLE, RUBRIC_GRADABLE, SELF_GRADABLE, ItemType
 from app.schemas.assessment import (
     AnswerSubmit,
     GradeRead,
     ItemCreate,
-    ItemKCRead,
     ItemRead,
     KCEstimateRead,
     ReviewItemRead,
 )
 from app.services import assessment as svc
+from app.services import session_runner as session_runner_svc
 
 GRADABLE = AUTO_GRADABLE | RUBRIC_GRADABLE | SELF_GRADABLE
 """Every item type the answer loop can grade: objective, open (rubric), and self-rated."""
 
 router = APIRouter(tags=["assessment"])
-
-
-def _to_read(item: Item) -> ItemRead:
-    """Project an item for the learner — without leaking its answer key."""
-    return ItemRead(
-        id=item.id,
-        item_type=ItemType(item.item_type),
-        stem=item.stem,
-        difficulty=item.difficulty,
-        rubric_id=item.rubric_id,
-        kcs=[ItemKCRead(kc_id=link.kc_id, weight=link.weight) for link in item.kc_links],
-    )
 
 
 @router.post("/items", response_model=ItemRead, status_code=status.HTTP_201_CREATED)
@@ -48,7 +36,7 @@ async def create_item(data: ItemCreate, session: SessionDep, _: CurrentLearner):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "unknown kc_id or rubric_id, or duplicate KC"
         ) from exc
-    return _to_read(item)
+    return svc.item_to_read(item)
 
 
 @router.get("/items/{item_id}", response_model=ItemRead)
@@ -56,7 +44,7 @@ async def get_item(item_id: uuid.UUID, session: SessionDep, _: CurrentLearner):
     item = await svc.get_item(session, item_id)
     if item is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "item not found")
-    return _to_read(item)
+    return svc.item_to_read(item)
 
 
 @router.post("/items/{item_id}/answer", response_model=GradeRead)
@@ -93,7 +81,20 @@ async def answer_item(
 
 
 @router.get("/reviews/due", response_model=list[ReviewItemRead])
-async def due_reviews(session: SessionDep, learner: CurrentLearner):
-    """KCs whose FSRS-scheduled review has come due, soonest first."""
-    items = await mastery.DEFAULT_TRACER.due_reviews(session, learner.id)
-    return [ReviewItemRead.model_validate(i) for i in items]
+async def due_reviews(session: SessionDep, learner: CurrentLearner, llm: LLMClientDep):
+    """KCs whose FSRS-scheduled review has come due, soonest first, each paired with an
+    answerable flashcard where one was eagerly resolved (see ``session_runner.due_review_items``
+    and the ``reviews_due_item_limit`` cost bound)."""
+    pairs = await session_runner_svc.due_review_items(
+        session, llm, learner_id=learner.id, item_limit=get_settings().reviews_due_item_limit
+    )
+    return [
+        ReviewItemRead(
+            kc_id=review.kc_id,
+            due_at=review.due_at,
+            ability=review.ability,
+            uncertainty=review.uncertainty,
+            item=svc.item_to_read(item) if item is not None else None,
+        )
+        for review, item in pairs
+    ]
