@@ -47,6 +47,27 @@ class ToolEvent(BaseModel):
     is_error: bool
 
 
+class WorkflowState(TypedDict):
+    """State for the guided-practice workflow graph (present -> await_response -> grade ->
+    respond, looping until correct or capped).
+
+    ``item_id`` is stored as ``str(uuid.UUID)``, never a UUID object or ORM row — the same
+    checkpoint-serializable-primitives rule as everything else in this module.
+    """
+
+    messages: list[ChatMessage]
+    system: str
+    max_tokens: int
+    item_id: str
+    response_text: str  # the learner's latest attempt, filled by await_response on resume
+    last_message: str  # this round's full presented/feedback text (present's or respond's)
+    score: float  # filled by grade
+    correct: bool  # filled by grade
+    usage: Usage  # this call's LLM usage (present's or respond's — grade's own call self-logs)
+    rounds: int  # graded attempts completed so far
+    max_rounds: int
+
+
 class AgenticState(TypedDict):
     """State for the bounded tool-calling loop (call_model <-> execute_tools).
 
