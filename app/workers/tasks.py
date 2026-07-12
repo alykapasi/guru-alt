@@ -13,6 +13,7 @@ from app.llm import build_llm_client
 from app.rag.demux import build_demuxer
 from app.rag.transcription import build_transcriber
 from app.services import ingestion
+from app.services import memory as memory_svc
 from app.storage import build_blob_store
 from app.workers.broker import broker
 
@@ -34,3 +35,12 @@ async def ingest_source_task(source_id: str) -> None:
             transcriber=transcriber,
             demuxer=demuxer,
         )
+
+
+@broker.task
+async def memory_write_back_task(conversation_id: str) -> None:
+    """Extract and persist durable memories from one conversation (enqueued on-demand)."""
+    settings = get_settings()
+    llm = build_llm_client(settings)
+    async with SessionFactory() as session:
+        await memory_svc.write_back(session, llm, conversation_id=uuid.UUID(conversation_id))

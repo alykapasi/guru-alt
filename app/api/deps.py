@@ -74,6 +74,24 @@ def get_ingestion_enqueuer() -> IngestionEnqueuer:
 
 IngestionEnqueuerDep = Annotated[IngestionEnqueuer, Depends(get_ingestion_enqueuer)]
 
+MemoryWriteBackEnqueuer = Callable[[uuid.UUID], Awaitable[None]]
+
+
+async def _enqueue_memory_write_back(conversation_id: uuid.UUID) -> None:
+    from app.workers.tasks import memory_write_back_task  # lazy: avoids an import cycle
+
+    await memory_write_back_task.kiq(str(conversation_id))
+
+
+def get_memory_write_back_enqueuer() -> MemoryWriteBackEnqueuer:
+    """Returns the callable that queues a memory write-back job. Overridden in tests."""
+    return _enqueue_memory_write_back
+
+
+MemoryWriteBackEnqueuerDep = Annotated[
+    MemoryWriteBackEnqueuer, Depends(get_memory_write_back_enqueuer)
+]
+
 
 async def get_current_learner(session: SessionDep) -> Learner:
     """Resolve the current learner (stub: the dev learner, created on first use)."""
