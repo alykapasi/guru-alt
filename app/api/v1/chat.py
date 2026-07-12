@@ -1,12 +1,15 @@
 """Chat endpoints: conversations + an SSE streaming tutor turn.
 
-``send_message`` dispatches each turn to one of three LangGraph flows: a one-off agentic
+``send_message`` dispatches each turn to one of four LangGraph flows: a one-off agentic
 tool-using action (``mode="agentic"``, checked first — it bypasses goal negotiation
-entirely), the interactive refinement gate (while the conversation has no committed
-``goal`` yet), or the plain tutor turn (once a goal is committed, or the gate was never
-entered). See ``app/services/refinement.py`` for the gate's persistence orchestration and
-its dispatch edge cases (e.g. a lost in-memory checkpoint degrading gracefully to plain
-chat), and ``app/services/agentic.py`` for the agentic turn.
+entirely), the guided-practice workflow (``mode="workflow"``, or whenever one is already
+paused mid-practice for this conversation — checked next, also bypassing goal negotiation),
+the interactive refinement gate (while the conversation has no committed ``goal`` yet), or
+the plain tutor turn (once a goal is committed, or the gate was never entered). See
+``app/services/refinement.py`` for the gate's persistence orchestration and its dispatch edge
+cases (e.g. a lost in-memory checkpoint degrading gracefully to plain chat),
+``app/services/agentic.py`` for the agentic turn, and ``app/services/workflow.py`` for the
+workflow turn.
 """
 
 import json
@@ -30,6 +33,7 @@ from app.services import agentic as agentic_svc
 from app.services import chat as svc
 from app.services import knowledge as knowledge_svc
 from app.services import refinement as refinement_svc
+from app.services import workflow as workflow_svc
 
 log = structlog.get_logger(__name__)
 
@@ -78,6 +82,9 @@ async def send_message(
 
     history = await svc.list_messages(session, conversation_id)
     settings = get_settings()
+    workflow_awaiting = await workflow_svc.is_awaiting_reply(
+        llm, session, conversation_id, learner_id=learner.id
+    )
 
     turn: AsyncIterator[Any]
     if data.mode == "agentic":
@@ -90,6 +97,17 @@ async def send_message(
             user_content=data.content,
             max_tokens=settings.chat_max_tokens,
             subject_id=conversation.subject_id,
+        )
+    elif data.mode == "workflow" or workflow_awaiting:
+        turn = workflow_svc.run_workflow_turn(
+            session,
+            llm,
+            learner_id=learner.id,
+            conversation=conversation,
+            user_content=data.content,
+            max_tokens=settings.chat_max_tokens,
+            max_rounds=settings.workflow_max_rounds,
+            resume=workflow_awaiting,
         )
     elif conversation.goal is not None:
         turn = svc.run_tutor_turn(
@@ -165,7 +183,14 @@ async def send_message(
                     }
                 )
             elif ev.type == "awaiting_reply":
-                yield _sse({"type": "awaiting_reply", "text": ev.text, "detail": ev.detail})
+                yield _sse(
+                    {
+                        "type": "awaiting_reply",
+                        "text": ev.text,
+                        "detail": ev.detail,
+                        "item": ev.item.model_dump(mode="json") if ev.item else None,
+                    }
+                )
             elif ev.type == "committed":
                 yield _sse({"type": "committed", "goal": ev.text, "detail": ev.detail})
             elif ev.type == "tool_call":

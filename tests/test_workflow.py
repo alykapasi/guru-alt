@@ -2,15 +2,21 @@
 workflow graph. Mirrors test_refinement.py's structure. HTTP-level dispatch tests are added
 alongside the router wiring (see the mode="workflow" dispatch commit)."""
 
+import json
 import uuid
+from collections.abc import Iterator
 
+import pytest
+from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import DEV_LEARNER_HANDLE, get_llm_client
 from app.llm.providers import FakeProvider
 from app.llm.providers.fake import FakeTurn
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
 from app.llm.types import ChatChunk, ModelRole
+from app.main import app
 from app.models.assessment import ItemType
 from app.models.chat import Conversation, LLMCall, Message
 from app.models.knowledge import KC, Subject, Topic
@@ -21,6 +27,7 @@ from app.services import lesson_plan as lesson_plan_svc
 from app.services.turn_common import TurnEvent
 from app.services.workflow import is_awaiting_reply, run_workflow_turn
 
+API = "/api/v1"
 PRESENT = "Here's a worked example. Now try: explain photosynthesis."
 RESPOND_1 = "Not quite — here's a hint, try again."
 RESPOND_2 = "Great job, you've got it!"
@@ -28,8 +35,10 @@ WRONG_GRADE = '{"score": 0.2, "rationale": "missing detail"}'
 RIGHT_GRADE = '{"score": 0.9, "rationale": "much better"}'
 
 
-async def _conversation_with_active_step(session: AsyncSession) -> Conversation:
-    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+async def _learner_and_subject_with_active_step(
+    session: AsyncSession, *, handle: str | None = None
+) -> tuple[Learner, Subject]:
+    learner = Learner(handle=handle or f"l-{uuid.uuid4().hex[:8]}")
     subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Bio")
     session.add_all([learner, subject])
     await session.flush()
@@ -52,6 +61,14 @@ async def _conversation_with_active_step(session: AsyncSession) -> Conversation:
     await lesson_plan_svc.generate_lesson_plan(
         session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
     )
+    await session.commit()
+    await session.refresh(learner)
+    await session.refresh(subject)
+    return learner, subject
+
+
+async def _conversation_with_active_step(session: AsyncSession) -> Conversation:
+    learner, subject = await _learner_and_subject_with_active_step(session)
     conversation = Conversation(learner_id=learner.id, subject_id=subject.id, goal="learn biology")
     session.add(conversation)
     await session.commit()
@@ -208,3 +225,55 @@ async def test_stream_failure_persists_user_only(db_session: AsyncSession) -> No
     ).all()
     assert [m.role for m in messages] == ["user"]
     assert (await db_session.scalars(select(LLMCall))).all() == []
+
+
+# --- HTTP-level: the router's dispatch to the workflow, and its priority over plain chat ---
+
+
+@pytest.fixture
+def fake_llm() -> Iterator[None]:
+    # One shared client/FakeProvider instance across both HTTP requests below — a fresh
+    # instance per dependency resolution (as in test_refinement.py's fixture, harmless there
+    # since it's unscripted) would reset the scripted _call_index each request.
+    script = [FakeTurn(text=PRESENT), FakeTurn(text=RIGHT_GRADE), FakeTurn(text=RESPOND_2)]
+    client = fake_llm_client(script=script)
+    app.dependency_overrides[get_llm_client] = lambda: client
+    yield
+    app.dependency_overrides.pop(get_llm_client, None)
+
+
+def _parse_sse(text: str) -> list[dict]:
+    return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: ")]
+
+
+async def test_dispatch_mode_workflow_then_resume_without_re_specifying_mode(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+) -> None:
+    # The stub auth seam always resolves to the dev learner — seed the plan/item for that
+    # exact learner, then create the conversation through the real endpoint (not a raw DB
+    # insert with an unrelated learner_id, which the router would 404 on).
+    _learner, subject = await _learner_and_subject_with_active_step(
+        db_session, handle=DEV_LEARNER_HANDLE
+    )
+    r = await api_client.post(f"{API}/conversations", json={"subject_id": str(subject.id)})
+    conversation_id = r.json()["id"]
+
+    r = await api_client.post(
+        f"{API}/conversations/{conversation_id}/messages",
+        json={"content": "let's practice", "mode": "workflow"},
+    )
+    events = _parse_sse(r.text)
+    awaiting = next(e for e in events if e["type"] == "awaiting_reply")
+    assert awaiting["text"] == PRESENT
+    assert awaiting["item"] is not None
+    assert not any(e["type"] == "done" for e in events)
+
+    # A follow-up turn with the default mode ("chat") still resumes the paused workflow —
+    # is_awaiting_reply takes priority over the client's mode, exactly like the refinement gate.
+    r = await api_client.post(
+        f"{API}/conversations/{conversation_id}/messages",
+        json={"content": "sunlight -> sugars"},
+    )
+    events = _parse_sse(r.text)
+    done = next(e for e in events if e["type"] == "done")
+    assert done["detail"] == "mastered"
