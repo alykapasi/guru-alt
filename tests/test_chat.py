@@ -3,6 +3,7 @@
 import json
 import uuid
 from collections.abc import AsyncIterator, Iterator, Sequence
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -351,6 +352,78 @@ async def test_subject_scoped_turn_with_a_fully_done_plan_gets_no_item(
     assert r.status_code == 200
     done = next(e for e in _parse_sse(r.text) if e["type"] == "done")
     assert done["item"] is None
+
+
+async def test_answering_a_served_item_through_the_real_endpoint_advances_the_next_turn(
+    api_client: AsyncClient, db_session: AsyncSession, recording_llm: list[str | None]
+) -> None:
+    """The literal "session runner follows/updates the plan" DoD, end-to-end through the real
+    HTTP endpoints (not direct service calls): a due review surfaces as a served item on one
+    turn; answering it via ``POST /items/{id}/answer`` auto-revises the plan (assessment.py's
+    existing, unchanged trigger); the very next turn serves something different."""
+    learner = await _get_dev_learner(api_client, db_session)
+    subject, kc = await _seeded_subject(db_session, learner.id, "Physics", "Kinematics")
+    # Pre-seed the bank so the session runner reuses this item rather than generating one
+    # through the recording provider (whose canned reply isn't valid flashcard JSON).
+    flashcard_reply = json.dumps({"stem": "What is velocity?", "answer": "Speed with direction"})
+    seeded_item, _ = await item_generation.generate_flashcard_item(
+        db_session, fake_llm_client(flashcard_reply), kc
+    )
+    assert seeded_item is not None
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=kc.id,
+            ability=0.8,
+            uncertainty=0.4,
+            due_at=datetime.now(UTC) - timedelta(days=1),
+        )
+    )
+    await db_session.commit()
+    await lesson_plan_svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+
+    r = await api_client.post(
+        f"{API}/conversations", json={"title": "Physics help", "subject_id": str(subject.id)}
+    )
+    conversation_id = r.json()["id"]
+    conversation = await db_session.get(Conversation, uuid.UUID(conversation_id))
+    assert conversation is not None
+    conversation.goal = "Learn physics"
+    await db_session.commit()
+
+    r = await api_client.post(
+        f"{API}/conversations/{conversation_id}/messages", json={"content": "hi"}
+    )
+    assert r.status_code == 200
+    first_done = next(e for e in _parse_sse(r.text) if e["type"] == "done")
+    first_item = first_done["item"]
+    assert first_item is not None  # the due review, served as a flashcard
+
+    r = await api_client.post(
+        f"{API}/items/{first_item['id']}/answer", json={"response": {"recalled": True}}
+    )
+    assert r.status_code == 200, r.text
+
+    # The review step is no longer due (FSRS rescheduled it forward), so it flips to done and
+    # the plan's active step moves on to the KC's still-pending "new" step — proven on the plan
+    # itself, since the session runner may legitimately re-serve the same (only) bank item for
+    # the new step too (reuse-then-generate economics), so served-item identity alone can't
+    # prove the plan advanced.
+    plan = await lesson_plan_svc.get_lesson_plan(db_session, learner.id, subject.id)
+    assert plan is not None
+    review_step = next(
+        s for s in plan.steps if s["kc_id"] == str(kc.id) and s["step_type"] == "review"
+    )
+    new_step = next(s for s in plan.steps if s["kc_id"] == str(kc.id) and s["step_type"] == "new")
+    assert review_step["status"] == "done"
+    assert new_step["status"] == "active"
+
+    r = await api_client.post(
+        f"{API}/conversations/{conversation_id}/messages", json={"content": "next"}
+    )
+    assert r.status_code == 200
+    second_done = next(e for e in _parse_sse(r.text) if e["type"] == "done")
+    assert second_done["item"] is not None
 
 
 # --- memory: retrieval wired into the tutor turn ------------------------------
