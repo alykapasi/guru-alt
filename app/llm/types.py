@@ -1,9 +1,9 @@
 """Provider-agnostic message, usage, and role types."""
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ModelRole(StrEnum):
@@ -20,6 +20,7 @@ class ChatRole(StrEnum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
+    TOOL = "tool"  # carries a ToolResultPart back to the model
 
 
 class TextPart(BaseModel):
@@ -37,14 +38,48 @@ class ImagePart(BaseModel):
     data: bytes
 
 
-ContentPart = TextPart | ImagePart
+class ToolUsePart(BaseModel):
+    """An assistant's request to call a tool. ``id`` ties it to the eventual ToolResultPart."""
+
+    type: Literal["tool_use"] = "tool_use"
+    id: str
+    name: str
+    input: dict[str, Any]
+
+
+class ToolResultPart(BaseModel):
+    """A tool's result, carried back to the model on a ``ChatRole.TOOL`` message."""
+
+    type: Literal["tool_result"] = "tool_result"
+    tool_use_id: str
+    content: str
+    is_error: bool = False
+
+
+ContentPart = TextPart | ImagePart | ToolUsePart | ToolResultPart
 """One part of a multimodal message. Providers translate to their native shape."""
 
 
 class ChatMessage(BaseModel):
     role: ChatRole
-    # A plain string (the common case) or ordered multimodal parts (text + images).
+    # A plain string (the common case) or ordered multimodal parts (text + images + tool parts).
     content: str | list[ContentPart]
+
+
+class ToolDef(BaseModel):
+    """A tool offered to the model. Providers translate ``parameters`` to their native schema."""
+
+    name: str
+    description: str
+    parameters: dict[str, Any]  # JSON schema for the tool's input
+
+
+class ToolCall(BaseModel):
+    """One tool invocation the model requested."""
+
+    id: str
+    name: str
+    input: dict[str, Any]
 
 
 def text_of(content: str | list[ContentPart]) -> str:
@@ -66,10 +101,11 @@ class Usage(BaseModel):
 
 
 class ChatChunk(BaseModel):
-    """One streamed delta. The terminal chunk may carry final ``usage``."""
+    """One streamed delta. The terminal chunk may carry final ``usage``/``tool_calls``."""
 
     text: str = ""
     usage: Usage | None = None
+    tool_calls: list[ToolCall] | None = None  # None = not yet known; set on the terminal chunk
 
 
 class ChatResponse(BaseModel):
@@ -78,3 +114,4 @@ class ChatResponse(BaseModel):
     content: str
     usage: Usage
     model: str
+    tool_calls: list[ToolCall] = Field(default_factory=list)
