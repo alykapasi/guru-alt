@@ -1,16 +1,23 @@
-"""Memory service: write-back (extract + dedup + persist) and view/erase."""
+"""Memory service + API: write-back (extract + dedup + persist) and view/erase."""
 
 import json
 import uuid
+from collections.abc import Iterator
 
+import pytest
+from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import DEV_LEARNER_HANDLE, get_memory_write_back_enqueuer
 from app.llm.registry import fake_llm_client
+from app.main import app
 from app.models.chat import Conversation, LLMCall, Message
 from app.models.learner import Learner
 from app.models.memory import Memory, MemoryKind
 from app.services import memory as svc
+
+API = "/api/v1"
 
 FACT_REPLY = json.dumps(
     {
@@ -200,3 +207,106 @@ async def test_delete_all_memories_scoped_to_the_learner(db_session: AsyncSessio
     assert count == 2
     assert await svc.list_memories(db_session, mine.id) == []
     assert len(await svc.list_memories(db_session, theirs.id)) == 1
+
+
+# --- API ------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_enqueue() -> Iterator[list[uuid.UUID]]:
+    """Capture enqueued write-back jobs instead of touching a real broker."""
+    enqueued: list[uuid.UUID] = []
+
+    async def _enqueue(conversation_id: uuid.UUID) -> None:
+        enqueued.append(conversation_id)
+
+    app.dependency_overrides[get_memory_write_back_enqueuer] = lambda: _enqueue
+    yield enqueued
+    app.dependency_overrides.pop(get_memory_write_back_enqueuer, None)
+
+
+async def test_write_back_endpoint_enqueues_the_conversation(
+    api_client: AsyncClient, db_session: AsyncSession, fake_enqueue: list[uuid.UUID]
+) -> None:
+    conv = (await api_client.post(f"{API}/conversations", json={})).json()
+
+    r = await api_client.post(f"{API}/conversations/{conv['id']}/memory/write-back")
+
+    assert r.status_code == 202, r.text
+    assert r.json() == {"status": "queued"}
+    assert fake_enqueue == [uuid.UUID(conv["id"])]
+
+
+async def test_write_back_endpoint_404s_on_missing_conversation(
+    api_client: AsyncClient, fake_enqueue: list[uuid.UUID]
+) -> None:
+    r = await api_client.post(f"{API}/conversations/{uuid.uuid4()}/memory/write-back")
+    assert r.status_code == 404
+    assert fake_enqueue == []
+
+
+async def test_get_memory_omits_the_embedding(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    learner = Learner(handle=DEV_LEARNER_HANDLE, display_name="Dev")
+    db_session.add(learner)
+    await db_session.flush()
+    db_session.add(
+        Memory(learner_id=learner.id, kind=MemoryKind.FACT, content="x", embedding=[0.0] * 768)
+    )
+    await db_session.flush()
+
+    r = await api_client.get(f"{API}/memory")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body) == 1
+    assert body[0]["content"] == "x"
+    assert "embedding" not in body[0]
+
+
+async def test_delete_memory_endpoint(api_client: AsyncClient, db_session: AsyncSession) -> None:
+    learner = Learner(handle=DEV_LEARNER_HANDLE, display_name="Dev")
+    db_session.add(learner)
+    await db_session.flush()
+    memory = Memory(learner_id=learner.id, kind=MemoryKind.FACT, content="x", embedding=[0.0] * 768)
+    db_session.add(memory)
+    await db_session.flush()
+
+    r = await api_client.delete(f"{API}/memory/{memory.id}")
+    assert r.status_code == 204
+
+    assert (await api_client.get(f"{API}/memory")).json() == []
+
+
+async def test_delete_memory_endpoint_404s_on_foreign_row(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    other = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(other)
+    await db_session.flush()
+    memory = Memory(learner_id=other.id, kind=MemoryKind.FACT, content="x", embedding=[0.0] * 768)
+    db_session.add(memory)
+    await db_session.flush()
+
+    r = await api_client.delete(f"{API}/memory/{memory.id}")
+    assert r.status_code == 404
+
+
+async def test_bulk_delete_memory_endpoint(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    learner = Learner(handle=DEV_LEARNER_HANDLE, display_name="Dev")
+    db_session.add(learner)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            Memory(learner_id=learner.id, kind=MemoryKind.FACT, content="a", embedding=[0.0] * 768),
+            Memory(learner_id=learner.id, kind=MemoryKind.FACT, content="b", embedding=[0.0] * 768),
+        ]
+    )
+    await db_session.flush()
+
+    r = await api_client.delete(f"{API}/memory")
+    assert r.status_code == 204
+
+    assert (await api_client.get(f"{API}/memory")).json() == []

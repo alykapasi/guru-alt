@@ -8,6 +8,7 @@ from app.api.v1 import (
     content,
     knowledge,
     lesson_plan,
+    memory,
     placement,
     profile,
     sources,
@@ -22,3 +23,4 @@ api_router.include_router(content.router)
 api_router.include_router(placement.router)
 api_router.include_router(profile.router)
 api_router.include_router(lesson_plan.router)
+api_router.include_router(memory.router)
