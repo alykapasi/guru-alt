@@ -125,6 +125,14 @@ class Settings(BaseSettings):
     # still returned, only item resolution beyond this is skipped.
     reviews_due_item_limit: int = 10
 
+    # Memory write-back (Phase 5). How many of a conversation's most recent messages get fed to
+    # extraction — cost/UX bound, same idiom as placement_light_test_size. A candidate memory is
+    # skipped as a near-duplicate if its cosine distance to an existing same-(learner, kind)
+    # memory is at or below this threshold. How many memories a tutor turn retrieves for context.
+    memory_extraction_window: int = 20
+    memory_dedup_max_distance: float = 0.05
+    memory_retrieval_limit: int = 5
+
     @property
     def runtime_typecheck(self) -> bool:
         """Whether beartype runtime checks should be active (dev/test only)."""

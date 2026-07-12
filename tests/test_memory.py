@@ -1,0 +1,202 @@
+"""Memory service: write-back (extract + dedup + persist) and view/erase."""
+
+import json
+import uuid
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.llm.registry import fake_llm_client
+from app.models.chat import Conversation, LLMCall, Message
+from app.models.learner import Learner
+from app.models.memory import Memory, MemoryKind
+from app.services import memory as svc
+
+FACT_REPLY = json.dumps(
+    {
+        "memories": [
+            {"kind": "fact", "content": "Studying for the MCAT."},
+            {"kind": "preference", "content": "Prefers morning study sessions."},
+        ]
+    }
+)
+
+
+async def _learner(session: AsyncSession) -> Learner:
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    session.add(learner)
+    await session.flush()
+    return learner
+
+
+async def _conversation_with_messages(session: AsyncSession, learner: Learner) -> Conversation:
+    conversation = Conversation(learner_id=learner.id)
+    session.add(conversation)
+    await session.flush()
+    session.add_all(
+        [
+            Message(
+                conversation_id=conversation.id,
+                role="user",
+                content="I'm studying for the MCAT, mornings only.",
+            ),
+            Message(
+                conversation_id=conversation.id,
+                role="assistant",
+                content="Let's start with organic chemistry.",
+            ),
+        ]
+    )
+    await session.flush()
+    return conversation
+
+
+# --- write_back ---------------------------------------------------------------
+
+
+async def test_write_back_persists_memories_and_logs_the_call(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    conversation = await _conversation_with_messages(db_session, learner)
+
+    created = await svc.write_back(
+        db_session, fake_llm_client(FACT_REPLY), conversation_id=conversation.id
+    )
+
+    assert {m.content for m in created} == {
+        "Studying for the MCAT.",
+        "Prefers morning study sessions.",
+    }
+    assert all(m.learner_id == learner.id for m in created)
+    assert all(m.conversation_id == conversation.id for m in created)
+
+    rows = (await db_session.scalars(select(Memory).where(Memory.learner_id == learner.id))).all()
+    assert len(rows) == 2
+
+    calls = (
+        await db_session.scalars(select(LLMCall).where(LLMCall.learner_id == learner.id))
+    ).all()
+    assert len(calls) == 1
+    assert calls[0].role == "fast"
+    assert calls[0].conversation_id == conversation.id
+
+
+async def test_write_back_dedupes_against_an_existing_near_duplicate(
+    db_session: AsyncSession,
+) -> None:
+    learner = await _learner(db_session)
+    conversation = await _conversation_with_messages(db_session, learner)
+    llm = fake_llm_client(FACT_REPLY)
+
+    first = await svc.write_back(db_session, llm, conversation_id=conversation.id)
+    assert len(first) == 2
+
+    second = await svc.write_back(db_session, llm, conversation_id=conversation.id)
+    assert second == []
+
+    rows = (await db_session.scalars(select(Memory).where(Memory.learner_id == learner.id))).all()
+    assert len(rows) == 2  # unchanged — the re-extraction deduped against the first batch
+
+
+async def test_write_back_dedupes_within_one_batch(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    conversation = await _conversation_with_messages(db_session, learner)
+    reply = json.dumps(
+        {
+            "memories": [
+                {"kind": "fact", "content": "Studying for the MCAT."},
+                {"kind": "fact", "content": "Studying for the MCAT."},
+            ]
+        }
+    )
+
+    created = await svc.write_back(
+        db_session, fake_llm_client(reply), conversation_id=conversation.id
+    )
+
+    assert len(created) == 1  # the second identical item deduped against the first, intra-batch
+
+
+async def test_write_back_unknown_conversation_returns_empty(db_session: AsyncSession) -> None:
+    created = await svc.write_back(
+        db_session, fake_llm_client(FACT_REPLY), conversation_id=uuid.uuid4()
+    )
+    assert created == []
+
+
+async def test_write_back_no_extracted_memories_persists_nothing(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    conversation = await _conversation_with_messages(db_session, learner)
+
+    created = await svc.write_back(
+        db_session, fake_llm_client("not json"), conversation_id=conversation.id
+    )
+
+    assert created == []
+    rows = (await db_session.scalars(select(Memory).where(Memory.learner_id == learner.id))).all()
+    assert rows == []
+
+
+# --- list / delete --------------------------------------------------------------
+
+
+async def test_list_memories_most_recent_first_respects_limit(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    conversation = await _conversation_with_messages(db_session, learner)
+    for i in range(3):
+        db_session.add(
+            Memory(
+                learner_id=learner.id,
+                conversation_id=conversation.id,
+                kind=MemoryKind.FACT,
+                content=f"fact {i}",
+                embedding=[0.0] * 768,
+            )
+        )
+    await db_session.flush()
+
+    rows = await svc.list_memories(db_session, learner.id, limit=2)
+    assert len(rows) == 2
+    assert rows[0].created_at >= rows[1].created_at
+
+
+async def test_delete_memory_own_row(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    memory = Memory(learner_id=learner.id, kind=MemoryKind.FACT, content="x", embedding=[0.0] * 768)
+    db_session.add(memory)
+    await db_session.flush()
+
+    assert await svc.delete_memory(db_session, learner.id, memory.id) is True
+    assert await db_session.get(Memory, memory.id) is None
+
+
+async def test_delete_memory_foreign_row_is_a_noop(db_session: AsyncSession) -> None:
+    owner, other = await _learner(db_session), await _learner(db_session)
+    memory = Memory(learner_id=owner.id, kind=MemoryKind.FACT, content="x", embedding=[0.0] * 768)
+    db_session.add(memory)
+    await db_session.flush()
+
+    assert await svc.delete_memory(db_session, other.id, memory.id) is False
+    assert await db_session.get(Memory, memory.id) is not None
+
+
+async def test_delete_memory_missing_id_is_a_noop(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    assert await svc.delete_memory(db_session, learner.id, uuid.uuid4()) is False
+
+
+async def test_delete_all_memories_scoped_to_the_learner(db_session: AsyncSession) -> None:
+    mine, theirs = await _learner(db_session), await _learner(db_session)
+    db_session.add_all(
+        [
+            Memory(learner_id=mine.id, kind=MemoryKind.FACT, content="a", embedding=[0.0] * 768),
+            Memory(learner_id=mine.id, kind=MemoryKind.FACT, content="b", embedding=[0.0] * 768),
+            Memory(learner_id=theirs.id, kind=MemoryKind.FACT, content="c", embedding=[0.0] * 768),
+        ]
+    )
+    await db_session.flush()
+
+    count = await svc.delete_all_memories(db_session, mine.id)
+
+    assert count == 2
+    assert await svc.list_memories(db_session, mine.id) == []
+    assert len(await svc.list_memories(db_session, theirs.id)) == 1
