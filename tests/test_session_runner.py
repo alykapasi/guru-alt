@@ -1,0 +1,138 @@
+"""Session runner: turning the plan's active step into a practice item."""
+
+import json
+import uuid
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.learning import item_generation
+from app.llm.registry import fake_llm_client
+from app.models.chat import LLMCall
+from app.models.knowledge import KC, KCEdge, Subject, Topic
+from app.models.learner import Learner
+from app.models.learning import LearnerKCState
+from app.services import lesson_plan as lesson_plan_svc
+from app.services import session_runner as svc
+
+MCQ_REPLY = json.dumps({"stem": "What is X?", "choices": ["A", "B", "C", "D"], "correct": 2})
+
+
+async def _graph(session: AsyncSession) -> tuple[Learner, Subject, KC, KC]:
+    """A subject with a root KC and a dependent KC (root -> dependent prerequisite)."""
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Chemistry")
+    session.add_all([learner, subject])
+    await session.flush()
+    topic = Topic(subject_id=subject.id, slug="t", name="T")
+    session.add(topic)
+    await session.flush()
+    root = KC(topic_id=topic.id, slug="a-root", name="A Root")
+    dependent = KC(topic_id=topic.id, slug="b-dependent", name="B Dependent")
+    session.add_all([root, dependent])
+    await session.flush()
+    session.add(KCEdge(kc_id=dependent.id, prereq_kc_id=root.id))
+    await session.flush()
+    return learner, subject, root, dependent
+
+
+async def test_next_item_none_when_no_plan(db_session: AsyncSession) -> None:
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Chemistry")
+    db_session.add_all([learner, subject])
+    await db_session.flush()
+
+    item = await svc.next_item(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id
+    )
+    assert item is None
+
+
+async def test_next_item_none_when_plan_is_fully_done(db_session: AsyncSession) -> None:
+    learner, subject, root, dependent = await _graph(db_session)
+    for kc_id in (root.id, dependent.id):
+        db_session.add(
+            LearnerKCState(learner_id=learner.id, kc_id=kc_id, ability=1.5, uncertainty=0.3)
+        )
+    await db_session.flush()
+    await lesson_plan_svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+
+    item = await svc.next_item(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id
+    )
+    assert item is None
+
+
+async def test_next_item_reuses_an_existing_bank_item(db_session: AsyncSession) -> None:
+    learner, subject, root, _dependent = await _graph(db_session)
+    await lesson_plan_svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+    existing, _ = await item_generation.generate_mcq_item(
+        db_session, fake_llm_client(MCQ_REPLY), root
+    )
+    assert existing is not None
+
+    item = await svc.next_item(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id
+    )
+    assert item is not None
+    assert item.id == existing.id
+
+    calls = (await db_session.scalars(select(LLMCall))).all()
+    assert len(calls) == 0
+
+
+async def test_next_item_generates_when_bank_is_empty(db_session: AsyncSession) -> None:
+    learner, subject, root, _dependent = await _graph(db_session)
+    await lesson_plan_svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+
+    item = await svc.next_item(
+        db_session, fake_llm_client(MCQ_REPLY), learner_id=learner.id, subject_id=subject.id
+    )
+    assert item is not None
+    assert [link.kc_id for link in item.kc_links] == [root.id]
+
+    calls = (await db_session.scalars(select(LLMCall))).all()
+    assert len(calls) == 1
+    assert calls[0].role == "fast"
+
+
+async def test_next_item_serves_a_due_review_step_the_same_way(db_session: AsyncSession) -> None:
+    learner, subject, root, _dependent = await _graph(db_session)
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=root.id,
+            ability=0.8,
+            uncertainty=0.4,
+            due_at=datetime.now(UTC) - timedelta(days=1),
+        )
+    )
+    await db_session.flush()
+    await lesson_plan_svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+
+    item = await svc.next_item(
+        db_session, fake_llm_client(MCQ_REPLY), learner_id=learner.id, subject_id=subject.id
+    )
+    assert item is not None
+    assert [link.kc_id for link in item.kc_links] == [root.id]
+
+
+async def test_next_item_none_on_malformed_generation_reply(db_session: AsyncSession) -> None:
+    learner, subject, _root, _dependent = await _graph(db_session)
+    await lesson_plan_svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+
+    item = await svc.next_item(
+        db_session, fake_llm_client("not json"), learner_id=learner.id, subject_id=subject.id
+    )
+    assert item is None
