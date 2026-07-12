@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning.kc_tagging import load_candidate_kcs
-from app.llm import ChatMessage, ChatResponse, ModelRole
+from app.llm import ChatMessage, ChatResponse, ModelRole, ToolDef
 from app.llm.providers import FakeProvider
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
 from app.models.knowledge import KC, Subject, Topic
@@ -179,6 +179,7 @@ class _CountingCompleteProvider(FakeProvider):
         messages: Sequence[ChatMessage],
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
         self.complete_calls += 1
         return await super().complete(

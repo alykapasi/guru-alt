@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from app.core.config import Settings
 from app.llm.base import LLMProvider
 from app.llm.providers import AnthropicProvider, FakeProvider, OpenAICompatProvider
-from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ModelRole
+from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ModelRole, ToolDef
 
 
 @dataclass(frozen=True)
@@ -50,10 +50,11 @@ class LLMClient:
         *,
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
         provider, model = self._resolve(role)
         return await provider.complete(
-            model=model, messages=messages, system=system, max_tokens=max_tokens
+            model=model, messages=messages, system=system, max_tokens=max_tokens, tools=tools
         )
 
     def stream(
@@ -63,9 +64,12 @@ class LLMClient:
         *,
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> AsyncIterator[ChatChunk]:
         provider, model = self._resolve(role)
-        return provider.stream(model=model, messages=messages, system=system, max_tokens=max_tokens)
+        return provider.stream(
+            model=model, messages=messages, system=system, max_tokens=max_tokens, tools=tools
+        )
 
     async def embed(self, role: ModelRole, texts: Sequence[str]) -> list[list[float]]:
         provider, model = self._resolve(role)

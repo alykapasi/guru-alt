@@ -19,6 +19,7 @@ from app.llm.types import (
     ChatRole,
     ImagePart,
     TextPart,
+    ToolDef,
     Usage,
     text_of,
 )
@@ -66,6 +67,7 @@ class AnthropicProvider:
         messages: Sequence[ChatMessage],
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
         system_text, convo = self._split(messages, system)
         extra: dict[str, Any] = {"system": system_text} if system_text else {}
@@ -83,6 +85,7 @@ class AnthropicProvider:
         messages: Sequence[ChatMessage],
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> AsyncIterator[ChatChunk]:
         system_text, convo = self._split(messages, system)
         extra: dict[str, Any] = {"system": system_text} if system_text else {}

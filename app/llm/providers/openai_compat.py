@@ -10,7 +10,7 @@ from typing import Any, cast
 
 from openai import AsyncOpenAI
 
-from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ImagePart, TextPart, Usage
+from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ImagePart, TextPart, ToolDef, Usage
 
 
 class OpenAICompatProvider:
@@ -49,6 +49,7 @@ class OpenAICompatProvider:
         messages: Sequence[ChatMessage],
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
         resp = await self._client.chat.completions.create(
             model=model,
@@ -71,6 +72,7 @@ class OpenAICompatProvider:
         messages: Sequence[ChatMessage],
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> AsyncIterator[ChatChunk]:
         stream = await self._client.chat.completions.create(
             model=model,

@@ -149,7 +149,7 @@ async def test_max_rounds_auto_commits(db_session: AsyncSession) -> None:
 class _BoomProvider(FakeProvider):
     """A provider whose stream raises immediately (simulates mid-generation failure)."""
 
-    async def stream(self, *, model, messages, system=None, max_tokens=1024):
+    async def stream(self, *, model, messages, system=None, max_tokens=1024, tools=None):
         raise RuntimeError("boom")
         yield ChatChunk()  # unreachable; makes this an async generator
 

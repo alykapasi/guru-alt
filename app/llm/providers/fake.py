@@ -4,7 +4,7 @@ import hashlib
 from collections.abc import AsyncIterator, Sequence
 
 from app.core.config import get_settings
-from app.llm.types import ChatChunk, ChatMessage, ChatResponse, Usage, text_of
+from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ToolDef, Usage, text_of
 
 
 class FakeProvider:
@@ -32,6 +32,7 @@ class FakeProvider:
         messages: Sequence[ChatMessage],
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
         return ChatResponse(content=self._reply, usage=self._usage(messages), model=model)
 
@@ -42,6 +43,7 @@ class FakeProvider:
         messages: Sequence[ChatMessage],
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> AsyncIterator[ChatChunk]:
         for i, word in enumerate(self._reply.split()):
             yield ChatChunk(text=word if i == 0 else f" {word}")

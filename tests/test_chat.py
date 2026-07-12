@@ -14,7 +14,7 @@ from app.api.deps import get_llm_client
 from app.learning import item_generation
 from app.llm.providers.fake import FakeProvider
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
-from app.llm.types import ChatChunk, ChatMessage, ModelRole
+from app.llm.types import ChatChunk, ChatMessage, ModelRole, ToolDef
 from app.main import app
 from app.models.chat import Conversation, LLMCall, Message
 from app.models.knowledge import KC, Subject, Topic
@@ -51,6 +51,7 @@ class _RecordingProvider(FakeProvider):
         messages: Sequence[ChatMessage],
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> AsyncIterator[ChatChunk]:
         self._systems.append(system)
         async for chunk in super().stream(

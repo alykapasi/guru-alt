@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.learning.profile_estimators import DIMENSION_SPECS
 from app.llm.providers import FakeProvider
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
-from app.llm.types import ChatMessage, ChatResponse, ModelRole, Usage, text_of
+from app.llm.types import ChatMessage, ChatResponse, ModelRole, ToolDef, Usage, text_of
 from app.models.assessment import Item, ItemType
 from app.models.chat import Conversation, LLMCall, Message
 from app.models.learner import Learner
@@ -44,6 +44,7 @@ class _SequencedProvider(FakeProvider):
         messages: Sequence[ChatMessage],
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
         reply = self._replies[min(self._calls, len(self._replies) - 1)]
         self._calls += 1
