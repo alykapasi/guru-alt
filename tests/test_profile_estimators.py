@@ -315,6 +315,29 @@ async def test_estimate_persistence_ignores_single_attempt_items(
     assert estimate is None
 
 
+async def test_estimate_persistence_collapses_multi_kc_fanout_into_one_attempt(
+    db_session: AsyncSession,
+) -> None:
+    """A multi-KC item fans one graded answer out into several same-timestamp
+    LearningEvent rows (mastery.record_observation) — that must count as one attempt,
+    not several, or a single wrong answer would masquerade as a qualifying retry."""
+    fanout_item, item_b, item_c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    events = [
+        # Two KCs tagged on the same answer: identical score + timestamp, not a retry.
+        _obs(score=0.0, item_id=fanout_item, minutes_offset=0),
+        _obs(score=0.0, item_id=fanout_item, minutes_offset=0),
+        _obs(score=0.0, item_id=item_b, minutes_offset=1),
+        _obs(score=1.0, item_id=item_b, minutes_offset=2),  # bounced back
+        _obs(score=0.0, item_id=item_c, minutes_offset=3),
+        _obs(score=0.0, item_id=item_c, minutes_offset=4),  # gave up
+    ]
+    estimate, _ = await _estimate_persistence(_ctx(db_session, events))
+    assert estimate is not None
+    # If the fan-out duplicate were (mis)counted as a qualifying single-attempt-that-gave-up
+    # item, this would be 1/3 instead.
+    assert estimate.value == pytest.approx(0.5)
+
+
 # --- engagement ----------------------------------------------------------
 
 

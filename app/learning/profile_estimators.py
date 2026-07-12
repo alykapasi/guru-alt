@@ -12,6 +12,7 @@ import statistics
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from itertools import pairwise
 from typing import Any, Literal
 
@@ -306,14 +307,19 @@ async def _estimate_help_seeking(ctx: EstimatorContext) -> tuple[DimensionEstima
 
 
 async def _estimate_persistence(ctx: EstimatorContext) -> tuple[DimensionEstimate | None, Usage]:
-    by_item: dict[str, list[LearningEvent]] = {}
+    # A single graded interaction fans out into one LearningEvent per tagged KC on a
+    # multi-KC item (mastery.record_observation) — all sharing the same created_at. Collapse
+    # those back into one attempt per (item_id, created_at) before counting attempts, or a
+    # single multi-KC answer would masquerade as multiple retries below.
+    by_item: dict[str, dict[datetime, LearningEvent]] = {}
     for e in _observations(ctx.events):
         item_id = e.payload.get("item_id")
         if item_id:
-            by_item.setdefault(item_id, []).append(e)
+            by_item.setdefault(item_id, {}).setdefault(e.created_at, e)
     qualifying = [
         attempts
-        for attempts in by_item.values()
+        for by_time in by_item.values()
+        for attempts in [list(by_time.values())]
         if len(attempts) >= 2 and attempts[0].payload.get("score", 1.0) < 0.5
     ]
     if len(qualifying) < PERSISTENCE_MIN_ITEMS:
