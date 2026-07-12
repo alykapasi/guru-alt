@@ -68,7 +68,7 @@ async def record_llm_call(
 class TurnEvent:
     """A streamed step of a conversation turn. The router maps these to SSE frames."""
 
-    type: Literal["token", "error", "done", "awaiting_reply", "committed"]
+    type: Literal["token", "error", "done", "awaiting_reply", "committed", "tool_call"]
     text: str = ""
     detail: str = ""
     message_id: str | None = None
