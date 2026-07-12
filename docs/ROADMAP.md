@@ -273,7 +273,15 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 > grounding uses the learner's **most-recently-updated plan** across all subjects, since
 > conversations aren't subject-scoped yet — revisit when the session runner needs tighter
 > per-conversation scoping. Full step-advancement through live conversation (marking a step done
-> because a session covered it) is the session runner's job, next.
+> because a session covered it) is the session runner's job, next. **Correction (Phase 5
+> review):** the plan-level `pacing`/`example_tags`/`reading_level_hint` hints are computed and
+> stored correctly (and test-asserted to shift with `pace`/`interests`/`reading_level`), but nothing
+> downstream — no generation path, no prompt — actually reads them yet; only the per-step
+> `target_difficulty`/`hint_density`/`preferred_item_type` hints are consumed (the last
+> structurally, via `session_runner`; the first two as advisory tutor-prompt text). There is no
+> "step size" concept anywhere in the codebase. A future slice that wants pacing to visibly affect
+> the session (e.g. how many new KCs per sitting) has a real, tested signal to build on — it just
+> isn't wired to anything yet.
 >
 > **Session runner landed.** No new `Session` model and no new LangGraph graph/interrupt —
 > "session" stays a derived concept (same spirit as the profile's `session_logistics`), and the
@@ -317,7 +325,9 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 > (`session_runner.due_review_items`) instead of returning KC metadata alone — a
 > plan-independent review queue, since clearing a spaced-repetition backlog shouldn't require
 > being mid-lesson. Resolution is capped at `reviews_due_item_limit` (soonest-due first); the due
-> list itself is never truncated. This is the first GET endpoint in the codebase with a
+> list itself is bounded separately and much more generously (`due_reviews_limit`, see the Phase
+> 5 review note below — this doc originally and inaccurately called it untruncated). This is the
+> first GET endpoint in the codebase with a
 > generation side effect (every other generation call site sits behind a POST) — accepted on the
 > same reuse-then-generate-forever economics as everywhere else, now bounded by that cap. **Known
 > v1 gaps:** flashcards store the generated answer (`answer_key={"back": ...}`) but nothing
@@ -355,9 +365,64 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 > no `source` column distinguishing extraction origin (YAGNI — every row comes from conversation
 > extraction today; `conversation_id`'s nullability is the future signal if a second source
 > shows up). This closes out Phase 5 — every scope item above is now landed.
+>
+> **Phase 5 review.** Before closing the phase, every slice above was independently re-checked
+> against its own landed-note claims (two parallel reviews covering placement+profile and
+> lesson-plan+session-runner+study-aids, plus a direct pass over the substrate/refinement-gate/
+> memory code) — not a re-read of this document, a re-check of the actual code and tests. Two real
+> bugs turned up and were fixed, both with new regression tests (`uv run poe check`: 382 passed,
+> 1 skipped):
+>
+> - **A live-breaking taskiq bug, root-caused.** `POST /sources/upload|link` and
+>   `POST /conversations/{id}/memory/write-back` 500'd on any real `uv run poe dev`/`uvicorn`
+>   process — `AttributeError: 'function' object has no attribute 'kiq'` — because beartype's
+>   package-wide import hook (`beartype_this_package`, `app/__init__.py`) rewrites every function
+>   *definition* it sees, and `@broker.task` sitting directly in that same decorator stack made
+>   beartype decorate the resulting `AsyncTaskiqDecoratedTask` *instance* rather than the function
+>   — since it can only meaningfully wrap `.__call__`, the module-level task name got rebound to a
+>   plain proxy function, silently losing `.kiq()` and every other task method. No test ever caught
+>   it because every enqueuer-dependent test overrides the enqueuer to bypass the broker (by
+>   design). Fixed in `app/workers/tasks.py` by applying `broker.task(...)` as a plain call after
+>   the `async def`, not as decorator syntax — beartype's claw hook only rewrites `def`/`async def`
+>   nodes, never plain assignments, so this sidesteps the interaction entirely. `tests/test_workers.py`
+>   now asserts both tasks are real dispatchable task objects.
+> - **A profile-corrupting multi-KC bug in `persistence`.** A single graded answer to a
+>   multi-KC item (`POST /items` accepts `kcs` with no max) fans out into one `LearningEvent` row
+>   per tagged KC, all sharing the same `created_at` (`mastery.record_observation`). The
+>   `_estimate_persistence` estimator (`app/learning/profile_estimators.py`) grouped events by
+>   `item_id` and treated list length as attempt count, so a *single* wrong multi-KC answer alone
+>   satisfied its "≥2 attempts" retry check and, since the duplicate rows share one score, always
+>   counted as "gave up" — corrupting the persistence rate with zero real retry evidence. Fixed by
+>   collapsing same-`(item_id, created_at)` rows into one attempt before counting; regression test
+>   added. (The same fan-out mildly inflates the *evidence count* — not the value — of `pace`,
+>   `help_seeking`, and `format_effectiveness`, and duplicates a question in `error_type`'s LLM
+>   prompt; lower severity, left as a known v1 characteristic rather than fixed everywhere, since
+>   generated content is always single-KC and only manually-tagged multi-KC items exercise it.)
+>
+> One doc/code mismatch was also fixed rather than just noted: `mastery.due_reviews` had a
+> hardcoded `limit=50` with no way to override it, contradicting this document's and
+> `ReviewItemRead`'s claim that "the due list itself is never truncated." Promoted to a real,
+> documented, configurable cap (`due_reviews_limit`, default 200) — distinct from and much larger
+> than `reviews_due_item_limit`, which separately bounds item *resolution*. A test gap was also
+> closed: `tests/test_chat.py` gained an end-to-end test that answers a served item through the
+> real `POST /items/{id}/answer` endpoint (not a direct service call) and confirms the *next* chat
+> turn's plan has genuinely advanced — the two halves of "session runner follows/updates the plan"
+> were previously only proven separately (unit tests) or manually (live smoke test), never joined
+> through the real HTTP endpoints in one automated test.
+>
+> Everything else held up: per-dimension profile claims spot-checked against code (8 of 12
+> estimators verified line-by-line), placement's `seed_prior` scoping, the prerequisite BFS +
+> topo-sort, `revise_steps`'s one-way `done` ratchet, `item_for_kc`'s fallback-tier order, the
+> refinement gate's resume/degrade-gracefully paths, and the memory subsystem's dedup/retrieval —
+> all matched their documented behavior with no further bugs found. The one substantive gap left
+> undone by choice (not oversight) is the DoD wording fix above: `pacing` is real and tested but
+> unconsumed — flagged rather than papered over with a new "step size" mechanic that wasn't part of
+> this review's scope.
 
 **DoD:** a new learner co-constructs a goal through the interactive gate, is placed, gets an adaptive
-plan whose pacing/challenge demonstrably shift with profile values (e.g. faster pace → larger steps),
+plan whose pacing/challenge demonstrably shift with profile values (e.g. `optimal_challenge` raises
+or lowers a step's `target_difficulty`; `format_effectiveness` picks the item type that scores best
+for this learner — both concretely tested off real profile rows, see the Phase 5 review note below),
 runs LangGraph-orchestrated sessions with study aids and surfaced reviews, and the experience reflects
 persistent memory across sessions.
 
