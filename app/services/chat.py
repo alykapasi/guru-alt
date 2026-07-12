@@ -12,9 +12,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.tutor import TutorState, build_tutor_graph
+from app.core.config import get_settings
 from app.llm.pricing import cost_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
+from app.memory import retrieval as memory_retrieval
+from app.memory.retrieval import MemoryHit
 from app.models.chat import Conversation, Message
 from app.services import session_runner as session_runner_svc
 from app.services.assessment import item_to_read
@@ -41,6 +44,11 @@ def _plan_grounding_note(context: PlanGroundingContext) -> str:
     if context.preferred_item_type is not None:
         parts.append(f"Preferred item type: {context.preferred_item_type}.")
     return " ".join(parts)
+
+
+def _memory_note(hits: Sequence[MemoryHit]) -> str:
+    facts = "; ".join(f"[{h.kind}] {h.content}" for h in hits)
+    return f"What you remember about this learner from past conversations: {facts}."
 
 
 async def create_conversation(
@@ -105,6 +113,12 @@ async def run_tutor_turn(
     the cross-subject heuristic, and additionally resolves a practice item for the active step
     (see ``session_runner.next_item``) attached to the "done" event — the session runner
     following the plan, not just talking about it.
+
+    Learner-global memory (facts/preferences/summaries from past conversations — see
+    ``app.memory.retrieval``) is folded in on every turn, not gated behind ``subject_id``; this
+    is what "wires memory into sessions" — write-back is a separate, on-demand step (see
+    ``app.services.memory.write_back``). System-prompt order is pinned: base prompt -> goal ->
+    plan-grounding -> memory-note.
     """
     messages = to_chat_messages(history)
     messages.append(ChatMessage(role=ChatRole.USER, content=user_content))
@@ -117,6 +131,15 @@ async def run_tutor_turn(
     plan_context = await get_active_step_context(session, learner_id, subject_id=subject_id)
     if plan_context is not None:
         system = f"{system}\n\n{_plan_grounding_note(plan_context)}"
+    memory_hits = await memory_retrieval.retrieve(
+        session,
+        llm,
+        user_content,
+        learner_id=learner_id,
+        limit=get_settings().memory_retrieval_limit,
+    )
+    if memory_hits:
+        system = f"{system}\n\n{_memory_note(memory_hits)}"
 
     practice_item = None
     if subject_id is not None:

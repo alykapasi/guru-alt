@@ -19,8 +19,10 @@ from app.models.chat import Conversation, LLMCall, Message
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState
+from app.models.memory import Memory, MemoryKind
 from app.services import chat as chat_svc
 from app.services import lesson_plan as lesson_plan_svc
+from app.services import memory as memory_svc
 
 API = "/api/v1"
 REPLY = "Let us explore this together."
@@ -349,3 +351,77 @@ async def test_subject_scoped_turn_with_a_fully_done_plan_gets_no_item(
     assert r.status_code == 200
     done = next(e for e in _parse_sse(r.text) if e["type"] == "done")
     assert done["item"] is None
+
+
+# --- memory: retrieval wired into the tutor turn ------------------------------
+
+
+async def test_tutor_turn_reflects_a_previously_written_memory(
+    api_client: AsyncClient, db_session: AsyncSession, recording_llm: list[str | None]
+) -> None:
+    learner = await _get_dev_learner(api_client, db_session)
+    content = "Studying for the MCAT, mornings only."
+    embedding = (await fake_llm_client().embed(ModelRole.EMBED, [content]))[0]
+    db_session.add(
+        Memory(learner_id=learner.id, kind=MemoryKind.FACT, content=content, embedding=embedding)
+    )
+    await db_session.commit()
+
+    r = await api_client.post(f"{API}/conversations", json={"title": "Chem help"})
+    conversation_id = r.json()["id"]
+    conversation = await db_session.get(Conversation, uuid.UUID(conversation_id))
+    assert conversation is not None
+    conversation.goal = "Understand acids"
+    await db_session.commit()
+
+    r = await api_client.post(
+        f"{API}/conversations/{conversation_id}/messages", json={"content": "hi"}
+    )
+    assert r.status_code == 200
+
+    system = recording_llm[0]
+    assert system is not None
+    assert content in system
+
+
+async def test_write_back_then_a_fresh_turn_reflects_the_written_memory(
+    api_client: AsyncClient, db_session: AsyncSession, recording_llm: list[str | None]
+) -> None:
+    """The Phase 5 DoD check: write memory in one conversation, see it shape a later one."""
+    learner = await _get_dev_learner(api_client, db_session)
+
+    r = await api_client.post(f"{API}/conversations", json={"title": "First chat"})
+    conv_a_id = uuid.UUID(r.json()["id"])
+    db_session.add_all(
+        [
+            Message(
+                conversation_id=conv_a_id,
+                role="user",
+                content="I'm studying for the MCAT, mornings only.",
+            ),
+            Message(conversation_id=conv_a_id, role="assistant", content="Got it."),
+        ]
+    )
+    await db_session.commit()
+
+    fact_reply = json.dumps({"memories": [{"kind": "fact", "content": "Studying for the MCAT."}]})
+    written = await memory_svc.write_back(
+        db_session, fake_llm_client(fact_reply), conversation_id=conv_a_id
+    )
+    assert len(written) == 1
+    assert written[0].learner_id == learner.id
+
+    r = await api_client.post(f"{API}/conversations", json={"title": "Second chat"})
+    conv_b_id = r.json()["id"]
+    conv_b = await db_session.get(Conversation, uuid.UUID(conv_b_id))
+    assert conv_b is not None
+    conv_b.goal = "Understand derivatives"
+    await db_session.commit()
+
+    r = await api_client.post(f"{API}/conversations/{conv_b_id}/messages", json={"content": "hi"})
+    assert r.status_code == 200
+
+    assert len(recording_llm) == 1  # write_back never calls .stream() — only .complete()/.embed()
+    system = recording_llm[0]
+    assert system is not None
+    assert "Studying for the MCAT." in system
