@@ -179,7 +179,7 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
   policy / example selection; revised on evidence.
 - ☑ Session runner that follows/updates the plan.
 - ☑ Study aids: flashcards, spaced-repetition surfacing (FSRS due reviews), fill-in-the-blank.
-- ☐ Per-user **memory** subsystem wired into sessions (facts, preferences, summarization, write-back).
+- ☑ Per-user **memory** subsystem wired into sessions (facts, preferences, summarization, write-back).
 
 > **Substrate landed.** LangGraph introduced behind `app/agent/`; the tutor turn now runs as
 > a single-node state graph (`build_tutor_graph`) driven by a `run_tutor_turn` service that
@@ -325,7 +325,36 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 > a pre-existing gap this slice scales into the default review experience rather than
 > introduces; cloze has no generator (only fill-in-the-blank does), so a profile preference for
 > cloze can only ever be served from the bank, never freshly generated; `target_difficulty`
-> remains unapplied. Memory is the remaining Phase 5 slice.
+> remains unapplied.
+>
+> **Memory landed.** Greenfield — `app/memory/` (extraction + vector-only retrieval) plus
+> `app/services/memory.py` (write-back/dedup/view/erase), mirroring the closest existing analogs
+> end-to-end rather than inventing new patterns: `Memory(learner_id, conversation_id, kind,
+> content, embedding)` mirrors `Chunk`'s `Vector(768)` + HNSW shape (no `tsv` column — the
+> TECHNICAL_DESIGN §7.1 schema sketch omits one, so retrieval is vector-only for v1, unlike
+> RAG's hybrid RRF); `extract_memories` (FAST role, JSON-only) mirrors `kc_tagging.py`'s
+> tolerant-parse-or-empty idiom. **Retrieval is what "wires memory into sessions"**: every tutor
+> turn embeds the learner's message and folds the top `memory_retrieval_limit` hits into the
+> system prompt as a third context note (after goal and plan-grounding), learner-global rather
+> than gated behind `subject_id`. **Write-back is separate and on-demand**
+> (`POST /conversations/{id}/memory/write-back`, 202, queued via `memory_write_back_task` —
+> mirrors the ingestion enqueuer seam byte-for-byte) rather than firing per-turn, since
+> extraction costs a real FAST call for no accumulated benefit if run on every message (same
+> reasoning as `POST /profile/refresh` staying on-demand). Candidate memories are deduped before
+> persisting via cosine distance to an existing same-`(learner, kind)` memory
+> (`memory_dedup_max_distance`), reusing the storage primitive rather than a new subsystem —
+> meaningfully better than exact-string dedup, since wording drift across extraction calls would
+> make that fire almost never. `GET /memory` (view) and both `DELETE /memory/{id}` and bulk
+> `DELETE /memory` (erase) ship now rather than later: the NFR's "learner-controllable
+> view/reset" bar, stated about the profile, applies at least as strongly to discrete personal
+> facts. Verified live end-to-end against real Postgres + Ollama: a fact revealed in one
+> conversation, written back, then surfaced unprompted in a *second*, unrelated conversation's
+> system prompt — the literal Phase 5 DoD bar. **Known v1 gaps:** deletion has no tombstone — a
+> later write-back over overlapping conversation history can re-extract a fact the learner just
+> deleted (the capped extraction window ages the overlap out over time, but doesn't prevent it);
+> no `source` column distinguishing extraction origin (YAGNI — every row comes from conversation
+> extraction today; `conversation_id`'s nullability is the future signal if a second source
+> shows up). This closes out Phase 5 — every scope item above is now landed.
 
 **DoD:** a new learner co-constructs a goal through the interactive gate, is placed, gets an adaptive
 plan whose pacing/challenge demonstrably shift with profile values (e.g. faster pace → larger steps),
