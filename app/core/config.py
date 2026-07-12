@@ -121,9 +121,14 @@ class Settings(BaseSettings):
     lesson_plan_max_steps: int = 20
 
     # How many of the (soonest-due-first) due reviews GET /reviews/due eagerly resolves an
-    # answerable item for — bounds worst-case LLM calls per request; the full due list is
-    # still returned, only item resolution beyond this is skipped.
+    # answerable item for — bounds worst-case LLM calls per request; the due list itself is
+    # bounded separately (see due_reviews_limit), only item resolution beyond this is skipped.
     reviews_due_item_limit: int = 10
+
+    # Hard cap on the due-reviews query itself (mastery.due_reviews) — deliberately much larger
+    # than reviews_due_item_limit; a real (not "unbounded") bound so a learner with a huge
+    # backlog can't pull unbounded rows in one request.
+    due_reviews_limit: int = 200
 
     # Memory write-back (Phase 5). How many of a conversation's most recent messages get fed to
     # extraction — cost/UX bound, same idiom as placement_light_test_size. A candidate memory is

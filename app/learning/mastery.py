@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.learning import scheduler
 from app.learning.tracer import Estimate, GlickoEstimator, MasteryEstimator, aggregate
 from app.models.knowledge import KC, Topic
@@ -218,14 +219,17 @@ async def due_reviews(
     learner_id: uuid.UUID,
     *,
     now: datetime | None = None,
-    limit: int = 50,
+    limit: int | None = None,
 ) -> list[ReviewItem]:
     """KCs whose FSRS review has come due (``due_at <= now``), soonest-due first.
 
     This is the retention half of the tracer: the lesson-plan policy interleaves these
-    into new material so knowledge stays durable (§7.7).
+    into new material so knowledge stays durable (§7.7). Capped at ``settings.due_reviews_limit``
+    by default — a real (if generous) bound, distinct from ``reviews_due_item_limit`` which
+    separately bounds how many of these get an item eagerly resolved.
     """
     now = now or datetime.now(UTC)
+    limit = limit if limit is not None else get_settings().due_reviews_limit
     states = (
         await session.scalars(
             select(LearnerKCState)

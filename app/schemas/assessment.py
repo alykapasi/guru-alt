@@ -76,8 +76,9 @@ class ReviewItemRead(BaseModel):
 
     ``item`` is an answerable practice item resolved for the KC (typically a flashcard —
     see ``session_runner.due_review_items``), or ``None`` past the request's item-resolution
-    cap (``reviews_due_item_limit``) — the due list itself is never truncated, only how many
-    entries get an item eagerly resolved.
+    cap (``reviews_due_item_limit``) — the due list itself is bounded separately (much more
+    generously, see ``mastery.due_reviews``'s ``due_reviews_limit``), only item resolution
+    beyond ``reviews_due_item_limit`` is skipped.
     """
 
     kc_id: uuid.UUID
