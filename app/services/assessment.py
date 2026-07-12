@@ -56,13 +56,19 @@ async def get_item(session: AsyncSession, item_id: uuid.UUID) -> Item | None:
     )
 
 
-async def find_item_for_kc(session: AsyncSession, kc_id: uuid.UUID) -> Item | None:
-    """The oldest bank item assessing ``kc_id``, if any — reuse before generating a new one."""
+async def find_item_for_kc(
+    session: AsyncSession, kc_id: uuid.UUID, *, item_type: ItemType | None = None
+) -> Item | None:
+    """The oldest bank item assessing ``kc_id``, if any — reuse before generating a new one.
+
+    ``item_type``, if given, restricts the search to that type (e.g. the session runner
+    preferring a flashcard for a review step) — ``None`` matches any type, the prior behavior.
+    """
+    stmt = select(Item).join(ItemKC, ItemKC.item_id == Item.id).where(ItemKC.kc_id == kc_id)
+    if item_type is not None:
+        stmt = stmt.where(Item.item_type == item_type)
     return await session.scalar(
-        select(Item)
-        .join(ItemKC, ItemKC.item_id == Item.id)
-        .where(ItemKC.kc_id == kc_id)
-        .options(selectinload(Item.kc_links), selectinload(Item.rubric))
+        stmt.options(selectinload(Item.kc_links), selectinload(Item.rubric))
         .order_by(Item.created_at)
         .limit(1)
     )

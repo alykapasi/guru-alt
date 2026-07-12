@@ -12,9 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_llm_client
 from app.llm.registry import fake_llm_client
 from app.main import app
+from app.models.assessment import Item, ItemKC, ItemType
 from app.models.chat import LLMCall
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learning import LearnerKCState, LearningEvent
+from app.services import assessment as svc
 
 API = "/api/v1"
 RUBRIC_REPLY = '{"score": 0.75, "rationale": "Good, with minor gaps."}'
@@ -49,6 +51,40 @@ def _mcq_body(kc_id: uuid.UUID) -> dict:
         "answer_key": {"choices": ["3", "4", "5"], "correct": 1},
         "difficulty": 0.0,
     }
+
+
+# --- find_item_for_kc (service-level) ----------------------------------------
+
+
+async def test_find_item_for_kc_filters_by_type(db_session: AsyncSession) -> None:
+    (kc,) = await _seed_kcs(db_session)
+    mcq = Item(item_type=ItemType.MCQ, stem="Q1", answer_key={"choices": ["a", "b"], "correct": 0})
+    flashcard = Item(item_type=ItemType.FLASHCARD, stem="Q2", answer_key=None)
+    db_session.add_all([mcq, flashcard])
+    await db_session.flush()
+    db_session.add_all(
+        [ItemKC(item_id=mcq.id, kc_id=kc.id), ItemKC(item_id=flashcard.id, kc_id=kc.id)]
+    )
+    await db_session.commit()
+
+    found = await svc.find_item_for_kc(db_session, kc.id, item_type=ItemType.FLASHCARD)
+    assert found is not None
+    assert found.id == flashcard.id
+
+    found = await svc.find_item_for_kc(db_session, kc.id, item_type=ItemType.MCQ)
+    assert found is not None
+    assert found.id == mcq.id
+
+
+async def test_find_item_for_kc_type_filter_none_when_no_match(db_session: AsyncSession) -> None:
+    (kc,) = await _seed_kcs(db_session)
+    mcq = Item(item_type=ItemType.MCQ, stem="Q1", answer_key={"choices": ["a", "b"], "correct": 0})
+    db_session.add(mcq)
+    await db_session.flush()
+    db_session.add(ItemKC(item_id=mcq.id, kc_id=kc.id))
+    await db_session.commit()
+
+    assert await svc.find_item_for_kc(db_session, kc.id, item_type=ItemType.FILL_BLANK) is None
 
 
 # --- authoring --------------------------------------------------------------
