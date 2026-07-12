@@ -7,8 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import item_generation
 from app.learning.grading import auto_grade, grade_flashcard
+from app.learning.rubric_grading import grade_open
 from app.llm.providers import FakeProvider
-from app.llm.registry import LLMClient, ModelSpec
+from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
 from app.llm.types import ModelRole
 from app.models.assessment import ItemType
 from app.models.knowledge import KC, Subject, Topic
@@ -137,6 +138,50 @@ async def test_generate_fill_blank_item_skips_empty_answer(db_session: AsyncSess
     assert item is None
 
 
+SHORT_REPLY = json.dumps({"stem": "Explain why plants need sunlight for photosynthesis."})
+
+
+async def test_generate_short_item_persists_open_gradable_item(db_session: AsyncSession) -> None:
+    kc = await _kc(db_session)
+    item, usage = await item_generation.generate_short_item(
+        db_session, _client_with_reply(SHORT_REPLY), kc
+    )
+
+    assert item is not None
+    assert item.item_type == ItemType.SHORT
+    assert item.stem == "Explain why plants need sunlight for photosynthesis."
+    assert item.answer_key is None
+    assert item.rubric_id is None
+    assert [link.kc_id for link in item.kc_links] == [kc.id]
+    assert usage.output_tokens > 0
+
+    # Round-trips through the real (rubric-less) LLM grading path.
+    result, _ = await grade_open(
+        fake_llm_client('{"score": 0.8, "rationale": "mostly right"}'),
+        stem=item.stem,
+        response={"text": "Sunlight provides the energy plants convert into sugars."},
+        rubric=None,
+    )
+    assert result.score == 0.8
+
+
+async def test_generate_short_item_skips_unparseable_reply(db_session: AsyncSession) -> None:
+    kc = await _kc(db_session)
+    item, usage = await item_generation.generate_short_item(
+        db_session, _client_with_reply("not json at all"), kc
+    )
+    assert item is None
+    assert usage.output_tokens > 0
+
+
+async def test_generate_short_item_skips_empty_stem(db_session: AsyncSession) -> None:
+    kc = await _kc(db_session)
+    item, _ = await item_generation.generate_short_item(
+        db_session, _client_with_reply(json.dumps({"stem": "  "})), kc
+    )
+    assert item is None
+
+
 FLASHCARD_REPLY = json.dumps(
     {"stem": "What is the powerhouse of the cell?", "answer": "The mitochondria"}
 )
@@ -173,5 +218,6 @@ def test_generators_cover_every_generatable_item_type() -> None:
     assert set(item_generation.GENERATORS) == {
         ItemType.MCQ,
         ItemType.FILL_BLANK,
+        ItemType.SHORT,
         ItemType.FLASHCARD,
     }
