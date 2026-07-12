@@ -142,6 +142,10 @@ class Settings(BaseSettings):
     # (agentic_max_iterations + 1) per turn against a runaway tool-calling loop.
     agentic_max_iterations: int = 4
 
+    # Live-fetch tool (Phase 6): cap on how much extracted webpage text fetch_webpage returns
+    # to the model — cost/UX bound, same idiom as placement_light_test_size.
+    fetch_webpage_max_chars: int = 6_000
+
     @property
     def runtime_typecheck(self) -> bool:
         """Whether beartype runtime checks should be active (dev/test only)."""
