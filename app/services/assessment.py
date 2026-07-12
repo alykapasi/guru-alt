@@ -28,7 +28,7 @@ from app.models.assessment import (
     ItemType,
 )
 from app.models.learning import LearnerKCState
-from app.schemas.assessment import AnswerSubmit, ItemCreate
+from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRead, ItemRead
 from app.services import knowledge as knowledge_svc
 from app.services import lesson_plan as lesson_plan_svc
 from app.services.llm_log import log_llm_call
@@ -53,6 +53,30 @@ async def get_item(session: AsyncSession, item_id: uuid.UUID) -> Item | None:
         select(Item)
         .where(Item.id == item_id)
         .options(selectinload(Item.kc_links), selectinload(Item.rubric))
+    )
+
+
+async def find_item_for_kc(session: AsyncSession, kc_id: uuid.UUID) -> Item | None:
+    """The oldest bank item assessing ``kc_id``, if any — reuse before generating a new one."""
+    return await session.scalar(
+        select(Item)
+        .join(ItemKC, ItemKC.item_id == Item.id)
+        .where(ItemKC.kc_id == kc_id)
+        .options(selectinload(Item.kc_links), selectinload(Item.rubric))
+        .order_by(Item.created_at)
+        .limit(1)
+    )
+
+
+def item_to_read(item: Item) -> ItemRead:
+    """Project an item for the learner — without leaking its answer key."""
+    return ItemRead(
+        id=item.id,
+        item_type=ItemType(item.item_type),
+        stem=item.stem,
+        difficulty=item.difficulty,
+        rubric_id=item.rubric_id,
+        kcs=[ItemKCRead(kc_id=link.kc_id, weight=link.weight) for link in item.kc_links],
     )
 
 

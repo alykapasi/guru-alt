@@ -6,30 +6,13 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
 from app.core.config import get_settings
-from app.models.assessment import Item, ItemType
-from app.schemas.assessment import ItemKCRead, ItemRead, KCEstimateRead
+from app.schemas.assessment import KCEstimateRead
 from app.schemas.placement import PlacementPromptRead, PlacementResultRead, PlacementSubmit
+from app.services import assessment as assessment_svc
 from app.services import knowledge as knowledge_svc
 from app.services import placement as svc
 
 router = APIRouter(tags=["placement"])
-
-
-def _item_to_read(item: Item) -> ItemRead:
-    """Project an item for the learner — without leaking its answer key.
-
-    Duplicates assessment router's ``_to_read`` (small, private, not worth a cross-router
-    import for eight lines — matches this codebase's existing tolerance for such duplication,
-    e.g. each JSON-parsing module owning its own tiny extractor).
-    """
-    return ItemRead(
-        id=item.id,
-        item_type=ItemType(item.item_type),
-        stem=item.stem,
-        difficulty=item.difficulty,
-        rubric_id=item.rubric_id,
-        kcs=[ItemKCRead(kc_id=link.kc_id, weight=link.weight) for link in item.kc_links],
-    )
 
 
 @router.get("/subjects/{subject_id}/placement/prompt", response_model=PlacementPromptRead)
@@ -61,5 +44,5 @@ async def run_placement(
     )
     return PlacementResultRead(
         seeded=[KCEstimateRead.model_validate(s) for s in result.seeded],
-        light_test_items=[_item_to_read(i) for i in result.light_test_items],
+        light_test_items=[assessment_svc.item_to_read(i) for i in result.light_test_items],
     )

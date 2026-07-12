@@ -11,17 +11,16 @@ KC later being answered for real, never clobbers evidence — no "finish placeme
 import uuid
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.learning import item_generation, mastery
 from app.learning.placement_inference import INFERENCE_ROLE, KCCandidate, infer_levels
 from app.learning.tracer import Estimate
 from app.llm import LLMClient
-from app.models.assessment import Item, ItemKC
+from app.models.assessment import Item
 from app.models.knowledge import KC, Subject
 from app.models.learning import LearnerKCState
+from app.services import assessment as assessment_svc
 from app.services import knowledge as knowledge_svc
 from app.services.llm_log import log_llm_call
 
@@ -45,16 +44,6 @@ exists. High uncertainty (vs. a real observation's) reflects that this is a soft
 class PlacementResult:
     seeded: list[LearnerKCState] = field(default_factory=list)
     light_test_items: list[Item] = field(default_factory=list)
-
-
-async def _existing_item_for_kc(session: AsyncSession, kc_id: uuid.UUID) -> Item | None:
-    return await session.scalar(
-        select(Item)
-        .join(ItemKC, ItemKC.item_id == Item.id)
-        .where(ItemKC.kc_id == kc_id)
-        .options(selectinload(Item.kc_links), selectinload(Item.rubric))
-        .limit(1)
-    )
 
 
 async def run_placement(
@@ -84,7 +73,7 @@ async def run_placement(
     root_kcs: list[KC] = list(await knowledge_svc.list_root_kcs(session, subject.id))
     light_test_items: list[Item] = []
     for kc in root_kcs[:light_test_size]:
-        item = await _existing_item_for_kc(session, kc.id)
+        item = await assessment_svc.find_item_for_kc(session, kc.id)
         if item is None:
             item, gen_usage = await item_generation.generate_mcq_item(session, llm, kc)
             if gen_usage.total_tokens:
