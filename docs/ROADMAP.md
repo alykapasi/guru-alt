@@ -434,8 +434,8 @@ persistent memory across sessions.
 
 **Scope**
 - ☑ Tool registry; live/external-data tool; retrieval-as-tool — exposed as LangGraph tool nodes.
-- ☐ Unified engine exposing chat / agentic / workflow modes as composable LangGraph graphs.
-- ☐ First structured workflow graph (e.g., guided practice / worked-example walkthrough).
+- ☑ Unified engine exposing chat / agentic / workflow modes as composable LangGraph graphs.
+- ☑ First structured workflow graph (e.g., guided practice / worked-example walkthrough).
 
 **DoD:** a guru can take a tool-using action and run at least one structured workflow end-to-end,
 selected by need/tier.
@@ -517,8 +517,57 @@ selected by need/tier.
 > codebase's docs means the age/persona rollout (MASTERPLAN: "MVP deliberately stays in the adult
 > tier"), not a feature-access system. YAGNI still holds.
 >
-> **Still open in Phase 6:** the unified engine's workflow mode + first structured workflow graph.
-> Two of the three Phase 6 scope boxes above remain unchecked.
+> **Still open after slice 2:** the unified engine's workflow mode + first structured workflow
+> graph. Landed in slice 3 below, closing out Phase 6.
+>
+> **Workflow mode landed (slice 3) — Phase 6 complete.** The third mode: a fixed multi-step
+> sequence with a human-in-the-loop pause, distinct from `agentic` (model freely chooses tools)
+> and `chat` (one generate call). Chosen workflow: **guided practice** — present a worked example +
+> practice problem for the learner's active lesson-plan step, pause for their attempt, grade it,
+> give feedback (looping for another attempt, capped, if wrong), done. `app/agent/workflow.py`'s
+> loop (`present -> await_response -> grade -> respond`, routing back to `await_response` until
+> correct or `workflow_max_rounds` is hit) mirrors `refinement.py`'s HITL/checkpointer shape
+> (its own `InMemorySaver`, same documented limitations) but is new territory: `grade` actually
+> **writes to the DB mid-graph**, closing over `session`/`learner_id` (never stored in
+> checkpointed state) — the dispatcher rebuilds the graph fresh each request with that request's
+> own `session`/`llm`, exactly like `build_refinement_graph(llm)` already does. `grade` calls the
+> existing `assessment_svc.answer_item` — the same grade→tracer→plan-revise transaction
+> `/items/{id}/answer` already uses — so this workflow adds zero new grading/tracer logic.
+>
+> **Item-type scoping was the one real design fork.** `AnswerSubmit.response`'s shape is
+> item-type-specific (MCQ needs a `{"choice": <index>}` matched against a `choices` list
+> `ItemRead` doesn't even expose to the learner — a separate, pre-existing gap left untouched) —
+> none of which map cleanly from free-text chat except `ItemType.SHORT` (open, rubric-graded):
+> `{"text": reply}` is a direct match, and it exercises the LLM rubric-grading path CLAUDE.md
+> calls load-bearing. Added `generate_short_item` (`app/learning/item_generation.py`, mirroring
+> the three existing generators) and `session_runner.short_answer_item_for_kc` — a **dedicated**
+> resolver, deliberately without `item_for_kc`'s any-type/MCQ fallback, since falling back to a
+> different item type would silently mis-grade every submission as incorrect rather than fail
+> loudly. `respond`'s feedback instructs the model to re-pose the *same* problem with a hint when
+> looping, never a new one — grading is always anchored to the original `item.stem`, so a
+> model-invented "next problem" would be graded against a question the learner was never asked.
+>
+> Reachable via `ChatTurnRequest.mode: "chat" | "agentic" | "workflow"`; `send_message` checks
+> `mode == "workflow"` **or** an in-flight workflow checkpoint (whichever is true) right after
+> `agentic`, ahead of goal/refinement-gate branching — a workflow presupposes a committed goal +
+> plan, so it never negotiates one, and an in-flight workflow always wins over the client's `mode`
+> on the next turn, mirroring the refinement gate's `is_awaiting_reply` precedent exactly. The
+> `awaiting_reply` SSE frame gained `item` (previously `done`-only) so the client can render the
+> practice problem while paused. No new `TurnEvent` fields beyond that — the grade/score is folded
+> into `respond`'s prose rather than wired as structured data, a deliberate v1 scoping choice.
+>
+> **Verified empirically before implementing** (not just recalled from training): reusing one
+> `thread_id` across multiple sequential fresh (non-`Command`) runs on the same LangGraph
+> checkpointer correctly starts over from `START` each time, with no stale bleed-through from an
+> earlier completed run — what lets one conversation support multiple guided-practice sessions
+> over time on `thread_id = str(conversation_id)`; and `aget_state` on a thread that's never been
+> run returns an empty, falsy snapshot, so `is_awaiting_reply` needs no special-casing for a
+> conversation that's never attempted a workflow.
+>
+> **This closes Phase 6's DoD**: a guru can take a tool-using action (`agentic`, slice 1-2) and
+> run a structured workflow end-to-end (`workflow`, slice 3). "Selected by need/tier" is satisfied
+> minimally — `mode` is an explicit per-turn client choice, not yet auto-selected by a policy; a
+> future phase could add that without changing this shape.
 
 ---
 
