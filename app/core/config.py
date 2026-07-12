@@ -120,6 +120,11 @@ class Settings(BaseSettings):
     # runaway subject graph. Review steps (due retention) are added on top, uncapped.
     lesson_plan_max_steps: int = 20
 
+    # How many of the (soonest-due-first) due reviews GET /reviews/due eagerly resolves an
+    # answerable item for — bounds worst-case LLM calls per request; the full due list is
+    # still returned, only item resolution beyond this is skipped.
+    reviews_due_item_limit: int = 10
+
     @property
     def runtime_typecheck(self) -> bool:
         """Whether beartype runtime checks should be active (dev/test only)."""

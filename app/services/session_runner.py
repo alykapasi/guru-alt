@@ -12,13 +12,22 @@ Item selection is type-aware: the active step's ``preferred_item_type`` (profile
 steps (spaced-repetition surfacing) when there's no explicit preference, and finally to
 any-type reuse then MCQ generation — see ``item_for_kc``. ``target_difficulty`` remains an
 unapplied v1 gap: no item-level difficulty targeting exists for generated items yet.
+
+``due_review_items`` is the plan-independent counterpart: a learner clearing their FSRS review
+queue doesn't need to be mid-lesson, so it resolves flashcards directly off
+``mastery.due_reviews`` rather than a lesson plan's active step. It's the first read-only
+endpoint in this codebase with a generation side effect (every other generation call site sits
+behind a POST) — defensible on the same reuse-then-generate-forever economics as everywhere
+else, bounded by ``reviews_due_item_limit`` so a large backlog can't trigger unbounded LLM
+calls on one request.
 """
 
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.learning import item_generation
+from app.learning import item_generation, mastery
+from app.learning.mastery import ReviewItem
 from app.llm import LLMClient
 from app.models.assessment import Item, ItemType
 from app.models.knowledge import KC
@@ -111,3 +120,26 @@ async def next_item(
     return await item_for_kc(
         session, llm, learner_id=learner_id, kc=kc, preferred_type=_effective_item_type(context)
     )
+
+
+async def due_review_items(
+    session: AsyncSession, llm: LLMClient, *, learner_id: uuid.UUID, item_limit: int
+) -> list[tuple[ReviewItem, Item | None]]:
+    """Every due review, paired with a resolved flashcard for the first ``item_limit`` (the
+    due list is soonest-due-first, so this caps the *nearest* reviews, not an arbitrary slice).
+    Entries past the cap carry ``None`` — still due, just not eagerly resolved this call.
+    """
+    reviews = await mastery.DEFAULT_TRACER.due_reviews(session, learner_id)
+    results: list[tuple[ReviewItem, Item | None]] = []
+    # Sequential, not gathered: item_for_kc can call session.commit() on this one shared
+    # AsyncSession, and concurrent operations on a single session are unsafe.
+    for i, review in enumerate(reviews):
+        item = None
+        if i < item_limit:
+            kc = await session.get(KC, review.kc_id)
+            if kc is not None:
+                item = await item_for_kc(
+                    session, llm, learner_id=learner_id, kc=kc, preferred_type=ItemType.FLASHCARD
+                )
+        results.append((review, item))
+    return results

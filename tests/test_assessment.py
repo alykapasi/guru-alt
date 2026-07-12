@@ -2,7 +2,7 @@
 
 import uuid
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -15,17 +15,28 @@ from app.main import app
 from app.models.assessment import Item, ItemKC, ItemType
 from app.models.chat import LLMCall
 from app.models.knowledge import KC, Subject, Topic
+from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
 from app.services import assessment as svc
+from app.services import session_runner as session_runner_svc
 
 API = "/api/v1"
 RUBRIC_REPLY = '{"score": 0.75, "rationale": "Good, with minor gaps."}'
+FLASHCARD_REPLY = '{"stem": "What is X?", "answer": "Y"}'
 
 
 @pytest.fixture
 def fake_grader() -> Iterator[None]:
     """Route every model role to a FakeProvider that returns a canned rubric grade."""
     app.dependency_overrides[get_llm_client] = lambda: fake_llm_client(reply=RUBRIC_REPLY)
+    yield
+    app.dependency_overrides.pop(get_llm_client, None)
+
+
+@pytest.fixture
+def fake_flashcard_llm() -> Iterator[None]:
+    """Route every model role to a FakeProvider that returns a canned flashcard reply."""
+    app.dependency_overrides[get_llm_client] = lambda: fake_llm_client(reply=FLASHCARD_REPLY)
     yield
     app.dependency_overrides.pop(get_llm_client, None)
 
@@ -218,7 +229,9 @@ async def test_flashcard_bad_rating_422(api_client: AsyncClient, db_session: Asy
     assert r.status_code == 422
 
 
-async def test_due_reviews_endpoint(api_client: AsyncClient, db_session: AsyncSession) -> None:
+async def test_due_reviews_endpoint(
+    api_client: AsyncClient, db_session: AsyncSession, fake_flashcard_llm: None
+) -> None:
     (kc,) = await _seed_kcs(db_session)
     item_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
     # Brand-new learner: nothing is due before any review.
@@ -234,6 +247,58 @@ async def test_due_reviews_endpoint(api_client: AsyncClient, db_session: AsyncSe
     due = (await api_client.get(f"{API}/reviews/due")).json()
     assert [r["kc_id"] for r in due] == [str(kc.id)]
     assert "ability" in due[0] and "due_at" in due[0]
+    # A flashcard is resolved for the due KC (spaced-repetition surfacing) — the bank had only
+    # an MCQ item, so this proves generation kicked in rather than reusing the wrong type.
+    assert due[0]["item"] is not None
+    assert due[0]["item"]["item_type"] == "flashcard"
+    assert "answer_key" not in due[0]["item"]
+
+
+async def test_due_reviews_endpoint_reuses_an_existing_flashcard(
+    api_client: AsyncClient, db_session: AsyncSession, fake_flashcard_llm: None
+) -> None:
+    (kc,) = await _seed_kcs(db_session)
+    body = {"item_type": "flashcard", "stem": "Capital of France?", "kcs": [{"kc_id": str(kc.id)}]}
+    item_id = (await api_client.post(f"{API}/items", json=body)).json()["id"]
+    await api_client.post(f"{API}/items/{item_id}/answer", json={"response": {"rating": 3}})
+    state = await db_session.scalar(select(LearnerKCState).where(LearnerKCState.kc_id == kc.id))
+    assert state is not None
+    state.due_at = datetime(2000, 1, 1, tzinfo=UTC)
+    await db_session.commit()
+
+    due = (await api_client.get(f"{API}/reviews/due")).json()
+    assert due[0]["item"]["id"] == item_id
+
+    calls = (await db_session.scalars(select(LLMCall))).all()
+    assert len(calls) == 0
+
+
+async def test_due_review_items_caps_item_resolution_at_the_limit(
+    db_session: AsyncSession,
+) -> None:
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+    kcs = await _seed_kcs(db_session, n=3)
+    now = datetime.now(UTC)
+    for i, kc in enumerate(kcs):
+        db_session.add(
+            LearnerKCState(
+                learner_id=learner.id,
+                kc_id=kc.id,
+                ability=0.0,
+                uncertainty=1.0,
+                # kcs[0] is the most overdue (earliest due_at) -> soonest-due-first order.
+                due_at=now - timedelta(days=3 - i),
+            )
+        )
+    await db_session.flush()
+
+    pairs = await session_runner_svc.due_review_items(
+        db_session, fake_llm_client(FLASHCARD_REPLY), learner_id=learner.id, item_limit=2
+    )
+    assert [r.kc_id for r, _ in pairs] == [kc.id for kc in kcs]
+    assert [item is not None for _, item in pairs] == [True, True, False]
 
 
 # --- rubric (LLM) grading ---------------------------------------------------
