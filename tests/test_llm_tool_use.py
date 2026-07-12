@@ -5,7 +5,8 @@ rather than hitting a real backend.
 """
 
 from app.llm.providers.anthropic import AnthropicProvider
-from app.llm.types import ChatMessage, ChatRole, ToolDef, ToolResultPart, ToolUsePart
+from app.llm.providers.openai_compat import OpenAICompatProvider
+from app.llm.types import ChatMessage, ChatRole, TextPart, ToolDef, ToolResultPart, ToolUsePart
 
 # --- Anthropic translation --------------------------------------------------
 
@@ -72,5 +73,70 @@ def test_anthropic_tools_payload_translates_tool_def() -> None:
     assert payload == {
         "tools": [
             {"name": "search", "description": "Search stuff.", "input_schema": {"type": "object"}}
+        ]
+    }
+
+
+# --- OpenAI-compatible translation ------------------------------------------
+
+
+def test_openai_message_translates_assistant_tool_use() -> None:
+    msg = ChatMessage(
+        role=ChatRole.ASSISTANT,
+        content=[
+            TextPart(text="checking..."),
+            ToolUsePart(id="t1", name="search", input={"q": "x"}),
+        ],
+    )
+    payload = OpenAICompatProvider._message(msg)
+    assert payload == {
+        "role": "assistant",
+        "content": "checking...",
+        "tool_calls": [
+            {
+                "id": "t1",
+                "type": "function",
+                "function": {"name": "search", "arguments": '{"q": "x"}'},
+            }
+        ],
+    }
+
+
+def test_openai_message_without_tool_use_is_unchanged() -> None:
+    msg = ChatMessage(role=ChatRole.USER, content="hello")
+    assert OpenAICompatProvider._message(msg) == {"role": "user", "content": "hello"}
+
+
+def test_openai_payload_tool_results_are_not_coalesced() -> None:
+    msgs = [
+        ChatMessage(role=ChatRole.TOOL, content=[ToolResultPart(tool_use_id="t1", content="a")]),
+        ChatMessage(role=ChatRole.TOOL, content=[ToolResultPart(tool_use_id="t2", content="b")]),
+    ]
+    payload = OpenAICompatProvider._payload(msgs, system=None)
+    assert payload == [
+        {"role": "tool", "tool_call_id": "t1", "content": "a"},
+        {"role": "tool", "tool_call_id": "t2", "content": "b"},
+    ]
+
+
+def test_openai_tools_payload_omitted_when_no_tools() -> None:
+    assert OpenAICompatProvider._tools_payload(None) == {}
+    assert OpenAICompatProvider._tools_payload([]) == {}
+
+
+def test_openai_tools_payload_translates_tool_def() -> None:
+    payload = OpenAICompatProvider._tools_payload(
+        [ToolDef(name="search", description="Search stuff.", parameters={"type": "object"})]
+    )
+    assert payload == {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "Search stuff.",
+                    "parameters": {"type": "object"},
+                },
+            }
         ]
     }
