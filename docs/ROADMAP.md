@@ -576,7 +576,7 @@ selected by need/tier.
 **Goal:** the learner-facing product.
 
 **Scope**
-- ☐ Vite + React + TS app; typed API client generated from the OpenAPI schema.
+- ☑ Vite + React + TS app; typed API client generated from the OpenAPI schema.
 - ☐ Streaming tutor chat UI; lesson-plan + session UI.
 - ☐ **Statistics dashboard:** mastery at KC/topic/subject levels, retention curves, momentum, and the
   **learner profile** ("how you learn" — with view/reset); tasteful **mastery-based** gamification
@@ -585,6 +585,53 @@ selected by need/tier.
 
 **DoD:** an adult learner completes the full loop in the browser — place → plan → session → assess →
 see the dashboard update — with streaming responses.
+
+> **App shell + design system landed (slice 1).** `frontend/` (Vite + React 19 + TS), scaffolded
+> fresh — nothing existed before this slice. Deliberately **scaffolding only**: routing, the typed
+> API client, the auth-stub wiring, the theme system, and top-nav layout chrome — the four main
+> screens (`/app/chat`, `/app/lessons`, `/app/dashboard`, `/app/uploads`) are placeholders this
+> slice, real content is later slices.
+>
+> **Design system, not defaults.** A first pass at this plan specified "Poppins, teal primary,
+> DaisyUI" — vague enough to produce a generic-looking AI-app (stock Tailwind teal, one font
+> doing every job, an unmodified component-library look, a centered-hero-plus-cards landing
+> page). Replaced with specifics: a **Fraunces + Inter** type pairing (a characterful display
+> face + a neutral, legible-at-small-sizes text face — not one geometric sans stretched across
+> every role) with a defined type scale; a real color system anchored on a deliberately
+> non-default teal (`#0E7C6B`, not Tailwind's stock `teal-500`) with a separate amber accent
+> reserved *only* for gamification/celebration moments; a 4px spacing scale; **Lucide** for every
+> functional icon, with the 🌱 emoji brand mark reserved as the *only* emoji in the UI (never a
+> stand-in for real icons); and an asymmetric landing-page hero with concrete, mechanism-specific
+> copy and a real product-preview mock — not a gradient-wash hero, the single most recognizable
+> "AI-generated SaaS landing page" tell. **Tailwind v4 + DaisyUI v5**, but DaisyUI is used as a
+> headless behavioral base only — both `guru-light`/`guru-dark` themes are built entirely from
+> custom `oklch()` tokens (computed from the hex anchors above) via DaisyUI v5's CSS-based
+> `@plugin "daisyui/theme"` syntax; no stock DaisyUI theme is used unmodified.
+>
+> **Typed client**: `openapi-typescript` generates `src/api/schema.d.ts` from the backend's
+> `/openapi.json` (`npm run gen:api`, checked-in output), paired with `openapi-fetch` for a fully
+> typed request client (`src/api/client.ts`). SSE isn't representable in OpenAPI's streaming
+> story, so `src/api/sse.ts` hand-rolls a `fetch` + `ReadableStream` reader (the backend's chat
+> endpoint is a POST-body stream, not a GET `EventSource`) with a `TurnEvent` union manually kept
+> in sync with `app/api/v1/chat.py::event_stream`'s frame shapes. A small `useConversations`
+> TanStack Query hook proves the whole path end-to-end (typed client → CORS → stub auth → real
+> DB) on the Chat placeholder, not just that it compiles.
+>
+> **Backend**: added `CORSMiddleware` + a `cors_origins` setting (`app/main.py`,
+> `app/core/config.py`) — nothing existed before, and the Vite dev server can't call the API
+> cross-origin without it.
+>
+> **Swapped `oxlint` (create-vite's new default) for ESLint + Prettier** to match this repo's
+> already-documented `npm run lint` convention, rather than let the scaffold tool's latest default
+> silently redefine it.
+>
+> **Deliberately deferred**: no frontend test runner yet (nothing meaningfully interactive exists
+> to test); no mobile responsiveness (desktop-only for this phase, by design); no client-side auth
+> UI (the stub-auth seam resolves the dev learner server-side, same as `curl`/tests today).
+>
+> **Still open in Phase 7:** the streaming chat UI, lesson-plan/session UI (with the guided
+> practice side panel), the stats dashboard, and uploads/history — the app shell's placeholders,
+> turned into the real screens.
 
 ---
 
