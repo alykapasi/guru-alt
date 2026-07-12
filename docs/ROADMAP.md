@@ -440,6 +440,51 @@ persistent memory across sessions.
 **DoD:** a guru can take a tool-using action and run at least one structured workflow end-to-end,
 selected by need/tier.
 
+> **Tool-calling foundation + agentic mode landed (slice 1).** Greenfield — `app/llm/` had zero
+> tool-call vocabulary before this slice, despite an old Phase 2 checkbox loosely implying a "tool
+> schema" existed. Added provider-agnostic tool types (`ToolDef`/`ToolCall`, `ToolUsePart`/
+> `ToolResultPart`, `ChatRole.TOOL`) to `app/llm/types.py`, with each provider translating to its
+> own wire shape — Anthropic's `tool_use`/`tool_result` blocks (coalescing consecutive
+> `ChatRole.TOOL` messages into one `user` message, since Anthropic requires every pending result
+> batched together) and OpenAI's `tool_calls` field / `role: "tool"` messages (one message per
+> result, no coalescing — the opposite requirement). Deliberately **hand-rolled**, not LangGraph's
+> prebuilt `create_react_agent`/`ToolNode` or Anthropic's Tool Runner — both require a LangChain
+> `BaseChatModel`-shaped object or direct SDK usage, which would reintroduce the exact coupling the
+> Phase 5 substrate note rejected ("nodes call our role-based `LLMClient`, no LangChain models").
+>
+> `app/agent/tools.py::build_tools` returns a fresh per-turn `list[Tool]` (mirrors
+> `build_tutor_graph(llm)` closing over the request's client) with one real tool this slice,
+> `search_materials`, wrapping `app/rag/retrieval.py::retrieve` — only `query` is model-controlled,
+> `session`/`llm`/`learner_id`/`subject_id` bind server-side so the model can never spoof a learner
+> or supply a subject it has no legitimate way to know. `app/agent/agentic.py::build_agentic_graph`
+> compiles a bounded `call_model ⇄ execute_tools` loop (no checkpointer, same no-HITL shape as
+> `tutor.py`), capped by `settings.agentic_max_iterations` (default 4) — verified directly by a test
+> that scripts a provider which always requests a tool call and asserts the graph still terminates.
+> A tool's own failure (unknown name or a raised exception) becomes an error `ToolResult` rather
+> than crashing the turn. Reachable via `ChatTurnRequest.mode: "chat" | "agentic"` (per-turn, not
+> persisted on `Conversation` — a learner can mix one tool-using turn into an otherwise plain
+> conversation); `send_message` checks `mode == "agentic"` first, ahead of the goal/refinement-gate
+> branching, so an agentic turn always bypasses goal negotiation. New `"tool_call"` SSE frame.
+>
+> **Accepted v1 gaps, documented not fixed:** intra-loop tool-call/tool-result exchanges aren't
+> persisted as `Message` rows (only the user message and final reply are) — a reloaded conversation
+> won't show what was searched; a `ToolCall` audit table mirroring `LLMCall` is the natural
+> follow-up. Hitting `agentic_max_iterations` mid-tool-call degrades gracefully (`done` event's
+> `detail="capped"`, whatever partial reply exists persists) rather than erroring, mirroring the
+> refinement gate's auto-commit-at-`max_rounds` precedent. The `astream`-mode-dispatch boilerplate
+> is now duplicated a third time across `run_tutor_turn`/`run_refinement_turn`/`run_agentic_turn`;
+> not extracted this slice since the agentic service also needs to branch on `"token"` vs.
+> `"tool_call"` custom payloads, so a shared helper would need reshaping — deferred to the workflow
+> graph slice, where a third matching-shape call site would make the extraction concrete rather
+> than speculative.
+>
+> **Still open in Phase 6:** the live/external-data tool (a "live lookup" tool over
+> `app/rag/fetch.py::default_fetch` is the likely primitive — no web-search integration exists),
+> the workflow mode + first structured workflow graph, and promoting `build_tools()`'s flat list to
+> a heavier `ToolSpec`/`ToolContext` registry once a second tool gives that shape a real second
+> caller. None of the three Phase 6 scope boxes above are checked yet — this slice covers part of
+> the first two.
+
 ---
 
 ## Phase 7 — Frontend MVP (React + Vite)
