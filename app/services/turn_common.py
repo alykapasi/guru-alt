@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm.types import ChatMessage, ChatRole, Usage
 from app.models.chat import LLMCall, Message
+from app.schemas.assessment import ItemRead
 
 
 async def add_message(
@@ -73,3 +74,6 @@ class TurnEvent:
     message_id: str | None = None
     usage: Usage = field(default_factory=Usage)
     cost_usd: float = 0.0
+    # The session runner's practice item for the plan's active step, if any — set on "done"
+    # for subject-scoped conversations only. See app.services.session_runner.next_item.
+    item: ItemRead | None = None

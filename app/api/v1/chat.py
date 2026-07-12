@@ -87,6 +87,7 @@ async def send_message(
             user_content=data.content,
             max_tokens=settings.chat_max_tokens,
             goal=conversation.goal,
+            subject_id=conversation.subject_id,
         )
     elif await refinement_svc.is_awaiting_reply(llm, conversation_id):
         turn = refinement_svc.run_refinement_turn(
@@ -126,6 +127,7 @@ async def send_message(
             history=history,
             user_content=data.content,
             max_tokens=settings.chat_max_tokens,
+            subject_id=conversation.subject_id,
         )
 
     async def event_stream() -> AsyncIterator[str]:
@@ -144,6 +146,7 @@ async def send_message(
                             "output_tokens": ev.usage.output_tokens,
                         },
                         "cost_usd": ev.cost_usd,
+                        "item": ev.item.model_dump(mode="json") if ev.item else None,
                     }
                 )
             elif ev.type == "awaiting_reply":

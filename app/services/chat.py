@@ -16,6 +16,8 @@ from app.llm.pricing import cost_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.models.chat import Conversation, Message
+from app.services import session_runner as session_runner_svc
+from app.services.assessment import item_to_read
 from app.services.lesson_plan import PlanGroundingContext, get_active_step_context
 from app.services.turn_common import TurnEvent, add_message, record_llm_call, to_chat_messages
 
@@ -90,6 +92,7 @@ async def run_tutor_turn(
     user_content: str,
     max_tokens: int,
     goal: str | None = None,
+    subject_id: uuid.UUID | None = None,
 ) -> AsyncIterator[TurnEvent]:
     """Persist the user turn, stream the tutor's reply through the graph, then persist it.
 
@@ -97,6 +100,11 @@ async def run_tutor_turn(
     folded into the system prompt so generation stays grounded in it. The learner's active
     lesson-plan step (if any) is folded in the same way, so the plan actually drives the
     conversation rather than sitting beside it — see ``lesson_plan.get_active_step_context``.
+
+    ``subject_id`` (the conversation's, if scoped to one) makes that lookup exact instead of
+    the cross-subject heuristic, and additionally resolves a practice item for the active step
+    (see ``session_runner.next_item``) attached to the "done" event — the session runner
+    following the plan, not just talking about it.
     """
     messages = to_chat_messages(history)
     messages.append(ChatMessage(role=ChatRole.USER, content=user_content))
@@ -106,9 +114,15 @@ async def run_tutor_turn(
     system = TUTOR_SYSTEM_PROMPT
     if goal:
         system = f"{TUTOR_SYSTEM_PROMPT}\n\nThe learner's stated goal for this conversation: {goal}"
-    plan_context = await get_active_step_context(session, learner_id)
+    plan_context = await get_active_step_context(session, learner_id, subject_id=subject_id)
     if plan_context is not None:
         system = f"{system}\n\n{_plan_grounding_note(plan_context)}"
+
+    practice_item = None
+    if subject_id is not None:
+        practice_item = await session_runner_svc.next_item(
+            session, llm, learner_id=learner_id, subject_id=subject_id
+        )
 
     spec = llm.spec(ModelRole.SMART)
     initial: TutorState = {
@@ -159,4 +173,7 @@ async def run_tutor_turn(
         output_tokens=usage.output_tokens,
         cost_usd=cost,
     )
-    yield TurnEvent(type="done", message_id=str(assistant.id), usage=usage, cost_usd=cost)
+    item_read = item_to_read(practice_item) if practice_item is not None else None
+    yield TurnEvent(
+        type="done", message_id=str(assistant.id), usage=usage, cost_usd=cost, item=item_read
+    )
