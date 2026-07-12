@@ -178,7 +178,7 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
   prerequisite-ordered KCs, scaffolding by tier, **profile-driven** step size / challenge / hint
   policy / example selection; revised on evidence.
 - ☑ Session runner that follows/updates the plan.
-- ☐ Study aids: flashcards, spaced-repetition surfacing (FSRS due reviews), fill-in-the-blank.
+- ☑ Study aids: flashcards, spaced-repetition surfacing (FSRS due reviews), fill-in-the-blank.
 - ☐ Per-user **memory** subsystem wired into sessions (facts, preferences, summarization, write-back).
 
 > **Substrate landed.** LangGraph introduced behind `app/agent/`; the tutor turn now runs as
@@ -239,8 +239,7 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 > `assessment.answer_item` stays untouched. Trait dimensions read a learner's full event
 > history, state dimensions (`engagement`) read only the most recent session — no incremental
 > EWMA blending in v1, since full recompute is cheap at this data scale. Learner view/reset:
-> `GET /profile`, `POST /profile/{key}/reset`. Lesson-plan policy, session runner, study aids,
-> and memory are the remaining Phase 5 slices.
+> `GET /profile`, `POST /profile/{key}/reset`. Memory is the remaining Phase 5 slice.
 >
 > **Lesson-plan policy landed** — designed as a genuinely dynamic policy, not a document
 > regenerated only on request. `LessonPlan` (`app/models/lesson_plan.py`, one row per
@@ -298,12 +297,35 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 > parallel. Verified live end-to-end against real Postgres + Ollama: a served item answered
 > through the real endpoint flipped its step to `done` and the very next turn's item correctly
 > disappeared, all without a single lesson-plan endpoint call. **Known v1 simplifications:** the
-> active step's `target_difficulty`/`preferred_item_type` hints are not yet applied to item
-> selection — the plan drives *which* KC gets practiced, not yet *what difficulty/format* it's
-> practiced at; `subject_id` is set API-first with no caller yet (no frontend exists before
-> Phase 7) — a future "continue subject X" entry point is expected to populate it, same
-> bootstrapping pattern every other Phase 5 endpoint has shipped under. Study aids and memory are
-> the remaining Phase 5 slices.
+> active step's `target_difficulty` hint is not yet applied to item selection (see the study-aids
+> note below for `preferred_item_type`, which now is) — the plan drives *which* KC gets
+> practiced, not yet *what difficulty* it's practiced at; `subject_id` is set API-first with no
+> caller yet (no frontend exists before Phase 7) — a future "continue subject X" entry point is
+> expected to populate it, same bootstrapping pattern every other Phase 5 endpoint has shipped
+> under.
+>
+> **Study aids landed.** No new mutation surface here either — this slice only widens *what*
+> `session_runner` can serve. `app/learning/item_generation.py` gained
+> `generate_fill_blank_item`/`generate_flashcard_item` (same FAST-role JSON-prompt shape as the
+> existing MCQ generator) plus a `GENERATORS` dispatch map. `session_runner.item_for_kc` replaces
+> the previous slice's untyped reuse-then-generate-MCQ with an order that closes the
+> `preferred_item_type` gap flagged above: reuse a bank item of the plan's preferred type (a free
+> win even for types with no generator, e.g. `cloze`) → generate that type if a generator exists
+> → reuse any type → generate MCQ. Steps with no explicit preference default to `"new"` → no
+> preference, `"review"` → flashcard, pairing the roadmap's "flashcards" and "spaced-repetition
+> surfacing" into one default. `GET /reviews/due` now resolves an answerable flashcard per due KC
+> (`session_runner.due_review_items`) instead of returning KC metadata alone — a
+> plan-independent review queue, since clearing a spaced-repetition backlog shouldn't require
+> being mid-lesson. Resolution is capped at `reviews_due_item_limit` (soonest-due first); the due
+> list itself is never truncated. This is the first GET endpoint in the codebase with a
+> generation side effect (every other generation call site sits behind a POST) — accepted on the
+> same reuse-then-generate-forever economics as everywhere else, now bounded by that cap. **Known
+> v1 gaps:** flashcards store the generated answer (`answer_key={"back": ...}`) but nothing
+> reveals it to the learner before self-rating yet — self-graded recall is fully trust-the-learner,
+> a pre-existing gap this slice scales into the default review experience rather than
+> introduces; cloze has no generator (only fill-in-the-blank does), so a profile preference for
+> cloze can only ever be served from the bank, never freshly generated; `target_difficulty`
+> remains unapplied. Memory is the remaining Phase 5 slice.
 
 **DoD:** a new learner co-constructs a goal through the interactive gate, is placed, gets an adaptive
 plan whose pacing/challenge demonstrably shift with profile values (e.g. faster pace → larger steps),
