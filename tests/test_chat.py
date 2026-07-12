@@ -129,6 +129,30 @@ async def test_empty_message_422(api_client: AsyncClient, fake_llm: None) -> Non
     assert r.status_code == 422
 
 
+# --- subject-scoped conversations ---------------------------------------------------
+
+
+async def test_create_conversation_with_subject_round_trips(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+) -> None:
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Chemistry")
+    db_session.add(subject)
+    await db_session.commit()
+
+    r = await api_client.post(
+        f"{API}/conversations", json={"title": "Chem help", "subject_id": str(subject.id)}
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["subject_id"] == str(subject.id)
+
+
+async def test_create_conversation_with_unknown_subject_404(
+    api_client: AsyncClient, fake_llm: None
+) -> None:
+    r = await api_client.post(f"{API}/conversations", json={"subject_id": str(uuid.uuid4())})
+    assert r.status_code == 404
+
+
 # --- lesson-plan grounding ---------------------------------------------------
 
 

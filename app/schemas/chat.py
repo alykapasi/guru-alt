@@ -8,6 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class ConversationCreate(BaseModel):
     title: str | None = None
+    # Set once at creation, never changed. Scopes plan grounding + the session runner's
+    # practice item to this exact subject instead of a cross-subject heuristic.
+    subject_id: uuid.UUID | None = None
 
 
 class ConversationRead(BaseModel):
@@ -17,6 +20,7 @@ class ConversationRead(BaseModel):
     learner_id: uuid.UUID
     title: str | None
     goal: str | None
+    subject_id: uuid.UUID | None
     created_at: datetime
 
 

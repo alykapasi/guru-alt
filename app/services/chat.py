@@ -42,9 +42,12 @@ def _plan_grounding_note(context: PlanGroundingContext) -> str:
 
 
 async def create_conversation(
-    session: AsyncSession, learner_id: uuid.UUID, title: str | None = None
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    title: str | None = None,
+    subject_id: uuid.UUID | None = None,
 ) -> Conversation:
-    conversation = Conversation(learner_id=learner_id, title=title)
+    conversation = Conversation(learner_id=learner_id, title=title, subject_id=subject_id)
     session.add(conversation)
     await session.commit()
     await session.refresh(conversation)

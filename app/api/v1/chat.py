@@ -25,6 +25,7 @@ from app.schemas.chat import (
     MessageRead,
 )
 from app.services import chat as svc
+from app.services import knowledge as knowledge_svc
 from app.services import refinement as refinement_svc
 
 log = structlog.get_logger(__name__)
@@ -40,7 +41,10 @@ def _sse(obj: dict[str, Any]) -> str:
 async def create_conversation(
     data: ConversationCreate, session: SessionDep, learner: CurrentLearner
 ):
-    return await svc.create_conversation(session, learner.id, data.title)
+    if data.subject_id is not None:
+        if await knowledge_svc.get_subject(session, data.subject_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
+    return await svc.create_conversation(session, learner.id, data.title, data.subject_id)
 
 
 @router.get("/conversations", response_model=list[ConversationRead])
