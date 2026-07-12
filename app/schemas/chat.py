@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -39,3 +40,8 @@ class ChatTurnRequest(BaseModel):
     # Explicit learner acceptance of the refinement gate's latest proposal. Ignored once a
     # conversation's goal is already committed (or no gate is in progress).
     satisfied: bool = False
+    # "agentic" is a one-off tool-using action for this turn only — it bypasses the
+    # refinement gate regardless of the conversation's goal/gate state. Per-turn rather than
+    # persisted on the conversation: no migration, and a learner can mix one tool-using turn
+    # into an otherwise plain conversation.
+    mode: Literal["chat", "agentic"] = "chat"

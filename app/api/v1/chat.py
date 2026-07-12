@@ -1,10 +1,12 @@
 """Chat endpoints: conversations + an SSE streaming tutor turn.
 
-``send_message`` dispatches each turn to one of two LangGraph flows: the interactive
-refinement gate (while the conversation has no committed ``goal`` yet) or the plain tutor
-turn (once a goal is committed, or the gate was never entered). See
-``app/services/refinement.py`` for the gate's persistence orchestration and its dispatch
-edge cases (e.g. a lost in-memory checkpoint degrading gracefully to plain chat).
+``send_message`` dispatches each turn to one of three LangGraph flows: a one-off agentic
+tool-using action (``mode="agentic"``, checked first — it bypasses goal negotiation
+entirely), the interactive refinement gate (while the conversation has no committed
+``goal`` yet), or the plain tutor turn (once a goal is committed, or the gate was never
+entered). See ``app/services/refinement.py`` for the gate's persistence orchestration and
+its dispatch edge cases (e.g. a lost in-memory checkpoint degrading gracefully to plain
+chat), and ``app/services/agentic.py`` for the agentic turn.
 """
 
 import json
@@ -24,6 +26,7 @@ from app.schemas.chat import (
     ConversationRead,
     MessageRead,
 )
+from app.services import agentic as agentic_svc
 from app.services import chat as svc
 from app.services import knowledge as knowledge_svc
 from app.services import refinement as refinement_svc
@@ -77,7 +80,18 @@ async def send_message(
     settings = get_settings()
 
     turn: AsyncIterator[Any]
-    if conversation.goal is not None:
+    if data.mode == "agentic":
+        turn = agentic_svc.run_agentic_turn(
+            session,
+            llm,
+            learner_id=learner.id,
+            conversation_id=conversation_id,
+            history=history,
+            user_content=data.content,
+            max_tokens=settings.chat_max_tokens,
+            subject_id=conversation.subject_id,
+        )
+    elif conversation.goal is not None:
         turn = svc.run_tutor_turn(
             session,
             llm,
@@ -147,11 +161,14 @@ async def send_message(
                         },
                         "cost_usd": ev.cost_usd,
                         "item": ev.item.model_dump(mode="json") if ev.item else None,
+                        "detail": ev.detail,
                     }
                 )
             elif ev.type == "awaiting_reply":
                 yield _sse({"type": "awaiting_reply", "text": ev.text, "detail": ev.detail})
             elif ev.type == "committed":
                 yield _sse({"type": "committed", "goal": ev.text, "detail": ev.detail})
+            elif ev.type == "tool_call":
+                yield _sse({"type": "tool_call", "detail": ev.detail})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
