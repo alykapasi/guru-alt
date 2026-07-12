@@ -38,9 +38,11 @@ not calibrated against real outcome data."""
 
 @dataclass(frozen=True)
 class PlanGroundingContext:
-    """The learner's current active step, shaped for folding into a tutor-turn system prompt."""
+    """The learner's current active step, shaped for folding into a tutor-turn system prompt
+    (and, via ``kc_id``, for the session runner to resolve a practice item)."""
 
     subject_name: str
+    kc_id: uuid.UUID
     kc_name: str
     target_difficulty: float | None
     hint_density: str | None
@@ -195,31 +197,39 @@ async def get_lesson_plan(
 
 
 async def get_active_step_context(
-    session: AsyncSession, learner_id: uuid.UUID
+    session: AsyncSession, learner_id: uuid.UUID, *, subject_id: uuid.UUID | None = None
 ) -> PlanGroundingContext | None:
-    """The learner's most-recently-updated plan's active step, for tutor-turn grounding.
+    """The active step of the learner's plan for ``subject_id``, for tutor-turn grounding and
+    the session runner's practice item.
 
-    A conversation isn't subject-scoped today, so "most recently updated plan" is the v1
-    heuristic for "what the learner is currently working on" — revisit once the session
-    runner needs tighter per-conversation scoping.
+    If ``subject_id`` is given, this is an exact lookup — ``None`` if that subject has no plan
+    yet (never falls back to a different subject's plan). If omitted (subject-less
+    conversations), falls back to the learner's most-recently-updated plan across all
+    subjects — the v1 heuristic from before conversations were subject-scoped, kept for
+    conversations that still aren't.
     """
-    plan = await session.scalar(
-        select(LessonPlan)
-        .where(LessonPlan.learner_id == learner_id)
-        .order_by(LessonPlan.updated_at.desc())
-        .limit(1)
-    )
+    if subject_id is not None:
+        plan = await _get_plan(session, learner_id, subject_id)
+    else:
+        plan = await session.scalar(
+            select(LessonPlan)
+            .where(LessonPlan.learner_id == learner_id)
+            .order_by(LessonPlan.updated_at.desc())
+            .limit(1)
+        )
     if plan is None:
         return None
     active = next((s for s in plan.steps if s["status"] == "active"), None)
     if active is None:
         return None
-    kc = await session.get(KC, uuid.UUID(active["kc_id"]))
+    kc_id = uuid.UUID(active["kc_id"])
+    kc = await session.get(KC, kc_id)
     subject = await session.get(Subject, plan.subject_id)
     if kc is None or subject is None:
         return None
     return PlanGroundingContext(
         subject_name=subject.name,
+        kc_id=kc_id,
         kc_name=kc.name,
         target_difficulty=active["target_difficulty"],
         hint_density=active["hint_density"],

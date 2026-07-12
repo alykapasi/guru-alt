@@ -222,8 +222,59 @@ async def test_get_active_step_context_reflects_the_active_step(db_session: Asyn
     context = await svc.get_active_step_context(db_session, learner.id)
     assert context is not None
     assert context.subject_name == subject.name
+    assert context.kc_id == root.id
     assert context.kc_name == root.name
     assert context.target_difficulty == 0.5
+
+
+async def test_get_active_step_context_with_subject_id_is_an_exact_lookup(
+    db_session: AsyncSession,
+) -> None:
+    """A plan for subject B wins over a *more recently updated* plan for subject A, when the
+    caller asks for subject B by id — proving exact scoping overrides the heuristic rather
+    than just coexisting with it."""
+    learner, subject_a, _root_a, _dependent_a = await _graph(db_session)
+    subject_b = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Biology")
+    db_session.add(subject_b)
+    await db_session.flush()
+    topic_b = Topic(subject_id=subject_b.id, slug="t", name="T")
+    db_session.add(topic_b)
+    await db_session.flush()
+    root_b = KC(topic_id=topic_b.id, slug="root-b", name="Root B")
+    db_session.add(root_b)
+    await db_session.flush()
+
+    await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject_b.id, goal=None
+    )
+    await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject_a.id, goal=None
+    )
+    # subject_a's plan is now the most-recently-updated one overall.
+
+    context = await svc.get_active_step_context(db_session, learner.id, subject_id=subject_b.id)
+    assert context is not None
+    assert context.subject_name == subject_b.name
+    assert context.kc_id == root_b.id
+
+
+async def test_get_active_step_context_with_subject_id_does_not_fall_back(
+    db_session: AsyncSession,
+) -> None:
+    """Subject B has no plan yet, even though the learner has one for subject A — must return
+    None, never A's plan."""
+    learner, subject_a, _root_a, _dependent_a = await _graph(db_session)
+    subject_b = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Biology")
+    db_session.add(subject_b)
+    await db_session.flush()
+
+    await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject_a.id, goal=None
+    )
+
+    assert (
+        await svc.get_active_step_context(db_session, learner.id, subject_id=subject_b.id) is None
+    )
 
 
 # --- auto-revision wiring (answer_item / refresh_profile) --------------------
