@@ -11,6 +11,7 @@ from app.core.config import Settings
 from app.llm import (
     ChatMessage,
     ChatRole,
+    ContentPart,
     ImagePart,
     ModelRole,
     TextPart,
@@ -40,7 +41,11 @@ def _image_message() -> ChatMessage:
 
 def test_text_of_str_and_parts() -> None:
     assert text_of("plain") == "plain"
-    parts = [TextPart(text="a"), ImagePart(media_type="image/png", data=_IMG), TextPart(text="b")]
+    parts: list[ContentPart] = [
+        TextPart(text="a"),
+        ImagePart(media_type="image/png", data=_IMG),
+        TextPart(text="b"),
+    ]
     assert text_of(parts) == "a b"  # images are skipped
 
 

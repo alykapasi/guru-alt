@@ -13,7 +13,7 @@ from app.api.deps import get_llm_client
 from app.learning.grading import auto_grade
 from app.llm.providers import FakeProvider
 from app.llm.registry import LLMClient, ModelSpec
-from app.llm.types import ChatMessage, ChatResponse, ModelRole, Usage, text_of
+from app.llm.types import ChatMessage, ChatResponse, ModelRole, ToolDef, Usage, text_of
 from app.main import app
 from app.models.assessment import ItemType
 from app.models.knowledge import KC, KCEdge, Subject, Topic
@@ -41,6 +41,7 @@ class _SequencedProvider(FakeProvider):
         messages: Sequence[ChatMessage],
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
         reply = self._replies[min(self._calls, len(self._replies) - 1)]
         self._calls += 1

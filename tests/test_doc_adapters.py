@@ -17,7 +17,7 @@ from pptx.util import Inches
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.llm import ChatMessage, ChatResponse, ModelRole
+from app.llm import ChatMessage, ChatResponse, ModelRole, ToolDef
 from app.llm.providers import FakeProvider
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
 from app.models.learner import Learner
@@ -293,6 +293,7 @@ class _CountingVisionProvider(FakeProvider):
         messages: Sequence[ChatMessage],
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
         self.inflight += 1
         self.max_inflight = max(self.max_inflight, self.inflight)

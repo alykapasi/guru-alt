@@ -100,6 +100,38 @@ async def generate_fill_blank_item(
     return item, completion.usage
 
 
+_SHORT_SYSTEM_PROMPT = (
+    "You write one short-answer question that requires a brief written explanation to test "
+    "understanding of a single knowledge component. Respond with ONLY a JSON object "
+    '{"stem": "<the question>"} and nothing else.'
+)
+
+
+async def generate_short_item(
+    session: AsyncSession, llm: LLMClient, kc: KC, *, max_tokens: int = 256
+) -> tuple[Item | None, Usage]:
+    """Generate and persist one open, rubric-graded short-answer item for ``kc``.
+
+    No ``answer_key``/``rubric_id`` — ``rubric_grading.grade_open`` grades on correctness and
+    completeness when there's no explicit rubric, and ``ItemCreate`` only requires an
+    ``answer_key`` for auto-gradable types.
+    """
+    completion = await llm.complete(
+        GENERATION_ROLE,
+        [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
+        system=_SHORT_SYSTEM_PROMPT,
+        max_tokens=max_tokens,
+    )
+    stem = _parse_short(completion.content)
+    if stem is None:
+        return None, completion.usage
+    item = await assessment_svc.create_item(
+        session,
+        ItemCreate(item_type=ItemType.SHORT, stem=stem, kcs=[ItemKCRef(kc_id=kc.id)]),
+    )
+    return item, completion.usage
+
+
 _FLASHCARD_SYSTEM_PROMPT = (
     "You write one flashcard question that tests recall of a single knowledge component. "
     'Respond with ONLY a JSON object {"stem": "<a short question testing recall>", "answer": '
@@ -142,6 +174,7 @@ GeneratorFn = Callable[[AsyncSession, LLMClient, KC], Awaitable[tuple[Item | Non
 GENERATORS: dict[ItemType, GeneratorFn] = {
     ItemType.MCQ: generate_mcq_item,
     ItemType.FILL_BLANK: generate_fill_blank_item,
+    ItemType.SHORT: generate_short_item,
     ItemType.FLASHCARD: generate_flashcard_item,
 }
 """Every item type this module can generate — what lets callers (the session runner) dispatch
@@ -175,6 +208,15 @@ def _parse_fill_blank(content: str) -> tuple[str, str] | None:
     if not stem or "___" not in stem or not answer:
         return None
     return stem, answer
+
+
+def _parse_short(content: str) -> str | None:
+    try:
+        raw = json.loads(_extract_json(content))
+        stem = str(raw["stem"]).strip()
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+    return stem or None
 
 
 def _parse_flashcard(content: str) -> tuple[str, str] | None:

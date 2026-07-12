@@ -19,6 +19,10 @@ from app.llm.types import (
     ChatRole,
     ImagePart,
     TextPart,
+    ToolCall,
+    ToolDef,
+    ToolResultPart,
+    ToolUsePart,
     Usage,
     text_of,
 )
@@ -32,7 +36,7 @@ class AnthropicProvider:
 
     @staticmethod
     def _content(content: str | list) -> str | list[dict[str, Any]]:
-        """Translate message content to Anthropic shape: a string, or text/image blocks."""
+        """Translate message content to Anthropic shape: a string, or content blocks."""
         if isinstance(content, str):
             return content
         blocks: list[dict[str, Any]] = []
@@ -43,21 +47,61 @@ class AnthropicProvider:
                 b64 = base64.b64encode(part.data).decode()
                 source = {"type": "base64", "media_type": part.media_type, "data": b64}
                 blocks.append({"type": "image", "source": source})
+            elif isinstance(part, ToolUsePart):
+                blocks.append(
+                    {"type": "tool_use", "id": part.id, "name": part.name, "input": part.input}
+                )
+            elif isinstance(part, ToolResultPart):
+                blocks.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": part.tool_use_id,
+                        "content": part.content,
+                        "is_error": part.is_error,
+                    }
+                )
         return blocks
 
     @classmethod
     def _split(
         cls, messages: Sequence[ChatMessage], system: str | None
     ) -> tuple[str | None, list[dict[str, Any]]]:
-        """Anthropic takes ``system`` separately; messages are user/assistant only."""
+        """Anthropic takes ``system`` separately; messages are user/assistant only.
+
+        Consecutive ``ChatRole.TOOL`` messages coalesce into one ``user`` message —
+        Anthropic requires every pending ``tool_result`` in a single message, or it
+        silently stops asking for parallel tool calls.
+        """
         system_parts = [system] if system else []
         convo: list[dict[str, Any]] = []
+        prev_was_tool_result = False
         for m in messages:
             if m.role is ChatRole.SYSTEM:
                 system_parts.append(text_of(m.content))  # system is text-only
+                prev_was_tool_result = False
+            elif m.role is ChatRole.TOOL:
+                content = cls._content(m.content)
+                blocks = content if isinstance(content, list) else [content]
+                if prev_was_tool_result:
+                    convo[-1]["content"].extend(blocks)
+                else:
+                    convo.append({"role": "user", "content": blocks})
+                prev_was_tool_result = True
             else:
                 convo.append({"role": m.role.value, "content": cls._content(m.content)})
+                prev_was_tool_result = False
         return ("\n\n".join(system_parts) or None), convo
+
+    @staticmethod
+    def _tools_payload(tools: Sequence[ToolDef] | None) -> dict[str, Any]:
+        if not tools:
+            return {}
+        return {
+            "tools": [
+                {"name": t.name, "description": t.description, "input_schema": t.parameters}
+                for t in tools
+            ]
+        }
 
     async def complete(
         self,
@@ -66,15 +110,22 @@ class AnthropicProvider:
         messages: Sequence[ChatMessage],
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
         system_text, convo = self._split(messages, system)
         extra: dict[str, Any] = {"system": system_text} if system_text else {}
+        extra.update(self._tools_payload(tools))
         msg = await self._client.messages.create(
             model=model, max_tokens=max_tokens, messages=cast(Any, convo), **extra
         )
         content = "".join(b.text for b in msg.content if b.type == "text")
+        tool_calls = [
+            ToolCall(id=b.id, name=b.name, input=b.input)
+            for b in msg.content
+            if b.type == "tool_use"
+        ]
         usage = Usage(input_tokens=msg.usage.input_tokens, output_tokens=msg.usage.output_tokens)
-        return ChatResponse(content=content, usage=usage, model=model)
+        return ChatResponse(content=content, usage=usage, model=model, tool_calls=tool_calls)
 
     async def stream(
         self,
@@ -83,20 +134,30 @@ class AnthropicProvider:
         messages: Sequence[ChatMessage],
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> AsyncIterator[ChatChunk]:
         system_text, convo = self._split(messages, system)
         extra: dict[str, Any] = {"system": system_text} if system_text else {}
+        extra.update(self._tools_payload(tools))
         async with self._client.messages.stream(
             model=model, max_tokens=max_tokens, messages=cast(Any, convo), **extra
         ) as stream:
             async for text in stream.text_stream:
                 yield ChatChunk(text=text)
+            # get_final_message() accumulates streamed input_json_delta fragments for us —
+            # final.content's ToolUseBlock.input is already a fully-parsed dict.
             final = await stream.get_final_message()
+            tool_calls = [
+                ToolCall(id=b.id, name=b.name, input=b.input)
+                for b in final.content
+                if b.type == "tool_use"
+            ]
             yield ChatChunk(
                 usage=Usage(
                     input_tokens=final.usage.input_tokens,
                     output_tokens=final.usage.output_tokens,
-                )
+                ),
+                tool_calls=tool_calls,
             )
 
     async def embed(self, *, model: str, texts: Sequence[str]) -> list[list[float]]:

@@ -1,0 +1,193 @@
+"""Bounded agentic LangGraph loop: call_model <-> execute_tools, scripted via FakeProvider.
+
+Graph-unit tests mirror test_agent_tutor.py's style, using a trivial in-file echo tool
+rather than the real search_materials tool, keeping them independent of the DB. The DB e2e
+section below mirrors test_agent_tutor.py's persistence tests, exercising run_agentic_turn
+(and therefore the real search_materials tool via build_tools) against a real conversation.
+"""
+
+import uuid
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.agent.agentic import AgenticState, build_agentic_graph
+from app.agent.tools import Tool, ToolResult
+from app.core.config import get_settings
+from app.llm.providers.fake import FakeTurn
+from app.llm.registry import LLMClient, fake_llm_client
+from app.llm.types import ChatMessage, ChatRole, ToolCall, Usage
+from app.models.chat import Conversation, LLMCall, Message
+from app.models.learner import Learner
+from app.services.agentic import run_agentic_turn
+from app.services.turn_common import TurnEvent
+
+
+def _state(max_iterations: int = 4) -> AgenticState:
+    return {
+        "messages": [ChatMessage(role=ChatRole.USER, content="search for x")],
+        "system": "You are an agent.",
+        "max_tokens": 256,
+        "max_iterations": max_iterations,
+        "iterations": 0,
+        "reply": "",
+        "usage": Usage(),
+        "pending_tool_calls": [],
+        "tool_events": [],
+    }
+
+
+async def _echo(args: dict) -> ToolResult:
+    return ToolResult(content=f"got {args}")
+
+
+_ECHO_TOOL = Tool(
+    name="echo",
+    description="Echoes its input.",
+    parameters={"type": "object", "properties": {"text": {"type": "string"}}},
+    execute=_echo,
+)
+
+
+async def test_tool_call_turn_routes_through_execute_tools_and_loops_back() -> None:
+    script = [
+        FakeTurn(tool_calls=[ToolCall(id="t1", name="echo", input={"text": "hi"})]),
+        FakeTurn(text="here is the answer"),
+    ]
+    graph = build_agentic_graph(fake_llm_client(script=script), [_ECHO_TOOL])
+
+    final = await graph.ainvoke(_state())
+
+    assert final["reply"] == "here is the answer"
+    assert final["iterations"] == 1
+    assert final["pending_tool_calls"] == []
+    assert len(final["tool_events"]) == 1
+    event = final["tool_events"][0]
+    assert event.name == "echo"
+    assert event.input == {"text": "hi"}
+    assert "hi" in event.result
+    assert not event.is_error
+
+
+async def test_unknown_tool_name_is_an_error_event_not_a_crash() -> None:
+    script = [
+        FakeTurn(tool_calls=[ToolCall(id="t1", name="nonexistent", input={})]),
+        FakeTurn(text="done"),
+    ]
+    graph = build_agentic_graph(fake_llm_client(script=script), [_ECHO_TOOL])
+
+    final = await graph.ainvoke(_state())
+
+    assert final["reply"] == "done"
+    event = final["tool_events"][0]
+    assert event.is_error
+
+
+async def test_max_iterations_bounds_an_unbounded_tool_calling_loop() -> None:
+    # Every scripted turn returns a tool call — an unbounded model would loop forever.
+    always_calls = FakeTurn(tool_calls=[ToolCall(id="t1", name="echo", input={})])
+    graph = build_agentic_graph(fake_llm_client(script=[always_calls] * 5), [_ECHO_TOOL])
+
+    final = await graph.ainvoke(_state(max_iterations=1))
+
+    assert final["iterations"] == 1  # exactly one execute_tools round, not unbounded
+    assert final["pending_tool_calls"] != []  # the cap stopped it mid-loop, not naturally
+
+
+async def test_streams_tokens_incrementally_during_call_model() -> None:
+    graph = build_agentic_graph(
+        fake_llm_client(script=[FakeTurn(text="hello world")]), [_ECHO_TOOL]
+    )
+    tokens: list[str] = []
+    async for mode, payload in graph.astream(_state(), stream_mode=["custom", "values"]):
+        if mode == "custom" and "token" in payload:
+            tokens.append(payload["token"])  # ty: ignore[invalid-argument-type]
+    assert "".join(tokens) == "hello world"
+
+
+async def test_usage_accumulates_across_iterations() -> None:
+    script = [
+        FakeTurn(text="checking now", tool_calls=[ToolCall(id="t1", name="echo", input={})]),
+        FakeTurn(text="done"),
+    ]
+    graph = build_agentic_graph(fake_llm_client(script=script), [_ECHO_TOOL])
+
+    final = await graph.ainvoke(_state())
+
+    # Summed across both call_model invocations ("checking now" + "done"), not just the last.
+    assert final["usage"].output_tokens == len("checking now".split()) + len("done".split())
+
+
+# --- run_agentic_turn: DB e2e (real search_materials tool via build_tools) --------------
+
+
+async def _conversation(session: AsyncSession) -> Conversation:
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    session.add(learner)
+    await session.flush()
+    conversation = Conversation(learner_id=learner.id)
+    session.add(conversation)
+    await session.commit()
+    await session.refresh(conversation)
+    return conversation
+
+
+async def _drain(session: AsyncSession, llm: LLMClient, conv: Conversation) -> list[TurnEvent]:
+    return [
+        ev
+        async for ev in run_agentic_turn(
+            session,
+            llm,
+            learner_id=conv.learner_id,
+            conversation_id=conv.id,
+            history=[],
+            user_content="search my notes for x",
+            max_tokens=256,
+        )
+    ]
+
+
+async def test_run_agentic_turn_persists_turn_and_logs_call(db_session: AsyncSession) -> None:
+    conv = await _conversation(db_session)
+    script = [
+        FakeTurn(tool_calls=[ToolCall(id="t1", name="search_materials", input={"query": "x"})]),
+        FakeTurn(text="here is your answer"),
+    ]
+    events = await _drain(db_session, fake_llm_client(script=script), conv)
+
+    assert events[0].type == "tool_call"
+    assert events[0].detail == "search_materials"
+    assert "".join(e.text for e in events if e.type == "token") == "here is your answer"
+    assert events[-1].type == "done"
+    assert events[-1].detail == ""
+
+    messages = (
+        await db_session.scalars(
+            select(Message).where(Message.conversation_id == conv.id).order_by(Message.created_at)
+        )
+    ).all()
+    # Only the user message and the final assistant reply persist — no intermediate
+    # tool-call/tool-result Message rows this slice.
+    assert [m.role for m in messages] == ["user", "assistant"]
+    assert messages[1].content == "here is your answer"
+
+    calls = (await db_session.scalars(select(LLMCall))).all()
+    assert len(calls) == 1  # one LLMCall per turn, usage summed across both call_model passes
+    assert calls[0].output_tokens == len("here is your answer".split())
+
+
+async def test_run_agentic_turn_marks_done_as_capped_when_iterations_exhausted(
+    db_session: AsyncSession,
+) -> None:
+    conv = await _conversation(db_session)
+    always_calls = FakeTurn(
+        tool_calls=[ToolCall(id="t1", name="search_materials", input={"query": "x"})]
+    )
+    max_iterations = get_settings().agentic_max_iterations
+    script = [always_calls] * (max_iterations + 1)
+
+    events = await _drain(db_session, fake_llm_client(script=script), conv)
+
+    done = events[-1]
+    assert done.type == "done"
+    assert done.detail == "capped"

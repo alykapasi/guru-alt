@@ -9,8 +9,8 @@ from dataclasses import dataclass
 
 from app.core.config import Settings
 from app.llm.base import LLMProvider
-from app.llm.providers import AnthropicProvider, FakeProvider, OpenAICompatProvider
-from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ModelRole
+from app.llm.providers import AnthropicProvider, FakeProvider, FakeTurn, OpenAICompatProvider
+from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ModelRole, ToolDef
 
 
 @dataclass(frozen=True)
@@ -50,10 +50,11 @@ class LLMClient:
         *,
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
         provider, model = self._resolve(role)
         return await provider.complete(
-            model=model, messages=messages, system=system, max_tokens=max_tokens
+            model=model, messages=messages, system=system, max_tokens=max_tokens, tools=tools
         )
 
     def stream(
@@ -63,9 +64,12 @@ class LLMClient:
         *,
         system: str | None = None,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
     ) -> AsyncIterator[ChatChunk]:
         provider, model = self._resolve(role)
-        return provider.stream(model=model, messages=messages, system=system, max_tokens=max_tokens)
+        return provider.stream(
+            model=model, messages=messages, system=system, max_tokens=max_tokens, tools=tools
+        )
 
     async def embed(self, role: ModelRole, texts: Sequence[str]) -> list[list[float]]:
         provider, model = self._resolve(role)
@@ -95,9 +99,11 @@ def build_llm_client(settings: Settings) -> LLMClient:
     return LLMClient(providers, roles)
 
 
-def fake_llm_client(reply: str = "Hello from the fake tutor.") -> LLMClient:
+def fake_llm_client(
+    reply: str = "Hello from the fake tutor.", *, script: Sequence[FakeTurn] | None = None
+) -> LLMClient:
     """A registry where every role is the deterministic FakeProvider (for tests)."""
-    fake = FakeProvider(reply=reply)
+    fake = FakeProvider(reply=reply, script=script)
     providers: dict[str, LLMProvider] = {"fake": fake}
     roles = {role: ModelSpec(provider="fake", model="fake-1") for role in ModelRole}
     return LLMClient(providers, roles)

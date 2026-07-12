@@ -138,6 +138,18 @@ class Settings(BaseSettings):
     memory_dedup_max_distance: float = 0.05
     memory_retrieval_limit: int = 5
 
+    # Max tool-execution rounds per agentic turn (Phase 6) — bounds worst-case LLM calls
+    # (agentic_max_iterations + 1) per turn against a runaway tool-calling loop.
+    agentic_max_iterations: int = 4
+
+    # Live-fetch tool (Phase 6): cap on how much extracted webpage text fetch_webpage returns
+    # to the model — cost/UX bound, same idiom as placement_light_test_size.
+    fetch_webpage_max_chars: int = 6_000
+
+    # Max attempt-rounds per guided-practice workflow turn (Phase 6) — same
+    # cap-then-degrade-gracefully idiom as refinement_max_rounds / agentic_max_iterations.
+    workflow_max_rounds: int = 3
+
     @property
     def runtime_typecheck(self) -> bool:
         """Whether beartype runtime checks should be active (dev/test only)."""
