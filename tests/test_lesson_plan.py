@@ -224,6 +224,7 @@ async def test_get_active_step_context_reflects_the_active_step(db_session: Asyn
     assert context.subject_name == subject.name
     assert context.kc_id == root.id
     assert context.kc_name == root.name
+    assert context.step_type == "new"
     assert context.target_difficulty == 0.5
 
 

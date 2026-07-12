@@ -44,6 +44,7 @@ class PlanGroundingContext:
     subject_name: str
     kc_id: uuid.UUID
     kc_name: str
+    step_type: engine.StepType
     target_difficulty: float | None
     hint_density: str | None
     preferred_item_type: str | None
@@ -231,6 +232,7 @@ async def get_active_step_context(
         subject_name=subject.name,
         kc_id=kc_id,
         kc_name=kc.name,
+        step_type=active["step_type"],
         target_difficulty=active["target_difficulty"],
         hint_density=active["hint_density"],
         preferred_item_type=active["preferred_item_type"],
