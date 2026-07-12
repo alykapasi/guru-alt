@@ -12,9 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_llm_client
 from app.learning import item_generation
-from app.llm.providers.fake import FakeProvider
+from app.llm.providers.fake import FakeProvider, FakeTurn
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
-from app.llm.types import ChatChunk, ChatMessage, ModelRole, ToolDef
+from app.llm.types import ChatChunk, ChatMessage, ModelRole, ToolCall, ToolDef
 from app.main import app
 from app.models.chat import Conversation, LLMCall, Message
 from app.models.knowledge import KC, Subject, Topic
@@ -58,6 +58,21 @@ class _RecordingProvider(FakeProvider):
             model=model, messages=messages, system=system, max_tokens=max_tokens
         ):
             yield chunk
+
+
+@pytest.fixture
+def agentic_llm() -> Iterator[None]:
+    """A scripted client: one tool-call turn, then a final text turn."""
+    script = [
+        FakeTurn(tool_calls=[ToolCall(id="t1", name="search_materials", input={"query": "x"})]),
+        FakeTurn(text="here is your answer"),
+    ]
+    client = LLMClient(
+        {"fake": FakeProvider(script=script)}, {r: ModelSpec("fake", "fake-1") for r in ModelRole}
+    )
+    app.dependency_overrides[get_llm_client] = lambda: client
+    yield
+    app.dependency_overrides.pop(get_llm_client, None)
 
 
 @pytest.fixture
@@ -499,3 +514,32 @@ async def test_write_back_then_a_fresh_turn_reflects_the_written_memory(
     system = recording_llm[0]
     assert system is not None
     assert "Studying for the MCAT." in system
+
+
+async def test_agentic_mode_bypasses_the_refinement_gate_and_streams_a_tool_call(
+    api_client: AsyncClient, agentic_llm: None
+) -> None:
+    r = await api_client.post(f"{API}/conversations", json={"title": "Agentic test"})
+    assert r.status_code == 201, r.text
+    conversation_id = r.json()["id"]
+
+    # No goal, no history — a plain "chat" turn here would trigger the refinement gate
+    # (see test_chat_streams_and_persists's comment). mode="agentic" must skip it entirely.
+    r = await api_client.post(
+        f"{API}/conversations/{conversation_id}/messages",
+        json={"content": "search my notes for x", "mode": "agentic"},
+    )
+    assert r.status_code == 200, r.text
+    events = _parse_sse(r.text)
+
+    assert not any(e["type"] in ("awaiting_reply", "committed") for e in events)
+
+    tool_calls = [e for e in events if e["type"] == "tool_call"]
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["detail"] == "search_materials"
+
+    tokens = [e["text"] for e in events if e["type"] == "token"]
+    assert "".join(tokens) == "here is your answer"
+
+    done = next(e for e in events if e["type"] == "done")
+    assert done["detail"] == ""
