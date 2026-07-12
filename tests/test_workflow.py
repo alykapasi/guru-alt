@@ -1,0 +1,210 @@
+"""Guided-practice workflow service-level tests: persistence orchestration around the
+workflow graph. Mirrors test_refinement.py's structure. HTTP-level dispatch tests are added
+alongside the router wiring (see the mode="workflow" dispatch commit)."""
+
+import uuid
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.llm.providers import FakeProvider
+from app.llm.providers.fake import FakeTurn
+from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
+from app.llm.types import ChatChunk, ModelRole
+from app.models.assessment import ItemType
+from app.models.chat import Conversation, LLMCall, Message
+from app.models.knowledge import KC, Subject, Topic
+from app.models.learner import Learner
+from app.schemas.assessment import ItemCreate, ItemKCRef
+from app.services import assessment as assessment_svc
+from app.services import lesson_plan as lesson_plan_svc
+from app.services.turn_common import TurnEvent
+from app.services.workflow import is_awaiting_reply, run_workflow_turn
+
+PRESENT = "Here's a worked example. Now try: explain photosynthesis."
+RESPOND_1 = "Not quite — here's a hint, try again."
+RESPOND_2 = "Great job, you've got it!"
+WRONG_GRADE = '{"score": 0.2, "rationale": "missing detail"}'
+RIGHT_GRADE = '{"score": 0.9, "rationale": "much better"}'
+
+
+async def _conversation_with_active_step(session: AsyncSession) -> Conversation:
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Bio")
+    session.add_all([learner, subject])
+    await session.flush()
+    topic = Topic(subject_id=subject.id, slug="t", name="T")
+    session.add(topic)
+    await session.flush()
+    kc = KC(topic_id=topic.id, slug="photosynthesis", name="Photosynthesis")
+    session.add(kc)
+    await session.flush()
+    # Seed a bank SHORT item directly (no LLM call) so scripted FakeProvider turns in tests
+    # below map 1:1 to present/grade/respond calls, not an extra item-generation call.
+    await assessment_svc.create_item(
+        session,
+        ItemCreate(
+            item_type=ItemType.SHORT,
+            stem="Explain photosynthesis in your own words.",
+            kcs=[ItemKCRef(kc_id=kc.id)],
+        ),
+    )
+    await lesson_plan_svc.generate_lesson_plan(
+        session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+    conversation = Conversation(learner_id=learner.id, subject_id=subject.id, goal="learn biology")
+    session.add(conversation)
+    await session.commit()
+    await session.refresh(conversation)
+    return conversation
+
+
+async def _conversation_without_a_plan(session: AsyncSession) -> Conversation:
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    session.add(learner)
+    await session.flush()
+    conversation = Conversation(learner_id=learner.id)
+    session.add(conversation)
+    await session.commit()
+    await session.refresh(conversation)
+    return conversation
+
+
+async def _drain(
+    session: AsyncSession,
+    llm: LLMClient,
+    conv: Conversation,
+    *,
+    user_content: str,
+    resume: bool = False,
+    max_rounds: int = 3,
+) -> list[TurnEvent]:
+    return [
+        ev
+        async for ev in run_workflow_turn(
+            session,
+            llm,
+            learner_id=conv.learner_id,
+            conversation=conv,
+            user_content=user_content,
+            max_tokens=256,
+            max_rounds=max_rounds,
+            resume=resume,
+        )
+    ]
+
+
+async def test_start_persists_presentation_and_awaits_reply(db_session: AsyncSession) -> None:
+    conv = await _conversation_with_active_step(db_session)
+    events = await _drain(db_session, fake_llm_client(PRESENT), conv, user_content="let's practice")
+
+    assert "".join(e.text for e in events if e.type == "token") == PRESENT
+    awaiting = next(e for e in events if e.type == "awaiting_reply")
+    assert awaiting.text == PRESENT
+    assert awaiting.detail == "practice"
+    assert awaiting.item is not None
+    assert awaiting.item.item_type.value == "short"
+    assert not any(e.type == "done" for e in events)
+
+    messages = (
+        await db_session.scalars(
+            select(Message).where(Message.conversation_id == conv.id).order_by(Message.created_at)
+        )
+    ).all()
+    assert [m.role for m in messages] == ["user", "assistant"]
+    assert messages[1].content == PRESENT
+
+    calls = (await db_session.scalars(select(LLMCall))).all()
+    assert len(calls) == 1
+    assert calls[0].role == "smart"
+
+
+async def test_resume_wrong_loops_and_persists_second_round(db_session: AsyncSession) -> None:
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=WRONG_GRADE), FakeTurn(text=RESPOND_1)]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice")
+
+    events = await _drain(db_session, llm, conv, user_content="wrong answer", resume=True)
+    awaiting = next(e for e in events if e.type == "awaiting_reply")
+    assert awaiting.text == RESPOND_1
+    assert awaiting.detail == "practice"
+
+    messages = (
+        await db_session.scalars(
+            select(Message).where(Message.conversation_id == conv.id).order_by(Message.created_at)
+        )
+    ).all()
+    assert [m.role for m in messages] == ["user", "assistant", "user", "assistant"]
+
+    # present (round 1) + grade's self-logged rubric call + respond (round 2's feedback).
+    calls = (await db_session.scalars(select(LLMCall))).all()
+    assert len(calls) == 3
+
+
+async def test_resume_correct_reaches_done_with_mastered_detail(db_session: AsyncSession) -> None:
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=RIGHT_GRADE), FakeTurn(text=RESPOND_2)]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice")
+
+    events = await _drain(db_session, llm, conv, user_content="sunlight -> sugars", resume=True)
+    done = next(e for e in events if e.type == "done")
+    assert done.detail == "mastered"
+    assert not any(e.type == "awaiting_reply" for e in events)
+
+    messages = (
+        await db_session.scalars(select(Message).where(Message.conversation_id == conv.id))
+    ).all()
+    assert [m.role for m in messages] == ["user", "assistant", "user", "assistant"]
+
+
+async def test_max_rounds_reaches_done_with_capped_detail(db_session: AsyncSession) -> None:
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=WRONG_GRADE), FakeTurn(text=RESPOND_1)]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice", max_rounds=1)
+
+    events = await _drain(
+        db_session, llm, conv, user_content="still wrong", resume=True, max_rounds=1
+    )
+    done = next(e for e in events if e.type == "done")
+    assert done.detail == "capped"
+
+
+async def test_no_active_plan_step_yields_clean_error(db_session: AsyncSession) -> None:
+    conv = await _conversation_without_a_plan(db_session)
+    llm = fake_llm_client(PRESENT)
+
+    events = await _drain(db_session, llm, conv, user_content="let's practice")
+    assert [e.type for e in events] == ["error"]
+
+    assert (await db_session.scalars(select(LLMCall))).all() == []
+    # No graph checkpoint was ever created — later dispatch still sees this as fresh.
+    assert await is_awaiting_reply(llm, db_session, conv.id, learner_id=conv.learner_id) is False
+
+
+class _BoomProvider(FakeProvider):
+    """A provider whose stream raises immediately (simulates mid-generation failure)."""
+
+    async def stream(self, *, model, messages, system=None, max_tokens=1024, tools=None):
+        raise RuntimeError("boom")
+        yield ChatChunk()  # unreachable; makes this an async generator
+
+
+async def test_stream_failure_persists_user_only(db_session: AsyncSession) -> None:
+    conv = await _conversation_with_active_step(db_session)
+    client = LLMClient(
+        {"fake": _BoomProvider()}, {r: ModelSpec("fake", "fake-1") for r in ModelRole}
+    )
+    events = await _drain(db_session, client, conv, user_content="let's practice")
+
+    assert events[-1].type == "error"
+    messages = (
+        await db_session.scalars(select(Message).where(Message.conversation_id == conv.id))
+    ).all()
+    assert [m.role for m in messages] == ["user"]
+    assert (await db_session.scalars(select(LLMCall))).all() == []
