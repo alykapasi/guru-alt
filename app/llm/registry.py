@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from app.core.config import Settings
 from app.llm.base import LLMProvider
-from app.llm.providers import AnthropicProvider, FakeProvider, OpenAICompatProvider
+from app.llm.providers import AnthropicProvider, FakeProvider, FakeTurn, OpenAICompatProvider
 from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ModelRole, ToolDef
 
 
@@ -99,9 +99,11 @@ def build_llm_client(settings: Settings) -> LLMClient:
     return LLMClient(providers, roles)
 
 
-def fake_llm_client(reply: str = "Hello from the fake tutor.") -> LLMClient:
+def fake_llm_client(
+    reply: str = "Hello from the fake tutor.", *, script: Sequence[FakeTurn] | None = None
+) -> LLMClient:
     """A registry where every role is the deterministic FakeProvider (for tests)."""
-    fake = FakeProvider(reply=reply)
+    fake = FakeProvider(reply=reply, script=script)
     providers: dict[str, LLMProvider] = {"fake": fake}
     roles = {role: ModelSpec(provider="fake", model="fake-1") for role in ModelRole}
     return LLMClient(providers, roles)

@@ -5,8 +5,17 @@ rather than hitting a real backend.
 """
 
 from app.llm.providers.anthropic import AnthropicProvider
+from app.llm.providers.fake import FakeProvider, FakeTurn
 from app.llm.providers.openai_compat import OpenAICompatProvider
-from app.llm.types import ChatMessage, ChatRole, TextPart, ToolDef, ToolResultPart, ToolUsePart
+from app.llm.types import (
+    ChatMessage,
+    ChatRole,
+    TextPart,
+    ToolCall,
+    ToolDef,
+    ToolResultPart,
+    ToolUsePart,
+)
 
 # --- Anthropic translation --------------------------------------------------
 
@@ -140,3 +149,52 @@ def test_openai_tools_payload_translates_tool_def() -> None:
             }
         ]
     }
+
+
+# --- FakeProvider scripting --------------------------------------------------
+
+
+async def test_fake_provider_plays_back_a_scripted_sequence() -> None:
+    script = [
+        FakeTurn(tool_calls=[ToolCall(id="t1", name="search", input={"query": "x"})]),
+        FakeTurn(text="here is the answer"),
+    ]
+    provider = FakeProvider(script=script)
+    messages = [ChatMessage(role=ChatRole.USER, content="go")]
+
+    first = await provider.complete(model="fake-1", messages=messages)
+    assert first.content == ""
+    assert first.tool_calls == [ToolCall(id="t1", name="search", input={"query": "x"})]
+
+    second = await provider.complete(model="fake-1", messages=messages)
+    assert second.content == "here is the answer"
+    assert second.tool_calls == []
+
+
+async def test_fake_provider_repeats_canned_reply_past_the_end_of_the_script() -> None:
+    provider = FakeProvider(reply="fallback", script=[FakeTurn(text="only turn")])
+    messages = [ChatMessage(role=ChatRole.USER, content="go")]
+    await provider.complete(model="fake-1", messages=messages)  # consumes the one scripted turn
+    third = await provider.complete(model="fake-1", messages=messages)
+    assert third.content == "fallback"
+
+
+async def test_fake_provider_stream_plays_back_scripted_tool_calls() -> None:
+    provider = FakeProvider(script=[FakeTurn(tool_calls=[ToolCall(id="t1", name="s", input={})])])
+    chunks = [
+        c
+        async for c in provider.stream(
+            model="fake-1", messages=[ChatMessage(role=ChatRole.USER, content="go")]
+        )
+    ]
+    assert "".join(c.text for c in chunks) == ""
+    tool_calls = next(c.tool_calls for c in chunks if c.tool_calls)
+    assert tool_calls == [ToolCall(id="t1", name="s", input={})]
+
+
+async def test_fake_provider_unscripted_behaviour_is_unchanged() -> None:
+    provider = FakeProvider(reply="hi there friend")
+    messages = [ChatMessage(role=ChatRole.USER, content="x")]
+    first = await provider.complete(model="fake-1", messages=messages)
+    second = await provider.complete(model="fake-1", messages=messages)
+    assert first.content == second.content == "hi there friend"
