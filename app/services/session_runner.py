@@ -71,6 +71,25 @@ async def item_for_kc(
     )
 
 
+async def short_answer_item_for_kc(
+    session: AsyncSession, llm: LLMClient, *, learner_id: uuid.UUID, kc: KC
+) -> Item | None:
+    """A SHORT (open, rubric-graded) item for ``kc`` — reuse-then-generate only.
+
+    Unlike ``item_for_kc``, this has no any-type/MCQ fallback: the guided-practice workflow's
+    ``{"text": ...}`` submission shape only grades correctly against a SHORT item (MCQ grading
+    reads ``response["choice"]``, which would always be ``None`` and always score
+    "incorrect" — a silent correctness bug, not a crash). Returns ``None`` only if generation
+    itself fails to parse.
+    """
+    item = await assessment_svc.find_item_for_kc(session, kc.id, item_type=ItemType.SHORT)
+    if item is not None:
+        return item
+    return await _generate_and_log(
+        session, llm, kc, learner_id=learner_id, generator=item_generation.generate_short_item
+    )
+
+
 async def _generate_and_log(
     session: AsyncSession,
     llm: LLMClient,

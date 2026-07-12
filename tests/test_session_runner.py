@@ -21,6 +21,7 @@ from app.services import session_runner as svc
 MCQ_REPLY = json.dumps({"stem": "What is X?", "choices": ["A", "B", "C", "D"], "correct": 2})
 FLASHCARD_REPLY = json.dumps({"stem": "What is X?", "answer": "Y"})
 FILL_BLANK_REPLY = json.dumps({"stem": "X is the ___.", "answer": "Y"})
+SHORT_REPLY = json.dumps({"stem": "Explain X in your own words."})
 
 
 async def _graph(session: AsyncSession) -> tuple[Learner, Subject, KC, KC]:
@@ -231,5 +232,59 @@ async def test_next_item_none_on_malformed_generation_reply(db_session: AsyncSes
 
     item = await svc.next_item(
         db_session, fake_llm_client("not json"), learner_id=learner.id, subject_id=subject.id
+    )
+    assert item is None
+
+
+# --- short_answer_item_for_kc (the guided-practice workflow's item resolver) --------------
+
+
+async def test_short_answer_item_for_kc_reuses_a_seeded_bank_item(db_session: AsyncSession) -> None:
+    _learner, _subject, root, _dependent = await _graph(db_session)
+    existing, _ = await item_generation.generate_short_item(
+        db_session, fake_llm_client(SHORT_REPLY), root
+    )
+    assert existing is not None
+
+    item = await svc.short_answer_item_for_kc(
+        db_session, fake_llm_client(), learner_id=uuid.uuid4(), kc=root
+    )
+    assert item is not None
+    assert item.id == existing.id
+
+    calls = (await db_session.scalars(select(LLMCall))).all()
+    assert len(calls) == 0
+
+
+async def test_short_answer_item_for_kc_generates_when_bank_is_empty(
+    db_session: AsyncSession,
+) -> None:
+    learner, _subject, root, _dependent = await _graph(db_session)
+
+    item = await svc.short_answer_item_for_kc(
+        db_session, fake_llm_client(SHORT_REPLY), learner_id=learner.id, kc=root
+    )
+    assert item is not None
+    assert item.item_type == ItemType.SHORT
+    assert [link.kc_id for link in item.kc_links] == [root.id]
+
+    calls = (await db_session.scalars(select(LLMCall))).all()
+    assert len(calls) == 1
+    assert calls[0].role == "fast"
+
+
+async def test_short_answer_item_for_kc_no_mcq_fallback_on_generation_failure(
+    db_session: AsyncSession,
+) -> None:
+    """Unlike item_for_kc, a failed SHORT generation must not fall back to a different-type
+    bank item — the workflow's grading only makes sense against a SHORT item."""
+    learner, _subject, root, _dependent = await _graph(db_session)
+    existing_mcq, _ = await item_generation.generate_mcq_item(
+        db_session, fake_llm_client(MCQ_REPLY), root
+    )
+    assert existing_mcq is not None
+
+    item = await svc.short_answer_item_for_kc(
+        db_session, fake_llm_client("not json"), learner_id=learner.id, kc=root
     )
     assert item is None
