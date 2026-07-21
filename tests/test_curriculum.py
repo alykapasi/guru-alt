@@ -1,13 +1,19 @@
-import pytest
+import json
 
 from app.learning.curriculum import CurriculumProposal, generate_curriculum
-from app.llm.registry import LLMClient, fake_llm_client
+from app.llm.providers import FakeProvider
+from app.llm.registry import LLMClient, ModelSpec
+from app.llm.types import ModelRole
 
 
-@pytest.fixture
-def llm() -> LLMClient:
-    # Use fake_llm_client for tests with a canned valid curriculum JSON response
-    curriculum_json = """{
+def _client_with_reply(reply: str) -> LLMClient:
+    """Create an LLMClient with FakeProvider returning a specific reply."""
+    fake = FakeProvider(reply=reply)
+    return LLMClient({"fake": fake}, {r: ModelSpec("fake", "fake-1") for r in ModelRole})
+
+
+VALID_CURRICULUM_REPLY = json.dumps(
+    {
         "subject_name": "Linear Algebra",
         "subject_description": "Fundamentals of linear algebra including vectors, matrices, and systems of equations",
         "topics": [
@@ -16,96 +22,115 @@ def llm() -> LLMClient:
                 "description": "Introduction to vector spaces and vector operations",
                 "kcs": [
                     {"name": "Vector basics", "description": "Vectors as ordered lists of numbers"},
-                    {"name": "Vector addition", "description": "Adding vectors component-wise"}
-                ]
+                    {"name": "Vector addition", "description": "Adding vectors component-wise"},
+                ],
             },
             {
                 "name": "Matrices",
                 "description": "Matrix operations and properties",
-                "kcs": [
-                    {"name": "Matrix basics", "description": "Matrices as rectangular arrays"}
-                ]
-            }
-        ]
-    }"""
-    return fake_llm_client(reply=curriculum_json)
+                "kcs": [{"name": "Matrix basics", "description": "Matrices as rectangular arrays"}],
+            },
+        ],
+    }
+)
 
 
-@pytest.mark.asyncio
-async def test_parse_well_formed_curriculum(llm):
+async def test_parse_well_formed_curriculum():
     """Curriculum JSON reply is parsed into CurriculumProposal."""
-    # FakeProvider returns a fixed reply; mock it to return valid curriculum JSON
     goal = "Learn linear algebra fundamentals"
     materials = ["Vector spaces are sets of vectors...", "Matrices are rectangular arrays..."]
 
-    result = await generate_curriculum(llm, goal, materials)
+    result = await generate_curriculum(_client_with_reply(VALID_CURRICULUM_REPLY), goal, materials)
 
     assert result is not None
     assert result.subject_name == "Linear Algebra"
-    assert len(result.topics) > 0
-    assert all(hasattr(t, "name") and hasattr(t, "kcs") for t in result.topics)
+    assert len(result.topics) == 2
+    assert result.topics[0].name == "Vectors"
+    assert len(result.topics[0].kcs) == 2
+    assert result.topics[0].kcs[0].name == "Vector basics"
 
 
-@pytest.mark.asyncio
-async def test_parse_malformed_json_returns_none(llm):
+async def test_parse_malformed_json_returns_none():
     """Malformed JSON reply returns None (not fatal)."""
-    # Mock FakeProvider to return invalid JSON
     goal = "Learn calculus"
 
-    result = await generate_curriculum(llm, goal, None)
+    result = await generate_curriculum(_client_with_reply("not json at all"), goal, None)
 
-    # Should gracefully return None instead of raising
-    assert result is None or isinstance(result, CurriculumProposal)
+    assert result is None
 
 
-@pytest.mark.asyncio
-async def test_empty_topics_returns_none(llm):
+async def test_empty_topics_returns_none():
     """Empty topics array is treated as failure."""
     goal = "Something"
+    bad_reply = json.dumps(
+        {
+            "subject_name": "Empty Subject",
+            "subject_description": "A subject with no topics",
+            "topics": [],
+        }
+    )
 
-    result = await generate_curriculum(llm, goal, None)
+    result = await generate_curriculum(_client_with_reply(bad_reply), goal, None)
 
-    # If topics is empty, should return None
-    if result is not None:
-        assert len(result.topics) > 0
+    assert result is None
 
 
-@pytest.mark.asyncio
-async def test_missing_required_fields_returns_none(llm):
-    """Missing topic/KC required fields (name, description) returns None."""
+async def test_missing_required_fields_returns_none():
+    """Missing topic required field (name) returns None."""
     goal = "Test goal"
+    bad_reply = json.dumps(
+        {
+            "subject_name": "Incomplete Subject",
+            "subject_description": "A subject with incomplete topics",
+            "topics": [
+                {
+                    # Missing 'name' field
+                    "description": "A topic without a name",
+                    "kcs": [{"name": "KC1", "description": "A knowledge component"}],
+                }
+            ],
+        }
+    )
 
-    result = await generate_curriculum(llm, goal, None)
+    result = await generate_curriculum(_client_with_reply(bad_reply), goal, None)
 
-    # Verify all topics have required fields
-    if result is not None:
-        for topic in result.topics:
-            assert hasattr(topic, "name") and topic.name
-            assert hasattr(topic, "description") and topic.description
-            for kc in topic.kcs:
-                assert hasattr(kc, "name") and kc.name
-                assert hasattr(kc, "description") and kc.description
+    assert result is None
 
 
-@pytest.mark.asyncio
-async def test_materials_included_in_prompt_when_provided(llm):
-    """When materials provided, they are included in the LLM prompt."""
+async def test_materials_included_in_prompt_when_provided():
+    """When materials provided, curriculum generation succeeds (materials grounded)."""
     goal = "Learn Python"
     materials = ["Python is a high-level language...", "Functions are reusable blocks of code..."]
 
-    await generate_curriculum(llm, goal, materials)
+    result = await generate_curriculum(_client_with_reply(VALID_CURRICULUM_REPLY), goal, materials)
 
-    # Prompt should mention materials — we can't directly inspect the prompt,
-    # but we can verify the function accepts materials and doesn't error
-    assert True  # If we got here without error, materials were handled
+    # Should successfully parse the curriculum with materials provided
+    assert result is not None
+    assert isinstance(result, CurriculumProposal)
 
 
-@pytest.mark.asyncio
-async def test_materials_none_omits_materials_section(llm):
+async def test_materials_none_omits_materials_section():
     """When materials is None, curriculum is purely knowledge-based."""
     goal = "Learn basic statistics"
 
-    result = await generate_curriculum(llm, goal, None)
+    result = await generate_curriculum(_client_with_reply(VALID_CURRICULUM_REPLY), goal, None)
 
     # Should succeed without materials
-    assert result is None or isinstance(result, CurriculumProposal)
+    assert result is not None
+    assert isinstance(result, CurriculumProposal)
+
+
+async def test_non_list_topics_returns_none():
+    """Topics field must be a list, not a dict or other type."""
+    goal = "Test"
+    bad_reply = json.dumps(
+        {
+            "subject_name": "Test Subject",
+            "subject_description": "Test",
+            "topics": {"key": "value"},  # topics should be a list, not a dict
+        }
+    )
+
+    result = await generate_curriculum(_client_with_reply(bad_reply), goal, None)
+
+    assert result is None

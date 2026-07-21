@@ -81,26 +81,17 @@ async def generate_curriculum(
         f'"kcs": [{{"name": "...", "description": "..."}}]}}]}}'
     )
 
-    spec = llm.spec(ModelRole.SMART)
+    completion = await llm.complete(
+        ModelRole.SMART,
+        [ChatMessage(role=ChatRole.USER, content=prompt)],
+        system=CURRICULUM_SYSTEM_PROMPT,
+        max_tokens=2048,
+    )
+    reply = completion.content
+
     try:
-        completion = await llm.complete(
-            ModelRole.SMART,
-            [ChatMessage(role=ChatRole.USER, content=prompt)],
-            system=CURRICULUM_SYSTEM_PROMPT,
-            max_tokens=2048,
-        )
-        reply = completion.content
-
-        # Tolerant JSON parsing — strip markdown fences if present
-        reply_clean = reply.strip()
-        if reply_clean.startswith("```json"):
-            reply_clean = reply_clean[7:]
-        if reply_clean.startswith("```"):
-            reply_clean = reply_clean[3:]
-        if reply_clean.endswith("```"):
-            reply_clean = reply_clean[:-3]
-        reply_clean = reply_clean.strip()
-
+        # Tolerant JSON parsing — extract JSON robustly from possibly-wrapped reply
+        reply_clean = _extract_json(reply)
         data = json.loads(reply_clean)
 
         # Validate required fields
@@ -148,9 +139,18 @@ async def generate_curriculum(
             topics=tuple(topics),
         )
 
-    except json.JSONDecodeError as exc:
-        log.warning("curriculum.json_decode_failed", error=str(exc))
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        log.warning("curriculum.parse_failed", reason="json_or_validation_error", error=str(exc))
         return None
-    except Exception as exc:
-        log.error("curriculum.generation_failed", error=str(exc), model=spec.model)
-        return None
+
+
+def _extract_json(content: str) -> str:
+    """Extract JSON object from possibly-wrapped reply (e.g. markdown fences).
+
+    Finds the first '{' and last '}' in the content.
+    Raises ValueError if no JSON object is found.
+    """
+    start, end = content.find("{"), content.rfind("}")
+    if start == -1 or end < start:
+        raise ValueError("no JSON object in reply")
+    return content[start : end + 1]
