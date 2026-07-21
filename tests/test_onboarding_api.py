@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from collections.abc import Iterator
 
 import pytest
 from httpx import AsyncClient
@@ -44,7 +45,7 @@ def _parse_sse(text: str) -> list[dict]:
 
 
 @pytest.fixture
-def fake_llm_goal() -> None:
+def fake_llm_goal() -> Iterator[None]:
     """Override LLM with goal refinement response."""
     app.dependency_overrides[get_llm_client] = lambda: fake_llm_client(GOAL_REFINEMENT_REPLY)
     yield
@@ -52,7 +53,7 @@ def fake_llm_goal() -> None:
 
 
 @pytest.fixture
-def fake_llm_curriculum() -> None:
+def fake_llm_curriculum() -> Iterator[None]:
     """Override LLM with curriculum response."""
     app.dependency_overrides[get_llm_client] = lambda: fake_llm_client(CURRICULUM_REPLY)
     yield
@@ -60,16 +61,14 @@ def fake_llm_curriculum() -> None:
 
 
 @pytest.fixture
-def fake_llm_invalid() -> None:
+def fake_llm_invalid() -> Iterator[None]:
     """Override LLM with invalid JSON response."""
     app.dependency_overrides[get_llm_client] = lambda: fake_llm_client("not json at all")
     yield
     app.dependency_overrides.pop(get_llm_client, None)
 
 
-async def test_goal_turns_streams_sse(
-    api_client: AsyncClient, fake_llm_goal: None
-) -> None:
+async def test_goal_turns_streams_sse(api_client: AsyncClient, fake_llm_goal: None) -> None:
     """Test goal refinement endpoint streams SSE frames."""
     session_id = str(uuid.uuid4())
     response = await api_client.post(
