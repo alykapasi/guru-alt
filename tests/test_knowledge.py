@@ -6,6 +6,8 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.knowledge import KC, KCEdge, Subject, Topic
+from app.models.learner import Learner
+from app.models.source import Source
 from app.schemas.knowledge import SubjectCreate
 from app.services import knowledge as svc
 
@@ -146,3 +148,198 @@ async def test_self_prerequisite_400(api_client: AsyncClient) -> None:
 async def test_invalid_slug_422(api_client: AsyncClient) -> None:
     r = await api_client.post(f"{API}/subjects", json={"slug": "Not A Slug", "name": "x"})
     assert r.status_code == 422
+
+
+# --- create_subject_with_graph (service) ------------------------------------
+
+
+async def test_create_subject_with_graph_builds_full_hierarchy(db_session: AsyncSession) -> None:
+    """Service: create_subject_with_graph creates Subject + Topics + KCs in one transaction."""
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+
+    topics_data = [
+        {
+            "name": "Integrals",
+            "description": "Integration techniques",
+            "kcs": [
+                {"name": "u-substitution", "description": "Substitution method"},
+                {"name": "Integration by parts", "description": "IBP"},
+            ],
+        },
+        {
+            "name": "Derivatives",
+            "description": "Differentiation",
+            "kcs": [
+                {"name": "Power rule", "description": "x^n"},
+                {"name": "Chain rule", "description": "Composition"},
+            ],
+        },
+    ]
+
+    subject = await svc.create_subject_with_graph(
+        db_session,
+        subject_name="Calculus",
+        subject_description="Calculus fundamentals",
+        topics_data=topics_data,
+        source_ids=None,
+        learner_id=learner.id,
+    )
+
+    assert subject.id is not None
+    assert subject.name == "Calculus"
+    assert subject.slug == "calculus"
+    assert subject.description == "Calculus fundamentals"
+
+    # Check topics were created
+    topics = await svc.list_topics(db_session, subject.id)
+    assert len(topics) == 2
+    topic_names = {t.name for t in topics}
+    assert topic_names == {"Integrals", "Derivatives"}
+
+    # Check KCs were created under each topic
+    for topic in topics:
+        kcs = await svc.list_kcs(db_session, topic.id)
+        if topic.name == "Integrals":
+            assert len(kcs) == 2
+            kc_names = {kc.name for kc in kcs}
+            assert kc_names == {"u-substitution", "Integration by parts"}
+        else:
+            assert len(kcs) == 2
+            kc_names = {kc.name for kc in kcs}
+            assert kc_names == {"Power rule", "Chain rule"}
+
+
+async def test_create_subject_with_graph_dedup_topic_slugs(db_session: AsyncSession) -> None:
+    """Service: topics with the same name get distinct slugs (dedup within subject)."""
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+
+    topics_data = [
+        {"name": "Functions", "description": None, "kcs": []},
+        {"name": "Functions", "description": None, "kcs": []},  # Dup name
+    ]
+
+    subject = await svc.create_subject_with_graph(
+        db_session,
+        subject_name="Math",
+        subject_description=None,
+        topics_data=topics_data,
+        source_ids=None,
+        learner_id=learner.id,
+    )
+
+    topics = await svc.list_topics(db_session, subject.id)
+    assert len(topics) == 2
+    topic_slugs = {t.slug for t in topics}
+    # First gets "functions", second gets "functions_2"
+    assert "functions" in topic_slugs
+    assert "functions_2" in topic_slugs
+
+
+async def test_create_subject_with_graph_dedup_subject_slug(db_session: AsyncSession) -> None:
+    """Service: subject slug dedup — appends _2, _3, etc. on global collision."""
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+
+    # Create first subject with slug "algebra"
+    first_subject = await svc.create_subject(
+        db_session, SubjectCreate(slug="algebra", name="Algebra v1")
+    )
+    assert first_subject.slug == "algebra"
+
+    # Try to create another with a name that slugifies to "algebra"
+    topics_data = [{"name": "Basics", "description": None, "kcs": []}]
+    second_subject = await svc.create_subject_with_graph(
+        db_session,
+        subject_name="Algebra",  # Will slugify to "algebra" which collides
+        subject_description=None,
+        topics_data=topics_data,
+        source_ids=None,
+        learner_id=learner.id,
+    )
+
+    assert second_subject.slug == "algebra_2"
+    assert second_subject.name == "Algebra"
+
+
+async def test_create_subject_with_graph_reassigns_sources(db_session: AsyncSession) -> None:
+    """Service: source reassignment — sets subject_id on owned sources."""
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+
+    # Create a source owned by the learner
+    source = Source(
+        learner_id=learner.id,
+        kind="file",
+        origin="notes.txt",
+        status="done",
+    )
+    db_session.add(source)
+    await db_session.flush()
+
+    topics_data = [{"name": "Basics", "description": None, "kcs": []}]
+    subject = await svc.create_subject_with_graph(
+        db_session,
+        subject_name="Physics",
+        subject_description=None,
+        topics_data=topics_data,
+        source_ids=[source.id],
+        learner_id=learner.id,
+    )
+
+    # Refresh the source to see the updated subject_id
+    await db_session.refresh(source)
+    assert source.subject_id == subject.id
+
+
+# --- API: POST /subjects/commit -----------------------------------------------
+
+
+async def test_commit_subject_creates_full_graph(api_client: AsyncClient) -> None:
+    """Endpoint: POST /subjects/commit returns 201 with the subject + full graph."""
+    payload = {
+        "subject_name": "Trigonometry",
+        "subject_description": "Trig basics",
+        "topics": [
+            {
+                "name": "Unit Circle",
+                "description": "The unit circle",
+                "kcs": [
+                    {"name": "Sine", "description": "sin(x)"},
+                    {"name": "Cosine", "description": "cos(x)"},
+                ],
+            },
+        ],
+        "source_ids": None,
+    }
+
+    r = await api_client.post(f"{API}/subjects/commit", json=payload)
+    assert r.status_code == 201, r.text
+    data = r.json()
+    assert data["name"] == "Trigonometry"
+    assert data["slug"] == "trigonometry"
+    assert data["description"] == "Trig basics"
+    assert data["id"] is not None
+
+
+async def test_commit_subject_duplicate_name_409(api_client: AsyncClient) -> None:
+    """Endpoint: posting the same subject_name twice returns 409 on second attempt."""
+    payload = {
+        "subject_name": "Chemistry",
+        "subject_description": None,
+        "topics": [{"name": "Basics", "description": None, "kcs": []}],
+        "source_ids": None,
+    }
+
+    # First one succeeds
+    r = await api_client.post(f"{API}/subjects/commit", json=payload)
+    assert r.status_code == 201
+
+    # Second one fails (same name)
+    r = await api_client.post(f"{API}/subjects/commit", json=payload)
+    assert r.status_code == 409
