@@ -10,6 +10,7 @@ from app.llm import ModelRole
 from app.llm.registry import fake_llm_client
 from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
+from app.services.knowledge import create_subject_with_graph, list_kcs_for_subject, list_topics
 from app.services.onboarding import generate_curriculum_for_onboarding, run_goal_refinement_turn
 from app.services.turn_common import TurnEvent
 
@@ -238,3 +239,91 @@ class TestGenerateCurriculumForOnboarding:
         assert result.subject_name == "Linear Algebra"
         assert len(result.topics) == 2
         assert result.topics[0].name == "Vectors"
+
+
+async def test_onboarding_end_to_end(db_session: AsyncSession) -> None:
+    """End-to-end onboarding: refine goal -> generate curriculum -> commit graph -> verify.
+
+    Ties Tasks 1-4 together: drives goal refinement to a committed goal, generates
+    a curriculum, commits the Subject/Topic/KC graph, and asserts it persisted.
+    """
+    # 1. Create a Learner
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+
+    # 2. Refine goal: start then satisfy
+    refine_llm = fake_llm_client(REPLY)
+    session_id = str(uuid.uuid4())
+
+    # Start refinement
+    events = await _drain(refine_llm, session_id, user_content="I want to learn linear algebra")
+    awaiting = next((e for e in events if e.type == "awaiting_reply"), None)
+    assert awaiting is not None, "Should have awaiting_reply event from first refinement turn"
+    assert awaiting.text == REPLY
+
+    # Resume with satisfaction to commit the goal
+    events2 = await _drain(
+        refine_llm,
+        session_id,
+        user_content="Yes, that's what I need",
+        satisfied=True,
+        resume=True,
+    )
+    committed = next((e for e in events2 if e.type == "committed"), None)
+    assert committed is not None, "Should have committed event after satisfaction"
+    assert committed.text == REPLY
+    goal = committed.text
+
+    # 3. Generate curriculum from committed goal
+    curr_llm = fake_llm_client(CURRICULUM_REPLY)
+    proposal = await generate_curriculum_for_onboarding(
+        session=db_session,
+        llm=curr_llm,
+        goal=goal,
+        source_ids=None,
+        learner_id=learner.id,
+    )
+
+    assert proposal is not None, "Curriculum should be generated"
+    assert proposal.subject_name == "Linear Algebra"
+    assert len(proposal.topics) == 2, "Should have 2 topics"
+    assert proposal.topics[0].name == "Vectors"
+    assert proposal.topics[1].name == "Matrices"
+    # Verify KC structure
+    assert len(proposal.topics[0].kcs) == 2, "First topic should have 2 KCs"
+    assert len(proposal.topics[1].kcs) == 2, "Second topic should have 2 KCs"
+
+    # 4. Commit the graph: transform proposal into topics_data shape
+    topics_data = [
+        {
+            "name": t.name,
+            "description": t.description,
+            "kcs": [{"name": kc.name, "description": kc.description} for kc in t.kcs],
+        }
+        for t in proposal.topics
+    ]
+
+    subject = await create_subject_with_graph(
+        db_session,
+        subject_name=proposal.subject_name,
+        subject_description=proposal.subject_description,
+        topics_data=topics_data,
+        source_ids=None,
+        learner_id=learner.id,
+    )
+
+    assert subject.id is not None, "Subject should have an id"
+    assert subject.name == "Linear Algebra"
+    assert subject.slug == "linear-algebra"
+
+    # 5. Verify the graph persisted
+    topics = await list_topics(db_session, subject.id)
+    assert len(topics) == 2, "Should have 2 topics in DB"
+    topic_names = {t.name for t in topics}
+    assert topic_names == {"Vectors", "Matrices"}
+
+    kcs = await list_kcs_for_subject(db_session, subject.id)
+    assert len(kcs) == 4, "Should have 4 KCs total across all topics"
+    kc_names = {kc.name for kc in kcs}
+    assert kc_names == {"Vector Addition", "Dot Product", "Matrix Multiplication", "Determinants"}
