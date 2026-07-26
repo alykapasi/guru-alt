@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
-from app.models.source import Source
+from app.models.source import Source, SourceKind, SourceStatus
 from app.schemas.knowledge import SubjectCreate
 from app.services import knowledge as svc
 
@@ -343,3 +343,48 @@ async def test_commit_subject_duplicate_name_409(api_client: AsyncClient) -> Non
     # Second one fails (same name)
     r = await api_client.post(f"{API}/subjects/commit", json=payload)
     assert r.status_code == 409
+
+
+async def test_create_subject_with_graph_reassigns_only_owned_sources(
+    db_session: AsyncSession,
+) -> None:
+    """The source-reassignment guard moves the caller's own sources but never another learner's."""
+    owner = Learner(handle=f"owner-{uuid.uuid4().hex[:8]}")
+    other = Learner(handle=f"other-{uuid.uuid4().hex[:8]}")
+    db_session.add_all([owner, other])
+    await db_session.flush()
+
+    owned = Source(
+        learner_id=owner.id,
+        kind=SourceKind.FILE,
+        origin="owned.txt",
+        content_type="text/plain",
+        status=SourceStatus.DONE,
+        subject_id=None,
+        meta={},
+    )
+    foreign = Source(
+        learner_id=other.id,
+        kind=SourceKind.FILE,
+        origin="foreign.txt",
+        content_type="text/plain",
+        status=SourceStatus.DONE,
+        subject_id=None,
+        meta={},
+    )
+    db_session.add_all([owned, foreign])
+    await db_session.flush()
+
+    subject = await svc.create_subject_with_graph(
+        db_session,
+        subject_name="Physics",
+        subject_description=None,
+        topics_data=[],
+        source_ids=[owned.id, foreign.id],
+        learner_id=owner.id,
+    )
+
+    await db_session.refresh(owned)
+    await db_session.refresh(foreign)
+    assert owned.subject_id == subject.id  # caller's own source reassigned
+    assert foreign.subject_id is None  # another learner's source left untouched

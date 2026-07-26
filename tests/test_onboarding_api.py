@@ -100,6 +100,20 @@ async def test_goal_turns_streams_sse(api_client: AsyncClient, fake_llm_goal: No
     assert "awaiting_reply" in str(awaiting["type"])
 
 
+async def test_goal_turns_rejects_unknown_mode(api_client: AsyncClient) -> None:
+    """An invalid mode is rejected with 422 rather than silently falling through to 'start'."""
+    response = await api_client.post(
+        f"{API}/onboarding/goal-turns",
+        json={
+            "session_id": str(uuid.uuid4()),
+            "content": "I want to learn photosynthesis",
+            "satisfied": False,
+            "mode": "resmue",
+        },
+    )
+    assert response.status_code == 422
+
+
 async def test_curriculum_endpoint_returns_proposal(
     api_client: AsyncClient, fake_llm_curriculum: None
 ) -> None:
@@ -130,4 +144,4 @@ async def test_curriculum_endpoint_400_on_llm_failure(
 
     assert response.status_code == 400
     data = response.json()
-    assert "detail" in data
+    assert data["detail"] == "Curriculum generation failed. Please try again."

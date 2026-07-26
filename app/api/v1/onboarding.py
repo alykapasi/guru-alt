@@ -3,7 +3,7 @@
 import json
 import uuid
 from collections.abc import AsyncIterator
-from typing import Annotated, Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -24,7 +24,7 @@ class GoalTurnRequest(BaseModel):
     session_id: str
     content: str
     satisfied: bool = False
-    mode: Annotated[str, "start or resume"] = "start"
+    mode: Literal["start", "resume"] = "start"
 
 
 class CurriculumRequest(BaseModel):
