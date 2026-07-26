@@ -3,12 +3,14 @@
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    analytics,
     assessment,
     chat,
     content,
     knowledge,
     lesson_plan,
     memory,
+    onboarding,
     placement,
     profile,
     sources,
@@ -24,3 +26,5 @@ api_router.include_router(placement.router)
 api_router.include_router(profile.router)
 api_router.include_router(lesson_plan.router)
 api_router.include_router(memory.router)
+api_router.include_router(analytics.router)
+api_router.include_router(onboarding.router)

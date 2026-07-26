@@ -9,13 +9,19 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.agentic import AgenticState, build_agentic_graph
-from app.agent.tools import build_tools
+from app.agent.tools import CitationAccumulator, build_tools
 from app.core.config import get_settings
 from app.llm.pricing import cost_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, ToolCall, Usage
 from app.models.chat import Message
-from app.services.turn_common import TurnEvent, add_message, record_llm_call, to_chat_messages
+from app.services.turn_common import (
+    TurnEvent,
+    add_message,
+    extract_citations,
+    record_llm_call,
+    to_chat_messages,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -35,19 +41,32 @@ async def run_agentic_turn(
     user_content: str,
     max_tokens: int,
     subject_id: uuid.UUID | None = None,
+    source_ids: Sequence[uuid.UUID] = (),
 ) -> AsyncIterator[TurnEvent]:
     """Persist the user turn, run the bounded tool-calling graph, then persist the reply.
 
     Intra-loop tool-call/tool-result exchanges are not persisted as ``Message`` rows this
     slice — only the user message and the final assistant reply are, exactly like
     ``run_tutor_turn``. ``tool_call`` events stream in-process for the SSE frame only.
+
+    Citations (Phase 7) come only from ``search_materials`` calls actually made this turn —
+    unlike ``run_tutor_turn``, there's no upfront retrieval; the model decides if/when to
+    search, and the ``CitationAccumulator`` collects whatever it found across every call.
     """
     messages = to_chat_messages(history)
     messages.append(ChatMessage(role=ChatRole.USER, content=user_content))
     await add_message(session, conversation_id, ChatRole.USER.value, user_content)
     await session.commit()
 
-    tools = build_tools(session, llm, learner_id=learner_id, subject_id=subject_id)
+    citation_acc = CitationAccumulator()
+    tools = build_tools(
+        session,
+        llm,
+        learner_id=learner_id,
+        subject_id=subject_id,
+        source_ids=source_ids or None,
+        citations=citation_acc,
+    )
     spec = llm.spec(ModelRole.SMART)
     initial: AgenticState = {
         "messages": messages,
@@ -87,8 +106,14 @@ async def run_agentic_turn(
         # than error, matching the refinement gate's auto-commit-at-max_rounds precedent.
         log.warning("agentic.iteration_cap_hit", conversation_id=str(conversation_id))
 
+    citations = extract_citations(reply, citation_acc.hits)
     assistant = await add_message(
-        session, conversation_id, ChatRole.ASSISTANT.value, reply, model=spec.model
+        session,
+        conversation_id,
+        ChatRole.ASSISTANT.value,
+        reply,
+        model=spec.model,
+        citations=citations,
     )
     cost = cost_usd(spec.model, usage)
     await record_llm_call(
@@ -117,4 +142,5 @@ async def run_agentic_turn(
         usage=usage,
         cost_usd=cost,
         detail="capped" if pending_tool_calls else "",
+        citations=citations,
     )

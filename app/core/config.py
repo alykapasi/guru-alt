@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = False  # False = human-friendly console; set True in prod.
 
+    # CORS (Phase 7): origins allowed to call the API from a browser. Dev default is the Vite
+    # dev server; prod overrides via GURU_CORS_ORIGINS (JSON array, e.g. '["https://app.example"]').
+    cors_origins: list[str] = ["http://localhost:5173"]
+
     # LLM — code references *roles*; each role maps to "provider:model" per env.
     # Providers: ollama (local), openrouter (cloud), anthropic. Dev defaults to
     # Ollama so chat works offline; prod overrides via GURU_MODEL_* env vars.
@@ -149,6 +153,11 @@ class Settings(BaseSettings):
     # Max attempt-rounds per guided-practice workflow turn (Phase 6) — same
     # cap-then-degrade-gracefully idiom as refinement_max_rounds / agentic_max_iterations.
     workflow_max_rounds: int = 3
+
+    # Retrieval grounding for chat/workflow turns (Phase 7): smaller than retrieve()'s general
+    # default since this runs on every subject-scoped turn and system-prompt length matters
+    # more here than in a one-off tool call.
+    chat_grounding_limit: int = 5
 
     @property
     def runtime_typecheck(self) -> bool:

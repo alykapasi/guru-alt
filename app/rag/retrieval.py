@@ -7,6 +7,7 @@ returned with their provenance for grounded, citable generation. Every query is 
 """
 
 import uuid
+from collections.abc import Sequence
 
 from pydantic import BaseModel
 from sqlalchemy import Select, func, select
@@ -37,10 +38,16 @@ async def retrieve(
     subject_id: uuid.UUID | None = None,
     topic_id: uuid.UUID | None = None,
     source_id: uuid.UUID | None = None,
+    source_ids: Sequence[uuid.UUID] | None = None,
     limit: int = 10,
     candidates: int = 50,
 ) -> list[RetrievalHit]:
-    """Hybrid-retrieve the most relevant chunks for ``query`` within the given scope."""
+    """Hybrid-retrieve the most relevant chunks for ``query`` within the given scope.
+
+    ``source_ids`` narrows to several specific sources (a conversation's explicit picks, see
+    ``ConversationSource``) — distinct from ``source_id``, which narrows to exactly one (the
+    debug ``/retrieve`` endpoint's existing use). Both may be combined with ``subject_id``.
+    """
     query = query.strip()
     if not query:
         return []
@@ -51,6 +58,8 @@ async def retrieve(
         )
         if source_id is not None:
             stmt = stmt.where(Chunk.source_id == source_id)
+        if source_ids is not None:
+            stmt = stmt.where(Chunk.source_id.in_(source_ids))
         if subject_id is not None:
             stmt = stmt.where(Source.subject_id == subject_id)
         if topic_id is not None:

@@ -4,6 +4,7 @@ Split out from ``chat.py`` so ``refinement.py`` can reuse them without the two s
 modules importing each other.
 """
 
+import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -13,7 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm.types import ChatMessage, ChatRole, Usage
 from app.models.chat import LLMCall, Message
+from app.rag.retrieval import RetrievalHit
 from app.schemas.assessment import ItemRead
+
+_CITATION_MARKER = re.compile(r"\[(\d+)\]")
+
+GROUNDING_INSTRUCTION = (
+    "When your answer draws on one of the numbered passages below, cite it inline immediately "
+    'after the sentence that uses it, like this: "...as shown here [1]." Only cite a passage '
+    "you actually used — never invent a number that isn't listed."
+)
 
 
 async def add_message(
@@ -22,11 +32,51 @@ async def add_message(
     role: str,
     content: str,
     model: str | None = None,
+    citations: list[dict] | None = None,
 ) -> Message:
-    message = Message(conversation_id=conversation_id, role=role, content=content, model=model)
+    message = Message(
+        conversation_id=conversation_id,
+        role=role,
+        content=content,
+        model=model,
+        citations=citations or [],
+    )
     session.add(message)
     await session.flush()
     return message
+
+
+def format_grounding(hits: Sequence[RetrievalHit]) -> str | None:
+    """Numbered passages for a system prompt, paired with ``GROUNDING_INSTRUCTION``.
+
+    Returns ``None`` for empty ``hits`` — the caller omits the grounding section entirely
+    rather than including an awkward empty block.
+    """
+    if not hits:
+        return None
+    passages = "\n".join(f"[{i}] {hit.text}" for i, hit in enumerate(hits, start=1))
+    return f"{GROUNDING_INSTRUCTION}\n\n{passages}"
+
+
+def extract_citations(reply: str, hits: Sequence[RetrievalHit]) -> list[dict]:
+    """Map every ``[N]`` marker actually present in ``reply`` to the hit it names.
+
+    Only returns markers the model wrote — never invents a citation for a hit it didn't cite —
+    and silently ignores out-of-range numbers (a hallucinated ``[7]`` with only 3 hits given).
+    Deduplicates by marker (a repeated ``[1]`` yields one citation entry, not two).
+    """
+    seen: dict[int, dict] = {}
+    for match in _CITATION_MARKER.finditer(reply):
+        marker = int(match.group(1))
+        if marker in seen or not (1 <= marker <= len(hits)):
+            continue
+        hit = hits[marker - 1]
+        seen[marker] = {
+            "marker": marker,
+            "chunk_id": str(hit.chunk_id),
+            "source_id": str(hit.source_id),
+        }
+    return [seen[m] for m in sorted(seen)]
 
 
 def to_chat_messages(history: Sequence[Message]) -> list[ChatMessage]:
@@ -77,3 +127,6 @@ class TurnEvent:
     # The session runner's practice item for the plan's active step, if any — set on "done"
     # for subject-scoped conversations only. See app.services.session_runner.next_item.
     item: ItemRead | None = None
+    # Citations grounding this turn's reply, if any — set on "done" for subject-scoped
+    # conversations only. See extract_citations above.
+    citations: list[dict] = field(default_factory=list)

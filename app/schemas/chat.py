@@ -9,9 +9,21 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class ConversationCreate(BaseModel):
     title: str | None = None
+    # "session" conversations (created by the Lessons page's "Start practice") always run the
+    # guided-practice workflow and are never shown behind the plain chat gate/composer — see
+    # Conversation.kind. Set once at creation, never changed.
+    kind: Literal["chat", "session"] = "chat"
     # Set once at creation, never changed. Scopes plan grounding + the session runner's
-    # practice item to this exact subject instead of a cross-subject heuristic.
+    # practice item to this exact subject instead of a cross-subject heuristic. Also the hard
+    # retrieval/citation boundary (Phase 7): None = "general", no library grounding at all.
     subject_id: uuid.UUID | None = None
+    # Narrows retrieval to specific sources within `subject_id`'s materials — empty means "all
+    # sources under this subject." Must be empty when subject_id is None (nothing to narrow).
+    source_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+class ConversationUpdate(BaseModel):
+    title: str = Field(min_length=1)
 
 
 class ConversationRead(BaseModel):
@@ -20,8 +32,10 @@ class ConversationRead(BaseModel):
     id: uuid.UUID
     learner_id: uuid.UUID
     title: str | None
+    kind: str
     goal: str | None
     subject_id: uuid.UUID | None
+    source_ids: list[uuid.UUID]
     created_at: datetime
 
 
@@ -32,6 +46,8 @@ class MessageRead(BaseModel):
     role: str
     content: str
     model: str | None
+    # Each entry: {"marker": int, "chunk_id": str, "source_id": str} — see Message.citations.
+    citations: list[dict]
     created_at: datetime
 
 

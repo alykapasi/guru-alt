@@ -1,0 +1,204 @@
+import { useCallback, useRef, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { API_BASE_URL } from "./client";
+
+// ============================================================================
+// Types
+// ============================================================================
+
+export type OnboardingTurnEvent =
+  | { type: "token"; text: string }
+  | { type: "awaiting_reply"; text: string; detail: string }
+  | { type: "committed"; goal: string; detail: string }
+  | { type: "error"; detail: string };
+
+export interface KCProposal {
+  name: string;
+  description: string;
+}
+
+export interface TopicProposal {
+  name: string;
+  description: string;
+  kcs: KCProposal[];
+}
+
+export interface CurriculumProposal {
+  subject_name: string;
+  subject_description: string;
+  topics: TopicProposal[];
+}
+
+export interface GoalTurnBody {
+  session_id: string;
+  content: string;
+  satisfied: boolean;
+  mode: "start" | "resume";
+}
+
+export interface SubjectCommitPayload {
+  subject_name: string;
+  subject_description: string | null;
+  topics: TopicProposal[];
+  source_ids: string[] | null;
+}
+
+export interface CreatedSubject {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+}
+
+// ============================================================================
+// SSE Streaming
+// ============================================================================
+
+/**
+ * Streams one goal-refinement turn. Mirrors sse.ts's streamTurn pattern: POST returns an SSE
+ * body, so we read the response body's ReadableStream directly and parse `data: {...}\n\n`
+ * frames by hand.
+ */
+export async function* streamGoalTurn(
+  body: GoalTurnBody,
+  signal?: AbortSignal,
+): AsyncGenerator<OnboardingTurnEvent> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/onboarding/goal-turns`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    throw new Error(`stream failed: ${res.status} ${res.statusText}`);
+  }
+
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += value;
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      const line = frame.split("\n").find((l) => l.startsWith("data: "));
+      if (!line) continue;
+      yield JSON.parse(line.slice("data: ".length)) as OnboardingTurnEvent;
+    }
+  }
+}
+
+// ============================================================================
+// Hooks
+// ============================================================================
+
+/**
+ * Owns the goal-refinement negotiation: local streaming state, the latest proposal text,
+ * the committed goal (once accepted), and a send function that streams turns.
+ *
+ * Tracks whether this session has already started (to determine mode: "start" vs "resume").
+ */
+export function useGoalRefinement(sessionId: string | undefined) {
+  const [proposal, setProposal] = useState<string>("");
+  const [committedGoal, setCommittedGoal] = useState<string | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [tokens, setTokens] = useState<string>("");
+  const hasStartedRef = useRef(false);
+
+  const send = useCallback(
+    async (content: string, satisfied: boolean) => {
+      if (!sessionId || isStreaming) return;
+      setError(null);
+      setTokens("");
+      setIsStreaming(true);
+
+      const mode: "start" | "resume" = hasStartedRef.current ? "resume" : "start";
+      if (!hasStartedRef.current) {
+        hasStartedRef.current = true;
+      }
+
+      try {
+        for await (const ev of streamGoalTurn({
+          session_id: sessionId,
+          content,
+          satisfied,
+          mode,
+        })) {
+          if (ev.type === "token") {
+            setTokens((t) => t + ev.text);
+          } else if (ev.type === "awaiting_reply") {
+            setProposal(ev.text);
+            setTokens("");
+          } else if (ev.type === "committed") {
+            setCommittedGoal(ev.goal);
+            setTokens("");
+          } else if (ev.type === "error") {
+            setError(ev.detail);
+          }
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Goal refinement failed.");
+      } finally {
+        setIsStreaming(false);
+      }
+    },
+    [sessionId, isStreaming],
+  );
+
+  return { proposal, committedGoal, isStreaming, error, tokens, send };
+}
+
+/**
+ * Mutation for generating a curriculum proposal from a committed goal and optional sources.
+ */
+export function useGenerateCurriculum() {
+  return useMutation({
+    mutationFn: async ({
+      goal,
+      sourceIds,
+    }: {
+      goal: string;
+      sourceIds: string[] | null;
+    }): Promise<CurriculumProposal> => {
+      const res = await fetch(`${API_BASE_URL}/api/v1/onboarding/curriculum`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goal, source_ids: sourceIds }),
+      });
+      if (!res.ok) {
+        throw new Error(`curriculum generation failed: ${res.status} ${res.statusText}`);
+      }
+      return res.json();
+    },
+  });
+}
+
+/**
+ * Mutation for committing a subject (with its knowledge graph structure) to the learner's
+ * subjects. Invalidates the subjects query on success.
+ */
+export function useCommitSubject() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: SubjectCommitPayload): Promise<CreatedSubject> => {
+      const res = await fetch(`${API_BASE_URL}/api/v1/subjects/commit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const error = new Error(
+          `subject commit failed: ${res.status} ${res.statusText}`,
+        ) as Error & { status?: number };
+        error.status = res.status;
+        throw error;
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["subjects"] });
+    },
+  });
+}

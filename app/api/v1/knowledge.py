@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import CurrentLearner, SessionDep
@@ -26,6 +27,15 @@ from app.schemas.knowledge import (
 from app.services import knowledge as svc
 
 router = APIRouter(tags=["knowledge"])
+
+
+class SubjectCommitRequest(BaseModel):
+    """Request to commit a subject with its topics and KCs."""
+
+    subject_name: str
+    subject_description: str | None = None
+    topics: list[dict]
+    source_ids: list[uuid.UUID] | None = None
 
 
 @asynccontextmanager
@@ -47,6 +57,31 @@ async def _conflict_409(session: SessionDep) -> AsyncIterator[None]:
 async def create_subject(data: SubjectCreate, session: SessionDep, _: CurrentLearner):
     async with _conflict_409(session):
         return await svc.create_subject(session, data)
+
+
+@router.post("/subjects/commit", response_model=SubjectRead, status_code=status.HTTP_201_CREATED)
+async def commit_subject(
+    request: SubjectCommitRequest, session: SessionDep, learner: CurrentLearner
+):
+    """Commit a subject with its full topic/KC graph in one atomic transaction.
+
+    Returns 409 if a subject with this name already exists (case-insensitive).
+    """
+    if await svc.subject_name_exists(session, request.subject_name):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="subject with this name already exists",
+        )
+
+    async with _conflict_409(session):
+        return await svc.create_subject_with_graph(
+            session,
+            subject_name=request.subject_name,
+            subject_description=request.subject_description,
+            topics_data=request.topics,
+            source_ids=request.source_ids,
+            learner_id=learner.id,
+        )
 
 
 @router.get("/subjects", response_model=list[SubjectRead])

@@ -1,0 +1,145 @@
+/* Guru's design system: two custom DaisyUI themes built entirely from our own tokens — no
+   stock DaisyUI theme (light/dark/emerald/etc.) is used unmodified. See
+   docs/superpowers/specs (Phase 7 slice 1 design notes) for the rationale behind each choice. */
+
+@import "tailwindcss";
+@plugin "daisyui" {
+  themes:
+    guru-light --default,
+    guru-dark --prefersdark;
+}
+
+@plugin "daisyui/theme" {
+  name: "guru-light";
+  default: true;
+  color-scheme: light;
+
+  --color-base-100: oklch(98% 0.005 78.3);
+  --color-base-200: oklch(94.8% 0.009 78.3);
+  --color-base-300: oklch(90.9% 0.014 78.3);
+  --color-base-content: oklch(27.3% 0.01 61);
+
+  --color-primary: oklch(52.6% 0.094 178.3);
+  --color-primary-content: oklch(98% 0.01 178.3);
+  --color-secondary: oklch(51.4% 0.019 191.9);
+  --color-secondary-content: oklch(98% 0.01 191.9);
+  --color-accent: oklch(71.5% 0.148 55.4);
+  --color-accent-content: oklch(20% 0.03 55.4);
+  --color-neutral: oklch(51% 0.015 75.3);
+  --color-neutral-content: oklch(96.2% 0.009 84.6);
+
+  --color-info: oklch(70% 0.12 220);
+  --color-info-content: oklch(98% 0.01 220);
+  --color-success: oklch(63.7% 0.155 146);
+  --color-success-content: oklch(98% 0.01 146);
+  --color-warning: oklch(79.5% 0.145 83.9);
+  --color-warning-content: oklch(20% 0.03 83.9);
+  --color-error: oklch(59.7% 0.182 24.5);
+  --color-error-content: oklch(98% 0.01 24.5);
+
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 1rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "guru-dark";
+  prefersdark: true;
+  color-scheme: dark;
+
+  --color-base-100: oklch(23.1% 0.005 174);
+  --color-base-200: oklch(27.2% 0.006 179.2);
+  --color-base-300: oklch(31.5% 0.01 151.5);
+  --color-base-content: oklch(94.8% 0.009 78.3);
+
+  --color-primary: oklch(63.9% 0.114 178.2);
+  --color-primary-content: oklch(20% 0.02 178.2);
+  --color-secondary: oklch(70% 0.03 191.9);
+  --color-secondary-content: oklch(20% 0.02 191.9);
+  --color-accent: oklch(75.3% 0.146 61.6);
+  --color-accent-content: oklch(20% 0.03 61.6);
+  --color-neutral: oklch(65% 0.015 75.3);
+  --color-neutral-content: oklch(20% 0.01 75.3);
+
+  --color-info: oklch(75% 0.1 220);
+  --color-info-content: oklch(20% 0.01 220);
+  --color-success: oklch(70% 0.15 146);
+  --color-success-content: oklch(20% 0.02 146);
+  --color-warning: oklch(80% 0.14 83.9);
+  --color-warning-content: oklch(20% 0.03 83.9);
+  --color-error: oklch(68% 0.17 24.5);
+  --color-error-content: oklch(20% 0.02 24.5);
+
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 1rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@theme {
+  --font-display: "Fraunces", ui-serif, serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  /* Motion tokens — reference these, not ad hoc transition-all durations. */
+  --default-transition-duration: 150ms;
+  --default-transition-timing-function: ease-out;
+  --ease-panel: ease-in-out;
+  --duration-panel: 250ms;
+}
+
+/* Type scale (docs/superpowers plan §0) — semantic classes so components reach for a role,
+   not a raw Tailwind text-* utility picked by feel. */
+@layer components {
+  .text-display {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 3.5rem;
+    line-height: 3.75rem;
+    letter-spacing: -0.01em;
+  }
+  .text-h1 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 2.25rem;
+    line-height: 2.75rem;
+  }
+  .text-h2 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 1.5rem;
+    line-height: 2rem;
+  }
+  .text-h3 {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1.125rem;
+    line-height: 1.625rem;
+  }
+  .text-body {
+    font-family: var(--font-sans);
+    font-weight: 400;
+    font-size: 1rem;
+    line-height: 1.625rem;
+  }
+  .text-caption {
+    font-family: var(--font-sans);
+    font-weight: 500;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+  }
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-base-100);
+  color: var(--color-base-content);
+}

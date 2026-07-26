@@ -576,33 +576,304 @@ selected by need/tier.
 **Goal:** the learner-facing product.
 
 **Scope**
-- ☐ Vite + React + TS app; typed API client generated from the OpenAPI schema.
-- ☐ Streaming tutor chat UI; lesson-plan + session UI.
-- ☐ **Statistics dashboard:** mastery at KC/topic/subject levels, retention curves, momentum, and the
+- ☑ Vite + React + TS app; typed API client generated from the OpenAPI schema.
+- ☑ Streaming tutor chat UI (chat + agentic modes; conversation create/rename/delete).
+- ☑ Lesson-plan + session UI (with the guided-practice side panel).
+- ☑ **Conversation scope:** starting a chat picks a subject (or an explicit "general" for no
+  library grounding), with optional per-source narrowing within that subject's materials.
+  Retrieval never crosses subject boundaries — **Memory stays learner-global by design** (a
+  mnemonic invented while studying art history is still recallable while studying physics; the
+  *content*, not personal facts, is what's hard-scoped). Backend retrieval scoping
+  (`app/rag/retrieval.py::retrieve`, `Source.subject_id`/`topic_id`) already supports this —
+  the gap is a conversation-to-source link and the picker UI.
+- ☑ **Citations:** every generation mode (chat, agentic, workflow — not just content-block
+  generation, which already has this) grounds responses in retrieved chunks and cites them.
+  v1 citation click-through shows the cited chunk's own extracted text + locator in a pane —
+  not a re-rendered original-format viewer (no PDF page-jump/audio-scrub UI yet; the locator
+  data to build one later already exists in `Chunk.provenance`).
+- ☑ **Statistics dashboard:** mastery at KC/topic/subject levels, retention curves, momentum, and the
   **learner profile** ("how you learn" — with view/reset); tasteful **mastery-based** gamification
   (rewards tied to learning, not time-on-app).
-- ☐ Uploads; conversation/session history.
+- ☑ Uploads; conversation/session history.
 
 **DoD:** an adult learner completes the full loop in the browser — place → plan → session → assess →
-see the dashboard update — with streaming responses.
+see the dashboard update — with streaming responses, sourced and cited from the learner's own
+scoped materials.
+
+> **Uploads + conversation/session history landed (slice 6) — Phase 7 complete.** `/app/uploads`:
+> a subject-taggable upload form (file or web link, backed by the already-existing
+> `POST /sources/upload`/`POST /sources/link` — no backend ingestion work needed, purely a
+> frontend gap) plus a materials list filterable by subject with a status badge
+> (pending/processing/done/failed).
+>
+> **A real routing bug surfaced live and got fixed, not shipped**: a guided-practice session is
+> just a `Conversation` row (per slice 4), so it showed up in the plain chat sidebar too — but
+> opening it there rendered the refinement-gate's "Sounds good, let's start" button, since the
+> frontend read "no goal set yet" as "awaiting goal negotiation" with no way to tell a paused
+> workflow apart from an actual new chat. Clicking it would have submitted that literal sentence
+> as the learner's answer to whatever practice problem was in progress. Fixed at the model level
+> — a new `Conversation.kind: "chat" | "session"` column (migration `0016_conversation_kind`, set
+> once at creation, never changed) — rather than papering over it client-side: the sidebar now
+> routes a `kind: "session"` row to `/app/lessons/session/:id`, and `Chat.tsx` redirects there
+> too if a session conversation is ever opened at `/app/chat/:id` directly (stale bookmark,
+> back button). Session conversations also now get a real title (`Practice: <KC name>`) instead
+> of falling back to "New conversation" in the sidebar — the practical form "session history"
+> takes here, rather than a separate history page duplicating the existing sidebar.
+>
+> **Statistics dashboard landed (slice 5).** `/app/dashboard`: an activity card (streak +
+> momentum), a per-subject mastery drill-down (a progress ring at the subject level, bars per
+> topic, per-KC ability/uncertainty below that — TECHNICAL_DESIGN §7.4's own target UX, "Calculus
+> 62% (wide) ... Integrals 40%, integration-by-parts weakest"), the learner profile (view +
+> per-dimension reset + a refresh action, already fully built in an earlier phase and just wired
+> up here), and a global due-for-review list.
+>
+> **Two new backend endpoints, both thin plumbing over already-tested code, no new math:**
+> `GET /subjects/{id}/mastery` walks `app/learning/mastery.py`'s existing `estimate_kc`/
+> `rollup_topic`/`rollup_subject` (unit-tested since an earlier phase, just never exposed) and
+> reuses the lesson plan's own `MASTERY_ABILITY_THRESHOLD`/`MASTERY_UNCERTAINTY_THRESHOLD` so a
+> KC/topic/subject's "mastered" badge means the same thing here as it does on the lesson-plan
+> page. `GET /activity` is new: a pure `streak_days`/`momentum_trend` policy
+> (`app/learning/activity.py`) over the raw `learning_events` log — no new tables, streak
+> defined as consecutive days with a real graded observation (not an app-open), momentum as a
+> v1-arbitrary ratio between the trailing two 7-day windows. **Momentum had no prior definition
+> anywhere in the codebase or docs** — this is a from-scratch product decision, not a discovered
+> spec.
+>
+> **A real, pre-existing bug surfaced and fixed in passing**: `LearningEvent.created_at` is a
+> naive `TIMESTAMP` column (unlike `LearnerKCState`'s explicit `DateTime(timezone=True)` fields),
+> so comparing it against a tz-aware `datetime.now(UTC)` crashes asyncpg outright
+> ("can't subtract offset-naive and offset-aware datetimes") — `get_activity` is the first code
+> in this codebase to run a time-range query against that column. Fixed by stripping tzinfo
+> before comparing, documented inline so a future reader doesn't "fix" it back to tz-aware and
+> reintroduce the crash.
+>
+> **Deliberately scoped out of v1**: a true FSRS retention/forgetting-curve chart — `fsrs_card`
+> is an intentionally opaque blob (`app/learning/scheduler.py`: "our schema never couples to FSRS
+> internals"), so a real curve needs new backend work (expose `stability`/`difficulty`/
+> `retrievability`, or replay `learning_events` to reconstruct ability-over-time) that wasn't
+> justified for this slice; the due-for-review list already surfaces the retention-relevant
+> signal that exists today. A dedicated reviews-due *widget* on the Lessons page was also skipped
+> — `revise_steps` already interleaves due reviews into the lesson plan's own step list, so it
+> lives on the dashboard as a global cross-subject view instead, not duplicated per subject.
+
+> **Lesson-plan + guided-practice session UI landed (slice 4).** A per-subject `/app/lessons`
+> view: an optional placement flow (a freeform background prompt → one LLM call seeds per-KC
+> ability/uncertainty priors, never overwriting real evidence) feeding into `POST
+> .../lesson-plan` generation (an optional goal, otherwise pure policy — no LLM call), then the
+> plan's flat, backend-ordered `steps` list rendered with KC names resolved per-step, the active
+> step highlighted, done steps checked off. "Start practice" creates a subject-scoped
+> conversation and jumps into `/app/lessons/session/:id` — the workflow-mode chat transcript
+> (reusing `useChatConversation`/`MessageList`/`Composer` as-is, extended with a `fixedMode` prop
+> so the session composer skips the chat/agentic toggle) plus a persistent item side panel
+> showing the KC and practice stem, sourced from the `awaiting_reply`/`done` SSE events' `item`
+> field — wiring that already existed on the wire but wasn't consumed by any hook yet. A session
+> auto-starts its first workflow turn on mount (ref-guarded against double-fire, not an effect
+> `setState`).
+>
+> **The plan never has a "start next session" endpoint to call** — `revise_plan` runs
+> automatically as a side effect of grading any answer (the workflow's `grade` node included), so
+> the frontend just re-reads the plan; the newly-active step is already there.
+>
+> **A real gap surfaced live, not a bug**: finishing a workflow round with a correct answer ends
+> that round (`detail: "mastered"`) but does **not** by itself flip the lesson-plan step to
+> `"done"` — that requires the KC's rolling ability/uncertainty estimate to cross a fixed
+> threshold (`app/services/lesson_plan.py`'s `MASTERY_ABILITY_THRESHOLD`/
+> `MASTERY_UNCERTAINTY_THRESHOLD`), which one correct short-answer response usually doesn't reach
+> from a cold start — exactly the point of a continuous IRT model (partial, accumulating
+> evidence, not a binary pass/fail). Caught via live verification: the UI originally said
+> "Mastered!" after one correct answer, which overclaimed what the backend event actually meant;
+> relabeled to "Correct — nice work!" to keep the round-level and plan-level notions of "mastered"
+> from being conflated.
+>
+> Reviews-due (`GET /reviews/due`) got no separate widget this slice — `revise_steps` already
+> interleaves due-review steps into the same ordered `steps` list, so working through the plan
+> already surfaces them; a standalone queue view is deferred, not required for the phase DoD.
+> Mid-session reload also isn't fully robust yet: the side panel's `item`/outcome state is local
+> to the live SSE stream, not reconstructed from persisted state, so a refresh mid-practice loses
+> the panel until the next reply — a known, accepted v1 gap in the same spirit as Phase 6's
+> workflow-mode note above (§ "the grade/score is folded into `respond`'s prose rather than wired
+> as structured data").
+
+> **Conversation scope + citations landed (slice 3).** A `ConversationSource` join table
+> (empty = every source under the conversation's subject) backs a "New chat" modal: pick a
+> subject (or "General," no grounding) then optionally narrow to specific sources. A shared
+> `format_grounding`/`extract_citations` pair (`app/services/turn_common.py`) produces and parses
+> literal `[N]` markers embedded in message text — one protocol reused unchanged across all three
+> generation paths: plain chat (one retrieval per turn), agentic (a `CitationAccumulator` dedupes
+> and stably numbers chunks across repeated `search_materials` tool calls within a turn), and
+> workflow (grounds only the `present` step's worked example — `respond`'s feedback isn't
+> source-derived, so it's never cited even if its prose coincidentally contains `[N]`-shaped
+> text). `Message.citations` (JSONB, mirrors `ContentBlock.citations`'s shape) lets the frontend
+> render markers as clickable superscripts (`MessageBlock`) opening a slide-over `CitationPane`
+> with the cited chunk's own extracted text + locator (page/slide/timestamp/paragraph from
+> `Chunk.provenance`) — the v1 click-through decision above, now implemented.
+>
+> This is a "grounding-set" claim, not a verified-per-sentence-correct one — same honesty bar as
+> `ContentBlock.citations` already had. Two real SQLAlchemy async bugs surfaced and got fixed
+> along the way: `session.get()` silently ignores eager-load `options` when the object is already
+> in the session's identity map (fixed with `populate_existing=True`); and reading a lazy
+> relationship (`Conversation.source_ids`) from inside `run_workflow_turn` was async-unsafe unless
+> the caller happened to eager-load it, so `source_ids` became an explicit parameter threaded down
+> from the API layer instead, matching the other two turn services.
+
+> **App shell + design system + chat UI landed (slices 1–2 + QoL).** Slice 1: app shell, design
+> system, typed API client (see below for full detail). Slice 2: streaming chat UI — a
+> conversation sidebar, flat-block message rendering with a live streaming cursor, a Chat/Agentic
+> mode toggle, inline tool-call chips during agentic turns, and refinement-gate handling (an
+> inline "sounds good, let's start" accept action, a goal marker once committed) reconstructed
+> from persisted state so it's correct after a reload, not just live. Plus a QoL pass: rename
+> (inline edit) and delete (inline confirm, hard delete, cascades cleanly) on conversations,
+> backed by new `PATCH`/`DELETE /conversations/{id}` endpoints.
+
+> **App shell + design system landed (slice 1).** `frontend/` (Vite + React 19 + TS), scaffolded
+> fresh — nothing existed before this slice. Deliberately **scaffolding only**: routing, the typed
+> API client, the auth-stub wiring, the theme system, and top-nav layout chrome — the four main
+> screens (`/app/chat`, `/app/lessons`, `/app/dashboard`, `/app/uploads`) are placeholders this
+> slice, real content is later slices.
+>
+> **Design system, not defaults.** A first pass at this plan specified "Poppins, teal primary,
+> DaisyUI" — vague enough to produce a generic-looking AI-app (stock Tailwind teal, one font
+> doing every job, an unmodified component-library look, a centered-hero-plus-cards landing
+> page). Replaced with specifics: a **Fraunces + Inter** type pairing (a characterful display
+> face + a neutral, legible-at-small-sizes text face — not one geometric sans stretched across
+> every role) with a defined type scale; a real color system anchored on a deliberately
+> non-default teal (`#0E7C6B`, not Tailwind's stock `teal-500`) with a separate amber accent
+> reserved *only* for gamification/celebration moments; a 4px spacing scale; **Lucide** for every
+> functional icon, with the 🌱 emoji brand mark reserved as the *only* emoji in the UI (never a
+> stand-in for real icons); and an asymmetric landing-page hero with concrete, mechanism-specific
+> copy and a real product-preview mock — not a gradient-wash hero, the single most recognizable
+> "AI-generated SaaS landing page" tell. **Tailwind v4 + DaisyUI v5**, but DaisyUI is used as a
+> headless behavioral base only — both `guru-light`/`guru-dark` themes are built entirely from
+> custom `oklch()` tokens (computed from the hex anchors above) via DaisyUI v5's CSS-based
+> `@plugin "daisyui/theme"` syntax; no stock DaisyUI theme is used unmodified.
+>
+> **Typed client**: `openapi-typescript` generates `src/api/schema.d.ts` from the backend's
+> `/openapi.json` (`npm run gen:api`, checked-in output), paired with `openapi-fetch` for a fully
+> typed request client (`src/api/client.ts`). SSE isn't representable in OpenAPI's streaming
+> story, so `src/api/sse.ts` hand-rolls a `fetch` + `ReadableStream` reader (the backend's chat
+> endpoint is a POST-body stream, not a GET `EventSource`) with a `TurnEvent` union manually kept
+> in sync with `app/api/v1/chat.py::event_stream`'s frame shapes. A small `useConversations`
+> TanStack Query hook proves the whole path end-to-end (typed client → CORS → stub auth → real
+> DB) on the Chat placeholder, not just that it compiles.
+>
+> **Backend**: added `CORSMiddleware` + a `cors_origins` setting (`app/main.py`,
+> `app/core/config.py`) — nothing existed before, and the Vite dev server can't call the API
+> cross-origin without it.
+>
+> **Swapped `oxlint` (create-vite's new default) for ESLint + Prettier** to match this repo's
+> already-documented `npm run lint` convention, rather than let the scaffold tool's latest default
+> silently redefine it.
+>
+> **Deliberately deferred**: no frontend test runner yet (nothing meaningfully interactive exists
+> to test); no mobile responsiveness (desktop-only for this phase, by design); no client-side auth
+> UI (the stub-auth seam resolves the dev learner server-side, same as `curl`/tests today).
+>
+> **Phase 7 complete** — see the landed-notes above for slices 1–6 + QoL.
 
 ---
 
-## Phase 8 — Hardening & scale
+## Phase 8 — Notes: the durable, personalized learning artifact
+
+**Goal:** notes become the primary long-term learning artifact — dynamically built as the
+learner studies, personalized to how they learn, and supplemented (not replaced) by MCQ/cloze/
+short-answer/flashcard practice.
+
+**Scope**
+- ☐ `Note` domain model: per-learner, per-topic (KC-tagged), cumulative — distinct from
+  `ContentBlock` (shared/cached *across* learners) and `Memory` (facts about the learner, not
+  learned content itself). See MASTERPLAN §4.9.
+- ☐ Auto-distillation: sessions/turns that cover new material feed a note-building step —
+  notes accumulate as the learner studies a topic, not generated only on request.
+- ☐ Profile-driven note format: the learner's profile shapes the note's presentation (bullet
+  points / narrative / mnemonics / worked examples / etc.) — a new profile dimension or an
+  extension of an existing one (design TBD when this phase starts); reuses `interests`/
+  `reading_level` where relevant for grounding/complexity.
+- ☐ Notes UI: browsable per subject/topic, learner-editable (not purely system-maintained),
+  reflects updates as new sessions add to it.
+
+**DoD:** studying a topic across multiple sessions (e.g. linear algebra) produces a growing,
+readable set of notes in a format suited to that learner, browsable/editable in a dedicated
+notes section, without needing to explicitly ask for them.
+
+> Not started. Deliberately sequenced after the rest of Phase 7 (needs a working chat/session UI
+> to distill notes *from*) and before the eval/auth/hardening phases (9–11) — this is core
+> learning-loop value, not infra polish.
+
+---
+
+## Phase 9 — Experiment & evaluation suite
+
+**Goal:** know which prompts, models, and configurations are actually optimal — measured, not guessed.
+
+**Scope**
+- ☐ Extend the existing eval harness (`tests/eval/`, `poe eval`) into a **config-sweep / ablation
+  runner**: parameterize experiments over the model-role registry (which model backs
+  `FAST`/`SMART`/`GENIUS`/`EMBED`), prompt variants, and generation configs; run the golden + live
+  suites across the sweep matrix.
+- ☐ **MLflow — tracking subset only**: log params/metrics/artifacts per run to a local file-backed
+  store with the run-comparison UI. Deliberately **no** model registry / serving / deployment
+  surface (avoids the overkill parts). Behind a thin seam so the tracking backend stays swappable.
+- ☐ **Experiment datasets from the KC-tagged event log**: build reusable eval sets (grading,
+  refinement gate, content generation, retrieval, KC-tagging) from real logged interactions — the
+  substrate the swappable-tracer + KC-tagged event log were designed to earn from day one.
+- ☐ **DSPy optimization workstream** (moved here from hardening): compile internal modules (grading,
+  refinement gate, content generation) offline against those datasets/metrics; report eval deltas
+  vs. the hand-written prompts.
+- ☐ Ablation reporting: a repeatable way to answer "does component X earn its cost?" — e.g. hybrid
+  vs. vector-only retrieval, refinement gate on/off, per-role model swaps, memory on/off.
+
+**DoD:** a single command runs a prompt × model × config sweep, results land in MLflow with a
+side-by-side comparison, ablations are reproducible, and DSPy-compiled modules are measured against
+the hand-written baselines on real-data eval sets.
+
+> Not started. Sequenced before auth/hardening on purpose: the alpha/beta rollout should be informed
+> by measured prompt/model/config choices, not locked in blind.
+
+---
+
+## Phase 10 — Lightweight auth + admin portal
+
+**Goal:** the minimum identity + operator visibility needed to run alpha/beta — real accounts, plus
+an admin view into cost, usage, and users.
+
+**Scope**
+- ☐ **Lightweight auth**: login (email/password or a single OAuth provider — design-time call),
+  session/token issuance, replacing the stubbed `get_current_learner` seam with a real resolver.
+  `learner_id` is already threaded everywhere behind that seam, so this is a swap, not a rewire.
+- ☐ **Admin portal**: operator-only views for **cost & token usage** (the per-call `LLMCall` log
+  already captures this, tagged by role+model), **user management**, and other operational signals
+  as they're needed.
+- ☐ **Root / impersonation access** for alpha/beta support: an admin can act into another account —
+  built with an **explicit scope, mandatory audit logging of every impersonation, and a clean
+  removal seam**. It is a temporary alpha/beta affordance removed at full release, not a permanent
+  backdoor.
+- ☐ Authorization boundary: learner vs. admin roles; the admin surface gated separately from the
+  learner app.
+
+**DoD:** a learner can create an account and log in (no more stub); an admin can log into the portal,
+see cost/token/usage and manage users, and impersonate an account with every impersonation audited;
+the impersonation path sits behind a single seam that can be disabled/removed for full release.
+
+> Not started. Deliberately lightweight — full production auth hardening (rate limiting, real session
+> security, provider hardening) is Phase 11. This is "enough to run supervised tests with real
+> accounts + operator visibility," not the final auth system.
+
+---
+
+## Phase 11 — Hardening & scale
 
 **Goal:** production-readiness.
 
 **Scope**
-- ☐ Real authentication; rate limiting; caching.
+- ☐ Production auth hardening (building on Phase 10): rate limiting; caching; real session/token
+  security; **remove the alpha/beta impersonation affordance**.
 - ☐ Robust queue/workers; tracing + cost dashboards.
 - ☐ Deployment pipeline; prod provider hardening (OpenRouter → hyperscaler option for compliance).
-- ☐ Expanded eval harness (educational quality + grading reliability) as a release gate.
-- ☐ **DSPy optimization workstream**: build eval datasets from the KC-tagged event log; compile
-  internal modules (grading, refinement gate, content generation) against metrics; gate prompt
-  changes on eval deltas.
+- ☐ Wire the Phase 9 eval suite as a **release gate** — block deploys on regressions in
+  teaching/grading quality (educational quality + grading reliability).
 
-**DoD:** deployable with real auth, observability, and an eval gate that blocks regressions in
-teaching/grading quality; DSPy-compiled modules measurably beat hand-written prompts on the eval set.
+**DoD:** deployable with hardened auth, observability, and an eval gate (on the Phase 9 suite) that
+blocks regressions in teaching/grading quality.
 
 ---
 
