@@ -186,6 +186,21 @@ alongside mastery.
   learn") for metacognition. It is distinct from **memory** (§5): memory stores facts ("likes
   basketball"); the profile quantifies learning traits and *uses* such facts.
 
+### 4.9 Notes — the durable artifact
+
+Where lessons/wikis/questions are AI-generated, cached, and reusable *across* learners (§5.4),
+**notes are the opposite**: per-learner, cumulative, and never shared. They are the intended
+**primary long-term learning artifact** — what a learner actually keeps and returns to — with
+practice (MCQ/cloze/short/flashcards) acting as reinforcement *around* them, not the retained
+artifact itself. Notes are distilled automatically as material is covered (a session on linear
+algebra grows that topic's notes, unprompted), organized by topic, and **personalized in form**
+by the learner profile (§4.8) — a learner who responds to mnemonics gets mnemonics, one who
+prefers narrative gets a worked story, one who wants density gets bullet points — the same "how
+they learn" signal that already drives pacing and item selection now also shapes how retained
+knowledge is written down. Sequenced deliberately after the initial frontend (ROADMAP Phase 8):
+it needs a working chat/session UI to distill from, and meaningfully more backend (a new domain
+model, a distillation step, format-selection logic) than a frontend-only slice.
+
 ---
 
 ## 5. Domain Model (concepts)
@@ -201,10 +216,19 @@ alongside mastery.
   comprehensive wiki, question/flashcard. Assembled and re-framed per learner (§5.4 below).
 - **Source & chunk** — ingested learner/curated material (documents, handwritten notes, audio/video,
   weblinks) normalized into embedded chunks carrying **provenance** for citations and compliance (§6).
+- **Citations** — every generated response (chat, agentic, workflow, and content blocks alike)
+  is grounded in retrieved chunks and cites them; a citation resolves to the cited chunk's own
+  extracted text + locator (page/slide/timestamp/etc.), not a re-rendered original file (v1).
 - **Lesson plan** — the adaptive teaching policy for a learner + goal (§4.6).
 - **Assessment item & rubric** — questions plus per-KC grading rubrics (§4.4).
-- **Conversation / message** — tutor dialogue, persisted, streamed.
-- **Memory** — persistent per-learner facts, preferences, and history that personalize every session.
+- **Conversation / message** — tutor dialogue, persisted, streamed. Scoped to a subject (or an
+  explicit "general," ungrounded) with optional per-source narrowing — retrieval never crosses
+  subject boundaries, a hard content boundary distinct from Memory's cross-subject scope below.
+- **Memory** — persistent per-learner facts, preferences, and history that personalize every
+  session — deliberately **learner-global, not subject-scoped** (a mnemonic invented studying
+  art history is still recallable studying physics; the *content*, not personal facts/context,
+  is what's hard-scoped by subject).
+- **Notes** — the per-learner, cumulative, profile-formatted long-term learning artifact (§4.9).
 
 ### 5.4 Content strategy — hybrid by tier
 
@@ -315,6 +339,8 @@ privacy/compliance gate.
 | Prompt quality | Interactive refinement gate + DSPy | Users lack optimal prompts; co-construct interactively, optimize modules offline. |
 | Ingestion | Multimodal adapters → one pipeline | Docs/OCR/ASR/web unify into chunks+provenance for RAG. |
 | OCR / ASR | Vision-LLM OCR + Whisper | Best on handwriting, least bespoke infra; fits the role registry. |
+| Content boundary | Conversations scoped to a subject (or explicit "general") + optional per-source narrowing; retrieval never crosses subject boundaries | Prevents cross-subject leakage (e.g. a physics chat pulling art-history chunks) while keeping Memory intentionally cross-subject for personal facts/mnemonics. |
+| Citation display | v1 shows the cited chunk's own extracted text in a pane, not a re-rendered original-format viewer | Works uniformly across every source type (PDF/audio/web/etc.) with zero new per-format viewer infra; a native viewer is a later, additive upgrade — the locator data for one already exists. |
 | Auth | Stubbed behind a seam | Defer identity; thread `learner_id` everywhere from day one. |
 | Connectivity | Online-first | Ship the MVP; design data model so offline/sync can be added. |
 | Monetization | None in MVP | Focus on the learning loop. |
@@ -343,7 +369,7 @@ privacy/compliance gate.
 
 ## 9. Explicitly Deferred (parked, not forgotten)
 
-Real authentication · billing/monetization · Guru-creator, teacher, and org-admin roles ·
+Billing/monetization · Guru-creator, teacher, and org-admin roles ·
 teacher/parent dashboards · multi-tenant orgs & classes (B2B) · DKT · standards alignment
 (Common Core/NGSS) · younger tiers + their child-privacy compliance · offline / low-bandwidth mode ·
 mobile & desktop clients.

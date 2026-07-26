@@ -110,7 +110,7 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   Ollama for dev, OpenRouter for prod, Claude as the prod SMART/GENIUS default.
 - **LangGraph orchestration + interactive refinement gate + DSPy** — introduced when they earn it.
 - **Multimodal ingestion** (docs/OCR/ASR/web) into one provenance-tagged RAG pipeline.
-- **Auth stubbed behind a seam** — thread `learner_id` everywhere now; real auth in Phase 8.
+- **Auth stubbed behind a seam** — thread `learner_id` everywhere now; real auth in Phase 10.
 - **Pydantic at boundaries · async throughout · Alembic-tracked schema.**
 
 ## Performance & Conciseness Guidelines
