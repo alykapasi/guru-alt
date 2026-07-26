@@ -21,6 +21,7 @@ from app.models.assessment import ItemType
 from app.models.chat import Conversation, LLMCall, Message
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
+from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.schemas.assessment import ItemCreate, ItemKCRef
 from app.services import assessment as assessment_svc
 from app.services import lesson_plan as lesson_plan_svc
@@ -136,6 +137,47 @@ async def test_start_persists_presentation_and_awaits_reply(db_session: AsyncSes
     assert calls[0].role == "smart"
 
 
+async def test_present_cites_retrieved_materials(db_session: AsyncSession) -> None:
+    """The `present` step (worked example) grounds + cites; `respond` (Phase 7) doesn't —
+    see test_resume_round_never_cites_even_if_respond_text_has_marker_syntax below."""
+    conv = await _conversation_with_active_step(db_session)
+    source = Source(
+        learner_id=conv.learner_id,
+        kind=SourceKind.FILE,
+        origin="notes.txt",
+        status=SourceStatus.DONE,
+        subject_id=conv.subject_id,
+        meta={},
+    )
+    db_session.add(source)
+    await db_session.flush()
+    chunk = Chunk(
+        source_id=source.id,
+        ordinal=0,
+        text="Photosynthesis converts light energy into chemical energy in chloroplasts.",
+        embedding=(await fake_llm_client().embed(ModelRole.EMBED, ["seed"]))[0],
+        provenance={},
+    )
+    db_session.add(chunk)
+    await db_session.commit()
+
+    cited_present = "Here's a worked example [1]. Now try: explain photosynthesis."
+    events = await _drain(
+        db_session, fake_llm_client(cited_present), conv, user_content="let's practice"
+    )
+    awaiting = next(e for e in events if e.type == "awaiting_reply")
+    assert awaiting.citations == [
+        {"marker": 1, "chunk_id": str(chunk.id), "source_id": str(source.id)}
+    ]
+
+    messages = (
+        await db_session.scalars(
+            select(Message).where(Message.conversation_id == conv.id).order_by(Message.created_at)
+        )
+    ).all()
+    assert messages[1].citations == awaiting.citations
+
+
 async def test_resume_wrong_loops_and_persists_second_round(db_session: AsyncSession) -> None:
     conv = await _conversation_with_active_step(db_session)
     llm = fake_llm_client(
@@ -176,6 +218,28 @@ async def test_resume_correct_reaches_done_with_mastered_detail(db_session: Asyn
         await db_session.scalars(select(Message).where(Message.conversation_id == conv.id))
     ).all()
     assert [m.role for m in messages] == ["user", "assistant", "user", "assistant"]
+
+
+async def test_resume_round_never_cites_even_if_respond_text_has_marker_syntax(
+    db_session: AsyncSession,
+) -> None:
+    """`respond` (feedback on an attempt) is out of scope for citations even on a fresh start's
+    first resume — gated on `resume`, not merely on whether `[N]` happens to appear in the
+    text, since a learner's own answer or the model's phrasing could coincidentally contain it."""
+    conv = await _conversation_with_active_step(db_session)
+    respond_with_marker_syntax = "See problem [1] above — not quite, try again."
+    llm = fake_llm_client(
+        script=[
+            FakeTurn(text=PRESENT),
+            FakeTurn(text=WRONG_GRADE),
+            FakeTurn(text=respond_with_marker_syntax),
+        ]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice")
+
+    events = await _drain(db_session, llm, conv, user_content="a wrong answer", resume=True)
+    awaiting = next(e for e in events if e.type == "awaiting_reply")
+    assert awaiting.citations == []
 
 
 async def test_max_rounds_reaches_done_with_capped_detail(db_session: AsyncSession) -> None:

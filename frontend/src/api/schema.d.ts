@@ -127,6 +127,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Conversation */
+        delete: operations["delete_conversation_api_v1_conversations__conversation_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Conversation */
+        patch: operations["update_conversation_api_v1_conversations__conversation_id__patch"];
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/messages": {
         parameters: {
             query?: never;
@@ -264,6 +282,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Sources
+         * @description List the learner's sources, optionally scoped to a subject — backs the conversation
+         *     creation modal's source picker (Phase 7).
+         */
+        get: operations["list_sources_api_v1_sources_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sources/{source_id}": {
         parameters: {
             query?: never;
@@ -310,6 +349,26 @@ export interface paths {
         };
         /** Get Source Chunks */
         get: operations["get_source_chunks_api_v1_sources__source_id__chunks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chunks/{chunk_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Chunk
+         * @description Fetch one chunk by id — backs the citation pane's click-through (Phase 7).
+         */
+        get: operations["get_chunk_api_v1_chunks__chunk_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -518,6 +577,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/subjects/{subject_id}/mastery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Subject Mastery */
+        get: operations["get_subject_mastery_api_v1_subjects__subject_id__mastery_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Activity */
+        get: operations["get_activity_api_v1_activity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -542,6 +635,17 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ActivityRead */
+        ActivityRead: {
+            /** Streak Days */
+            streak_days: number;
+            /** Observations Last 7D */
+            observations_last_7d: number;
+            /** Observations Prior 7D */
+            observations_prior_7d: number;
+            /** Momentum */
+            momentum: string;
+        };
         /**
          * AnswerSubmit
          * @description A learner's response. ``response`` shape depends on the item type (see grading).
@@ -633,8 +737,16 @@ export interface components {
         ConversationCreate: {
             /** Title */
             title?: string | null;
+            /**
+             * Kind
+             * @default chat
+             * @enum {string}
+             */
+            kind: "chat" | "session";
             /** Subject Id */
             subject_id?: string | null;
+            /** Source Ids */
+            source_ids?: string[];
         };
         /** ConversationRead */
         ConversationRead: {
@@ -650,15 +762,24 @@ export interface components {
             learner_id: string;
             /** Title */
             title: string | null;
+            /** Kind */
+            kind: string;
             /** Goal */
             goal: string | null;
             /** Subject Id */
             subject_id: string | null;
+            /** Source Ids */
+            source_ids: string[];
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+        };
+        /** ConversationUpdate */
+        ConversationUpdate: {
+            /** Title */
+            title: string;
         };
         /** DimensionRead */
         DimensionRead: {
@@ -830,6 +951,22 @@ export interface components {
             /** Uncertainty */
             uncertainty: number;
         };
+        /** KCMasteryRead */
+        KCMasteryRead: {
+            /**
+             * Kc Id
+             * Format: uuid
+             */
+            kc_id: string;
+            /** Kc Name */
+            kc_name: string;
+            /** Ability */
+            ability: number;
+            /** Uncertainty */
+            uncertainty: number;
+            /** Mastered */
+            mastered: boolean;
+        };
         /** KCRead */
         KCRead: {
             /**
@@ -952,6 +1089,10 @@ export interface components {
             content: string;
             /** Model */
             model: string | null;
+            /** Citations */
+            citations: {
+                [key: string]: unknown;
+            }[];
             /**
              * Created At
              * Format: date-time
@@ -1125,6 +1266,22 @@ export interface components {
             /** Description */
             description?: string | null;
         };
+        /** SubjectMasteryRead */
+        SubjectMasteryRead: {
+            /**
+             * Subject Id
+             * Format: uuid
+             */
+            subject_id: string;
+            /** Ability */
+            ability: number;
+            /** Uncertainty */
+            uncertainty: number;
+            /** Mastered */
+            mastered: boolean;
+            /** Topics */
+            topics: components["schemas"]["TopicMasteryRead"][];
+        };
         /** SubjectRead */
         SubjectRead: {
             /**
@@ -1147,6 +1304,24 @@ export interface components {
             name: string;
             /** Description */
             description?: string | null;
+        };
+        /** TopicMasteryRead */
+        TopicMasteryRead: {
+            /**
+             * Topic Id
+             * Format: uuid
+             */
+            topic_id: string;
+            /** Topic Name */
+            topic_name: string;
+            /** Ability */
+            ability: number;
+            /** Uncertainty */
+            uncertainty: number;
+            /** Mastered */
+            mastered: boolean;
+            /** Kcs */
+            kcs: components["schemas"]["KCMasteryRead"][];
         };
         /** TopicRead */
         TopicRead: {
@@ -1537,6 +1712,70 @@ export interface operations {
             };
         };
     };
+    delete_conversation_api_v1_conversations__conversation_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_conversation_api_v1_conversations__conversation_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_messages_api_v1_conversations__conversation_id__messages_get: {
         parameters: {
             query?: never;
@@ -1788,6 +2027,37 @@ export interface operations {
             };
         };
     };
+    list_sources_api_v1_sources_get: {
+        parameters: {
+            query?: {
+                subject_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_source_api_v1_sources__source_id__get: {
         parameters: {
             query?: never;
@@ -1870,6 +2140,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChunkRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_chunk_api_v1_chunks__chunk_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                chunk_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChunkRead"];
                 };
             };
             /** @description Validation Error */
@@ -2255,6 +2556,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_subject_mastery_api_v1_subjects__subject_id__mastery_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectMasteryRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_activity_api_v1_activity_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityRead"];
                 };
             };
         };

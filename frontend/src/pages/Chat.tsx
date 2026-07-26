@@ -1,23 +1,48 @@
-import { MessageSquare } from "lucide-react";
-import { PlaceholderPage } from "../components/PlaceholderPage";
-import { useConversations } from "../api/hooks";
+import { useState } from "react";
+import { Navigate, useParams } from "react-router-dom";
+import { useChatConversation } from "../hooks/useChatConversation";
+import { MessageList } from "../components/chat/MessageList";
+import { Composer } from "../components/chat/Composer";
+import { CitationPane } from "../components/chat/CitationPane";
+import type { Citation } from "../api/sse";
 
 export function Chat() {
-  const { data, isLoading, isError } = useConversations();
+  const { conversationId } = useParams<{ conversationId: string }>();
+  const { conversation, messages, isLoadingMessages, pending, error, awaitingGoalAccept, send } =
+    useChatConversation(conversationId);
+  const [citation, setCitation] = useState<Citation | null>(null);
+
+  // A session conversation's paused workflow reply must never be shown behind the plain
+  // chat gate (e.g. a stale bookmark or the browser back button landing here directly).
+  if (conversation?.kind === "session") {
+    return <Navigate to={`/app/lessons/session/${conversation.id}`} replace />;
+  }
 
   return (
-    <>
-      <PlaceholderPage
-        icon={MessageSquare}
-        title="Chat"
-        description="The streaming tutor conversation — chat, agentic tool use, and guided-practice workflow modes — lands in the next slice."
-      />
-      <p className="text-caption text-base-content/50">
-        {isLoading && "Checking the API…"}
-        {isError && "Couldn't reach the API — is the backend running?"}
-        {data &&
-          `Connected — ${data.length} existing conversation${data.length === 1 ? "" : "s"} on the backend.`}
-      </p>
-    </>
+    <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1 flex-col">
+        {isLoadingMessages ? (
+          <div className="flex flex-1 items-center justify-center">
+            <p className="text-caption text-base-content/50">Loading conversation…</p>
+          </div>
+        ) : (
+          <MessageList
+            messages={messages}
+            pending={pending}
+            goal={conversation?.goal}
+            awaitingGoalAccept={awaitingGoalAccept}
+            onAcceptGoal={() =>
+              send("Sounds good, let's get started.", { mode: "chat", satisfied: true })
+            }
+            onCitationClick={setCitation}
+          />
+        )}
+        {error && (
+          <p className="text-caption text-error mx-auto w-full max-w-3xl px-6 pb-2">{error}</p>
+        )}
+        <Composer disabled={!!pending} onSend={(content, mode) => send(content, { mode })} />
+      </div>
+      {citation && <CitationPane citation={citation} onClose={() => setCitation(null)} />}
+    </div>
   );
 }

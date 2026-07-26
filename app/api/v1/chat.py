@@ -20,13 +20,16 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 
 from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
 from app.core.config import get_settings
+from app.models.source import Source
 from app.schemas.chat import (
     ChatTurnRequest,
     ConversationCreate,
     ConversationRead,
+    ConversationUpdate,
     MessageRead,
 )
 from app.services import agentic as agentic_svc
@@ -51,12 +54,62 @@ async def create_conversation(
     if data.subject_id is not None:
         if await knowledge_svc.get_subject(session, data.subject_id) is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
-    return await svc.create_conversation(session, learner.id, data.title, data.subject_id)
+    if data.kind == "session" and data.subject_id is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "a session conversation requires a subject_id"
+        )
+    if data.source_ids:
+        if data.subject_id is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "source_ids requires a subject_id to narrow within"
+            )
+        sources = (
+            await session.scalars(select(Source).where(Source.id.in_(data.source_ids)))
+        ).all()
+        if len(sources) != len(set(data.source_ids)):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "one or more sources not found")
+        for source in sources:
+            if source.learner_id != learner.id or source.subject_id != data.subject_id:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "one or more sources don't belong to this learner/subject",
+                )
+    return await svc.create_conversation(
+        session,
+        learner.id,
+        data.title,
+        kind=data.kind,
+        subject_id=data.subject_id,
+        source_ids=data.source_ids,
+    )
 
 
 @router.get("/conversations", response_model=list[ConversationRead])
 async def list_conversations(session: SessionDep, learner: CurrentLearner):
     return await svc.list_conversations(session, learner.id)
+
+
+@router.patch("/conversations/{conversation_id}", response_model=ConversationRead)
+async def update_conversation(
+    conversation_id: uuid.UUID,
+    data: ConversationUpdate,
+    session: SessionDep,
+    learner: CurrentLearner,
+):
+    conversation = await svc.get_conversation(session, conversation_id)
+    if conversation is None or conversation.learner_id != learner.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    return await svc.update_conversation_title(session, conversation, data.title)
+
+
+@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(
+    conversation_id: uuid.UUID, session: SessionDep, learner: CurrentLearner
+):
+    conversation = await svc.get_conversation(session, conversation_id)
+    if conversation is None or conversation.learner_id != learner.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    await svc.delete_conversation(session, conversation)
 
 
 @router.get("/conversations/{conversation_id}/messages", response_model=list[MessageRead])
@@ -97,6 +150,7 @@ async def send_message(
             user_content=data.content,
             max_tokens=settings.chat_max_tokens,
             subject_id=conversation.subject_id,
+            source_ids=conversation.source_ids,
         )
     elif data.mode == "workflow" or workflow_awaiting:
         turn = workflow_svc.run_workflow_turn(
@@ -108,6 +162,7 @@ async def send_message(
             max_tokens=settings.chat_max_tokens,
             max_rounds=settings.workflow_max_rounds,
             resume=workflow_awaiting,
+            source_ids=conversation.source_ids,
         )
     elif conversation.goal is not None:
         turn = svc.run_tutor_turn(
@@ -120,6 +175,7 @@ async def send_message(
             max_tokens=settings.chat_max_tokens,
             goal=conversation.goal,
             subject_id=conversation.subject_id,
+            source_ids=conversation.source_ids,
         )
     elif await refinement_svc.is_awaiting_reply(llm, conversation_id):
         turn = refinement_svc.run_refinement_turn(
@@ -160,6 +216,7 @@ async def send_message(
             user_content=data.content,
             max_tokens=settings.chat_max_tokens,
             subject_id=conversation.subject_id,
+            source_ids=conversation.source_ids,
         )
 
     async def event_stream() -> AsyncIterator[str]:
@@ -180,6 +237,7 @@ async def send_message(
                         "cost_usd": ev.cost_usd,
                         "item": ev.item.model_dump(mode="json") if ev.item else None,
                         "detail": ev.detail,
+                        "citations": ev.citations,
                     }
                 )
             elif ev.type == "awaiting_reply":
@@ -189,6 +247,7 @@ async def send_message(
                         "text": ev.text,
                         "detail": ev.detail,
                         "item": ev.item.model_dump(mode="json") if ev.item else None,
+                        "citations": ev.citations,
                     }
                 )
             elif ev.type == "committed":

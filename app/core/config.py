@@ -154,6 +154,11 @@ class Settings(BaseSettings):
     # cap-then-degrade-gracefully idiom as refinement_max_rounds / agentic_max_iterations.
     workflow_max_rounds: int = 3
 
+    # Retrieval grounding for chat/workflow turns (Phase 7): smaller than retrieve()'s general
+    # default since this runs on every subject-scoped turn and system-prompt length matters
+    # more here than in a one-off tool call.
+    chat_grounding_limit: int = 5
+
     @property
     def runtime_typecheck(self) -> bool:
         """Whether beartype runtime checks should be active (dev/test only)."""

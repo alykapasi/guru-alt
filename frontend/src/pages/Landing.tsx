@@ -40,7 +40,7 @@ export function Landing() {
             Guru pairs spaced practice with an AI tutor that tracks exactly what you know — so you
             spend less time relearning and more time moving forward.
           </p>
-          <Link to="/app/chat" className="btn btn-primary">
+          <Link to="/app/subjects/new" className="btn btn-primary">
             Get started
             <ArrowRight size={16} />
           </Link>

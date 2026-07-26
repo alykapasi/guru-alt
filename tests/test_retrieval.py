@@ -160,6 +160,29 @@ async def test_retrieval_scoped_to_subject(db_session: AsyncSession) -> None:
     assert in_scope.id in ids and out_scope.id not in ids
 
 
+async def test_retrieval_scoped_to_source_ids(db_session: AsyncSession) -> None:
+    """A conversation narrowed to specific sources (Phase 7) — distinct from the single
+    ``source_id`` the debug endpoint uses."""
+    learner = await _learner(db_session)
+    src_a = await _source(db_session, learner)
+    src_b = await _source(db_session, learner)
+    src_c = await _source(db_session, learner)
+    a = await _chunk(db_session, src_a, "narrowed keyword content")
+    b = await _chunk(db_session, src_b, "narrowed keyword content")
+    c = await _chunk(db_session, src_c, "narrowed keyword content")
+
+    hits = await retrieval.retrieve(
+        db_session,
+        fake_llm_client(),
+        "narrowed",
+        learner_id=learner.id,
+        source_ids=[src_a.id, src_b.id],
+    )
+    ids = {h.chunk_id for h in hits}
+    assert ids == {a.id, b.id}
+    assert c.id not in ids
+
+
 # --- endpoint ---------------------------------------------------------------
 
 

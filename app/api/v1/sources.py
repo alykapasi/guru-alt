@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 
 from app.api.deps import (
@@ -91,6 +91,21 @@ async def link_source(
     return source
 
 
+@router.get("/sources", response_model=list[SourceRead])
+async def list_sources(
+    session: SessionDep,
+    learner: CurrentLearner,
+    subject_id: Annotated[uuid.UUID | None, Query()] = None,
+):
+    """List the learner's sources, optionally scoped to a subject — backs the conversation
+    creation modal's source picker (Phase 7)."""
+    stmt = select(Source).where(Source.learner_id == learner.id)
+    if subject_id is not None:
+        stmt = stmt.where(Source.subject_id == subject_id)
+    sources = (await session.scalars(stmt.order_by(Source.created_at.desc()))).all()
+    return list(sources)
+
+
 @router.get("/sources/{source_id}", response_model=SourceRead)
 async def get_source(source_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
     source = await session.get(Source, source_id)
@@ -130,3 +145,15 @@ async def get_source_chunks(source_id: uuid.UUID, session: SessionDep, learner: 
         )
     ).all()
     return list(chunks)
+
+
+@router.get("/chunks/{chunk_id}", response_model=ChunkRead)
+async def get_chunk(chunk_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+    """Fetch one chunk by id — backs the citation pane's click-through (Phase 7)."""
+    chunk = await session.get(Chunk, chunk_id)
+    if chunk is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "chunk not found")
+    source = await session.get(Source, chunk.source_id)
+    if source is None or source.learner_id != learner.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "chunk not found")
+    return chunk

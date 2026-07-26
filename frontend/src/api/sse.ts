@@ -14,6 +14,14 @@ export interface ItemEvent {
   kcs: { kc_id: string; weight: number }[];
 }
 
+/** The literal [N] marker in a message's content, mapped to the chunk it cites — see
+ * app/services/turn_common.py's format_grounding/extract_citations. */
+export interface Citation {
+  marker: number;
+  chunk_id: string;
+  source_id: string;
+}
+
 /** Mirrors app/api/v1/chat.py's event_stream() frame shapes exactly. Not derivable from the
  * OpenAPI schema — FastAPI's StreamingResponse body isn't typed there — so this union is
  * hand-maintained alongside the backend's `_sse()` calls. */
@@ -27,8 +35,15 @@ export type TurnEvent =
       cost_usd: number;
       item: ItemEvent | null;
       detail: string;
+      citations: Citation[];
     }
-  | { type: "awaiting_reply"; text: string; detail: string; item: ItemEvent | null }
+  | {
+      type: "awaiting_reply";
+      text: string;
+      detail: string;
+      item: ItemEvent | null;
+      citations: Citation[];
+    }
   | { type: "committed"; goal: string; detail: string }
   | { type: "tool_call"; detail: string };
 

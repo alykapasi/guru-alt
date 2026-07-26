@@ -21,6 +21,7 @@ from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState
 from app.models.memory import Memory, MemoryKind
+from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.services import chat as chat_svc
 from app.services import lesson_plan as lesson_plan_svc
 from app.services import memory as memory_svc
@@ -135,6 +136,67 @@ async def test_chat_streams_and_persists(
     assert calls[0].output_tokens == len(REPLY.split())
 
 
+async def test_rename_conversation(api_client: AsyncClient) -> None:
+    r = await api_client.post(f"{API}/conversations", json={"title": "Original"})
+    conversation_id = r.json()["id"]
+
+    r = await api_client.patch(f"{API}/conversations/{conversation_id}", json={"title": "Renamed"})
+    assert r.status_code == 200, r.text
+    assert r.json()["title"] == "Renamed"
+
+    r = await api_client.get(f"{API}/conversations")
+    renamed = next(c for c in r.json() if c["id"] == conversation_id)
+    assert renamed["title"] == "Renamed"
+
+
+async def test_rename_missing_conversation_404(api_client: AsyncClient) -> None:
+    r = await api_client.patch(f"{API}/conversations/{uuid.uuid4()}", json={"title": "Renamed"})
+    assert r.status_code == 404
+
+
+async def test_rename_conversation_empty_title_422(api_client: AsyncClient) -> None:
+    r = await api_client.post(f"{API}/conversations", json={})
+    conversation_id = r.json()["id"]
+
+    r = await api_client.patch(f"{API}/conversations/{conversation_id}", json={"title": ""})
+    assert r.status_code == 422
+
+
+async def test_delete_conversation_cascades_messages(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+) -> None:
+    r = await api_client.post(f"{API}/conversations", json={"title": "To delete"})
+    conversation_id = r.json()["id"]
+    conversation = await db_session.get(Conversation, uuid.UUID(conversation_id))
+    assert conversation is not None
+    conversation.goal = "Understand derivatives"
+    await db_session.commit()
+
+    r = await api_client.post(
+        f"{API}/conversations/{conversation_id}/messages", json={"content": "hi"}
+    )
+    assert r.status_code == 200
+
+    r = await api_client.delete(f"{API}/conversations/{conversation_id}")
+    assert r.status_code == 204
+
+    assert await db_session.get(Conversation, uuid.UUID(conversation_id)) is None
+    remaining = (
+        await db_session.scalars(
+            select(Message).where(Message.conversation_id == uuid.UUID(conversation_id))
+        )
+    ).all()
+    assert remaining == []
+
+    r = await api_client.get(f"{API}/conversations")
+    assert conversation_id not in [c["id"] for c in r.json()]
+
+
+async def test_delete_missing_conversation_404(api_client: AsyncClient) -> None:
+    r = await api_client.delete(f"{API}/conversations/{uuid.uuid4()}")
+    assert r.status_code == 404
+
+
 async def test_send_to_missing_conversation_404(api_client: AsyncClient, fake_llm: None) -> None:
     r = await api_client.post(
         f"{API}/conversations/{uuid.uuid4()}/messages", json={"content": "hi"}
@@ -173,6 +235,113 @@ async def test_create_conversation_with_unknown_subject_404(
 ) -> None:
     r = await api_client.post(f"{API}/conversations", json={"subject_id": str(uuid.uuid4())})
     assert r.status_code == 404
+
+
+async def test_create_conversation_defaults_to_chat_kind(
+    api_client: AsyncClient, fake_llm: None
+) -> None:
+    r = await api_client.post(f"{API}/conversations", json={})
+    assert r.status_code == 201, r.text
+    assert r.json()["kind"] == "chat"
+
+
+async def test_create_session_conversation_round_trips(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+) -> None:
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Chemistry")
+    db_session.add(subject)
+    await db_session.commit()
+
+    r = await api_client.post(
+        f"{API}/conversations",
+        json={"kind": "session", "subject_id": str(subject.id), "title": "Practice: Atoms"},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["kind"] == "session"
+
+
+async def test_create_session_conversation_without_subject_400(
+    api_client: AsyncClient, fake_llm: None
+) -> None:
+    r = await api_client.post(f"{API}/conversations", json={"kind": "session"})
+    assert r.status_code == 400
+
+
+async def _learner_source(
+    session: AsyncSession, learner_id: uuid.UUID, *, subject_id: uuid.UUID | None = None
+) -> Source:
+    source = Source(
+        learner_id=learner_id,
+        kind=SourceKind.FILE,
+        origin="notes.txt",
+        status=SourceStatus.DONE,
+        subject_id=subject_id,
+        meta={},
+    )
+    session.add(source)
+    await session.flush()
+    return source
+
+
+async def test_create_conversation_with_narrowed_sources_round_trips(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+) -> None:
+    learner = await _get_dev_learner(api_client, db_session)
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Chemistry")
+    db_session.add(subject)
+    await db_session.flush()
+    source = await _learner_source(db_session, learner.id, subject_id=subject.id)
+    await db_session.commit()
+
+    r = await api_client.post(
+        f"{API}/conversations",
+        json={"subject_id": str(subject.id), "source_ids": [str(source.id)]},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["source_ids"] == [str(source.id)]
+
+
+async def test_create_conversation_with_unknown_source_404(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+) -> None:
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Chemistry")
+    db_session.add(subject)
+    await db_session.commit()
+
+    r = await api_client.post(
+        f"{API}/conversations",
+        json={"subject_id": str(subject.id), "source_ids": [str(uuid.uuid4())]},
+    )
+    assert r.status_code == 404
+
+
+async def test_create_conversation_source_from_wrong_subject_400(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+) -> None:
+    learner = await _get_dev_learner(api_client, db_session)
+    subject_a = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Chemistry")
+    subject_b = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Biology")
+    db_session.add_all([subject_a, subject_b])
+    await db_session.flush()
+    source = await _learner_source(db_session, learner.id, subject_id=subject_b.id)
+    await db_session.commit()
+
+    r = await api_client.post(
+        f"{API}/conversations",
+        json={"subject_id": str(subject_a.id), "source_ids": [str(source.id)]},
+    )
+    assert r.status_code == 400
+
+
+async def test_create_conversation_source_ids_without_subject_400(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+) -> None:
+    learner = await _get_dev_learner(api_client, db_session)
+    source = await _learner_source(db_session, learner.id)
+    await db_session.commit()
+
+    r = await api_client.post(f"{API}/conversations", json={"source_ids": [str(source.id)]})
+    assert r.status_code == 400
 
 
 # --- lesson-plan grounding ---------------------------------------------------
@@ -543,3 +712,143 @@ async def test_agentic_mode_bypasses_the_refinement_gate_and_streams_a_tool_call
 
     done = next(e for e in events if e["type"] == "done")
     assert done["detail"] == ""
+
+
+# --- citations (Phase 7): conversation scope + retrieval-grounded generation ------------
+
+
+async def test_tutor_turn_cites_retrieved_materials(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    learner = await _get_dev_learner(api_client, db_session)
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Biology")
+    db_session.add(subject)
+    await db_session.flush()
+    source = await _learner_source(db_session, learner.id, subject_id=subject.id)
+    chunk = Chunk(
+        source_id=source.id,
+        ordinal=0,
+        text="Mitochondria produce ATP through cellular respiration.",
+        embedding=(await fake_llm_client().embed(ModelRole.EMBED, ["seed"]))[0],
+        provenance={"method": "text"},
+    )
+    db_session.add(chunk)
+    await db_session.commit()
+
+    r = await api_client.post(
+        f"{API}/conversations", json={"title": "Bio help", "subject_id": str(subject.id)}
+    )
+    conversation_id = r.json()["id"]
+    conversation = await db_session.get(Conversation, uuid.UUID(conversation_id))
+    assert conversation is not None
+    conversation.goal = "Understand cell biology"
+    await db_session.commit()
+
+    cited_reply = "The mitochondria produce ATP for the cell [1]."
+    app.dependency_overrides[get_llm_client] = lambda: fake_llm_client(cited_reply)
+    try:
+        r = await api_client.post(
+            f"{API}/conversations/{conversation_id}/messages",
+            json={"content": "What produces energy in a cell?"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+    assert r.status_code == 200, r.text
+
+    done = next(e for e in _parse_sse(r.text) if e["type"] == "done")
+    assert done["citations"] == [
+        {"marker": 1, "chunk_id": str(chunk.id), "source_id": str(source.id)}
+    ]
+
+    messages = (
+        await db_session.scalars(
+            select(Message)
+            .where(Message.conversation_id == uuid.UUID(conversation_id))
+            .order_by(Message.created_at)
+        )
+    ).all()
+    assert messages[1].citations == done["citations"]
+
+
+async def test_general_conversation_has_no_citations(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A subject-less ("general") conversation never retrieves — no citations, no grounding —
+    even when matching materials exist elsewhere for this learner."""
+    learner = await _get_dev_learner(api_client, db_session)
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Biology")
+    db_session.add(subject)
+    await db_session.flush()
+    source = await _learner_source(db_session, learner.id, subject_id=subject.id)
+    db_session.add(
+        Chunk(
+            source_id=source.id,
+            ordinal=0,
+            text="Mitochondria produce ATP.",
+            embedding=(await fake_llm_client().embed(ModelRole.EMBED, ["seed"]))[0],
+            provenance={},
+        )
+    )
+    await db_session.commit()
+
+    r = await api_client.post(f"{API}/conversations", json={"title": "General chat"})
+    conversation_id = r.json()["id"]
+    conversation = await db_session.get(Conversation, uuid.UUID(conversation_id))
+    assert conversation is not None
+    conversation.goal = "Just chatting"
+    await db_session.commit()
+
+    app.dependency_overrides[get_llm_client] = lambda: fake_llm_client("Sure, happy to help [1]!")
+    try:
+        r = await api_client.post(
+            f"{API}/conversations/{conversation_id}/messages",
+            json={"content": "What produces energy in a cell?"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+    assert r.status_code == 200, r.text
+
+    done = next(e for e in _parse_sse(r.text) if e["type"] == "done")
+    # The reply happens to contain "[1]" but nothing was ever retrieved to cite — no hits
+    # means extract_citations has nothing to map it to.
+    assert done["citations"] == []
+
+
+async def test_agentic_mode_cites_search_materials_results(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    learner = await _get_dev_learner(api_client, db_session)
+    source = await _learner_source(db_session, learner.id)
+    chunk = Chunk(
+        source_id=source.id,
+        ordinal=0,
+        text="The learner's notes say photosynthesis occurs in chloroplasts.",
+        embedding=(await fake_llm_client().embed(ModelRole.EMBED, ["seed"]))[0],
+        provenance={},
+    )
+    db_session.add(chunk)
+    await db_session.commit()
+
+    script = [
+        FakeTurn(tool_calls=[ToolCall(id="t1", name="search_materials", input={"query": "x"})]),
+        FakeTurn(text="Photosynthesis happens in the chloroplasts [1]."),
+    ]
+    client = LLMClient(
+        {"fake": FakeProvider(script=script)}, {r: ModelSpec("fake", "fake-1") for r in ModelRole}
+    )
+    app.dependency_overrides[get_llm_client] = lambda: client
+    try:
+        r = await api_client.post(f"{API}/conversations", json={"title": "Agentic cite test"})
+        conversation_id = r.json()["id"]
+        r = await api_client.post(
+            f"{API}/conversations/{conversation_id}/messages",
+            json={"content": "where does photosynthesis happen?", "mode": "agentic"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+    assert r.status_code == 200, r.text
+
+    done = next(e for e in _parse_sse(r.text) if e["type"] == "done")
+    assert done["citations"] == [
+        {"marker": 1, "chunk_id": str(chunk.id), "source_id": str(source.id)}
+    ]

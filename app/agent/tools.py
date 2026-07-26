@@ -8,7 +8,7 @@ requests.
 
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import trafilatura
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,12 +17,33 @@ from app.core.config import get_settings
 from app.llm import LLMClient, ToolDef
 from app.rag.fetch import Fetcher, FetchError, safe_fetch
 from app.rag.retrieval import RetrievalHit, retrieve
+from app.services.turn_common import format_grounding
 
 _HTML_CONTENT_TYPES = {"text/html", "application/xhtml+xml"}
 _UNSUPPORTED_CONTENT_TYPE_PREFIXES = ("image/", "audio/", "video/")
 _UNSUPPORTED_CONTENT_TYPES = {"application/pdf", "application/octet-stream"}
 
-__all__ = ["Tool", "ToolResult", "build_tools"]
+__all__ = ["CitationAccumulator", "Tool", "ToolResult", "build_tools"]
+
+
+@dataclass
+class CitationAccumulator:
+    """Turn-scoped, ordered record of every chunk ``search_materials`` has retrieved so far.
+
+    The model may call the tool several times in one agentic turn; numbering must stay stable
+    and deduped across all of them — a chunk retrieved again on a later call keeps its first
+    marker number rather than getting a new one. Passed by the caller (``run_agentic_turn``) so
+    it can read the final set after the loop ends; a fresh one per turn, never shared/global.
+    """
+
+    hits: list[RetrievalHit] = field(default_factory=list)
+    _seen: set[uuid.UUID] = field(default_factory=set)
+
+    def add(self, hits: Sequence[RetrievalHit]) -> None:
+        for hit in hits:
+            if hit.chunk_id not in self._seen:
+                self._seen.add(hit.chunk_id)
+                self.hits.append(hit)
 
 
 @dataclass(frozen=True)
@@ -51,30 +72,55 @@ def build_tools(
     *,
     learner_id: uuid.UUID,
     subject_id: uuid.UUID | None = None,
+    source_ids: Sequence[uuid.UUID] | None = None,
+    citations: CitationAccumulator | None = None,
     fetch: Fetcher = safe_fetch,
 ) -> list[Tool]:
-    """The tool set for one turn."""
+    """The tool set for one turn. ``citations`` defaults to a fresh, throwaway accumulator when
+    the caller doesn't need to read it back (e.g. most existing tests) — pass one explicitly
+    (``run_agentic_turn`` does) to collect what was cited across the whole turn."""
+    citations = citations if citations is not None else CitationAccumulator()
     return [
-        _search_materials_tool(session, llm, learner_id=learner_id, subject_id=subject_id),
+        _search_materials_tool(
+            session,
+            llm,
+            learner_id=learner_id,
+            subject_id=subject_id,
+            source_ids=source_ids,
+            citations=citations,
+        ),
         _fetch_webpage_tool(fetch=fetch),
     ]
 
 
-def _format_hits(hits: Sequence[RetrievalHit]) -> str:
-    if not hits:
-        return "No relevant passages found in the learner's materials."
-    return "\n".join(f"{i}. [source={h.source_id}] {h.text}" for i, h in enumerate(hits, start=1))
-
-
 def _search_materials_tool(
-    session: AsyncSession, llm: LLMClient, *, learner_id: uuid.UUID, subject_id: uuid.UUID | None
+    session: AsyncSession,
+    llm: LLMClient,
+    *,
+    learner_id: uuid.UUID,
+    subject_id: uuid.UUID | None,
+    source_ids: Sequence[uuid.UUID] | None,
+    citations: CitationAccumulator,
 ) -> Tool:
     async def execute(args: dict[str, object]) -> ToolResult:
         query = args.get("query")
         if not isinstance(query, str) or not query.strip():
             return ToolResult(content="A non-empty query is required.", is_error=True)
-        hits = await retrieve(session, llm, query, learner_id=learner_id, subject_id=subject_id)
-        return ToolResult(content=_format_hits(hits))
+        hits = await retrieve(
+            session,
+            llm,
+            query,
+            learner_id=learner_id,
+            subject_id=subject_id,
+            source_ids=source_ids,
+        )
+        citations.add(hits)
+        # The full accumulated set, not just this call's hits — keeps [N] numbering stable and
+        # consistent across every search_materials call in this turn (see CitationAccumulator).
+        grounding = format_grounding(citations.hits)
+        return ToolResult(
+            content=grounding or "No relevant passages found in the learner's materials."
+        )
 
     return Tool(
         name="search_materials",

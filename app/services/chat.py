@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator, Sequence
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.agent.tutor import TutorState, build_tutor_graph
 from app.core.config import get_settings
@@ -18,11 +19,19 @@ from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.memory import retrieval as memory_retrieval
 from app.memory.retrieval import MemoryHit
-from app.models.chat import Conversation, Message
+from app.models.chat import Conversation, ConversationSource, Message
+from app.rag.retrieval import retrieve
 from app.services import session_runner as session_runner_svc
 from app.services.assessment import item_to_read
 from app.services.lesson_plan import PlanGroundingContext, get_active_step_context
-from app.services.turn_common import TurnEvent, add_message, record_llm_call, to_chat_messages
+from app.services.turn_common import (
+    TurnEvent,
+    add_message,
+    extract_citations,
+    format_grounding,
+    record_llm_call,
+    to_chat_messages,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -55,19 +64,52 @@ async def create_conversation(
     session: AsyncSession,
     learner_id: uuid.UUID,
     title: str | None = None,
+    kind: str = "chat",
     subject_id: uuid.UUID | None = None,
+    source_ids: Sequence[uuid.UUID] = (),
 ) -> Conversation:
-    conversation = Conversation(learner_id=learner_id, title=title, subject_id=subject_id)
+    conversation = Conversation(
+        learner_id=learner_id, title=title, kind=kind, subject_id=subject_id
+    )
     session.add(conversation)
+    await session.flush()
+    for source_id in source_ids:
+        session.add(ConversationSource(conversation_id=conversation.id, source_id=source_id))
     await session.commit()
-    await session.refresh(conversation)
+    await session.refresh(conversation, attribute_names=["conversation_sources"])
     return conversation
 
 
 async def get_conversation(
     session: AsyncSession, conversation_id: uuid.UUID
 ) -> Conversation | None:
-    return await session.get(Conversation, conversation_id)
+    # populate_existing=True: without it, session.get() silently ignores the eager-load option
+    # whenever the object is already in the session's identity map (e.g. a caller fetched it
+    # separately first) — conversation_sources would stay unloaded and .source_ids would try an
+    # unsupported sync lazy-load outside of any awaited ORM operation.
+    return await session.get(
+        Conversation,
+        conversation_id,
+        options=[selectinload(Conversation.conversation_sources)],
+        populate_existing=True,
+    )
+
+
+async def update_conversation_title(
+    session: AsyncSession, conversation: Conversation, title: str
+) -> Conversation:
+    conversation.title = title
+    await session.commit()
+    await session.refresh(conversation)
+    return conversation
+
+
+async def delete_conversation(session: AsyncSession, conversation: Conversation) -> None:
+    # Messages cascade (Conversation.messages: cascade="all, delete-orphan" + FK ondelete
+    # CASCADE); LLMCall.conversation_id is ondelete SET NULL, so the cost/token audit log
+    # survives deletion by design.
+    await session.delete(conversation)
+    await session.commit()
 
 
 async def list_conversations(
@@ -77,6 +119,7 @@ async def list_conversations(
         select(Conversation)
         .where(Conversation.learner_id == learner_id)
         .order_by(Conversation.created_at.desc())
+        .options(selectinload(Conversation.conversation_sources))
     )
     return result.all()
 
@@ -101,6 +144,7 @@ async def run_tutor_turn(
     max_tokens: int,
     goal: str | None = None,
     subject_id: uuid.UUID | None = None,
+    source_ids: Sequence[uuid.UUID] = (),
 ) -> AsyncIterator[TurnEvent]:
     """Persist the user turn, stream the tutor's reply through the graph, then persist it.
 
@@ -112,13 +156,16 @@ async def run_tutor_turn(
     ``subject_id`` (the conversation's, if scoped to one) makes that lookup exact instead of
     the cross-subject heuristic, and additionally resolves a practice item for the active step
     (see ``session_runner.next_item``) attached to the "done" event — the session runner
-    following the plan, not just talking about it.
+    following the plan, not just talking about it. The same ``subject_id`` (plus ``source_ids``,
+    the conversation's explicit narrowing if any) scopes retrieval-grounded citations (Phase 7) —
+    a "general" (subject-less) conversation retrieves nothing and cites nothing, unchanged from
+    before this existed.
 
     Learner-global memory (facts/preferences/summaries from past conversations — see
     ``app.memory.retrieval``) is folded in on every turn, not gated behind ``subject_id``; this
     is what "wires memory into sessions" — write-back is a separate, on-demand step (see
     ``app.services.memory.write_back``). System-prompt order is pinned: base prompt -> goal ->
-    plan-grounding -> memory-note.
+    plan-grounding -> retrieval-grounding -> memory-note.
     """
     messages = to_chat_messages(history)
     messages.append(ChatMessage(role=ChatRole.USER, content=user_content))
@@ -131,6 +178,22 @@ async def run_tutor_turn(
     plan_context = await get_active_step_context(session, learner_id, subject_id=subject_id)
     if plan_context is not None:
         system = f"{system}\n\n{_plan_grounding_note(plan_context)}"
+
+    hits = []
+    if subject_id is not None:
+        hits = await retrieve(
+            session,
+            llm,
+            user_content,
+            learner_id=learner_id,
+            subject_id=subject_id,
+            source_ids=source_ids or None,
+            limit=get_settings().chat_grounding_limit,
+        )
+        grounding = format_grounding(hits)
+        if grounding is not None:
+            system = f"{system}\n\n{grounding}"
+
     memory_hits = await memory_retrieval.retrieve(
         session,
         llm,
@@ -172,8 +235,14 @@ async def run_tutor_turn(
         yield TurnEvent(type="error", detail="generation failed")
         return
 
+    citations = extract_citations(reply, hits)
     assistant = await add_message(
-        session, conversation_id, ChatRole.ASSISTANT.value, reply, model=spec.model
+        session,
+        conversation_id,
+        ChatRole.ASSISTANT.value,
+        reply,
+        model=spec.model,
+        citations=citations,
     )
     cost = cost_usd(spec.model, usage)
     await record_llm_call(
@@ -198,5 +267,10 @@ async def run_tutor_turn(
     )
     item_read = item_to_read(practice_item) if practice_item is not None else None
     yield TurnEvent(
-        type="done", message_id=str(assistant.id), usage=usage, cost_usd=cost, item=item_read
+        type="done",
+        message_id=str(assistant.id),
+        usage=usage,
+        cost_usd=cost,
+        item=item_read,
+        citations=citations,
     )
