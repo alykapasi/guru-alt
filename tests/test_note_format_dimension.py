@@ -2,6 +2,7 @@
 
 import uuid
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning.profile_estimators import DIMENSION_SPECS, EstimatorContext, _estimate_note_format
@@ -46,12 +47,22 @@ async def test_majority_format_emitted(db_session: AsyncSession) -> None:
     estimate, _ = await _estimate_note_format(_ctx(db_session, learner.id))
     assert estimate is not None
     assert estimate.value == "narrative"
-    assert 0.0 <= estimate.uncertainty < 1.0
+    # 3 explicit choices: 2 narrative (share=2/3) → uncertainty=1-2/3=1/3≈0.33
+    assert estimate.uncertainty == pytest.approx(round(1 - 2 / 3, 2))
 
 
 async def test_no_majority_emits_nothing(db_session: AsyncSession) -> None:
     learner = await _learner_with_notes(
         db_session, ["narrative", "outline", "mnemonic", "worked_examples"]
+    )
+    estimate, _ = await _estimate_note_format(_ctx(db_session, learner.id))
+    assert estimate is None
+
+
+async def test_null_formats_excluded_from_count(db_session: AsyncSession) -> None:
+    # 2 explicit + 5 NULL → only 2 explicit count, which is below threshold
+    learner = await _learner_with_notes(
+        db_session, ["outline", "outline", None, None, None, None, None]
     )
     estimate, _ = await _estimate_note_format(_ctx(db_session, learner.id))
     assert estimate is None
