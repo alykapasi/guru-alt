@@ -74,6 +74,18 @@ async def _add_observation(db_session: AsyncSession, learner: Learner, kc: KC) -
     await db_session.flush()
 
 
+async def _add_placement_seed(db_session: AsyncSession, learner: Learner, kc: KC) -> None:
+    db_session.add(
+        LearningEvent(
+            learner_id=learner.id,
+            kc_id=kc.id,
+            event_type="placement_seed",
+            payload={"ability": 0.0, "uncertainty": 1.0, "source": "placement"},
+        )
+    )
+    await db_session.flush()
+
+
 async def _add_message(db_session: AsyncSession, learner: Learner, topic: Topic) -> None:
     conv = Conversation(learner_id=learner.id, subject_id=topic.subject_id)
     db_session.add(conv)
@@ -109,6 +121,22 @@ async def test_no_activity_is_not_stale_and_refresh_is_noop(db_session: AsyncSes
     # refresh with no activity must not call the LLM at all: a script would raise if consumed
     view = await notes_svc.refresh_note(db_session, fake_llm_client(script=[]), learner.id, topic)
     assert view.content_md is None and view.revision_ordinal is None
+
+
+async def test_placement_seed_alone_is_not_stale_and_refresh_is_noop(
+    db_session: AsyncSession,
+) -> None:
+    learner, topic, kc = await _seed(db_session)
+    await _add_placement_seed(db_session, learner, kc)
+    view = await notes_svc.note_view(db_session, learner.id, topic)
+    assert view.stale is False
+    # refresh with only placement_seed activity must not call the LLM: a script would raise if consumed
+    view = await notes_svc.refresh_note(db_session, fake_llm_client(script=[]), learner.id, topic)
+    assert view.content_md is None and view.revision_ordinal is None
+    # sanity: an observation event on the same topic still marks it stale (filter isn't over-broad)
+    await _add_observation(db_session, learner, kc)
+    view = await notes_svc.note_view(db_session, learner.id, topic)
+    assert view.stale is True
 
 
 async def test_no_change_advances_watermark_without_revision(db_session: AsyncSession) -> None:

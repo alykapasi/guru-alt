@@ -96,6 +96,7 @@ async def _has_new_activity(
             LearningEvent.learner_id == learner_id,
             LearningEvent.kc_id.in_(kc_ids),
             LearningEvent.created_at > watermark,
+            LearningEvent.event_type == "observation",
         )
         .limit(1)
     )
