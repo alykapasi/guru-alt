@@ -41,13 +41,23 @@ export interface NoteRevisionSource {
 // raw-fetch approach as onboarding.ts)
 // ============================================================================
 
+/** Mirrors onboarding.ts's `.status`-attaching pattern, plus parses the FastAPI `detail` body
+ * so callers (e.g. NoteView's edit-conflict banner) can surface the backend's own user-facing
+ * message instead of a generic "request failed". */
 async function jfetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE_URL}/api/v1${path}`, {
     headers: { "Content-Type": "application/json" },
     ...init,
   });
   if (!res.ok) {
-    throw new Error(`${init?.method ?? "GET"} ${path} failed: ${res.status}`);
+    const body = (await res.json().catch(() => null)) as { detail?: unknown } | null;
+    const message =
+      typeof body?.detail === "string"
+        ? body.detail
+        : `${init?.method ?? "GET"} ${path} failed: ${res.status}`;
+    const error = new Error(message) as Error & { status?: number };
+    error.status = res.status;
+    throw error;
   }
   return (await res.json()) as T;
 }
