@@ -779,25 +779,57 @@ learner studies, personalized to how they learn, and supplemented (not replaced)
 short-answer/flashcard practice.
 
 **Scope**
-- ☐ `Note` domain model: per-learner, per-topic (KC-tagged), cumulative — distinct from
+- ☑ `Note` domain model: per-learner, per-topic (KC-tagged), cumulative — distinct from
   `ContentBlock` (shared/cached *across* learners) and `Memory` (facts about the learner, not
   learned content itself). See MASTERPLAN §4.9.
-- ☐ Auto-distillation: sessions/turns that cover new material feed a note-building step —
+- ☑ Auto-distillation: sessions/turns that cover new material feed a note-building step —
   notes accumulate as the learner studies a topic, not generated only on request.
-- ☐ Profile-driven note format: the learner's profile shapes the note's presentation (bullet
+- ☑ Profile-driven note format: the learner's profile shapes the note's presentation (bullet
   points / narrative / mnemonics / worked examples / etc.) — a new profile dimension or an
   extension of an existing one (design TBD when this phase starts); reuses `interests`/
   `reading_level` where relevant for grounding/complexity.
-- ☐ Notes UI: browsable per subject/topic, learner-editable (not purely system-maintained),
+- ☑ Notes UI: browsable per subject/topic, learner-editable (not purely system-maintained),
   reflects updates as new sessions add to it.
 
 **DoD:** studying a topic across multiple sessions (e.g. linear algebra) produces a growing,
 readable set of notes in a format suited to that learner, browsable/editable in a dedicated
 notes section, without needing to explicitly ask for them.
 
-> Not started. Deliberately sequenced after the rest of Phase 7 (needs a working chat/session UI
-> to distill notes *from*) and before the eval/auth/hardening phases (9–11) — this is core
-> learning-loop value, not infra polish.
+> **Notes landed — Phase 8 complete.** A per-learner, per-topic note (`Note`, migration `0017`)
+> that grows unprompted as the learner studies, distinct from `ContentBlock` (shared across
+> learners) and `Memory` (facts about the learner). The load-bearing decision is a
+> **substrate/projection split**: the source of truth is a format-neutral, KC-tagged list of
+> *atoms* (`concept` / `example` / `callout` / `learner`) stored as JSONB; the four reading
+> formats (outline / narrative / mnemonic / worked-examples) are cached LLM *projections* of that
+> substrate (`NoteRender`), not separate copies. Switching format is a cheap re-render, never a
+> re-distillation — and every explicit switch is evidence that earns a `note_format` profile
+> dimension (≥3 choices with a strict majority), so the system *learns* a learner's preferred
+> format and applies it as the default via a cascade (explicit choice > learned dimension >
+> conceptual-error heuristic > `outline`).
+>
+> **Notes build by catch-up-on-read, not a background job.** Each note carries a `watermark`;
+> opening (or explicitly refreshing) it distills only the session transcript + graded outcomes
+> accumulated *past* that watermark, then advances it. Activity that turns out to hold nothing
+> note-worthy still advances the watermark (a `no_change` reply, no new revision) so a topic
+> doesn't re-distill the same sibling-topic chatter forever. All distill/absorb/render steps run
+> on the `SMART` role through the registry and are cost-logged per call; a parse failure or a
+> broken invariant keeps the existing note untouched and simply stays stale to retry later.
+>
+> **The one hard guarantee is enforced in code, not merely prompted.** A distill merge that drops
+> a learner-contributed atom is *rejected* (`_learner_atoms_preserved`) — the model may restructure
+> freely but cannot silently delete something the learner wrote. Edit-absorption is the deliberate
+> exception: when the learner edits the rendered note directly, their edit is the authority and
+> *may* delete even their own earlier atoms. Every change (distill / learner-edit / restore)
+> appends an immutable `NoteRevision`; history is browsable with a deterministic, LLM-free "source"
+> view (`mechanical_render`) per revision, and restoring an old revision copies it *forward* as a
+> new revision rather than rewriting history. Eight endpoints back a dedicated `/app/notes` UI
+> (per-subject index with stale badges, `react-markdown` render, format switcher, inline edit,
+> stale "catch-up" banner, and a revision-history drawer).
+>
+> **Known v1 gaps, deferred deliberately:** granularity is topic-level only (no per-KC or
+> cross-topic notes); notes are an *output*, not yet a retrieval source the tutor reads *from*; and
+> the format-switch *event* history isn't recorded — only the current `note_format` majority is,
+> enough to pick a default but not to chart preference drift over time.
 
 ---
 
