@@ -57,3 +57,22 @@ async def test_run_sweep_survives_a_failing_cell(tmp_path) -> None:
     assert len(runs) == 1
     assert runs[0].params["status"] == "failed"
     assert "rubric_pass_rate" not in runs[0].metrics
+
+
+async def test_run_sweep_multi_suite_logs_per_suite_metrics_and_artifacts(tmp_path) -> None:
+    config = SweepConfig.model_validate(
+        {
+            "name": "s",
+            "suites": ["rubric", "kc_tagging"],
+            "axes": {"smart": [{"provider": "fake", "model": "fake-1"}]},
+        }
+    )
+    tracker = FakeTracker()
+    await run_sweep(config, _fake_base('{"score": 1.0}'), tracker, artifact_dir=tmp_path)
+
+    runs = tracker.list_runs()
+    assert len(runs) == 1
+    assert runs[0].params["status"] == "ok"
+    assert "rubric_pass_rate" in runs[0].metrics
+    assert "kc_tagging_pass_rate" in runs[0].metrics
+    assert len(tracker.artifacts[runs[0].name]) == 2  # one artifact per suite

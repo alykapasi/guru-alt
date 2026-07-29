@@ -26,13 +26,28 @@ def pairwise_diff(a: RunRecord, b: RunRecord) -> dict[str, float]:
     return {k: b.metrics.get(k, 0.0) - a.metrics.get(k, 0.0) for k in sorted(keys)}
 
 
-def _format_leaderboard(runs: list[RunRecord]) -> str:
-    ranked = leaderboard(runs)
-    lines = [f"{'run':<28}{'quality':>9}{'cost_usd':>12}", "-" * 49]
+def _default_quality_metric(runs: list[RunRecord]) -> str:
+    """Pick the quality metric to rank on from the runs' logged `suites` param.
+
+    All cells in a sweep share the same suites (from the config), so the first suite of the first
+    run carrying a `suites` param decides the column — e.g. a kc_tagging sweep ranks on
+    `kc_tagging_pass_rate`. Falls back to `rubric_pass_rate` when no suites param is present.
+    """
+    for run in runs:
+        suites = run.params.get("suites", "")
+        first = suites.split(",")[0].strip() if suites else ""
+        if first:
+            return f"{first}_pass_rate"
+    return "rubric_pass_rate"
+
+
+def _format_leaderboard(runs: list[RunRecord], *, quality_metric: str = "rubric_pass_rate") -> str:
+    ranked = leaderboard(runs, quality_metric=quality_metric)
+    lines = [f"{'run':<28}{quality_metric:>22}{'cost_usd':>12}", "-" * 62]
     for run in ranked:
-        quality = run.metrics.get("rubric_pass_rate", float("nan"))
+        quality = run.metrics.get(quality_metric, float("nan"))
         cost = run.metrics.get("cost_usd", float("nan"))
-        lines.append(f"{run.name:<28}{quality:>9.3f}{cost:>12.4f}")
+        lines.append(f"{run.name:<28}{quality:>22.3f}{cost:>12.4f}")
     return "\n".join(lines)
 
 
@@ -50,6 +65,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="sweep-report")
     parser.add_argument("--experiment", help="experiment name to report on")
     parser.add_argument("--compare", nargs=2, metavar=("RUN_A", "RUN_B"))
+    parser.add_argument(
+        "--quality-metric",
+        default=None,
+        help="metric to rank by (default: derived from the run's suites)",
+    )
     args = parser.parse_args()
 
     if not args.experiment:
@@ -68,7 +88,8 @@ def main() -> int:
             return 1
         print(_format_diff(a, b))
     else:
-        print(_format_leaderboard(runs))
+        quality_metric = args.quality_metric or _default_quality_metric(runs)
+        print(_format_leaderboard(runs, quality_metric=quality_metric))
     return 0
 
 

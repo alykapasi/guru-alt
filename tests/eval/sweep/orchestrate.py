@@ -27,17 +27,18 @@ async def run_sweep(
     ``status=failed`` and does not abort the sweep (§10)."""
     for cell in expand(config):
         tracker.start_run(cell.id)
-        tracker.log_params(_cell_params(cell))
         try:
-            reports, cost = await run_cell(cell, base_client, session=session)
-        except Exception as exc:  # provider error / timeout / auth / bad suite — keep going
-            tracker.log_params({"status": "failed", "error": str(exc)[:500]})
+            tracker.log_params(_cell_params(cell))
+            try:
+                reports, cost = await run_cell(cell, base_client, session=session)
+            except Exception as exc:  # provider error / timeout / auth / bad suite — keep going
+                tracker.log_params({"status": "failed", "error": str(exc)[:500]})
+                continue
+            tracker.log_params({"status": "ok"})
+            tracker.log_metrics(_cell_metrics(reports, cost))
+            _log_artifacts(tracker, cell, reports, artifact_dir)
+        finally:
             tracker.end_run()
-            continue
-        tracker.log_params({"status": "ok"})
-        tracker.log_metrics(_cell_metrics(reports, cost))
-        _log_artifacts(tracker, cell, reports, artifact_dir)
-        tracker.end_run()
 
 
 def _cell_params(cell: Cell) -> dict[str, str]:

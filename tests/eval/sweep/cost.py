@@ -31,6 +31,9 @@ class CostTrackingClient(LLMClient):
     ``stream`` and ``embed`` are delegated **untracked**: the swept chat suites use ``complete``,
     and ``embed`` returns no ``Usage`` to price. Embedding/streaming cost is out of scope for the
     model-selection metric (which sweeps chat roles).
+
+    Build the cell client as ``CostTrackingClient(base.with_roles(...))`` — wrap *after*
+    ``with_roles``; the inherited ``with_roles`` returns a plain ``LLMClient`` and would drop tracking.
     """
 
     def __init__(self, inner: LLMClient) -> None:
