@@ -26,7 +26,7 @@
 - `tests/eval/harness.py` — a data-driven eval harness: Pydantic case models, JSON case files (`tests/eval/cases/*.json`), and scorers returning an `EvalReport` (with `pass_rate` and `MAE`). Six suites: `grading`/`tracer` (deterministic, no model), `rubric`/`kc_tagging` (live model), `retrieval` (DB + embeddings), `grounding` (citation contract, scripted model). Scorers that need a model take an `LLMClient` argument.
 - `poe eval` → `python -m tests.eval.harness` → runs only the two deterministic suites as the CI gate.
 - `app/llm/registry.py` — maps roles (`FAST`/`SMART`/`GENIUS`/`EMBED`) to `(provider, model)` per environment; `fake_llm_client(...)` builds a `FakeProvider`-backed client.
-- `app/llm/pricing.py` — `cost_usd(model: str, usage: Usage) -> float` over a `_PRICES` table; `Usage` has `input_tokens`, `output_tokens`, `.total`.
+- `app/llm/pricing.py` — `cost_usd(model: str, usage: Usage) -> float` over a `_PRICES` table (substring match; unknown/local models price to `$0`); `Usage` has `input_tokens`, `output_tokens`, and a `.total_tokens` property.
 
 ## 2. Architecture
 
@@ -55,7 +55,7 @@ Each is a focused unit with a well-defined interface.
 
 ### 3.3 Cell runner
 - **Does:** for one `Cell` — build a fresh `LLMClient` whose role→model map is the cell's `role_overrides` (falling back to the ambient env map for roles the cell doesn't override), wrap it in the cost-instrumented client, run the cell's selected harness scorers over the existing cases, and return `(list[EvalReport], CostSummary)`.
-- **Suites in scope:** the genuinely model-driven scorers — `rubric` (SMART-role grading), `kc_tagging` (tagging model), `retrieval` (EMBED-role embeddings + retrieval-time LLM use). A sweep config selects the subset that exercises the role it varies. **Excluded:** `grading`/`tracer` (deterministic, no model) and `grounding` (its scorer builds a *scripted* fake client internally — it's a citation-**contract** test, constant across models, not a quality target).
+- **Suites in scope:** the genuinely model-driven scorers — `rubric` (**SMART**-role grading), `kc_tagging` (**FAST**-role tagging), `retrieval` (**EMBED**-role embeddings). A sweep config selects the subset that exercises the role(s) it varies — so a SMART sweep runs `rubric`, a FAST sweep runs `kc_tagging`, an EMBED sweep runs `retrieval`. **Excluded:** `grading`/`tracer` (deterministic, no model) and `grounding` (its scorer builds a *scripted* fake client internally — it's a citation-**contract** test, constant across models, not a quality target).
 - **Depends on:** the harness scorers (reused as-is), the registry's client-construction path, a DB session for `retrieval`.
 
 ### 3.4 `Tracker` protocol + impls
@@ -74,10 +74,10 @@ A sweep file declares axes; the runner takes their cartesian product. Illustrati
 
 ```yaml
 name: role-selection-v1
-suites: [rubric, kc_tagging]   # the suites that exercise the swept role (SMART here)
+suites: [rubric]     # the suite that exercises the swept role (rubric → SMART; kc_tagging → FAST)
 axes:
   SMART:            # candidate models for the SMART role
-    - {provider: openrouter, model: claude-sonnet-5}
+    - {provider: openrouter, model: claude-sonnet-4-6}
     - {provider: openrouter, model: claude-opus-4-8}
     - {provider: ollama,     model: <a-cheap-oss-model>}
   # roles not listed here stay at the ambient env mapping
@@ -108,7 +108,9 @@ The model-role sweep already exercises the ablation machinery (cell A vs cell B 
 
 ## 8. First experiment (the end-to-end proof)
 
-**Model-role selection + cost.** A `role-selection-v1.yaml` sweeps the `SMART` role across a small candidate set (a frontier model, a mid model, a cheap OSS model), runs the suites that exercise SMART (`rubric`, `kc_tagging`) over the existing cases, logs quality + cost per cell to MLflow. **Output:** a leaderboard that supports statements like *"SMART=sonnet-5 reaches 96% of opus's rubric/kc-tagging quality at 18% of the cost."* Running this end-to-end (config → cells → priced runs → leaderboard) is the definition of done for the foundation.
+**Model-role selection + cost.** A `role-selection-v1.yaml` sweeps the `SMART` role across a small candidate set (a frontier model, a mid model, a cheap OSS model), runs the suite that exercises SMART (`rubric`) over the existing cases, logs quality + cost per cell to MLflow. **Output:** a leaderboard that supports statements like *"SMART=sonnet-4-6 reaches 96% of opus's rubric quality at 18% of the cost."* Running this end-to-end (config → cells → priced runs → leaderboard) is the definition of done for the foundation.
+
+`kc_tagging` is the identical pattern one tier down — a **FAST**-role axis scored by the `kc_tagging` suite (KC tagging runs on `FAST`, not SMART). The runner supports it as a one-line config sibling; it's deliberately kept out of the first config to keep the DoD single-role and the live-walkthrough call count minimal (candidate models are all in `_PRICES` or intentionally `$0` local).
 
 ## 9. Execution & `poe` wiring
 
