@@ -1,0 +1,10 @@
+name: role-selection-v1
+suites: [rubric]          # rubric exercises the SMART role
+axes:
+  smart:                  # candidate models for the SMART role
+    - {provider: openrouter, model: claude-opus-4-8}
+    - {provider: openrouter, model: claude-sonnet-4-6}
+    - {provider: ollama,     model: llama3.1:8b}   # adjust to a model you have pulled
+gen_config:
+  - {}
+toggles: {}

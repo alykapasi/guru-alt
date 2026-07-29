@@ -36,3 +36,6 @@ htmlcov/
 .env
 .env.local
 .env.*.local
+
+# MLflow local tracking store (experiment sweeps)
+mlruns/

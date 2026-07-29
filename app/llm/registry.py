@@ -39,6 +39,14 @@ class LLMClient:
     def spec(self, role: ModelRole) -> ModelSpec:
         return self._roles[role]
 
+    def with_roles(self, overrides: dict[ModelRole, "ModelSpec"]) -> "LLMClient":
+        """A new client sharing this client's providers, with ``overrides`` merged over its roles.
+
+        The sweep builds one fresh client per cell (D9); this never mutates ``self``. Providers are
+        stateless connection holders, so sharing them across the two clients is safe.
+        """
+        return LLMClient(self._providers, {**self._roles, **overrides})
+
     def _resolve(self, role: ModelRole) -> tuple[LLMProvider, str]:
         spec = self._roles[role]
         return self._providers[spec.provider], spec.model
