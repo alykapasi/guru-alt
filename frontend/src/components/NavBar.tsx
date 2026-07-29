@@ -1,11 +1,12 @@
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, MessageSquare, NotebookText, Upload } from "lucide-react";
+import { BookOpen, LayoutDashboard, MessageSquare, NotebookText, Upload } from "lucide-react";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
 
 const LINKS = [
   { to: "/app/chat", label: "Chat", icon: MessageSquare },
   { to: "/app/lessons", label: "Lessons", icon: NotebookText },
+  { to: "/app/notes", label: "Notes", icon: BookOpen },
   { to: "/app/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/app/uploads", label: "Uploads", icon: Upload },
 ];

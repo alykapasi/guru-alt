@@ -159,6 +159,12 @@ class Settings(BaseSettings):
     # more here than in a one-off tool call.
     chat_grounding_limit: int = 5
 
+    # Notes (Phase 8). Caps on what one catch-up distillation reads — cost/UX bounds, same
+    # idiom as memory_extraction_window. Messages come from subject-scoped conversations
+    # past the note's watermark; outcome events from the topic's KCs.
+    note_distill_max_messages: int = 150
+    note_distill_max_outcome_events: int = 50
+
     @property
     def runtime_typecheck(self) -> bool:
         """Whether beartype runtime checks should be active (dev/test only)."""

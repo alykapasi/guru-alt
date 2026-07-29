@@ -9,6 +9,8 @@ import { Lessons } from "./pages/Lessons";
 import { Session } from "./pages/Session";
 import { Dashboard } from "./pages/Dashboard";
 import { Uploads } from "./pages/Uploads";
+import { Notes } from "./pages/Notes";
+import { NoteView } from "./pages/NoteView";
 import { SubjectWizard } from "./pages/SubjectWizard";
 
 /** Keys Chat on conversationId so switching conversations remounts it fresh — its local
@@ -42,6 +44,8 @@ function App() {
           <Route path="lessons" element={<Lessons />} />
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="uploads" element={<Uploads />} />
+          <Route path="notes" element={<Notes />} />
+          <Route path="notes/:topicId" element={<NoteView />} />
           <Route path="subjects/new" element={<SubjectWizard />} />
         </Route>
       </Routes>

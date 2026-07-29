@@ -10,6 +10,7 @@ to this list only, never a migration (see ``app/models/profile.py``).
 import json
 import statistics
 import uuid
+from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,6 +26,7 @@ from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
 from app.models.assessment import Item, ItemType
 from app.models.chat import Conversation, Message
 from app.models.learning import LearningEvent
+from app.models.note import Note
 
 PROFILE_LLM_ROLE = ModelRole.FAST
 """Every LLM-backed profile estimator is a cheap classification task — the FAST tier."""
@@ -553,6 +555,35 @@ async def _estimate_format_effectiveness(
     return DimensionEstimate(value=value, uncertainty=_uncertainty(total)), Usage()
 
 
+# --- Context & preferences: note format -------------------------------------
+
+NOTE_FORMAT_MIN_CHOICES = 3
+
+
+async def _estimate_note_format(
+    ctx: EstimatorContext,
+) -> tuple[DimensionEstimate | None, Usage]:
+    """The learner's settled note format, read from real explicit ``Note.format`` choices.
+
+    No behavioral signal for written-material preference exists before notes ship, so this
+    dimension is *earned* from the format toggle itself (spec §6.3): >= 3 explicit choices
+    with a strict majority - value = the majority format, uncertainty = 1 - its share.
+    Anything less emits nothing and the notes format-cascade falls through to heuristics.
+    """
+    rows = await ctx.session.scalars(
+        select(Note.format).where(Note.learner_id == ctx.learner_id, Note.format.is_not(None))
+    )
+    choices = list(rows.all())
+    if len(choices) < NOTE_FORMAT_MIN_CHOICES:
+        return None, Usage()
+    counts = Counter(choices)
+    fmt, top = counts.most_common(1)[0]
+    if top * 2 <= len(choices):  # need a strict majority, not a plurality
+        return None, Usage()
+    share = top / len(choices)
+    return DimensionEstimate(value=fmt, uncertainty=round(1.0 - share, 2)), Usage()
+
+
 DIMENSION_SPECS: list[DimensionSpec] = [
     DimensionSpec(key="pace", kind="trait", source="behavioral", estimate=_estimate_pace),
     DimensionSpec(
@@ -600,6 +631,9 @@ DIMENSION_SPECS: list[DimensionSpec] = [
         kind="trait",
         source="behavioral",
         estimate=_estimate_format_effectiveness,
+    ),
+    DimensionSpec(
+        key="note_format", kind="trait", source="behavioral", estimate=_estimate_note_format
     ),
 ]
 """The dimension catalog. Populated incrementally (see the learner-profile plan's commit

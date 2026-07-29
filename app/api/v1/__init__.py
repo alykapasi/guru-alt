@@ -10,6 +10,7 @@ from app.api.v1 import (
     knowledge,
     lesson_plan,
     memory,
+    notes,
     onboarding,
     placement,
     profile,
@@ -26,5 +27,6 @@ api_router.include_router(placement.router)
 api_router.include_router(profile.router)
 api_router.include_router(lesson_plan.router)
 api_router.include_router(memory.router)
+api_router.include_router(notes.router)
 api_router.include_router(analytics.router)
 api_router.include_router(onboarding.router)

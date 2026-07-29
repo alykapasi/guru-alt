@@ -16,8 +16,10 @@ from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
 from app.llm.types import ChatMessage, ChatResponse, ModelRole, ToolDef, Usage, text_of
 from app.models.assessment import Item, ItemType
 from app.models.chat import Conversation, LLMCall, Message
+from app.models.knowledge import Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearningEvent
+from app.models.note import Note
 from app.models.profile import LearnerProfile, ProfileDimension
 from app.services import profile as svc
 
@@ -184,6 +186,16 @@ async def _rich_learner(session: AsyncSession) -> Learner:
         _obs(learner.id, score=1.0, latency_ms=3000, minutes_offset=2000 + i * 5) for i in range(3)
     ]
     session.add_all(session1 + session2)
+
+    # Add explicit note format choices for note_format dimension
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="S")
+    session.add(subject)
+    await session.flush()
+    for fmt in ["outline", "outline", "outline", "narrative"]:
+        topic = Topic(subject_id=subject.id, slug=f"t-{uuid.uuid4().hex[:8]}", name="T")
+        session.add(topic)
+        await session.flush()
+        session.add(Note(learner_id=learner.id, topic_id=topic.id, format=fmt))
 
     conversation = Conversation(
         learner_id=learner.id,
