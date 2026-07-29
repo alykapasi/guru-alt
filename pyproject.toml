@@ -66,6 +66,7 @@ format-check = "ruff format --check ."
 db-upgrade = "alembic upgrade head"
 db-downgrade = "alembic downgrade -1"
 eval = "python -m tests.eval.harness"
+sweep = "python -m tests.eval.sweep"
 hooks-install = "pre-commit install"
 hooks = "pre-commit run --all-files"
 check.sequence = ["lint", "type-check", "test"]
