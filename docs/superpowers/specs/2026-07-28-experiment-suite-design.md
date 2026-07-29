@@ -16,7 +16,7 @@
 | D8 | **Config = declarative YAML** under `tests/eval/experiments/`; **code lives in `tests/eval/`**, run standalone (not pytest-collected). | Matches the roadmap's "extend the existing harness (`tests/eval/`, `poe eval`)" and the harness's "cases as data" ethos. |
 | D9 | **Cells build a fresh `LLMClient` with an overridden role→model map**, never mutate the global registry. | Isolation: no cross-cell leakage; the alternative (monkeypatching the global registry per cell) is stateful and leak-prone. |
 
-**Deferred to later specs (out of scope here):** real-data dataset construction from the event log (9b); DSPy-compilable modules + offline compilation (9c). See §12.
+**Deferred to later specs (out of scope here):** real-data dataset construction from the event log (9b); DSPy-compilable modules + offline compilation (9c). See §12. The full catalog of experiments this foundation serves — and the offline/online split that decides which *machine* runs each — is mapped in §14.
 
 ## 1. Goal & context
 
@@ -140,7 +140,8 @@ The **live** sweep stays a manual tool, validated by actually running `role-sele
 
 **Explicitly deferred:**
 - **9b — real-data datasets** from the `LearningEvent` log (mining real inputs + the ground-truth labeling story: strong-model-as-judge / human review / downstream-outcome signal).
-- **9c — DSPy optimization** (introduce DSPy-compilable modules for grading/refinement-gate/content-generation behind a prompt seam; compile offline against 9b datasets + 9a metrics; report deltas vs hand-written prompts).
+- **9c — DSPy optimization** (introduce DSPy-compilable modules behind a **prompt seam that spans the whole prompt surface** — user-facing tutoring prompts *and* system prompts, agentic/LangGraph node instructions, and the pipeline's guiding prompts for grading/refinement-gate/content-generation/distillation; compile offline against 9b datasets + 9a metrics; report deltas vs hand-written prompts).
+- **Latency / speed capture** — deliberately out of 9a (see §14). Dev hardware is severely suboptimal; moving a role to a real serving path (OpenRouter/Groq/self-hosted on proper infra) improves tok/s for free, so latency only becomes a real signal once roles run on representative infra. The cost-instrumented client (§3.2) is where a per-call timer slots in when that time comes.
 - **YAGNI now:** additional ablation toggles beyond the one proof toggle; prompt-variant sweeping at scale (no prompt seam exists yet — that arrives with 9c); any MLflow surface beyond tracking (registry/serving/deployment); making the sweep a CI gate.
 
 ## 13. New dependencies
@@ -148,3 +149,30 @@ The **live** sweep stays a manual tool, validated by actually running `role-sele
 - `mlflow` (tracking + local UI). Added as a dev/experiment dependency, not a runtime app dependency.
 - `PyYAML` promoted to a direct dependency (already present transitively in the lock).
 - `app/` runtime code is **not** touched except possibly to expose **one** ablation-toggle config seam (§7); the sweep is otherwise additive under `tests/eval/`.
+
+## 14. Experiment landscape (the governing map)
+
+9a is the *measurement foundation*; this section records the full catalog of experiments it is the foundation **for**, so 9b, 9c, and the future online-experimentation phase each have a named home instead of being re-derived every time. It is a map, not a backlog commitment — each item lands when its phase does.
+
+**The load-bearing split — offline vs online.** Every experiment falls on one side of a hard line, and the line decides which *machine* runs it:
+
+- **Offline / reference-scored** — hold a config fixed, run it against a fixed dataset, score against gold. Cheap, repeatable, fast, no real users. This is the 9a sweep runner (and everything 9b/9c layer onto it).
+- **Online / behavior-scored** — assign *real learners* to variants and measure behavior/outcomes over time (retention, completion, mastery velocity). Needs learner bucketing + event instrumentation + statistical significance — a separate substrate 9a cannot provide, and therefore a distinct future phase, not a 9a/9b/9c item.
+
+| Experiment | Optimizes | Machine | Home |
+|---|---|---|---|
+| Model-role selection (per-role model choice) | cost · quality | offline sweep | **9a** |
+| Generation config (temperature, thinking budget, max_tokens) | quality · cost | offline sweep | **9a** |
+| Retrieval config (hybrid vs vector, HNSW ef/m, chunk size, top-k) | quality · cost | offline sweep | **9a** (toggle/axis) |
+| Prompt caching / batching on non-interactive grading & distillation | cost | offline sweep | **9a** (toggle) |
+| Embedding model + dimensionality | quality · cost | offline sweep | **9a** |
+| Grading / tracer / KC-tagging accuracy vs *expanded* gold | quality | offline sweep | **9b** (needs labeled data) |
+| Note-distillation faithfulness / coverage | quality | offline sweep | **9b** (needs scorer + data) |
+| Prompt composition — user-facing *and* system/agentic/pipeline prompts | quality · cost | offline sweep | **9c** (needs prompt seam) |
+| Lesson-plan policy (does it accelerate mastery?) | learning outcome | simulated learners | closed-loop sim (future) |
+| Note format · gamification · scaffolding/pacing | UX · outcome | online A/B | online-experimentation phase (future) |
+| Durable-learning north star (1-wk / 1-mo retention) | outcome | online A/B | online-experimentation phase (future) |
+
+**Latency / speed — explicit placeholder, deliberately out of 9a.** Latency is offline-measurable through the same cost-instrumentation seam (§3.2), but is *not* captured now: dev hardware is severely suboptimal (Ollama on a workstation), and moving any role to a real serving path (OpenRouter, Groq, a self-hosted model on proper infra) improves tok/s automatically. Measuring latency against today's hardware would optimize the wrong variable. Revisit once roles run on representative infra.
+
+**Prompt composition (9c) scope note.** The 9c prompt seam is not only the user-facing tutoring prompt — it spans the whole prompt surface: system prompts, agentic/LangGraph node instructions, and the pipeline's guiding prompts (distillation, grading, refinement gate, content assembly). DSPy compiles against the same seam. The 9a cell model already has room for a plain `prompt_variant` axis, so 9c adds the seam, not new runner machinery.
