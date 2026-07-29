@@ -2,7 +2,7 @@
 
 import pytest
 
-from tests.eval.sweep.report import leaderboard, pairwise_diff
+from tests.eval.sweep.report import _format_diff, _format_leaderboard, leaderboard, pairwise_diff
 from tests.eval.sweep.tracking import RunRecord
 
 
@@ -24,3 +24,16 @@ def test_pairwise_diff_is_b_minus_a() -> None:
     diff = pairwise_diff(_run("a", 0.8, 0.5), _run("b", 0.95, 0.1))
     assert diff["rubric_pass_rate"] == pytest.approx(0.15)
     assert diff["cost_usd"] == pytest.approx(-0.4)
+
+
+def test_format_leaderboard_orders_best_first() -> None:
+    out = _format_leaderboard([_run("mid", 0.9, 0.2), _run("top", 1.0, 0.5)])
+    body = [line for line in out.splitlines() if line.startswith(("top", "mid"))]
+    assert body[0].startswith("top") and body[1].startswith("mid")
+
+
+def test_format_diff_shows_signed_deltas() -> None:
+    out = _format_diff(_run("a", 0.8, 0.5), _run("b", 0.95, 0.1))
+    assert "b" in out and "a" in out
+    assert "+0.1500" in out  # rubric_pass_rate delta
+    assert "-0.4000" in out  # cost_usd delta
