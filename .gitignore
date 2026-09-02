@@ -39,3 +39,6 @@ htmlcov/
 
 # MLflow local tracking store (experiment sweeps)
 mlruns/
+
+# Mined real-data eval datasets (Phase 9b) — never committed
+tests/eval/datasets/*.json
