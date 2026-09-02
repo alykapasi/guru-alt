@@ -68,6 +68,7 @@ db-downgrade = "alembic downgrade -1"
 eval = "python -m tests.eval.harness"
 sweep = "python -m tests.eval.sweep"
 sweep-report = "python -m tests.eval.sweep.report"
+build-calibration-dataset = "python -m tests.eval.datasets"
 hooks-install = "pre-commit install"
 hooks = "pre-commit run --all-files"
 check.sequence = ["lint", "type-check", "test"]
