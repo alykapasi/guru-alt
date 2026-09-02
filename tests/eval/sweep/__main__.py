@@ -22,7 +22,10 @@ async def _run(config_path: str) -> None:
     config = load_sweep_config(config_path)
     base_client = build_llm_client(get_settings())
     tracker = MLflowTracker(experiment=config.name)
-    artifact_dir = Path("mlruns") / "artifacts" / config.name
+    # Stage artifacts OUTSIDE the MLflow store root: a dir under mlruns/ is scanned as a
+    # (malformed) experiment by `sweep-report`, spamming tracebacks. run_sweep also logs each
+    # artifact into MLflow's own per-run store, so this is only a local staging location.
+    artifact_dir = Path("sweep-artifacts") / config.name
     await run_sweep(config, base_client, tracker, artifact_dir=artifact_dir)
     print(f"sweep '{config.name}' complete — view with: uv run mlflow ui")
 

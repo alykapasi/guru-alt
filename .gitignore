@@ -40,5 +40,8 @@ htmlcov/
 # MLflow local tracking store (experiment sweeps)
 mlruns/
 
+# Sweep artifact staging dir (kept outside mlruns/ so it isn't scanned as an experiment)
+sweep-artifacts/
+
 # Mined real-data eval datasets (Phase 9b) — never committed
 tests/eval/datasets/*.json
