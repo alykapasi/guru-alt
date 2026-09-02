@@ -13,6 +13,7 @@ from app.learning.tracer import Estimate, GlickoEstimator, MasteryEstimator
 from tests.eval.datasets.models import CalibrationDataset
 
 _N_BUCKETS = 5
+_DEFAULT_ESTIMATOR: MasteryEstimator = GlickoEstimator()
 
 
 class ReliabilityBucket(BaseModel):
@@ -35,14 +36,12 @@ class CalibrationReport(BaseModel):
 def score_tracer_calibration(
     dataset: CalibrationDataset,
     *,
-    estimator: MasteryEstimator | None = None,
+    estimator: MasteryEstimator = _DEFAULT_ESTIMATOR,
     tolerance: float = 0.15,
 ) -> CalibrationReport:
     """Prequential (predict-then-update) replay; MAE/RMSE + a reliability table over all
     steps.
     """
-    if estimator is None:
-        estimator = GlickoEstimator()
     pairs: list[tuple[float, float]] = []  # (predicted, actual) across all sequences
     sequences_passed = 0
     for seq in dataset.sequences:

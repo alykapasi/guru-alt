@@ -45,10 +45,12 @@ async def mine_observation_sequences(
 
 def _step_of(event: LearningEvent) -> Step | None:
     try:
-        return Step(
-            score=float(event.payload["score"]),
-            difficulty=float(event.payload["difficulty"]),
-        )
+        score = float(event.payload["score"])
+        difficulty = float(event.payload["difficulty"])
     except (KeyError, TypeError, ValueError):
         log.warning("mine.skip_malformed_observation", event_id=str(event.id))
         return None
+    if not 0.0 <= score <= 1.0:
+        log.warning("mine.skip_malformed_observation", event_id=str(event.id))
+        return None
+    return Step(score=score, difficulty=difficulty)

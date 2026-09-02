@@ -80,5 +80,22 @@ async def test_mine_skips_malformed_payload(db_session: AsyncSession) -> None:
     assert [s.score for s in dataset.sequences[0].steps] == [1.0, 0.5, 0.0]
 
 
+async def test_mine_skips_out_of_range_score(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    kc = await _kc(db_session, "kc")
+    t0 = datetime(2026, 1, 1, 12, 0, 0)
+    db_session.add(_obs(learner.id, kc.id, 1.0, 0.0, t0))
+    db_session.add(_obs(learner.id, kc.id, 0.5, 0.5, t0 + timedelta(minutes=1)))
+    db_session.add(_obs(learner.id, kc.id, 5.0, 0.0, t0 + timedelta(minutes=2)))
+    db_session.add(_obs(learner.id, kc.id, 0.0, 1.0, t0 + timedelta(minutes=3)))
+    await db_session.flush()
+
+    dataset = await mine_observation_sequences(db_session, min_length=3)
+
+    assert len(dataset.sequences) == 1
+    # the out-of-range observation is skipped; the 3 valid ones remain, in order
+    assert [s.score for s in dataset.sequences[0].steps] == [1.0, 0.5, 0.0]
+
+
 async def test_mine_empty_log_returns_empty(db_session: AsyncSession) -> None:
     assert (await mine_observation_sequences(db_session)).sequences == []
