@@ -838,13 +838,13 @@ notes section, without needing to explicitly ask for them.
 **Goal:** know which prompts, models, and configurations are actually optimal — measured, not guessed.
 
 **Scope**
-- ☐ Extend the existing eval harness (`tests/eval/`, `poe eval`) into a **config-sweep / ablation
+- ☑ Extend the existing eval harness (`tests/eval/`, `poe eval`) into a **config-sweep / ablation
   runner**: parameterize experiments over the model-role registry (which model backs
   `FAST`/`SMART`/`GENIUS`/`EMBED`), prompt variants, and generation configs; run the golden + live
-  suites across the sweep matrix.
-- ☐ **MLflow — tracking subset only**: log params/metrics/artifacts per run to a local file-backed
+  suites across the sweep matrix. *(9a)*
+- ☑ **MLflow — tracking subset only**: log params/metrics/artifacts per run to a local file-backed
   store with the run-comparison UI. Deliberately **no** model registry / serving / deployment
-  surface (avoids the overkill parts). Behind a thin seam so the tracking backend stays swappable.
+  surface (avoids the overkill parts). Behind a thin seam so the tracking backend stays swappable. *(9a)*
 - ☐ **Experiment datasets from the KC-tagged event log**: build reusable eval sets (grading,
   refinement gate, content generation, retrieval, KC-tagging) from real logged interactions — the
   substrate the swappable-tracer + KC-tagged event log were designed to earn from day one.
@@ -858,8 +858,38 @@ notes section, without needing to explicitly ask for them.
 side-by-side comparison, ablations are reproducible, and DSPy-compiled modules are measured against
 the hand-written baselines on real-data eval sets.
 
-> Not started. Sequenced before auth/hardening on purpose: the alpha/beta rollout should be informed
-> by measured prompt/model/config choices, not locked in blind.
+> Sequenced before auth/hardening on purpose: the alpha/beta rollout should be informed by measured
+> prompt/model/config choices, not locked in blind. In progress — 9a + 9b landed, DSPy + more
+> datasets + real ablation axes remain.
+>
+> **9a — sweep & ablation runner + MLflow tracking landed** (scope items 1–2). An offline
+> config-sweep runner under `tests/eval/sweep/` (namespace pkg): a declarative YAML matrix (`axes` =
+> candidate models per role × `gen_config` × `toggles`) expands into fully-resolved cells; each cell
+> runs the golden/live harness suites through a `CostTrackingClient` that meters token `Usage` per
+> (role, model) and prices it, then logs one MLflow run (params, metrics, per-case report artifact).
+> A failed cell logs `status=failed` and never aborts the sweep. The tracking backend sits behind a
+> `Tracker` seam (`FakeTracker` for tests, a local-file `MLflowTracker` for real runs) — tracking
+> subset only, no registry/serving/deployment. `poe sweep <config.yaml>` runs it; `poe sweep-report`
+> renders a leaderboard (quality desc, cost tie-break) and a pairwise ablation diff. One concrete
+> ablation toggle is wired end-to-end (`strict_kc_tagging` flips the scorer's confidence gate) as
+> the proof-of-shape for item 5.
+>
+> **9b — real-data mining pipeline + first dataset landed** (scope item 3, pipeline-first). A
+> `tests/eval/datasets/` subpackage mirroring the sweep one. It mines the `LearningEvent` observation
+> log into per-`(learner, KC)` sequences and scores the tracer's forward model with **prequential
+> (predict-then-update) replay** through the *production* estimator (`app.learning.tracer`) — a
+> **label-free** eval (ground truth = the next observation) with **zero app changes**, so it can't
+> drift from what ships. A deterministic synthetic generator is the CI gate; the real mine is a
+> manual `poe build-calibration-dataset` writing a **gitignored** dataset (no learner data is ever
+> committed). Deliberately pipeline-first: the reusable machinery + the first dataset (tracer
+> calibration) landed. A follow-up fix stages sweep artifacts outside `mlruns/` so `sweep-report`
+> output stays clean.
+>
+> **Still open in Phase 9:** the remaining real-data datasets — grading / refinement-gate / content /
+> retrieval / KC-tagging (item 3); the **DSPy optimization workstream** (item 4, next — "9c", widened
+> to cover user-facing *and* system/agentic/pipeline guiding prompts); and the real ablation axes
+> (item 5 — hybrid-vs-vector retrieval, refinement gate on/off, memory on/off; only the pairwise-diff
+> report + one proof toggle exist so far).
 
 ---
 
