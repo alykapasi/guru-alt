@@ -2,25 +2,414 @@
   {
     "id": "photosynthesis-single-kc",
     "text": "Photosynthesis converts light energy into chemical energy: chlorophyll in the chloroplasts absorbs sunlight, which drives the reactions that build glucose from carbon dioxide and water, releasing oxygen.",
-    "candidates": ["Photosynthesis", "Cellular respiration", "Plate tectonics"],
-    "expect": [1]
+    "candidates": [
+      "Photosynthesis",
+      "Cellular respiration",
+      "Plate tectonics"
+    ],
+    "expect": [
+      1
+    ]
   },
   {
     "id": "newton-second-law-single-kc",
     "text": "Newton's second law of motion states that the net force on an object equals its mass times its acceleration, so a heavier object needs a larger force to reach the same acceleration.",
-    "candidates": ["Newton's laws of motion", "Thermodynamics", "Wave optics"],
-    "expect": [1]
+    "candidates": [
+      "Newton's laws of motion",
+      "Thermodynamics",
+      "Wave optics"
+    ],
+    "expect": [
+      1
+    ]
   },
   {
     "id": "calculus-two-kcs",
     "text": "Differentiation gives the instantaneous rate of change of a function, and integration reverses it to recover the accumulated area under the curve; together they are tied by the fundamental theorem of calculus.",
-    "candidates": ["Differentiation", "Integration", "Linear algebra"],
-    "expect": [1, 2]
+    "candidates": [
+      "Differentiation",
+      "Integration",
+      "Linear algebra"
+    ],
+    "expect": [
+      1,
+      2
+    ]
   },
   {
     "id": "distractor-teaches-none",
     "text": "To fold a fitted bedsheet, tuck each corner into the next, smooth out the elastic edge, and fold the resulting rectangle into thirds before stacking it in the closet.",
-    "candidates": ["Organic chemistry", "Photosynthesis", "Roman history"],
+    "candidates": [
+      "Organic chemistry",
+      "Photosynthesis",
+      "Roman history"
+    ],
+    "expect": []
+  },
+  {
+    "id": "mitosis-single-kc",
+    "text": "During mitosis, a single cell duplicates its chromosomes and then divides once to produce two genetically identical daughter cells, each with the same chromosome number as the parent.",
+    "candidates": [
+      "Meiosis",
+      "Mitosis",
+      "DNA replication"
+    ],
+    "expect": [
+      2
+    ]
+  },
+  {
+    "id": "meiosis-near-miss-replication",
+    "text": "Meiosis produces four genetically distinct gametes, each with half the chromosome number of the parent cell, through two successive divisions following one round of DNA replication.",
+    "candidates": [
+      "Meiosis",
+      "DNA replication",
+      "Mitosis"
+    ],
+    "expect": [
+      1
+    ]
+  },
+  {
+    "id": "ohms-law-single-kc",
+    "text": "Ohm's law states that the current through a conductor is directly proportional to the voltage across it and inversely proportional to its resistance, expressed as V = IR.",
+    "candidates": [
+      "Ohm's law",
+      "Kirchhoff's laws",
+      "Electromagnetic induction"
+    ],
+    "expect": [
+      1
+    ]
+  },
+  {
+    "id": "kirchhoff-and-ohm-multi-kc",
+    "text": "To solve the circuit, apply Kirchhoff's voltage law to sum the voltage drops around the loop to zero, then use Ohm's law to convert each drop into a current through the known resistance.",
+    "candidates": [
+      "Kirchhoff's laws",
+      "Ohm's law",
+      "Electromagnetic induction"
+    ],
+    "expect": [
+      1,
+      2
+    ]
+  },
+  {
+    "id": "french-revolution-single-kc",
+    "text": "The French Revolution began in 1789 when financial crisis and widespread food shortages led the Third Estate to storm the Bastille, toppling the absolute monarchy of Louis XVI.",
+    "candidates": [
+      "French Revolution",
+      "American Revolution",
+      "Industrial Revolution"
+    ],
+    "expect": [
+      1
+    ]
+  },
+  {
+    "id": "industrial-revolution-near-miss-french",
+    "text": "The Industrial Revolution transformed manufacturing through steam power and mechanized textile mills, shifting economies from agrarian to factory-based production across Britain and beyond, decades before upheavals like the French Revolution reshaped politics on the continent.",
+    "candidates": [
+      "French Revolution",
+      "Industrial Revolution",
+      "American Revolution"
+    ],
+    "expect": [
+      2
+    ]
+  },
+  {
+    "id": "pythagorean-theorem-single-kc",
+    "text": "The Pythagorean theorem states that in a right triangle, the square of the hypotenuse equals the sum of the squares of the other two sides, written as a squared plus b squared equals c squared.",
+    "candidates": [
+      "Pythagorean theorem",
+      "Law of cosines",
+      "Trigonometric identities"
+    ],
+    "expect": [
+      1
+    ]
+  },
+  {
+    "id": "law-of-cosines-tangential-pythagorean",
+    "text": "The law of cosines generalizes the Pythagorean theorem to triangles that are not right triangles, but this passage focuses only on how to compute a side length from the other two sides and their included angle.",
+    "candidates": [
+      "Pythagorean theorem",
+      "Law of cosines",
+      "Trigonometric identities"
+    ],
+    "expect": [
+      2
+    ]
+  },
+  {
+    "id": "binary-search-single-kc",
+    "text": "Binary search repeatedly halves a sorted array, comparing the target to the middle element and discarding the half that cannot contain it, achieving logarithmic time complexity.",
+    "candidates": [
+      "Binary search",
+      "Linear search",
+      "Merge sort"
+    ],
+    "expect": [
+      1
+    ]
+  },
+  {
+    "id": "merge-sort-and-complexity-multi-kc",
+    "text": "Merge sort recursively splits the array in half, sorts each half, and merges the sorted halves back together, giving it a time complexity of O(n log n) in every case.",
+    "candidates": [
+      "Merge sort",
+      "Time complexity",
+      "Binary search"
+    ],
+    "expect": [
+      1,
+      2
+    ]
+  },
+  {
+    "id": "recipe-teaches-none",
+    "text": "Preheat the oven to 350 degrees, cream the butter and sugar until fluffy, then fold in the flour and chocolate chips before baking the cookies for twelve minutes.",
+    "candidates": [
+      "Chemical reactions",
+      "Thermodynamics",
+      "Baking science"
+    ],
+    "expect": []
+  },
+  {
+    "id": "covalent-bonding-single-kc",
+    "text": "A covalent bond forms when two atoms share one or more pairs of electrons, allowing each atom to attain a more stable electron configuration, as seen in the H2 molecule.",
+    "candidates": [
+      "Ionic bonding",
+      "Covalent bonding",
+      "Metallic bonding"
+    ],
+    "expect": [
+      2
+    ]
+  },
+  {
+    "id": "ionic-bonding-near-miss-covalent",
+    "text": "Ionic bonding occurs when one atom transfers electrons to another, creating oppositely charged ions that attract each other electrostatically \u2014 a contrast to covalent bonding, where electrons are shared rather than transferred.",
+    "candidates": [
+      "Ionic bonding",
+      "Covalent bonding",
+      "Metallic bonding"
+    ],
+    "expect": [
+      1
+    ]
+  },
+  {
+    "id": "supply-demand-single-kc",
+    "text": "The law of supply and demand describes how the price of a good rises when demand exceeds supply and falls when supply exceeds demand, converging toward an equilibrium price.",
+    "candidates": [
+      "Supply and demand",
+      "Opportunity cost",
+      "Market structures"
+    ],
+    "expect": [
+      1
+    ]
+  },
+  {
+    "id": "opportunity-cost-single-kc",
+    "text": "Opportunity cost is the value of the next-best alternative given up when choosing one option over another, such as the wages foregone by attending college full time.",
+    "candidates": [
+      "Supply and demand",
+      "Market structures",
+      "Opportunity cost"
+    ],
+    "expect": [
+      3
+    ]
+  },
+  {
+    "id": "roman-empire-near-miss-republic",
+    "text": "The Roman Empire began in 27 BC when Augustus became the first emperor, ending the centuries-old Roman Republic in which power had been shared among elected senators and consuls.",
+    "candidates": [
+      "Roman Republic",
+      "Roman Empire",
+      "Greek democracy"
+    ],
+    "expect": [
+      2
+    ]
+  },
+  {
+    "id": "plate-tectonics-single-kc",
+    "text": "Plate tectonics explains how the Earth's lithosphere is divided into rigid plates that move slowly over the mantle, driving earthquakes, volcanic activity, and the formation of mountain ranges.",
+    "candidates": [
+      "Plate tectonics",
+      "Rock cycle",
+      "Erosion"
+    ],
+    "expect": [
+      1
+    ]
+  },
+  {
+    "id": "rock-cycle-multi-kc",
+    "text": "The rock cycle describes how igneous rock can weather into sediment through erosion, be compacted into sedimentary rock, and later transform into metamorphic rock under heat and pressure.",
+    "candidates": [
+      "Rock cycle",
+      "Erosion",
+      "Plate tectonics"
+    ],
+    "expect": [
+      1,
+      2
+    ]
+  },
+  {
+    "id": "quadratic-formula-single-kc",
+    "text": "The quadratic formula gives the roots of any equation in the form ax squared plus bx plus c equals zero as x equals negative b plus or minus the square root of b squared minus four a c, all over two a.",
+    "candidates": [
+      "Quadratic formula",
+      "Factoring polynomials",
+      "Completing the square"
+    ],
+    "expect": [
+      1
+    ]
+  },
+  {
+    "id": "completing-the-square-tangential-quadratic",
+    "text": "Completing the square rewrites a quadratic expression as a perfect square plus a constant, a technique that can also be used to derive the quadratic formula itself.",
+    "candidates": [
+      "Quadratic formula",
+      "Completing the square",
+      "Factoring polynomials"
+    ],
+    "expect": [
+      2
+    ]
+  },
+  {
+    "id": "hash-tables-single-kc",
+    "text": "A hash table stores key-value pairs by computing a hash of the key to determine an index into an underlying array, giving average constant-time lookups, insertions, and deletions.",
+    "candidates": [
+      "Hash tables",
+      "Linked lists",
+      "Binary search trees"
+    ],
+    "expect": [
+      1
+    ]
+  },
+  {
+    "id": "poetry-lecture-teaches-none",
+    "text": "The sonnet's volta, or turn, typically arrives in the final couplet, shifting the poem's argument or emotional register after the octave has established its central tension.",
+    "candidates": [
+      "Hash tables",
+      "Linked lists",
+      "Binary search trees"
+    ],
+    "expect": []
+  },
+  {
+    "id": "world-war-two-single-kc",
+    "text": "World War II began in Europe in 1939 when Germany invaded Poland, drawing Britain and France into a conflict that eventually spanned nearly every continent and ended in 1945.",
+    "candidates": [
+      "World War I",
+      "World War II",
+      "Cold War"
+    ],
+    "expect": [
+      2
+    ]
+  },
+  {
+    "id": "cold-war-near-miss-wwii",
+    "text": "The Cold War was a decades-long standoff between the United States and the Soviet Union that emerged from the alliances and power vacuums left in the aftermath of the Second World War.",
+    "candidates": [
+      "World War II",
+      "Cold War",
+      "World War I"
+    ],
+    "expect": [
+      2
+    ]
+  },
+  {
+    "id": "acids-bases-single-kc",
+    "text": "An acid is a substance that donates hydrogen ions in solution, lowering the pH, while a base accepts hydrogen ions or donates hydroxide ions, raising the pH toward the basic end of the scale.",
+    "candidates": [
+      "Acids and bases",
+      "Redox reactions",
+      "Stoichiometry"
+    ],
+    "expect": [
+      1
+    ]
+  },
+  {
+    "id": "redox-and-stoichiometry-multi-kc",
+    "text": "In this redox reaction, zinc loses two electrons to become Zn2+ while copper gains them; balancing the equation stoichiometrically shows one mole of zinc reacts with exactly one mole of copper ions.",
+    "candidates": [
+      "Redox reactions",
+      "Stoichiometry",
+      "Acids and bases"
+    ],
+    "expect": [
+      1,
+      2
+    ]
+  },
+  {
+    "id": "probability-single-kc",
+    "text": "The probability of two independent events both occurring is the product of their individual probabilities, so flipping two fair coins and getting heads on both has a probability of one-quarter.",
+    "candidates": [
+      "Probability",
+      "Combinatorics",
+      "Statistics"
+    ],
+    "expect": [
+      1
+    ]
+  },
+  {
+    "id": "combinatorics-tangential-probability",
+    "text": "Combinatorics counts the number of ways to choose or arrange objects \u2014 a foundational tool for computing probabilities later on \u2014 such as figuring out how many five-card hands can be dealt from a standard deck using the combination formula.",
+    "candidates": [
+      "Probability",
+      "Combinatorics",
+      "Statistics"
+    ],
+    "expect": [
+      2
+    ]
+  },
+  {
+    "id": "guitar-tuning-teaches-none",
+    "text": "To tune a guitar to standard tuning, adjust each string until it matches E, A, D, G, B, and E from lowest to highest, using an electronic tuner or matching harmonics between adjacent strings.",
+    "candidates": [
+      "Binary search",
+      "Hash tables",
+      "Dynamic programming"
+    ],
+    "expect": []
+  },
+  {
+    "id": "stretching-routine-teaches-none",
+    "text": "A pre-run warm-up should include dynamic stretches like leg swings and walking lunges for about five minutes to raise muscle temperature and reduce injury risk before sprinting.",
+    "candidates": [
+      "World War I",
+      "Cold War",
+      "Roman Empire"
+    ],
+    "expect": []
+  },
+  {
+    "id": "watercolor-painting-teaches-none",
+    "text": "Wet-on-wet watercolor technique involves applying pigment to paper that is already damp, letting colors bleed and blend softly, which works well for skies and soft background washes.",
+    "candidates": [
+      "Photosynthesis",
+      "Cellular respiration",
+      "Mitosis"
+    ],
     "expect": []
   }
 ]
