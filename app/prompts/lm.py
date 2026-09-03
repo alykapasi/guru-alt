@@ -24,6 +24,7 @@ class RoleLM(dspy.BaseLM):
         self._client = client
         self._max_tokens = max_tokens
         self.usage_sum = Usage()
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def aforward(self, prompt=None, messages=None, **kwargs):
         system, chat = _split_messages(messages, prompt)
@@ -37,8 +38,14 @@ class RoleLM(dspy.BaseLM):
         return _openai_response(resp.content, resp.model, resp.usage)
 
     def forward(self, prompt=None, messages=None, **kwargs):
-        # Offline compile is synchronous with no running loop; drive the async client directly.
-        return asyncio.run(self.aforward(prompt=prompt, messages=messages, **kwargs))
+        # Offline compile/report calls forward() once per example. A fresh asyncio.run() per call
+        # would close the loop the provider's persistent httpx pool is bound to (D5 rejected this),
+        # killing every reused connection on the next call — so keep ONE loop for the whole run.
+        if self._loop is None:
+            self._loop = asyncio.new_event_loop()
+        return self._loop.run_until_complete(
+            self.aforward(prompt=prompt, messages=messages, **kwargs)
+        )
 
 
 def _split_messages(

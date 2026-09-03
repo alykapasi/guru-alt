@@ -44,12 +44,13 @@ async def test_tag_chunk_no_candidates_makes_no_call() -> None:
 
 
 async def test_tag_chunk_garbage_reply_yields_no_tags() -> None:
-    tags, _usage = await tag_chunk(
+    tags, usage = await tag_chunk(
         fake_llm_client(reply="not valid adapter output"),
         "text",
         _candidates(1),
     )
     assert tags == []
+    assert usage.total_tokens > 0  # D8: a failed parse still accounts usage for cost logging
 
 
 async def test_tag_chunk_maps_model_indices_to_candidate_kcs() -> None:

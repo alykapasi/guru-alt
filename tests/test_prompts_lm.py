@@ -1,5 +1,7 @@
 """RoleLM routes DSPy calls through our role-based LLMClient (Phase 9c)."""
 
+import asyncio
+
 import dspy
 
 from app.llm import ModelRole
@@ -19,6 +21,18 @@ async def test_aforward_matches_forward() -> None:
     lm = RoleLM(ModelRole.FAST, fake_llm_client(reply="async reply"))
     resp = await lm.aforward(messages=[{"role": "user", "content": "hi"}])
     assert resp.choices[0].message.content == "async reply"
+
+
+def test_forward_reuses_one_event_loop_across_calls() -> None:
+    # C1 regression: forward() must drive every call on ONE persistent loop. A fresh asyncio.run()
+    # per call would close the loop the provider's httpx pool is bound to, breaking the 2nd call.
+    lm = RoleLM(ModelRole.FAST, fake_llm_client(reply="hello"))
+    lm.forward(messages=[{"role": "user", "content": "hi"}])
+    first_loop = lm._loop
+    lm.forward(messages=[{"role": "user", "content": "hi"}])
+    assert first_loop is not None
+    assert isinstance(first_loop, asyncio.AbstractEventLoop)
+    assert lm._loop is first_loop  # same persistent loop reused, not recreated per call
 
 
 def test_predict_runs_through_rolelm() -> None:
