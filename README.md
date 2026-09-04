@@ -17,9 +17,12 @@ Note: "alt" is a version suffix for the current build, not part of the product n
 
 - **Backend:** Python 3.13 · FastAPI · Uvicorn · Pydantic · async SQLAlchemy 2.0
 - **Database:** PostgreSQL 17 + pgvector (HNSW) + pg_trgm/GIN, via Alembic migrations
+- **AI / LLM:** provider-agnostic LLM layer addressed **by role** (`FAST`/`SMART`/`GENIUS`/`EMBED`
+  → Ollama dev · OpenRouter/Anthropic prod) · LangGraph orchestration · DSPy prompt optimization ·
+  MLflow eval tracking
 - **Tooling:** [uv](https://docs.astral.sh/uv/) (packaging) · ruff (lint/format) · ty (types) ·
   beartype (runtime types) · pytest · poethepoet (task runner) · pre-commit
-- **Frontend:** React + TypeScript + Vite (later phase)
+- **Frontend:** React + TypeScript + Vite
 
 ---
 
@@ -131,9 +134,23 @@ guru-alt/
 ├── app/
 │   ├── __init__.py        # enables beartype runtime checks (dev/test)
 │   ├── main.py            # FastAPI app: lifespan, middleware, /health
-│   └── core/              # config, db (engine/session/Base), logging, middleware
+│   ├── api/               # versioned FastAPI routers (endpoints)
+│   ├── core/              # config, db (engine/session/Base), logging, middleware
+│   ├── models/            # SQLAlchemy ORM models
+│   ├── schemas/           # Pydantic boundary schemas
+│   ├── services/          # business logic behind the routers
+│   ├── llm/               # provider-agnostic LLM + model-role registry (FAST/SMART/GENIUS/EMBED)
+│   ├── prompts/           # DSPy programs + RoleLM seam + interactive refinement gate
+│   ├── agent/             # LangGraph graphs (tutor turn · lesson-gen · grading · workflow)
+│   ├── rag/               # multimodal ingestion + hybrid retrieval (vector + full-text + metadata)
+│   ├── learning/          # knowledge graph · tracer · FSRS · learner profile · lesson policy · notes
+│   ├── memory/            # persistent per-learner memory
+│   ├── storage/           # object/file storage
+│   └── workers/           # Redis-backed job-queue tasks
+├── frontend/              # React 19 + TypeScript + Vite app
 ├── db/migrations/         # Alembic (async); 0001 enables vector + pg_trgm
 ├── tests/                 # pytest suite
+│   └── eval/              # eval harness: golden/live suites · sweep runner · real-data datasets · DSPy compile/report
 ├── docs/                  # MASTERPLAN · ROADMAP · TECHNICAL_DESIGN
 ├── docker-compose.yml     # Postgres (pgvector) + Redis
 ├── pyproject.toml         # deps + poe tasks + tool config
