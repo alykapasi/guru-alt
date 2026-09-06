@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from app.learning import mastery, rubric_grading
 from app.learning.grading import GradeResult, NotAutoGradable, auto_grade, grade_flashcard
+from app.learning.item_presentation import public_presentation
 from app.learning.mastery import Observation
 from app.learning.rubric_grading import GRADING_ROLE
 from app.llm import LLMClient
@@ -76,13 +77,15 @@ async def find_item_for_kc(
 
 def item_to_read(item: Item) -> ItemRead:
     """Project an item for the learner — without leaking its answer key."""
+    item_type = ItemType(item.item_type)
     return ItemRead(
         id=item.id,
-        item_type=ItemType(item.item_type),
+        item_type=item_type,
         stem=item.stem,
         difficulty=item.difficulty,
         rubric_id=item.rubric_id,
         kcs=[ItemKCRead(kc_id=link.kc_id, weight=link.weight) for link in item.kc_links],
+        presentation=public_presentation(item_type, item.answer_key),
     )
 
 

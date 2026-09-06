@@ -36,7 +36,12 @@ class ItemKCRead(BaseModel):
 
 
 class ItemRead(BaseModel):
-    """An item as presented to a learner — the ``answer_key`` is deliberately withheld."""
+    """An item as presented to a learner — the ``answer_key`` is deliberately withheld.
+
+    ``presentation`` carries the part of the answer key the learner legitimately needs to
+    answer (an MCQ's ``choices``, never its ``correct`` index). See
+    :func:`app.learning.item_presentation.public_presentation`.
+    """
 
     id: uuid.UUID
     item_type: ItemType
@@ -44,6 +49,7 @@ class ItemRead(BaseModel):
     difficulty: float
     rubric_id: uuid.UUID | None
     kcs: list[ItemKCRead]
+    presentation: dict | None = None
 
 
 class AnswerSubmit(BaseModel):

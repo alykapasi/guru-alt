@@ -113,6 +113,55 @@ async def test_create_item_hides_answer_key(
     assert "answer_key" not in body  # never leak the key to a learner
 
 
+async def test_mcq_presentation_exposes_choices_without_the_answer(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """An MCQ is unanswerable without its options, but the correct index stays secret."""
+    (kc,) = await _seed_kcs(db_session)
+    item_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
+
+    body = (await api_client.get(f"{API}/items/{item_id}")).json()
+
+    assert body["presentation"] == {"choices": ["3", "4", "5"]}
+    assert "answer_key" not in body
+    assert "correct" not in (body["presentation"] or {})  # the key itself is never public
+
+
+async def test_cloze_presentation_withholds_the_blanks(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A cloze answer key IS the answer — nothing in it is public."""
+    (kc,) = await _seed_kcs(db_session)
+    r = await api_client.post(
+        f"{API}/items",
+        json={
+            "item_type": "cloze",
+            "stem": "The powerhouse is the ___.",
+            "kcs": [{"kc_id": str(kc.id)}],
+            "answer_key": {"blanks": ["mitochondria"]},
+            "difficulty": 0.0,
+        },
+    )
+    body = (await api_client.get(f"{API}/items/{r.json()['id']}")).json()
+
+    assert body["presentation"] is None
+
+
+async def test_malformed_mcq_response_is_rejected_not_graded_wrong(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A missing choice is bad input, not evidence the learner does not know the answer."""
+    (kc,) = await _seed_kcs(db_session)
+    item_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
+
+    r = await api_client.post(f"{API}/items/{item_id}/answer", json={"response": {}})
+
+    assert r.status_code == 422
+    # nothing was traced: a malformed submission must not become mastery evidence
+    events = (await db_session.scalars(select(LearningEvent))).all()
+    assert events == []
+
+
 async def test_get_item_404(api_client: AsyncClient) -> None:
     r = await api_client.get(f"{API}/items/{uuid.uuid4()}")
     assert r.status_code == 404

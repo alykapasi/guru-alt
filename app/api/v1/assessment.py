@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
 from app.core.config import get_settings
-from app.learning.grading import SelfGradeError
+from app.learning.grading import InvalidResponse, SelfGradeError
 from app.learning.rubric_grading import RubricGradingError
 from app.models.assessment import AUTO_GRADABLE, RUBRIC_GRADABLE, SELF_GRADABLE, ItemType
 from app.schemas.assessment import (
@@ -65,7 +65,7 @@ async def answer_item(
         )
     try:
         result, states = await svc.answer_item(session, learner.id, item, submission, llm=llm)
-    except SelfGradeError as exc:
+    except (InvalidResponse, SelfGradeError) as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except RubricGradingError as exc:
         await session.rollback()
