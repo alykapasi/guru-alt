@@ -30,7 +30,7 @@
 - ☑ `poe check` aggregate task = `lint` + `type-check` + `test`.
 - ☑ **GitHub Actions CI** (`.github/workflows/ci.yml`) — format-check, lint, type-check, test, and a
   migration-apply check against a pgvector service. *CD deferred to Phase 8 (no deploy target yet).*
-- ☐ Pre-commit hooks (ruff format/lint, etc.) — follow-up.
+- ☑ Pre-commit hooks (ruff format/lint, ty, hygiene) — see `.pre-commit-config.yaml`.
 
 **DoD:** ✅ `uv run poe check` passes · ✅ `uv run poe dev` boots, `GET /health` returns ok ·
 ✅ `docker compose up` brings up Postgres+pgvector · ✅ first migration applies extensions cleanly ·
