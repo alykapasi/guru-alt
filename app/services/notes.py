@@ -7,8 +7,10 @@ pure reads — the work happens behind explicit refresh/edit calls, avoiding the
 """
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 from sqlalchemy import delete, select
@@ -86,8 +88,19 @@ async def _reading_level(session: AsyncSession, learner_id: uuid.UUID) -> object
     return await _dimension_value(session, learner_id, "reading_level")
 
 
+def _cursors(note: Note | None) -> tuple[datetime, datetime]:
+    """This note's (messages, events) cursors — EPOCH for a note that does not exist yet."""
+    if note is None:
+        return EPOCH, EPOCH
+    return note.messages_watermark, note.events_watermark
+
+
 async def _has_new_activity(
-    session: AsyncSession, learner_id: uuid.UUID, topic: Topic, watermark: datetime
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    topic: Topic,
+    messages_watermark: datetime,
+    events_watermark: datetime,
 ) -> bool:
     kc_ids = select(KC.id).where(KC.topic_id == topic.id).scalar_subquery()
     event = await session.scalar(
@@ -95,7 +108,7 @@ async def _has_new_activity(
         .where(
             LearningEvent.learner_id == learner_id,
             LearningEvent.kc_id.in_(kc_ids),
-            LearningEvent.created_at > watermark,
+            LearningEvent.created_at > events_watermark,
             LearningEvent.event_type == "observation",
         )
         .limit(1)
@@ -108,7 +121,7 @@ async def _has_new_activity(
         .where(
             Conversation.learner_id == learner_id,
             Conversation.subject_id == topic.subject_id,
-            Message.created_at > watermark,
+            Message.created_at > messages_watermark,
         )
         .limit(1)
     )
@@ -128,8 +141,7 @@ async def _current_render(session: AsyncSession, note: Note, note_format: str) -
 async def _is_stale(
     session: AsyncSession, learner_id: uuid.UUID, topic: Topic, note: Note | None, fmt: str
 ) -> bool:
-    watermark = note.watermark if note is not None else EPOCH
-    if await _has_new_activity(session, learner_id, topic, watermark):
+    if await _has_new_activity(session, learner_id, topic, *_cursors(note)):
         return True
     # Render-failure recovery: substrate current but no cached render for the effective format.
     if note is not None and note.revision_ordinal > 0:
@@ -167,11 +179,44 @@ async def note_view(session: AsyncSession, learner_id: uuid.UUID, topic: Topic) 
 class _Gathered:
     transcript: str
     outcomes: str
-    latest: datetime | None
+    messages_watermark: datetime
+    events_watermark: datetime
+
+
+def _advance(rows: Sequence[Any], limit: int, current: datetime) -> tuple[list[Any], datetime]:
+    """Trim one fetched page to a safe boundary and return its new cursor.
+
+    Rows arrive ordered by ``created_at`` with one extra row fetched, so ``len(rows) > limit``
+    means more activity is waiting. Two rules keep a cursor from stepping over unread rows:
+
+    * A page that ends mid-timestamp drops that trailing group — ``created_at`` is
+      transaction-start time, so one answer tagged to several KCs writes several events at the
+      identical instant, and a ``> watermark`` cursor landing inside that group would skip its
+      remainder forever. The group is left whole for the next pass.
+    * The cursor only ever advances to a row this page actually consumed, never to the newest
+      row in some *other* stream.
+    """
+    if len(rows) <= limit:
+        return list(rows), max((r.created_at for r in rows), default=current)
+    page = list(rows[:limit])
+    boundary = page[-1].created_at
+    if rows[limit].created_at > boundary:
+        return page, boundary  # the page happens to end on a complete group
+    trimmed = [r for r in page if r.created_at < boundary]
+    if trimmed:
+        return trimmed, trimmed[-1].created_at
+    log.warning(  # one instant holds more rows than a whole page; taking it splits the group
+        "notes.same_timestamp_group_exceeds_page", limit=limit, at=boundary.isoformat()
+    )
+    return page, boundary
 
 
 async def _gather(
-    session: AsyncSession, learner_id: uuid.UUID, topic: Topic, watermark: datetime
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    topic: Topic,
+    messages_watermark: datetime,
+    events_watermark: datetime,
 ) -> _Gathered:
     settings = get_settings()
     kcs = (await session.scalars(select(KC).where(KC.topic_id == topic.id))).all()
@@ -183,13 +228,16 @@ async def _gather(
             .where(
                 LearningEvent.learner_id == learner_id,
                 LearningEvent.kc_id.in_(list(kc_names)),
-                LearningEvent.created_at > watermark,
+                LearningEvent.created_at > events_watermark,
                 LearningEvent.event_type == "observation",
             )
             .order_by(LearningEvent.created_at)
-            .limit(settings.note_distill_max_outcome_events)
+            .limit(settings.note_distill_max_outcome_events + 1)
         )
     ).all()
+    events, new_events_watermark = _advance(
+        events, settings.note_distill_max_outcome_events, events_watermark
+    )
 
     item_ids = {uuid.UUID(e.payload["item_id"]) for e in events if e.payload.get("item_id")}
     items: dict[uuid.UUID, Item] = {}
@@ -215,19 +263,22 @@ async def _gather(
             .where(
                 Conversation.learner_id == learner_id,
                 Conversation.subject_id == topic.subject_id,
-                Message.created_at > watermark,
+                Message.created_at > messages_watermark,
             )
             .order_by(Message.created_at)
-            .limit(settings.note_distill_max_messages)
+            .limit(settings.note_distill_max_messages + 1)
         )
     ).all()
+    messages, new_messages_watermark = _advance(
+        messages, settings.note_distill_max_messages, messages_watermark
+    )
     transcript_lines = [f"{m.role}: {m.content}" for m in messages]
 
-    timestamps = [e.created_at for e in events] + [m.created_at for m in messages]
     return _Gathered(
         transcript="\n".join(transcript_lines),
         outcomes="\n".join(outcome_lines),
-        latest=max(timestamps) if timestamps else None,
+        messages_watermark=new_messages_watermark,
+        events_watermark=new_events_watermark,
     )
 
 
@@ -267,12 +318,14 @@ async def _commit_new_revision(
 async def refresh_note(
     session: AsyncSession, llm: LLMClient, learner_id: uuid.UUID, topic: Topic
 ) -> NoteView:
-    """The catch-up: distill anything past the watermark, then ensure a render exists."""
+    """The catch-up: distill anything past the per-stream cursors, then ensure a render exists."""
     note = await get_note(session, learner_id, topic.id)
     fmt = await effective_format(session, learner_id, note)
-    watermark = note.watermark if note is not None else EPOCH
+    messages_watermark, events_watermark = _cursors(note)
 
-    if not await _has_new_activity(session, learner_id, topic, watermark):
+    if not await _has_new_activity(
+        session, learner_id, topic, messages_watermark, events_watermark
+    ):
         # Render-only heal (render missing for a current substrate), or nothing to do.
         if note is not None and note.revision_ordinal > 0:
             if await _current_render(session, note, fmt) is None:
@@ -280,7 +333,7 @@ async def refresh_note(
                 await session.commit()
         return await _view(session, learner_id, topic, note)
 
-    gathered = await _gather(session, learner_id, topic, watermark)
+    gathered = await _gather(session, learner_id, topic, messages_watermark, events_watermark)
     atoms = note.substrate if note is not None else []
     result, usage = await note_distill.distill(
         llm,
@@ -298,17 +351,23 @@ async def refresh_note(
         await session.commit()  # persist the cost log
         return await _view(session, learner_id, topic, note)
 
-    new_watermark = gathered.latest or _now()
     if note is None:
-        note = Note(learner_id=learner_id, topic_id=topic.id, substrate=[], watermark=new_watermark)
+        note = Note(
+            learner_id=learner_id,
+            topic_id=topic.id,
+            substrate=[],
+            messages_watermark=gathered.messages_watermark,
+            events_watermark=gathered.events_watermark,
+        )
         session.add(note)
         await session.flush()
     else:
-        note.watermark = new_watermark
+        note.messages_watermark = gathered.messages_watermark
+        note.events_watermark = gathered.events_watermark
 
     if result.no_change:
         await session.commit()
-        # note.watermark just changed -> the row's onupdate=func.now() updated_at is expired;
+        # the note's cursors just changed -> the row's onupdate=func.now() updated_at is expired;
         # refresh before _view reads it (a bare attribute access can't await the reload).
         await session.refresh(note)
         return await _view(session, learner_id, topic, note)
@@ -359,7 +418,13 @@ async def set_format(
     """Set (or clear, None=auto) the explicit format; render the new format if missing."""
     note = await get_note(session, learner_id, topic.id)
     if note is None:
-        note = Note(learner_id=learner_id, topic_id=topic.id, substrate=[], watermark=EPOCH)
+        note = Note(
+            learner_id=learner_id,
+            topic_id=topic.id,
+            substrate=[],
+            messages_watermark=EPOCH,
+            events_watermark=EPOCH,
+        )
         session.add(note)
         await session.flush()
     note.format = note_format

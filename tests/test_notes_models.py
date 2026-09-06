@@ -28,7 +28,8 @@ async def test_note_round_trip_with_revision_and_render(db_session: AsyncSession
     note = Note(learner_id=learner.id, topic_id=topic.id, substrate=atoms, revision_ordinal=1)
     db_session.add(note)
     await db_session.flush()
-    assert note.watermark == WATERMARK_EPOCH
+    assert note.messages_watermark == WATERMARK_EPOCH
+    assert note.events_watermark == WATERMARK_EPOCH
     assert note.format is None
 
     db_session.add(NoteRevision(note_id=note.id, ordinal=1, substrate=atoms, cause="distill"))

@@ -23,7 +23,13 @@ WATERMARK_EPOCH = datetime(1970, 1, 1)
 
 
 class Note(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """One living note per (learner, topic). ``watermark`` = last-distilled activity cutoff."""
+    """One living note per (learner, topic).
+
+    Catch-up distillation reads two independent activity streams (subject messages and KC
+    outcome events), each with its own page limit, so each needs its **own** cursor. A single
+    shared watermark advanced to the newest row across both streams, which silently skipped
+    the tail of whichever stream its page had truncated.
+    """
 
     __tablename__ = "notes"
     __table_args__ = (UniqueConstraint("learner_id", "topic_id"),)
@@ -35,7 +41,8 @@ class Note(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("topics.id", ondelete="CASCADE"), index=True
     )
     substrate: Mapped[list] = mapped_column(JSONB, default=list)
-    watermark: Mapped[datetime] = mapped_column(default=WATERMARK_EPOCH)
+    messages_watermark: Mapped[datetime] = mapped_column(default=WATERMARK_EPOCH)
+    events_watermark: Mapped[datetime] = mapped_column(default=WATERMARK_EPOCH)
     # Explicit learner format choice (outline|narrative|mnemonic|worked_examples);
     # NULL = auto (cascade: learned note_format dimension -> heuristic -> outline).
     format: Mapped[str | None] = mapped_column(default=None)

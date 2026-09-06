@@ -2,10 +2,11 @@
 
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.learning import note_distill
 from app.llm import LLMClient
 from app.llm.providers.fake import FakeTurn
@@ -104,7 +105,7 @@ async def test_first_refresh_creates_note_revision_and_render(db_session: AsyncS
     assert view.revision_ordinal == 1
     assert view.stale is False
     note = await notes_svc.get_note(db_session, learner.id, topic.id)
-    assert note is not None and note.watermark > notes_svc.EPOCH
+    assert note is not None and note.events_watermark > notes_svc.EPOCH
 
 
 async def test_message_activity_marks_stale(db_session: AsyncSession) -> None:
@@ -146,7 +147,8 @@ async def test_no_change_advances_watermark_without_revision(db_session: AsyncSe
     view = await notes_svc.refresh_note(db_session, llm, learner.id, topic)
     assert view.stale is False  # watermark advanced past the event
     note = await notes_svc.get_note(db_session, learner.id, topic.id)
-    assert note is not None and note.revision_ordinal == 0 and note.watermark > notes_svc.EPOCH
+    assert note is not None and note.revision_ordinal == 0
+    assert note.events_watermark > notes_svc.EPOCH
 
 
 async def test_distill_failure_keeps_substrate_and_watermark(db_session: AsyncSession) -> None:
@@ -164,7 +166,8 @@ async def test_learner_atom_survives_or_merge_rejected(db_session: AsyncSession)
         topic_id=topic.id,
         substrate=[*ATOMS, LEARNER_ATOM],
         revision_ordinal=1,
-        watermark=notes_svc.EPOCH,
+        messages_watermark=notes_svc.EPOCH,
+        events_watermark=notes_svc.EPOCH,
     )
     db_session.add(note)
     await (
@@ -275,3 +278,107 @@ async def test_notes_index(db_session: AsyncSession) -> None:
     assert len(entries) == 1
     assert entries[0]["topic_id"] == topic.id
     assert entries[0]["has_note"] is False and entries[0]["stale"] is True
+
+
+# --- S38: per-stream catch-up cursors ---------------------------------------
+#
+# created_at is server_default=func.now(), i.e. transaction-start time, so rows written
+# together share a timestamp. These tests set it explicitly to control ordering.
+
+
+async def _msg_at(db_session: AsyncSession, learner: Learner, topic: Topic, at: datetime) -> None:
+    conv = Conversation(learner_id=learner.id, subject_id=topic.subject_id)
+    db_session.add(conv)
+    await db_session.flush()
+    db_session.add(Message(conversation_id=conv.id, role="user", content="q", created_at=at))
+    await db_session.flush()
+
+
+async def _event_at(db_session: AsyncSession, learner: Learner, kc: KC, at: datetime) -> None:
+    db_session.add(
+        LearningEvent(
+            learner_id=learner.id,
+            kc_id=kc.id,
+            event_type="observation",
+            payload={"score": 1.0, "item_id": None, "response": {"text": "x"}, "hints_used": 0},
+            created_at=at,
+        )
+    )
+    await db_session.flush()
+
+
+async def test_gather_does_not_skip_messages_when_events_run_ahead(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    """The bug: one watermark advanced to the max across BOTH streams.
+
+    With messages truncated by their limit and an event timestamped later, the shared
+    watermark jumped past the unread messages, skipping them permanently.
+    """
+    learner, topic, kc = await _seed(db_session)
+    base = datetime(2026, 1, 1, 12, 0, 0)
+    for i in range(3):  # 3 messages, limit will be 2
+        await _msg_at(db_session, learner, topic, base + timedelta(minutes=i))
+    await _event_at(db_session, learner, kc, base + timedelta(hours=1))  # later than every message
+
+    monkeypatch.setattr(get_settings(), "note_distill_max_messages", 2)
+    monkeypatch.setattr(get_settings(), "note_distill_max_outcome_events", 50)
+    gathered = await notes_svc._gather(
+        db_session, learner.id, topic, notes_svc.EPOCH, notes_svc.EPOCH
+    )
+
+    # the third message is still pending: its cursor must not pass it
+    assert gathered.messages_watermark < base + timedelta(minutes=2)
+    # the event stream, fully consumed, advances independently
+    assert gathered.events_watermark == base + timedelta(hours=1)
+
+
+async def test_gather_leaves_a_split_timestamp_group_for_the_next_pass(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    """A multi-KC answer writes several events with one timestamp; a page must not split it."""
+    learner, topic, kc = await _seed(db_session)
+    base = datetime(2026, 1, 1, 12, 0, 0)
+    await _event_at(db_session, learner, kc, base)
+    await _event_at(db_session, learner, kc, base + timedelta(minutes=5))  # tied pair
+    await _event_at(db_session, learner, kc, base + timedelta(minutes=5))
+
+    monkeypatch.setattr(get_settings(), "note_distill_max_outcome_events", 2)
+    gathered = await notes_svc._gather(
+        db_session, learner.id, topic, notes_svc.EPOCH, notes_svc.EPOCH
+    )
+
+    # stops below the tied group so both of its rows are read together next time
+    assert gathered.events_watermark == base
+
+
+async def test_gather_advances_both_cursors_when_nothing_is_truncated(
+    db_session: AsyncSession,
+) -> None:
+    learner, topic, kc = await _seed(db_session)
+    base = datetime(2026, 1, 1, 12, 0, 0)
+    await _msg_at(db_session, learner, topic, base)
+    await _event_at(db_session, learner, kc, base + timedelta(minutes=1))
+
+    gathered = await notes_svc._gather(
+        db_session, learner.id, topic, notes_svc.EPOCH, notes_svc.EPOCH
+    )
+
+    assert gathered.messages_watermark == base
+    assert gathered.events_watermark == base + timedelta(minutes=1)
+
+
+async def test_refresh_stays_stale_while_truncated_activity_remains(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    """End-to-end: a backlog bigger than one page leaves the note stale, not silently done."""
+    learner, topic, kc = await _seed(db_session)
+    base = datetime(2026, 1, 1, 12, 0, 0)
+    for i in range(3):
+        await _msg_at(db_session, learner, topic, base + timedelta(minutes=i))
+    await _event_at(db_session, learner, kc, base + timedelta(hours=1))
+
+    monkeypatch.setattr(get_settings(), "note_distill_max_messages", 2)
+    view = await notes_svc.refresh_note(db_session, _distill_then_render(ATOMS), learner.id, topic)
+
+    assert view.stale is True  # the unread third message is still waiting
