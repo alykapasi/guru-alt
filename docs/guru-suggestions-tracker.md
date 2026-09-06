@@ -547,7 +547,32 @@ allowed relative to self-rating, not part of this defect. The whitelist makes it
 
 ### S58 — Expand CI to cover the delivered product and actual failure boundaries
 
-**Status:** Proposed · **Priority:** Before release
+**Status:** Partially implemented (branch `fix/tracker-s54-s38`) · **Priority:** Before release
+
+**Implemented:** Three gates that were missing entirely.
+
+*The frontend is now gated.* CI gained a second job running `npm ci && npm run lint &&
+npm run build` against `frontend/`. `build` is `tsc -b && vite build`, so it is the frontend's
+type-check as well as its build — an incompatible change to `src/api/schema.d.ts` or a broken
+component now blocks the PR instead of shipping.
+
+*Model/migration drift is now gated.* `poe db-check` (`alembic check`) autogenerates against the
+freshly migrated database and fails if that produces any operation — i.e. a model changed without
+its migration. This is the failure that only ever appears on somebody *else's* database.
+
+*The suite owns its database.* Tests asserted on global rows (total `llm_calls`, event counts) and
+claimed the fixed `dev` learner handle while sharing the developer's database, so a dev server
+running alongside them produced up to 29 failures with nothing wrong in the code — twice during
+this branch's work, once sending the investigation down the wrong path entirely. `poe test` now
+depends on `poe test-db-init`, which derives `<database>_test` from `GURU_DATABASE_URL` (same host,
+same credentials, so nothing new to keep in sync), creates it, migrates it, and points the suite
+there via the rootdir `conftest.py` — early enough to beat `app.core.db`'s import-time engine. This
+also re-runs every migration against a genuinely empty database on each CI run.
+
+**Still open:** browser/e2e journeys, API-contract gates between frontend and backend,
+separate-session concurrency tests (the fixture still shares one savepoint-joined session, so it
+cannot exercise real cross-connection commits), queue integration, fault injection, and migration
+tests against representative *existing* data rather than only a fresh database.
 
 **Evidence:** CI builds/tests the backend and applies migrations, but has no frontend install/build/lint or browser workflow. Backend fixtures use one transactional session with savepoints, and many workflow tests use canned model responses; these do not establish separate-worker or real-commit behavior.
 

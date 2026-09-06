@@ -80,7 +80,12 @@ uv run alembic revision --autogenerate -m "short description"
 
 uv run alembic current                # which revision is applied
 uv run alembic history --verbose      # full migration history
+uv run poe db-check                   # fail if a model has drifted from the migrations
 ```
+
+`db-check` is `alembic check`: it autogenerates against the live database and fails if that
+would produce any operation — i.e. someone changed `app/models/` without writing the migration.
+CI runs it, so a drifted model is caught before it reaches anyone else's database.
 
 **Open a psql shell:**
 
@@ -259,9 +264,20 @@ uv run poe check     # lint + type-check + full test suite — the gate. Must be
 ```
 
 The suite runs **fully offline** (FakeProvider for LLMs, fakes for ASR/demux, in-memory broker), so
-a green local run means a green CI run. CI additionally applies migrations against a pgvector
-service. Pre-commit hooks (`uv run poe hooks-install`) catch format/lint/type issues before they
-reach a commit.
+a green local run means a green CI run. Pre-commit hooks (`uv run poe hooks-install`) catch
+format/lint/type issues before they reach a commit.
+
+**Tests run on their own database.** `poe test` first runs `poe test-db-init`, which creates and
+migrates `<your database>_test` (derived from `GURU_DATABASE_URL` — same host, same credentials)
+and points the suite at it. This is not cosmetic: several tests assert on *global* rows (total
+`llm_calls`, event counts) and claim the fixed `dev` learner handle, so a dev server writing to the
+same database makes them fail for reasons that have nothing to do with the code. If you see a burst
+of unrelated failures, check you aren't overriding `GURU_DATABASE_URL` to a database something else
+is using.
+
+CI runs three gates: this suite, `alembic upgrade head` + `db-check` against a fresh pgvector
+service, and a separate **frontend** job (`npm ci && npm run lint && npm run build` — `build` is
+`tsc -b`, so it is the frontend's type-check too).
 
 ---
 
