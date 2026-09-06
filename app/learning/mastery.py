@@ -13,16 +13,17 @@ tracer update + event together so an interaction is recorded atomically.
 
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.learning import scheduler
+from app.learning.assistance import evidence_credit
 from app.learning.tracer import Estimate, GlickoEstimator, MasteryEstimator, aggregate
 from app.models.knowledge import KC, Topic
 from app.models.learning import LearnerKCState, LearningEvent
@@ -43,6 +44,11 @@ class Observation(BaseModel):
     submitted twice records the interaction once (see ``services.assessment.answer_item``).
     Left unset, one is generated per observation. ``correct``/``detail`` carry the grader's
     verdict into the log so a recorded attempt can be replayed without re-grading it.
+
+    ``hints_used`` and ``prior_attempts`` say how *assisted* the attempt was; together they
+    scale the evidence down (see :mod:`app.learning.assistance`). ``prior_attempts`` counts
+    earlier looks at this same question in this sitting, not lifetime practice — a review
+    weeks later is an independent demonstration and counts fully.
     """
 
     learner_id: uuid.UUID
@@ -53,6 +59,7 @@ class Observation(BaseModel):
     response: dict | None = None
     latency_ms: int | None = None
     hints_used: int | None = None
+    prior_attempts: int = Field(default=0, ge=0)
     attempt_id: uuid.UUID | None = None
     correct: bool | None = None
     detail: dict | None = None
@@ -153,12 +160,16 @@ async def record_observation(
     """Fold one graded interaction into every tagged KC and append per-KC events.
 
     Each KC's prior is first decayed to ``now`` (uncertainty grows with the gap since it
-    was last seen), then updated with its apportioned share of the item's evidence. One
-    immutable ``learning_event`` is written per KC — the replayable, KC-tagged substrate
-    the learner profile (§7.8) and DKT (§7.5) consume later.
+    was last seen), then updated with its apportioned share of the item's evidence — scaled
+    down if the attempt was assisted (:mod:`app.learning.assistance`). One immutable
+    ``learning_event`` is written per KC — the replayable, KC-tagged substrate the learner
+    profile (§7.8) and DKT (§7.5) consume later.
     """
     now = now or datetime.now(UTC)
     total_w = sum(obs.kc_weights.values())
+    # Hints and re-asks make this a weaker measurement of unaided ability, so it moves the
+    # estimate less *and* shrinks its uncertainty less — the estimator's `weight` does both.
+    credit = evidence_credit(hints_used=obs.hints_used, prior_attempts=obs.prior_attempts)
     # One id shared by this answer's whole per-KC fan-out, so consumers can tell "one learner
     # action tagged to three components" from "three separate attempts" (see LearningEvent).
     # A caller-supplied id doubles as an idempotency key, enforced by a unique index.
@@ -170,7 +181,9 @@ async def record_observation(
         decayed = estimator.decay(
             _estimate_of(state), elapsed_days=_elapsed_days(state.last_seen_at, now)
         )
-        post = estimator.update(decayed, score=obs.score, difficulty=obs.difficulty, weight=weight)
+        post = estimator.update(
+            decayed, score=obs.score, difficulty=obs.difficulty, weight=weight * credit
+        )
         state.ability = post.ability
         state.uncertainty = post.uncertainty
         state.last_seen_at = now
@@ -190,6 +203,8 @@ async def record_observation(
                     "response": obs.response,
                     "latency_ms": obs.latency_ms,
                     "hints_used": obs.hints_used,
+                    "prior_attempts": obs.prior_attempts,
+                    "credit": credit,
                     "correct": obs.correct,
                     "detail": obs.detail,
                     "estimator": estimator.name,
@@ -199,6 +214,49 @@ async def record_observation(
         updated.append(state)
     await session.flush()
     return updated
+
+
+async def recent_attempts_at_item(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    item_id: uuid.UUID,
+    *,
+    now: datetime | None = None,
+    within_minutes: int | None = None,
+) -> int:
+    """How many times this learner already attempted this item in the current sitting.
+
+    Repeat exposure only costs evidence while the question is still fresh: re-answering
+    something you were just told you got wrong is not an independent demonstration, but
+    meeting it again weeks later is exactly the retention practice FSRS schedules. The window
+    is therefore the same "one sitting" gap the learner profile uses.
+
+    Counts *attempts*, not rows — one answer writes one event per tagged KC. Rows predating
+    ``attempt_id`` (and any whose KC was since deleted) each stand alone, matching how the
+    rest of the engine reads an unattributed row.
+
+    ``LearningEvent.created_at`` is a naive ``TIMESTAMP`` written by Postgres's ``now()``,
+    which is UTC in this deployment, so the cutoff drops tzinfo — the same convention as
+    ``services.analytics.get_activity``.
+    """
+    now = now or datetime.now(UTC)
+    minutes = (
+        within_minutes if within_minutes is not None else get_settings().profile_session_gap_minutes
+    )
+    since = (now - timedelta(minutes=minutes)).replace(tzinfo=None)
+    return (
+        await session.scalar(
+            select(func.count(distinct(func.coalesce(LearningEvent.attempt_id, LearningEvent.id))))
+            .select_from(LearningEvent)
+            .where(
+                LearningEvent.learner_id == learner_id,
+                LearningEvent.event_type == "observation",
+                LearningEvent.created_at >= since,
+                LearningEvent.payload["item_id"].astext == str(item_id),
+            )
+        )
+        or 0
+    )
 
 
 async def seed_prior(

@@ -113,6 +113,10 @@ async def answer_item(
     without a second mastery update. The check is cheap but racy on its own, so the unique
     index on (learner, attempt, KC) is what actually decides a tie — a concurrent duplicate
     loses at commit and replays the winner's grade instead of raising.
+
+    Evidence is discounted when the attempt was assisted — hints reported by the caller, plus
+    earlier attempts at this same item in this sitting, counted here rather than trusted from
+    the request. See :mod:`app.learning.assistance`.
     """
     if submission.attempt_id is not None:
         recorded = await _recorded_attempt(session, learner_id, item, submission.attempt_id)
@@ -128,6 +132,9 @@ async def answer_item(
         response=submission.response,
         latency_ms=submission.latency_ms,
         hints_used=submission.hints_used,
+        # Counted server-side rather than trusted from the client: it is the learner's own
+        # history that decides whether this is a fresh demonstration or a re-run.
+        prior_attempts=await mastery.recent_attempts_at_item(session, learner_id, item.id),
         attempt_id=submission.attempt_id,
         correct=result.correct,
         detail=result.detail,

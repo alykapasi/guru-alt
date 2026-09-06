@@ -117,7 +117,9 @@ class Settings(BaseSettings):
     placement_light_test_size: int = 3
 
     # Gap (minutes) beyond which two consecutive learning events are treated as different
-    # sessions — shared by every profile estimator that reasons about session-scoped behavior.
+    # sessions — shared by every profile estimator that reasons about session-scoped behavior,
+    # and by the tracer's repeat-exposure discount (mastery.recent_attempts_at_item): one
+    # notion of "the same sitting", not two that can drift apart.
     profile_session_gap_minutes: int = 30
 
     # Cap on how many KCs a generated lesson plan targets at once — cost/UX bound on a

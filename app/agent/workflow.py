@@ -79,7 +79,10 @@ def build_workflow_graph(
             session,
             learner_id,
             item,
-            AnswerSubmit(response={"text": state["response_text"]}),
+            # Every round past the first followed a hint on this same problem (see `respond`),
+            # so the round count *is* the help given. Reporting it stops three scaffolded
+            # rounds from reading as three independent demonstrations (app.learning.assistance).
+            AnswerSubmit(response={"text": state["response_text"]}, hints_used=state["rounds"]),
             llm=llm,
         )
         return {"score": result.score, "correct": result.correct, "rounds": state["rounds"] + 1}

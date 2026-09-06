@@ -60,7 +60,7 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | S10 | Preserve component-specific assessment evidence and define explicit grading criteria for generated open questions. | The same aggregate score updates every tagged component with different weights; generated short questions have no explicit rubric. [R2–R4] | Avoid treating a failure in projections as equal evidence of failure in every skill involved in least squares. | High | Accepted |
 | S11 | Make targeted prerequisite detours an explicit planning capability. | Routine revision changes status, review order, and scaffolding hints while preserving remaining new-topic order. [R5] | Investigate and address the prerequisite blocking the learner, then return to the original objective. | High | Accepted |
 | S12 | Apply difficulty targeting to question selection/generation. | The session runner explicitly documents target difficulty as unapplied. [R6] | The learner's estimated capability affects the actual task they receive. | High | Accepted |
-| S13 | Distinguish assisted retries from independent demonstrations in mastery evidence. | Guided practice hints and retries the same question; every attempt updates mastery. Hint context is omitted by that workflow and is not used by the estimator even when recorded elsewhere. [R7–R8] | Prevent assistance and repeated exposure from producing unjustified mastery confidence. | First | Accepted |
+| S13 | Distinguish assisted retries from independent demonstrations in mastery evidence. | Guided practice hints and retries the same question; every attempt updates mastery. Hint context is omitted by that workflow and is not used by the estimator even when recorded elsewhere. [R7–R8] | Prevent assistance and repeated exposure from producing unjustified mastery confidence. | First | Implemented (see below) |
 | S14 | Select fresh assessment items with awareness of prior exposure, and check delayed retention and transfer. | Bank selection returns the oldest matching item without considering the learner's exposure. [R2] | Establish that the learner can solve a different problem without help and retain that capability. | First | Accepted |
 | S15 | Connect exploratory conversation to structured learning evidence through a deliberate assessment mechanism. | Plain chat can ask questions, but its conversational answers do not directly update mastery. [R9] | Make the initial learner-led experience contribute trustworthy evidence without treating all conversation as proof of mastery. | High | Accepted |
 | S16 | Share appropriate learner context and learning-state access across chat, agentic, and guided modes. | Plain chat injects memory and plan hints; agentic service does not inject those same contexts. [R9–R10] | Switching modes retains relevant understanding of the learner and their goal. | High | Accepted |
@@ -207,6 +207,46 @@ Coverage: API identity/scope, assessments, knowledge model, ingestion/workers, n
 **Second-pass check:** A learner-created question/key cannot silently become another learner's trusted assessment.
 
 **Code:** [app/api/v1/assessment.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/api/v1/assessment.py), [app/models/assessment.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/models/assessment.py), [app/services/assessment.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/services/assessment.py).
+
+### S13 — Distinguish assisted retries from independent demonstrations
+
+**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** First
+
+**Implemented:** Both halves of the gap. The guided-practice workflow now reports the help it gave
+— every round past the first follows a hint on the same problem, so the round count *is* the
+assistance — and the tracer now uses it. Repeat exposure is counted server-side from the learner's
+own event log rather than trusted from the request, so a client cannot present a second run at the
+same question as an independent one.
+
+`app/learning/assistance.py` turns the two into one number: `1 / (1 + hints + prior_attempts)`,
+which scales the observation's weight. In a Glicko update that reduces the ability move *and* the
+uncertainty shrinkage, which is the point — three scaffolded rounds previously read as three
+independent demonstrations and manufactured confidence the learner had not earned.
+
+**Design decisions worth disagreeing with:**
+
+*The discount is symmetric.* An assisted wrong answer is discounted exactly like an assisted right
+one. The framing is measurement, not reward: a scaffolded attempt is a noisy read of unaided
+ability, so it should move the estimate less in either direction. The alternative — treating failure
+*with* help as stronger evidence of not knowing — is defensible but asymmetric, and there is no data
+here to justify picking a direction.
+
+*Repeat exposure is windowed to one sitting*, reusing `profile_session_gap_minutes` (30) rather than
+adding a second setting that means the same thing. Meeting an item again weeks later is exactly the
+retention practice FSRS schedules and counts fully.
+
+*The scaffolds add rather than max.* In guided practice round 2 carries both a hint and a prior
+look, giving credit 1/3. They weaken independence for different reasons — being told part of the
+answer, versus having been told the answer was wrong — so both count.
+
+**Related, deliberately not changed:** FSRS scheduling still reads the raw score, so a hinted
+success schedules the next review as far out as an unaided one. That is arguably the same harm in
+the retention half of the engine, but changing it means deciding what a scaffolded recall is worth
+as a *retrieval*, which is a pedagogy call rather than a bug fix. Left open.
+
+**Evidence:** Guided practice hints and retries the same question; every attempt updates mastery. Hint context is omitted by that workflow and is not used by the estimator even when recorded elsewhere. [R7–R8]
+
+**Second-pass check:** Assistance and repeated exposure no longer produce unjustified mastery confidence.
 
 ### S34 — Make attempts and turns idempotent and concurrency-safe
 

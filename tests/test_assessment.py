@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import Integer, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -508,3 +508,44 @@ async def test_the_database_rejects_a_duplicate_attempt_row(
     with pytest.raises(IntegrityError):
         await db_session.flush()
     await db_session.rollback()
+
+
+# --- assisted attempts are weaker evidence (S13) ------------------------------
+
+
+async def test_answering_the_same_item_again_in_one_sitting_counts_for_less(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Re-answering a question you were just graded on is not a fresh demonstration.
+
+    The repeat is counted server-side from the learner's own history, so a client cannot
+    present a second run at the same question as an independent one.
+    """
+    (kc,) = await _seed_kcs(db_session)
+    item_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
+    for _ in range(2):
+        r = await api_client.post(f"{API}/items/{item_id}/answer", json={"response": {"choice": 1}})
+        assert r.status_code == 200
+
+    events = (
+        await db_session.scalars(
+            select(LearningEvent)
+            .where(LearningEvent.kc_id == kc.id)
+            .order_by(LearningEvent.payload["prior_attempts"].astext.cast(Integer))
+        )
+    ).all()
+    assert [e.payload["prior_attempts"] for e in events] == [0, 1]
+    assert [e.payload["credit"] for e in events] == [1.0, 0.5]
+
+
+async def test_a_first_answer_is_full_strength_evidence(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The discount must not quietly tax ordinary unaided practice."""
+    (kc,) = await _seed_kcs(db_session)
+    item_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
+    await api_client.post(f"{API}/items/{item_id}/answer", json={"response": {"choice": 1}})
+
+    event = await db_session.scalar(select(LearningEvent).where(LearningEvent.kc_id == kc.id))
+    assert event is not None
+    assert event.payload["credit"] == 1.0

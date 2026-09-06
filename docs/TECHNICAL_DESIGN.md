@@ -239,6 +239,15 @@ class KnowledgeTracer(Protocol):
 credit), `item difficulty`, latency, hints. Implementations are swappable (Elo/Glicko now → DKT
 later) and may be ensembled.
 
+**Assistance discount.** Mastery is a claim about unaided ability, so an assisted attempt is a
+noisier measurement of it, not a smaller success. Hints reported by the caller plus prior attempts
+at the same item *in the same sitting* scale the observation's weight by `1 / (1 + scaffolds)`
+(`app/learning/assistance.py`), which in a Glicko update reduces both the ability move and the
+uncertainty shrinkage — symmetrically, in either direction. Guided practice hints and re-asks the
+same problem, so without this three scaffolded rounds read as three independent demonstrations.
+Repeat exposure is windowed: meeting the same item weeks later is the retention practice FSRS
+schedules and counts fully.
+
 ### 7.3 Continuous estimator (Elo/Glicko-style) — baseline
 
 Per-KC continuous ability `θ` and per-item difficulty `d`; treat each interaction as a "match":
