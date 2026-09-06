@@ -4,6 +4,10 @@ Mirrors test_llm_vision.py's approach: exercise each provider's translator direc
 rather than hitting a real backend.
 """
 
+from collections.abc import AsyncIterator
+from types import SimpleNamespace
+from typing import Any
+
 from app.llm.providers.anthropic import AnthropicProvider
 from app.llm.providers.fake import FakeProvider, FakeTurn
 from app.llm.providers.openai_compat import OpenAICompatProvider
@@ -198,3 +202,93 @@ async def test_fake_provider_unscripted_behaviour_is_unchanged() -> None:
     first = await provider.complete(model="fake-1", messages=messages)
     second = await provider.complete(model="fake-1", messages=messages)
     assert first.content == second.content == "hi there friend"
+
+
+# --- OpenAI-compatible streaming contract (S49) -------------------------------
+#
+# `stream_options={"include_usage": True}` is an OpenAI extension. A compatible endpoint is
+# free to ignore it, and the adapter used to finalize its accumulated tool calls *only* on a
+# usage-carrying chunk — so against such an endpoint every tool call was silently discarded.
+# These drive the adapter with stubbed chunk objects shaped like the SDK's.
+
+
+def _tool_delta(index: int, *, call_id: str = "", name: str = "", arguments: str = "") -> Any:
+    return SimpleNamespace(
+        index=index, id=call_id, function=SimpleNamespace(name=name, arguments=arguments)
+    )
+
+
+def _chunk(*, content: str | None = None, tool_calls: list[Any] | None = None) -> Any:
+    delta = SimpleNamespace(content=content, tool_calls=tool_calls)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)], usage=None)
+
+
+def _usage_chunk(input_tokens: int, output_tokens: int) -> Any:
+    """The terminal chunk OpenAI sends: no choices, usage only."""
+    return SimpleNamespace(
+        choices=[],
+        usage=SimpleNamespace(prompt_tokens=input_tokens, completion_tokens=output_tokens),
+    )
+
+
+def _provider_streaming(chunks: list[Any]) -> OpenAICompatProvider:
+    async def create(**_: object) -> AsyncIterator[Any]:
+        async def gen() -> AsyncIterator[Any]:
+            for chunk in chunks:
+                yield chunk
+
+        return gen()
+
+    provider = OpenAICompatProvider(name="stub", base_url="http://stub", api_key="")
+    provider._client = SimpleNamespace(  # ty: ignore[invalid-assignment]
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    return provider
+
+
+async def _collect(provider: OpenAICompatProvider) -> list[Any]:
+    return [
+        c
+        async for c in provider.stream(
+            model="m", messages=[ChatMessage(role=ChatRole.USER, content="go")]
+        )
+    ]
+
+
+async def test_openai_stream_keeps_tool_calls_when_the_endpoint_reports_no_usage() -> None:
+    provider = _provider_streaming(
+        [
+            _chunk(tool_calls=[_tool_delta(0, call_id="call_1", name="fetch_webpage")]),
+            _chunk(tool_calls=[_tool_delta(0, arguments='{"url":')]),
+            _chunk(tool_calls=[_tool_delta(0, arguments='"https://x"}')]),
+        ]
+    )
+    chunks = await _collect(provider)
+
+    tool_calls = [tc for c in chunks for tc in c.tool_calls]
+    assert tool_calls == [ToolCall(id="call_1", name="fetch_webpage", input={"url": "https://x"})]
+
+
+async def test_openai_stream_reports_usage_with_the_tool_calls_when_it_is_sent() -> None:
+    provider = _provider_streaming(
+        [
+            _chunk(tool_calls=[_tool_delta(0, call_id="c1", name="a", arguments="{}")]),
+            _chunk(tool_calls=[_tool_delta(1, call_id="c2", name="b", arguments="{}")]),
+            _usage_chunk(11, 3),
+        ]
+    )
+    chunks = await _collect(provider)
+
+    terminal = [c for c in chunks if c.usage is not None]
+    assert len(terminal) == 1  # exactly one terminal chunk, never two
+    assert terminal[0].usage.input_tokens == 11
+    assert terminal[0].usage.output_tokens == 3
+    assert [tc.name for tc in terminal[0].tool_calls] == ["a", "b"]
+
+
+async def test_openai_stream_of_plain_text_is_unchanged() -> None:
+    """No tool calls and no usage: nothing extra is emitted."""
+    provider = _provider_streaming([_chunk(content="hel"), _chunk(content="lo")])
+    chunks = await _collect(provider)
+    assert "".join(c.text or "" for c in chunks) == "hello"
+    assert all(c.usage is None for c in chunks)

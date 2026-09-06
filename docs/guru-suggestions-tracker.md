@@ -520,7 +520,23 @@ teaching decisions is S18/S44 and remains open.
 
 ### S49 — Make provider compatibility an explicit contract
 
-**Status:** Proposed · **Priority:** High
+**Status:** Partially implemented (branch `fix/tracker-s54-s38`) · **Priority:** High
+
+**Implemented — tool calls no longer depend on a usage chunk.** `stream_options={"include_usage":
+True}` is an OpenAI *extension*; a compatible endpoint may ignore it. The adapter accumulated
+index-keyed tool-call deltas and finalized them only inside `if chunk.usage is not None`, so against
+such an endpoint every tool call the model had just streamed was silently discarded — an agentic
+turn would simply end without acting, with nothing logged. Finalization now happens when the stream
+ends: usage is carried forward if it arrives, and exactly one terminal chunk is emitted, carrying
+whatever tool calls accumulated. A plain-text stream with no usage still emits no terminal chunk, so
+nothing else changes.
+
+Verified the way it should be: the new test fails against the previous adapter and passes against
+this one.
+
+**Still open:** startup validation of provider names and role capabilities, and the defined
+behavior for truncation, retries, timeouts, rate limits and early disconnect. Those are a contract
+to design, not a bug to fix.
 
 **Evidence:** The OpenAI-compatible streaming adapter emits assembled tool calls only when a chunk includes usage. A compatible endpoint that finishes tool calls without a usage chunk can lose them. Registry configuration does not validate role capabilities or provider names up front.
 

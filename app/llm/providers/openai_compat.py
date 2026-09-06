@@ -176,9 +176,9 @@ class OpenAICompatProvider:
         )
         # Unlike Anthropic, OpenAI has no server-side accumulation helper: tool calls stream
         # as index-keyed partial deltas (id/name typically only on the first delta for that
-        # index, arguments as string fragments) — accumulate per index, finalize on the
-        # usage-carrying terminal chunk.
+        # index, arguments as string fragments) — accumulate per index and finalize once.
         pending: dict[int, dict[str, str]] = {}
+        usage: Usage | None = None
         async for chunk in stream:
             if chunk.choices:
                 delta = chunk.choices[0].delta
@@ -194,19 +194,19 @@ class OpenAICompatProvider:
                         if tc.function.arguments:
                             acc["arguments"] += tc.function.arguments
             if chunk.usage is not None:
-                tool_calls = [
-                    ToolCall(
-                        id=acc["id"], name=acc["name"], input=_parse_arguments(acc["arguments"])
-                    )
-                    for acc in pending.values()
-                ]
-                yield ChatChunk(
-                    usage=Usage(
-                        input_tokens=chunk.usage.prompt_tokens,
-                        output_tokens=chunk.usage.completion_tokens,
-                    ),
-                    tool_calls=tool_calls,
+                usage = Usage(
+                    input_tokens=chunk.usage.prompt_tokens,
+                    output_tokens=chunk.usage.completion_tokens,
                 )
+        # Finalize when the stream ends, not when usage happens to arrive. `include_usage` is
+        # an OpenAI extension: a compatible endpoint is free to ignore it, and one that does
+        # used to have every tool call it had just streamed silently discarded here.
+        tool_calls = [
+            ToolCall(id=acc["id"], name=acc["name"], input=_parse_arguments(acc["arguments"]))
+            for acc in pending.values()
+        ]
+        if usage is not None or tool_calls:
+            yield ChatChunk(usage=usage or Usage(), tool_calls=tool_calls)
 
     async def embed(self, *, model: str, texts: Sequence[str]) -> list[list[float]]:
         resp = await self._client.embeddings.create(model=model, input=list(texts))
