@@ -21,9 +21,12 @@ import structlog
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
 from app.core.config import get_settings
+from app.llm import LLMClient
+from app.models.chat import Conversation
 from app.models.source import Source
 from app.schemas.chat import (
     ChatTurnRequest,
@@ -36,6 +39,7 @@ from app.services import agentic as agentic_svc
 from app.services import chat as svc
 from app.services import knowledge as knowledge_svc
 from app.services import refinement as refinement_svc
+from app.services import turn_lock
 from app.services import workflow as workflow_svc
 
 log = structlog.get_logger(__name__)
@@ -120,31 +124,27 @@ async def list_messages(conversation_id: uuid.UUID, session: SessionDep, learner
     return await svc.list_messages(session, conversation_id)
 
 
-@router.post("/conversations/{conversation_id}/messages")
-async def send_message(
-    conversation_id: uuid.UUID,
+async def _dispatch_turn(
+    session: AsyncSession,
+    llm: LLMClient,
+    *,
+    learner_id: uuid.UUID,
+    conversation: Conversation,
     data: ChatTurnRequest,
-    session: SessionDep,
-    learner: CurrentLearner,
-    llm: LLMClientDep,
-) -> StreamingResponse:
-    """Persist the user turn, then stream the tutor's reply as Server-Sent Events."""
-    conversation = await svc.get_conversation(session, conversation_id)
-    if conversation is None or conversation.learner_id != learner.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
-
+) -> AsyncIterator[Any]:
+    """Pick the flow this turn belongs to and return its (not yet started) event stream."""
+    conversation_id = conversation.id
     history = await svc.list_messages(session, conversation_id)
     settings = get_settings()
     workflow_awaiting = await workflow_svc.is_awaiting_reply(
-        llm, session, conversation_id, learner_id=learner.id
+        llm, session, conversation_id, learner_id=learner_id
     )
 
-    turn: AsyncIterator[Any]
     if data.mode == "agentic":
-        turn = agentic_svc.run_agentic_turn(
+        return agentic_svc.run_agentic_turn(
             session,
             llm,
-            learner_id=learner.id,
+            learner_id=learner_id,
             conversation_id=conversation_id,
             history=history,
             user_content=data.content,
@@ -152,11 +152,11 @@ async def send_message(
             subject_id=conversation.subject_id,
             source_ids=conversation.source_ids,
         )
-    elif data.mode == "workflow" or workflow_awaiting:
-        turn = workflow_svc.run_workflow_turn(
+    if data.mode == "workflow" or workflow_awaiting:
+        return workflow_svc.run_workflow_turn(
             session,
             llm,
-            learner_id=learner.id,
+            learner_id=learner_id,
             conversation=conversation,
             user_content=data.content,
             max_tokens=settings.chat_max_tokens,
@@ -164,11 +164,11 @@ async def send_message(
             resume=workflow_awaiting,
             source_ids=conversation.source_ids,
         )
-    elif conversation.goal is not None:
-        turn = svc.run_tutor_turn(
+    if conversation.goal is not None:
+        return svc.run_tutor_turn(
             session,
             llm,
-            learner_id=learner.id,
+            learner_id=learner_id,
             conversation_id=conversation_id,
             history=history,
             user_content=data.content,
@@ -177,11 +177,11 @@ async def send_message(
             subject_id=conversation.subject_id,
             source_ids=conversation.source_ids,
         )
-    elif await refinement_svc.is_awaiting_reply(llm, conversation_id):
-        turn = refinement_svc.run_refinement_turn(
+    if await refinement_svc.is_awaiting_reply(llm, conversation_id):
+        return refinement_svc.run_refinement_turn(
             session,
             llm,
-            learner_id=learner.id,
+            learner_id=learner_id,
             conversation=conversation,
             user_content=data.content,
             satisfied=data.satisfied,
@@ -189,11 +189,11 @@ async def send_message(
             max_rounds=settings.refinement_max_rounds,
             resume=True,
         )
-    elif not history:
-        turn = refinement_svc.run_refinement_turn(
+    if not history:
+        return refinement_svc.run_refinement_turn(
             session,
             llm,
-            learner_id=learner.id,
+            learner_id=learner_id,
             conversation=conversation,
             user_content=data.content,
             satisfied=data.satisfied,
@@ -201,23 +201,53 @@ async def send_message(
             max_rounds=settings.refinement_max_rounds,
             resume=False,
         )
-    else:
-        # Goal never committed, gate not mid-flight, but the conversation already has
-        # history — the gate's in-memory checkpoint was lost (e.g. a restart) or this
-        # conversation predates the gate. Degrade to plain chat rather than re-asking
-        # "what do you want to learn?" mid-conversation.
-        log.warning("refinement.gate_state_lost", conversation_id=str(conversation_id))
-        turn = svc.run_tutor_turn(
-            session,
-            llm,
-            learner_id=learner.id,
-            conversation_id=conversation_id,
-            history=history,
-            user_content=data.content,
-            max_tokens=settings.chat_max_tokens,
-            subject_id=conversation.subject_id,
-            source_ids=conversation.source_ids,
+    # Goal never committed, gate not mid-flight, but the conversation already has history —
+    # the gate's in-memory checkpoint was lost (e.g. a restart) or this conversation predates
+    # the gate. Degrade to plain chat rather than re-asking "what do you want to learn?"
+    # mid-conversation.
+    log.warning("refinement.gate_state_lost", conversation_id=str(conversation_id))
+    return svc.run_tutor_turn(
+        session,
+        llm,
+        learner_id=learner_id,
+        conversation_id=conversation_id,
+        history=history,
+        user_content=data.content,
+        max_tokens=settings.chat_max_tokens,
+        subject_id=conversation.subject_id,
+        source_ids=conversation.source_ids,
+    )
+
+
+@router.post("/conversations/{conversation_id}/messages")
+async def send_message(
+    conversation_id: uuid.UUID,
+    data: ChatTurnRequest,
+    session: SessionDep,
+    learner: CurrentLearner,
+    llm: LLMClientDep,
+) -> StreamingResponse:
+    """Persist the user turn, then stream the tutor's reply as Server-Sent Events.
+
+    One turn at a time per conversation: an overlapping request is refused rather than
+    allowed to interleave messages or resume the same paused graph twice (see
+    ``app.services.turn_lock``). The claim is held until the stream ends, however it ends.
+    """
+    conversation = await svc.get_conversation(session, conversation_id)
+    if conversation is None or conversation.learner_id != learner.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+
+    if not turn_lock.claim(conversation_id):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "a turn is already in progress for this conversation"
         )
+    try:
+        turn = await _dispatch_turn(
+            session, llm, learner_id=learner.id, conversation=conversation, data=data
+        )
+    except Exception:
+        turn_lock.release(conversation_id)
+        raise
 
     async def event_stream() -> AsyncIterator[str]:
         async for ev in turn:
@@ -255,4 +285,11 @@ async def send_message(
             elif ev.type == "tool_call":
                 yield _sse({"type": "tool_call", "detail": ev.detail})
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    async def guarded_stream() -> AsyncIterator[str]:
+        try:
+            async for chunk in event_stream():
+                yield chunk
+        finally:
+            turn_lock.release(conversation_id)
+
+    return StreamingResponse(guarded_stream(), media_type="text/event-stream")

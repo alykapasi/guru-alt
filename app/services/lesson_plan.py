@@ -16,7 +16,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, cast
 
-from sqlalchemy import select
+import structlog
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -29,6 +30,8 @@ from app.models.lesson_plan import LessonPlan
 from app.services import knowledge as knowledge_svc
 from app.services import profile as profile_svc
 from app.services.llm_log import log_llm_call
+
+log = structlog.get_logger(__name__)
 
 MASTERY_ABILITY_THRESHOLD = 1.0
 MASTERY_UNCERTAINTY_THRESHOLD = 0.5
@@ -184,17 +187,54 @@ async def revise_plan(
         ),
     )
     _apply_plan_level_hints(plan, scaffolding)
+    plan.revision_pending = False  # whatever was owed, this recomputation covers it
 
     await session.commit()
     await session.refresh(plan)
     return plan
 
 
+async def mark_revision_pending(
+    session: AsyncSession, *, learner_id: uuid.UUID, subject_id: uuid.UUID
+) -> None:
+    """Record that this plan is behind the evidence, so the next read brings it up to date.
+
+    Set only when a revision failed *after* its triggering answer had already committed: the
+    grade is authoritative and gets reported, and the derived plan carries the debt instead of
+    the learner being told their answer failed. See ``services.assessment.answer_item``.
+    """
+    await session.execute(
+        update(LessonPlan)
+        .where(LessonPlan.learner_id == learner_id, LessonPlan.subject_id == subject_id)
+        .values(revision_pending=True)
+    )
+    await session.commit()
+
+
 async def get_lesson_plan(
     session: AsyncSession, learner_id: uuid.UUID, subject_id: uuid.UUID
 ) -> LessonPlan | None:
-    """Read-only — no recompute."""
-    return await _get_plan(session, learner_id, subject_id)
+    """Read-only — no recompute, unless the plan is carrying an unpaid revision.
+
+    ``revision_pending`` means a revision this plan was owed failed after its triggering
+    answer had committed, so the plan is behind evidence the learner has already produced.
+    Repairing it here is what lets it catch up without the learner having to answer anything
+    else — and, like the revision that failed, it is best-effort: a stale plan is worth
+    showing, a 500 is not.
+    """
+    plan = await _get_plan(session, learner_id, subject_id)
+    if plan is None or not plan.revision_pending:
+        return plan
+    try:
+        return await revise_plan(session, learner_id=learner_id, subject_id=subject_id) or plan
+    except Exception:
+        log.exception(
+            "lesson_plan.pending_revision_repair_failed",
+            learner_id=str(learner_id),
+            subject_id=str(subject_id),
+        )
+        await session.rollback()
+        return plan
 
 
 async def get_active_step_context(

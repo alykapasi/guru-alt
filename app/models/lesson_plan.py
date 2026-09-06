@@ -38,3 +38,7 @@ class LessonPlan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # list[dict]: kc_id, order, step_type ("new"|"review"), status ("pending"|"active"|"done"),
     # target_difficulty, hint_density, preferred_item_type.
     steps: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    # Set when a revision this plan was owed failed *after* its triggering answer had already
+    # committed. Mastery is authoritative and must be reported; the plan is derived, so it
+    # records the debt instead and the next read pays it (see services.lesson_plan).
+    revision_pending: Mapped[bool] = mapped_column(default=False)

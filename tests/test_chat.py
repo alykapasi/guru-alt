@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_llm_client
+from app.api.v1 import chat as chat_router
 from app.learning import item_generation
 from app.llm.providers.fake import FakeProvider, FakeTurn
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
@@ -25,6 +26,7 @@ from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.services import chat as chat_svc
 from app.services import lesson_plan as lesson_plan_svc
 from app.services import memory as memory_svc
+from app.services import turn_lock
 
 API = "/api/v1"
 REPLY = "Let us explore this together."
@@ -852,3 +854,89 @@ async def test_agentic_mode_cites_search_materials_results(
     assert done["citations"] == [
         {"marker": 1, "chunk_id": str(chunk.id), "source_id": str(source.id)}
     ]
+
+
+# --- one turn at a time per conversation (S34) --------------------------------
+
+
+async def _goal_set_conversation(api_client: AsyncClient, db_session: AsyncSession) -> str:
+    """A conversation past the refinement gate, so a message runs a plain tutor turn."""
+    conversation_id = (
+        await api_client.post(f"{API}/conversations", json={"title": "Busy"})
+    ).json()["id"]
+    conversation = await db_session.get(Conversation, uuid.UUID(conversation_id))
+    assert conversation is not None
+    conversation.goal = "Understand derivatives"
+    await db_session.commit()
+    return conversation_id
+
+
+async def test_a_second_turn_while_one_is_running_is_refused(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+) -> None:
+    """Overlapping turns interleave messages and can resume the same paused graph twice."""
+    conversation_id = await _goal_set_conversation(api_client, db_session)
+    assert turn_lock.claim(uuid.UUID(conversation_id))
+    try:
+        r = await api_client.post(
+            f"{API}/conversations/{conversation_id}/messages", json={"content": "and again?"}
+        )
+        assert r.status_code == 409
+    finally:
+        turn_lock.release(uuid.UUID(conversation_id))
+
+    # Nothing was written for the refused turn.
+    messages = (
+        await db_session.scalars(
+            select(Message).where(Message.conversation_id == uuid.UUID(conversation_id))
+        )
+    ).all()
+    assert messages == []
+
+
+async def test_a_finished_turn_frees_the_conversation(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+) -> None:
+    conversation_id = await _goal_set_conversation(api_client, db_session)
+    for _ in range(2):
+        r = await api_client.post(
+            f"{API}/conversations/{conversation_id}/messages", json={"content": "hello"}
+        )
+        assert r.status_code == 200
+    assert turn_lock.is_active(uuid.UUID(conversation_id)) is False
+
+
+async def test_a_turn_that_fails_to_start_frees_the_conversation(
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    fake_llm: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A claim that outlived a failed dispatch would wedge the conversation permanently."""
+    conversation_id = await _goal_set_conversation(api_client, db_session)
+
+    async def boom(*args: object, **kwargs: object) -> bool:
+        raise RuntimeError("checkpoint lookup exploded")
+
+    monkeypatch.setattr(chat_router.workflow_svc, "is_awaiting_reply", boom)
+    with pytest.raises(RuntimeError):
+        await api_client.post(
+            f"{API}/conversations/{conversation_id}/messages", json={"content": "hello"}
+        )
+    assert turn_lock.is_active(uuid.UUID(conversation_id)) is False
+
+
+async def test_a_different_conversation_is_unaffected(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+) -> None:
+    """The claim is per conversation, not a global chat lock."""
+    busy = await _goal_set_conversation(api_client, db_session)
+    other = await _goal_set_conversation(api_client, db_session)
+    assert turn_lock.claim(uuid.UUID(busy))
+    try:
+        r = await api_client.post(
+            f"{API}/conversations/{other}/messages", json={"content": "hello"}
+        )
+        assert r.status_code == 200
+    finally:
+        turn_lock.release(uuid.UUID(busy))

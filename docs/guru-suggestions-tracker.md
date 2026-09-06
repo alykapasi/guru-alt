@@ -250,7 +250,7 @@ as a *retrieval*, which is a pedagogy call rather than a bug fix. Left open.
 
 ### S34 — Make attempts and turns idempotent and concurrency-safe
 
-**Status:** Partially implemented (branch `fix/tracker-s54-s38`) · **Priority:** First
+**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** First
 
 **Implemented — attempts.** `AnswerSubmit.attempt_id` is an optional idempotency key: a client
 generates one per attempt and reuses it across retries. `answer_item` returns the grade already
@@ -272,14 +272,24 @@ answers arriving together on a KC the learner had never been assessed on both sa
 inserted, and one aborted the whole transaction — losing a graded answer. It now inserts through
 `ON CONFLICT DO NOTHING` and re-reads.
 
-**Still open — turns.** Per-conversation turn serialization is not addressed. Overlapping turns on
-one conversation still have no defined behavior. The obvious mechanism, a session-level advisory
-lock held for the turn, does not fit the current request-scoped `AsyncSession`: turn services commit
-mid-stream and SQLAlchemy returns the connection to the pool at each commit, so the lock would be
-released early or leak to an unrelated request. Doing this properly needs a connection held for the
-life of the SSE stream, or a durable turn record with an expiry — a design decision, not a patch.
-Also still open: the suite cannot yet exercise either concurrency fix under real concurrency,
-because the fixture shares one savepoint-joined session (see S58).
+**Implemented — turns.** A conversation runs one turn at a time (`app/services/turn_lock.py`).
+`send_message` claims the conversation before reading history and holds it until the stream ends —
+completion, error, or a client hanging up — and an overlapping request gets `409 Conflict` rather
+than being queued. Queuing would hold an SSE connection open behind work whose history read has
+already gone stale; refusing is the defined behavior a client can act on, and the frontend already
+blocks a second send while one is pending, so this is a guard against second tabs and stray clients
+rather than a UI change. Two overlapping turns previously interleaved messages and — worse — could
+resume the *same* paused graph, grading one practice answer twice.
+
+The claim is in-process, deliberately: `app/agent/workflow.py` and `app/agent/refinement.py` compile
+with `InMemorySaver`, so a paused turn can only ever be resumed by the process that paused it. A
+durable claim buys nothing until the checkpointers are durable, and at that point both should move
+together. Extracting the six-way dispatch into `_dispatch_turn` was needed to release the claim
+cleanly when a turn fails before it starts; the branch structure is unchanged.
+
+**Still open:** the suite cannot exercise the attempt/state fixes under *real* concurrency, because
+the fixture shares one savepoint-joined session (see S58). The turn lock is covered directly, including
+release after success and after a dispatch failure.
 
 **Evidence:** Answer submissions have no attempt/idempotency key. Mastery updates read then write without a lock/version check. The route has no server-side per-conversation turn serialization. Retries can duplicate evidence; concurrent updates can lose changes or race checkpoint resumes.
 
@@ -291,7 +301,26 @@ because the fixture shares one savepoint-joined session (see S58).
 
 ### S35 — Repair derived plans after committed assessments without regrading
 
-**Status:** Proposed · **Priority:** High
+**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** High
+
+**Implemented:** The authoritative-event/derived-plan split is kept; what changes is that a failure
+on the derived side can no longer be reported as a failure of the authoritative one. A plan revision
+that raises is logged, and the plan records the debt on itself (`lesson_plans.revision_pending`,
+migration `0021`). The learner gets the grade they earned, once.
+
+The debt is paid on the next read: `get_lesson_plan` revises a plan carrying `revision_pending`
+before returning it, so the plan catches up **without another assessment** — the second-pass check.
+A plan that owes nothing is still not recomputed, so this does not quietly turn every read into a
+revision. Repair-on-read is itself best-effort: a stale plan is worth showing, a 500 is not.
+Retrying an answer (with its `attempt_id`, S34) also triggers the revision, so a client that does
+retry gets the plan caught up as a side effect rather than a second observation.
+
+Two things surfaced while building this. The repair path must `rollback()` first — a revision that
+failed part-way can leave a half-applied step list on the session, and committing the flag would
+commit that with it — and rollback expires every ORM row the caller still holds. `answer_item` now
+reads the states it returns *after* the revision rather than before; returning expired rows would
+have failed serialization in the route with `MissingGreenlet`. The fault-injection test caught that,
+not review.
 
 **Evidence:** Mastery and event records commit before plan revision. If revision fails, the client can receive a failure despite a committed answer. Retrying the answer currently generates another observation.
 
