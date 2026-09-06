@@ -142,7 +142,9 @@ All repository links below are pinned to the reviewed commit.
 
 | 2026-09-06 | User accepted prior recommendations S01–S21. Added new proposals S22–S29 from the knowledge graph and content pipeline review; these remain proposed. No code modified or tests executed. |
 
-| 2026-09-06 | First implementation pass. S54 (`5056153`) and S38 (`fe0bc80`) implemented on branch `fix/tracker-s54-s38` off `0d9b7f8` — the same snapshot this review inspected. Both claims were re-verified against current source before any change. `uv run poe check` green (604 passed, 3 skipped). Implemented means software correctness with tests, not educational validation. All other suggestions unchanged. |
+| 2026-09-06 | First implementation pass. S54 (`929c390`) and S38 (`889df5f`) implemented on branch `fix/tracker-s54-s38`, originally off `0d9b7f8` (the same snapshot this review inspected) and later rebased onto merged `main`; the SHAs here are the post-rebase ones. Both claims were re-verified against current source before any change. `uv run poe check` green (604 passed, 3 skipped). Implemented means software correctness with tests, not educational validation. All other suggestions unchanged. |
+
+| 2026-09-06 | S45 implemented (`d84f69c`) on the same branch, after PR #15 (Phase 9c) merged and the branch was rebased onto it. `uv run poe check` green (626 passed, 1 skipped). Note: an unrelated leftover `dev` learner row from earlier live testing caused 8 spurious failures until removed — the suite itself leaves none behind. |
 
 ## Remaining architecture autopsy — source pass
 
@@ -256,7 +258,7 @@ Coverage: API identity/scope, assessments, knowledge model, ingestion/workers, n
 
 ### S38 — Fix note catch-up cursors so activity cannot be skipped
 
-**Status:** Implemented (`fe0bc80`, branch `fix/tracker-s54-s38`) · **Priority:** First
+**Status:** Implemented (`889df5f`, branch `fix/tracker-s54-s38`) · **Priority:** First
 
 **Implemented:** The shared watermark is split into per-stream cursors (`Note.messages_watermark`,
 `Note.events_watermark`; migration `0018`, both seeded from the value they replace so the boundary
@@ -351,7 +353,28 @@ Software correctness only; no educational validation claimed.
 
 ### S45 — Separate attempts from per-component events in analytics and profiling
 
-**Status:** Proposed · **Priority:** High
+**Status:** Implemented (`d84f69c`, branch `fix/tracker-s54-s38`) · **Priority:** High
+
+**Implemented:** `learning_events.attempt_id` (migration `0019`) carries one id across a single
+graded answer's whole per-KC fan-out. Each KC keeps its own evidence row and its own state update —
+only the *counting* changes. Historical rows are backfilled by grouping an observation's
+(learner, item, instant), which is exactly how the fan-out was written; a row with no `attempt_id`
+is treated as its own attempt, so pre-migration rows and non-attempt events such as
+`placement_seed` are never collapsed together.
+
+Confirmed while implementing that every payload field except `weight` — score, difficulty,
+`latency_ms`, `hints_used`, `item_id`, `response` — is item-level and identical across the fan-out,
+and that **no estimator reads `kc_id` or `weight`**. Deduplicating at the shared `_observations()`
+entry point is therefore correct for all nine of its call sites: pace, optimal challenge, cognitive
+load, error type, help-seeking, persistence, engagement, session logistics and format effectiveness.
+Format effectiveness was the most consequential — a multi-KC MCQ counted triple toward "this format
+works for this learner", which the planner then acts on. `get_activity` now counts distinct
+attempts, so momentum reflects learner effort rather than KC-tagging breadth.
+`_estimate_persistence`'s manual `(item_id, created_at)` workaround is now redundant for the
+fan-out and retains only its real job, grouping retries of the same item.
+
+Software correctness only; the calibration question of whether these dimensions *should* drive
+teaching decisions is S18/S44 and remains open.
 
 **Evidence:** One answer creates one event per tagged KC. Activity counts each observation row, and profile estimators treat those rows as samples. A three-KC answer can therefore count three times for activity and some statistical summaries.
 
@@ -459,7 +482,7 @@ Software correctness only; no educational validation claimed.
 
 ### S54 — Separate public item presentation from secret answer keys
 
-**Status:** Implemented (`5056153`, branch `fix/tracker-s54-s38`) · **Priority:** High
+**Status:** Implemented (`929c390`, branch `fix/tracker-s54-s38`) · **Priority:** High
 
 **Implemented:** `app/learning/item_presentation.py` decides per item type which part of an
 `answer_key` is public — a **whitelist**, so a new answer-key field cannot leak by omission. MCQ
