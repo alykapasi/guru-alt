@@ -249,3 +249,41 @@ async def test_tracer_facade_update_estimate_and_due(db_session: AsyncSession) -
 
     est = await mastery.DEFAULT_TRACER.estimate(db_session, learner.id, kc.id)
     assert est.ability == state.ability
+
+
+# --- S45: one graded answer is one attempt, however many KCs it is tagged to ---
+
+
+async def test_multi_kc_observation_shares_one_attempt_id(db_session: AsyncSession) -> None:
+    """The fan-out is per-KC *evidence*, not three separate learner actions."""
+    learner, _subject, _topic, (a, b, c) = await _seed(db_session, kc_slugs=("a", "b", "c"))
+    obs = Observation(
+        learner_id=learner.id, kc_weights={a.id: 1.0, b.id: 1.0, c.id: 1.0}, score=1.0
+    )
+
+    states = await mastery.record_observation(db_session, obs)
+
+    events = (
+        await db_session.scalars(
+            select(LearningEvent).where(LearningEvent.learner_id == learner.id)
+        )
+    ).all()
+    assert len(states) == 3  # every component still gets its own state
+    assert len(events) == 3  # and its own replayable evidence row
+    attempt_ids = {e.attempt_id for e in events}
+    assert len(attempt_ids) == 1 and None not in attempt_ids  # but one shared attempt
+
+
+async def test_separate_observations_get_separate_attempt_ids(db_session: AsyncSession) -> None:
+    learner, _subject, _topic, (kc,) = await _seed(db_session)
+    obs = Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=1.0)
+
+    await mastery.record_observation(db_session, obs)
+    await mastery.record_observation(db_session, obs)
+
+    events = (
+        await db_session.scalars(
+            select(LearningEvent).where(LearningEvent.learner_id == learner.id)
+        )
+    ).all()
+    assert len({e.attempt_id for e in events}) == 2  # two real attempts

@@ -53,5 +53,12 @@ class LearningEvent(UUIDPrimaryKeyMixin, Base):
         ForeignKey("kcs.id", ondelete="SET NULL"), index=True, default=None
     )
     event_type: Mapped[str] = mapped_column(index=True)
+    # One graded answer fans out into one row per tagged KC — same score, latency, hints and
+    # item, differing only in ``payload["weight"]``. ``attempt_id`` ties that fan-out back
+    # together so anything measuring the *learner's action* (activity volume, latency, hints,
+    # format effectiveness) counts it once, while each KC keeps its own evidence row.
+    # NULL on rows written before the column existed, and on non-attempt events like
+    # ``placement_seed``; treat such a row as its own attempt.
+    attempt_id: Mapped[uuid.UUID | None] = mapped_column(index=True, default=None)
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)

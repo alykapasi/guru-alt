@@ -133,6 +133,9 @@ async def record_observation(
     """
     now = now or datetime.now(UTC)
     total_w = sum(obs.kc_weights.values())
+    # One id shared by this answer's whole per-KC fan-out, so consumers can tell "one learner
+    # action tagged to three components" from "three separate attempts" (see LearningEvent).
+    attempt_id = uuid.uuid4()
     updated: list[LearnerKCState] = []
     for kc_id, raw_w in obs.kc_weights.items():
         weight = raw_w / total_w
@@ -151,6 +154,7 @@ async def record_observation(
                 learner_id=obs.learner_id,
                 kc_id=kc_id,
                 event_type="observation",
+                attempt_id=attempt_id,
                 payload={
                     "score": obs.score,
                     "difficulty": obs.difficulty,

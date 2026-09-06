@@ -90,15 +90,26 @@ async def get_activity(session: AsyncSession, learner_id: uuid.UUID) -> Activity
     today = now.date()
     naive_now = now.replace(tzinfo=None)
     lookback_start = naive_now - timedelta(days=90)
-    timestamps = (
-        await session.scalars(
-            select(LearningEvent.created_at).where(
+    rows = (
+        await session.execute(
+            select(LearningEvent.created_at, LearningEvent.attempt_id, LearningEvent.id).where(
                 LearningEvent.learner_id == learner_id,
                 LearningEvent.event_type == "observation",
                 LearningEvent.created_at >= lookback_start,
             )
         )
     ).all()
+    # One answer fans out into a row per tagged KC. Count the attempt, not the evidence, or
+    # momentum would reward broad KC tagging over learner effort. Rows written before
+    # attempt_id existed have none and each stand alone.
+    seen: set[uuid.UUID] = set()
+    timestamps: list[datetime] = []
+    for created_at, attempt_id, _event_id in rows:
+        if attempt_id is not None:
+            if attempt_id in seen:
+                continue
+            seen.add(attempt_id)
+        timestamps.append(created_at)  # no attempt id: the row is its own attempt
 
     active_days = {ts.date() for ts in timestamps}
     last_7d_start = naive_now - timedelta(days=7)

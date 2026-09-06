@@ -218,3 +218,57 @@ async def test_activity_endpoint_reflects_seeded_events(
     assert body["observations_last_7d"] == 1
     assert body["streak_days"] == 1
     assert body["momentum"] == "up"
+
+
+async def test_activity_counts_a_multi_kc_answer_once(db_session: AsyncSession) -> None:
+    """S45: one answer tagged to three KCs is one attempt, not three observations.
+
+    Otherwise momentum and streak reward broad KC tagging rather than learner effort.
+    """
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    attempt = uuid.uuid4()
+
+    for _ in range(3):  # the per-KC fan-out of ONE graded answer
+        db_session.add(
+            LearningEvent(
+                learner_id=learner.id,
+                event_type="observation",
+                attempt_id=attempt,
+                payload={"score": 1.0},
+                created_at=now - timedelta(days=1),
+            )
+        )
+    await db_session.flush()
+
+    result = await svc.get_activity(db_session, learner.id)
+
+    assert result.observations_last_7d == 1
+
+
+async def test_activity_still_counts_legacy_events_without_an_attempt_id(
+    db_session: AsyncSession,
+) -> None:
+    """Rows predating the attempt_id column each stand alone rather than collapsing to one."""
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    for _ in range(2):
+        db_session.add(
+            LearningEvent(
+                learner_id=learner.id,
+                event_type="observation",
+                attempt_id=None,
+                payload={"score": 1.0},
+                created_at=now - timedelta(days=1),
+            )
+        )
+    await db_session.flush()
+
+    result = await svc.get_activity(db_session, learner.id)
+
+    assert result.observations_last_7d == 2

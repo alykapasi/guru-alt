@@ -26,6 +26,7 @@ from app.learning.profile_estimators import (
     _estimate_persistence,
     _estimate_reading_level,
     _estimate_session_logistics,
+    _observations,
 )
 from app.llm import LLMClient
 from app.llm.registry import fake_llm_client
@@ -522,3 +523,39 @@ async def test_estimate_format_effectiveness_compares_formats(db_session: AsyncS
     assert estimate is not None
     assert estimate.value["mcq"]["mean_score"] == pytest.approx(1.0)
     assert estimate.value["cloze"]["mean_score"] == pytest.approx(0.0)
+
+
+# --- S45: estimators sample attempts, not per-KC evidence rows ---------------
+
+
+def test_observations_collapses_the_per_kc_fan_out() -> None:
+    """Every payload field an estimator reads (score, latency, hints, difficulty) is
+    item-level and identical across the fan-out, so three rows would triple-weight one
+    answer in pace, help-seeking, challenge, load, format and engagement estimates."""
+    attempt = uuid.uuid4()
+    events = [
+        LearningEvent(
+            learner_id=uuid.uuid4(),
+            event_type="observation",
+            attempt_id=attempt,
+            payload={"score": 1.0, "latency_ms": 4200, "hints_used": 2},
+        )
+        for _ in range(3)
+    ]
+
+    assert len(_observations(events)) == 1
+
+
+def test_observations_keeps_distinct_attempts_and_legacy_rows() -> None:
+    learner = uuid.uuid4()
+    a, b = uuid.uuid4(), uuid.uuid4()
+    events = [
+        LearningEvent(learner_id=learner, event_type="observation", attempt_id=a, payload={}),
+        LearningEvent(learner_id=learner, event_type="observation", attempt_id=b, payload={}),
+        # pre-migration rows carry no attempt_id and must not collapse into each other
+        LearningEvent(learner_id=learner, event_type="observation", attempt_id=None, payload={}),
+        LearningEvent(learner_id=learner, event_type="observation", attempt_id=None, payload={}),
+        LearningEvent(learner_id=learner, event_type="placement_seed", attempt_id=None, payload={}),
+    ]
+
+    assert len(_observations(events)) == 4  # 2 attempts + 2 legacy; the seed is excluded
