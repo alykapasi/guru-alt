@@ -90,6 +90,18 @@ def test_normalize_collapses_whitespace() -> None:
     assert normalize("a\n\n  b\tc ") == "a b c"
 
 
+def test_normalize_strips_nul_bytes() -> None:
+    """Postgres text columns reject 0x00 outright, and \\s does not match it, so a single
+    stray NUL from PDF extraction failed the whole chunk INSERT and the entire ingestion."""
+    assert normalize("clean\x00text") == "cleantext"
+    assert "\x00" not in normalize("a\x00\x00b c")
+
+
+def test_chunk_units_output_never_contains_nul() -> None:
+    units = chunk_units([ExtractedUnit(text="page one\x00 body text")], size=200, overlap=50)
+    assert units and all("\x00" not in u.text for u in units)
+
+
 def test_chunk_units_windows_long_text_with_overlap() -> None:
     text = " ".join(f"word{i}" for i in range(800))
     units = chunk_units([ExtractedUnit(text=text)], size=200, overlap=50)
