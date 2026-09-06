@@ -210,7 +210,36 @@ Coverage: API identity/scope, assessments, knowledge model, ingestion/workers, n
 
 ### S34 — Make attempts and turns idempotent and concurrency-safe
 
-**Status:** Proposed · **Priority:** First
+**Status:** Partially implemented (branch `fix/tracker-s54-s38`) · **Priority:** First
+
+**Implemented — attempts.** `AnswerSubmit.attempt_id` is an optional idempotency key: a client
+generates one per attempt and reuses it across retries. `answer_item` returns the grade already
+recorded under that id without re-grading (so no second model call on the rubric path) and without
+a second mastery update. The read-then-write check alone is racy, so the guarantee rests on a
+partial unique index over (learner_id, attempt_id, kc_id) — migration `0020`, partial because
+non-attempt rows legitimately share NULL. A duplicate that slips past the check loses at commit,
+and `answer_item` catches that `IntegrityError` and replays the winner's grade rather than raising.
+The replay is rebuilt from the event log rather than a new results table: `record_observation` now
+writes the grader's `correct`/`detail` into the payload, which the log claimed to preserve for
+replay but was silently dropping.
+
+Migration `0020` also has to repair its own predecessor: `0019` backfilled `attempt_id` by grouping
+on (learner, item, instant), so two genuinely separate answers written in one transaction were
+merged under one id and would now collide. Those extras get fresh ids first.
+
+**Implemented — conflict-safe learner state.** `_get_or_create_state` read-then-inserted, so two
+answers arriving together on a KC the learner had never been assessed on both saw "no state", both
+inserted, and one aborted the whole transaction — losing a graded answer. It now inserts through
+`ON CONFLICT DO NOTHING` and re-reads.
+
+**Still open — turns.** Per-conversation turn serialization is not addressed. Overlapping turns on
+one conversation still have no defined behavior. The obvious mechanism, a session-level advisory
+lock held for the turn, does not fit the current request-scoped `AsyncSession`: turn services commit
+mid-stream and SQLAlchemy returns the connection to the pool at each commit, so the lock would be
+released early or leak to an unrelated request. Doing this properly needs a connection held for the
+life of the SSE stream, or a durable turn record with an expiry — a design decision, not a patch.
+Also still open: the suite cannot yet exercise either concurrency fix under real concurrency,
+because the fixture shares one savepoint-joined session (see S58).
 
 **Evidence:** Answer submissions have no attempt/idempotency key. Mastery updates read then write without a lock/version check. The route has no server-side per-conversation turn serialization. Retries can duplicate evidence; concurrent updates can lose changes or race checkpoint resumes.
 

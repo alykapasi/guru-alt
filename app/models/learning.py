@@ -8,7 +8,7 @@ that later feeds the tracer, the learner profile, and (eventually) DKT.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Index, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -45,6 +45,20 @@ class LearningEvent(UUIDPrimaryKeyMixin, Base):
     """
 
     __tablename__ = "learning_events"
+    # An ``attempt_id`` supplied by a caller is an idempotency key: a retried submission must
+    # update mastery once, not once per retry. Uniqueness is per (learner, attempt, KC) because
+    # one attempt legitimately writes one row per tagged KC. Partial, since ``attempt_id`` is
+    # NULL on pre-migration rows and on non-attempt events, which are not deduplicated.
+    __table_args__ = (
+        Index(
+            "uq_learning_events_learner_attempt_kc",
+            "learner_id",
+            "attempt_id",
+            "kc_id",
+            unique=True,
+            postgresql_where=text("attempt_id IS NOT NULL"),
+        ),
+    )
 
     learner_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("learners.id", ondelete="CASCADE"), index=True

@@ -53,11 +53,18 @@ class ItemRead(BaseModel):
 
 
 class AnswerSubmit(BaseModel):
-    """A learner's response. ``response`` shape depends on the item type (see grading)."""
+    """A learner's response. ``response`` shape depends on the item type (see grading).
+
+    ``attempt_id`` is an optional idempotency key. Generate one per attempt on the client and
+    reuse it across retries: the same id submitted twice grades and updates mastery once, and
+    the second request returns the first one's grade. Without it a dropped response or an
+    impatient double-click hands the learner extra mastery evidence for one piece of work.
+    """
 
     response: dict
     latency_ms: int | None = Field(default=None, ge=0)
     hints_used: int | None = Field(default=None, ge=0)
+    attempt_id: uuid.UUID | None = None
 
 
 class KCEstimateRead(BaseModel):

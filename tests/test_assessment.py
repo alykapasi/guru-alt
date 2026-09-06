@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_llm_client
@@ -415,3 +416,95 @@ async def test_answer_missing_item_404(api_client: AsyncClient) -> None:
         f"{API}/items/{uuid.uuid4()}/answer", json={"response": {"choice": 0}}
     )
     assert r.status_code == 404
+
+
+# --- idempotent attempts (S34) ------------------------------------------------
+
+
+async def test_retrying_an_attempt_id_grades_once(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A resubmitted attempt returns the first grade and adds no second observation.
+
+    Without the key, a dropped response or a double-click hands the learner a second full
+    mastery update for one piece of work.
+    """
+    (kc,) = await _seed_kcs(db_session)
+    item_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
+    body = {"response": {"choice": 1}, "attempt_id": str(uuid.uuid4())}
+
+    first = (await api_client.post(f"{API}/items/{item_id}/answer", json=body)).json()
+    second = (await api_client.post(f"{API}/items/{item_id}/answer", json=body)).json()
+
+    assert first == second
+    events = (
+        await db_session.scalars(select(LearningEvent).where(LearningEvent.kc_id == kc.id))
+    ).all()
+    assert len(events) == 1
+    state = await db_session.scalar(select(LearnerKCState).where(LearnerKCState.kc_id == kc.id))
+    assert state is not None
+    assert state.ability == pytest.approx(first["estimates"][0]["ability"])
+
+
+async def test_distinct_attempt_ids_are_separate_evidence(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Deduplication is per key — two real answers still count twice."""
+    (kc,) = await _seed_kcs(db_session)
+    item_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
+    for _ in range(2):
+        r = await api_client.post(
+            f"{API}/items/{item_id}/answer",
+            json={"response": {"choice": 1}, "attempt_id": str(uuid.uuid4())},
+        )
+        assert r.status_code == 200
+
+    events = (
+        await db_session.scalars(select(LearningEvent).where(LearningEvent.kc_id == kc.id))
+    ).all()
+    assert len(events) == 2
+    assert len({e.attempt_id for e in events}) == 2
+
+
+async def test_retrying_a_rubric_attempt_does_not_call_the_model_again(
+    api_client: AsyncClient, db_session: AsyncSession, fake_grader: None
+) -> None:
+    """The replay short-circuits before grading, so the retry is free as well as safe."""
+    (kc,) = await _seed_kcs(db_session)
+    body = {"item_type": "short", "stem": "Define inertia.", "kcs": [{"kc_id": str(kc.id)}]}
+    item_id = (await api_client.post(f"{API}/items", json=body)).json()["id"]
+    answer = {
+        "response": {"text": "Resistance to change in motion."},
+        "attempt_id": str(uuid.uuid4()),
+    }
+
+    first = (await api_client.post(f"{API}/items/{item_id}/answer", json=answer)).json()
+    second = (await api_client.post(f"{API}/items/{item_id}/answer", json=answer)).json()
+
+    assert first == second and first["score"] == 0.75
+    calls = (await db_session.scalars(select(LLMCall).where(LLMCall.role == "smart"))).all()
+    assert len(calls) == 1
+
+
+async def test_the_database_rejects_a_duplicate_attempt_row(
+    db_session: AsyncSession,
+) -> None:
+    """The unique index — not the read-then-write check — is what settles a concurrent retry."""
+    (kc,) = await _seed_kcs(db_session)
+    learner = Learner(handle=f"idem-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+    attempt = uuid.uuid4()
+    for _ in range(2):
+        db_session.add(
+            LearningEvent(
+                learner_id=learner.id,
+                kc_id=kc.id,
+                event_type="observation",
+                attempt_id=attempt,
+                payload={"score": 1.0},
+            )
+        )
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+    await db_session.rollback()

@@ -18,6 +18,7 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -37,6 +38,11 @@ class Observation(BaseModel):
 
     ``kc_weights`` maps each tagged KC to its relative credit; a single-KC item is just one
     entry. The item is treated as one unit of evidence split across the KCs by weight.
+
+    ``attempt_id``, when the caller supplies one, is an idempotency key: the same id
+    submitted twice records the interaction once (see ``services.assessment.answer_item``).
+    Left unset, one is generated per observation. ``correct``/``detail`` carry the grader's
+    verdict into the log so a recorded attempt can be replayed without re-grading it.
     """
 
     learner_id: uuid.UUID
@@ -47,6 +53,9 @@ class Observation(BaseModel):
     response: dict | None = None
     latency_ms: int | None = None
     hints_used: int | None = None
+    attempt_id: uuid.UUID | None = None
+    correct: bool | None = None
+    detail: dict | None = None
 
     @field_validator("kc_weights")
     @classmethod
@@ -82,16 +91,33 @@ def _elapsed_days(last_seen: datetime | None, now: datetime) -> float:
 async def _get_or_create_state(
     session: AsyncSession, learner_id: uuid.UUID, kc_id: uuid.UUID
 ) -> LearnerKCState:
+    """The learner's state row for this KC, creating a default one on first sighting.
+
+    Creation goes through ``ON CONFLICT DO NOTHING`` against the (learner, KC) unique
+    constraint: two answers arriving together on a KC the learner has never been assessed
+    on would both read "no state" and both insert, and one would fail the whole
+    transaction. Losing the race here is not an error — it just means someone else created
+    the row, so re-read it.
+    """
     state = await session.scalar(
         select(LearnerKCState).where(
             LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id == kc_id
         )
     )
-    if state is None:
-        state = LearnerKCState(learner_id=learner_id, kc_id=kc_id)
-        session.add(state)
-        await session.flush()
-    return state
+    if state is not None:
+        return state
+    await session.execute(
+        pg_insert(LearnerKCState)
+        .values(learner_id=learner_id, kc_id=kc_id)
+        .on_conflict_do_nothing(index_elements=["learner_id", "kc_id"])
+    )
+    created = await session.scalar(
+        select(LearnerKCState).where(
+            LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id == kc_id
+        )
+    )
+    assert created is not None  # the row exists now: we inserted it, or the other writer did
+    return created
 
 
 async def estimate_kc(
@@ -135,7 +161,8 @@ async def record_observation(
     total_w = sum(obs.kc_weights.values())
     # One id shared by this answer's whole per-KC fan-out, so consumers can tell "one learner
     # action tagged to three components" from "three separate attempts" (see LearningEvent).
-    attempt_id = uuid.uuid4()
+    # A caller-supplied id doubles as an idempotency key, enforced by a unique index.
+    attempt_id = obs.attempt_id or uuid.uuid4()
     updated: list[LearnerKCState] = []
     for kc_id, raw_w in obs.kc_weights.items():
         weight = raw_w / total_w
@@ -163,6 +190,8 @@ async def record_observation(
                     "response": obs.response,
                     "latency_ms": obs.latency_ms,
                     "hints_used": obs.hints_used,
+                    "correct": obs.correct,
+                    "detail": obs.detail,
                     "estimator": estimator.name,
                 },
             )
