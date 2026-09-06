@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from taskiq_redis import ListQueueBroker
 
 from app.core.config import AppEnv, Settings, get_settings
 from app.storage import BlobNotFound, InMemoryBlobStore, S3BlobStore
@@ -102,3 +103,13 @@ async def test_s3_streaming_upload_download(tmp_path: Path) -> None:
     await store.delete(key)
     with pytest.raises(BlobNotFound):
         await store.download(key, tmp_path / "missing.bin")
+
+
+def test_broker_disables_the_blocking_read_timeout() -> None:
+    """Regression: redis-py 8 defaults socket_timeout to 5s, but the worker's BRPOP blocks
+    indefinitely on an idle queue — the timeout killed the worker every 5s in a restart loop."""
+    broker = build_broker(Settings(env=AppEnv.DEV, redis_url="redis://localhost:6379/0"))
+    assert isinstance(broker, ListQueueBroker)  # narrows AsyncBroker to the pooled redis one
+    kwargs = broker.connection_pool.connection_kwargs
+    assert kwargs.get("socket_timeout") is None
+    assert kwargs.get("socket_keepalive") is True
