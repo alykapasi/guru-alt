@@ -7,9 +7,13 @@ subject/topic** — a bounded, relevant set, never the whole graph. Candidates a
 numbered list and the model replies with indices, which is far more robust than having it echo
 UUIDs. Tagging is **best-effort**: an unparseable, empty, or hallucinated reply yields no tags
 rather than failing the ingest. All model access is by role — no provider SDK, no model name.
+
+The classification itself runs as a DSPy program (app/prompts/kc_tagging_program.py), reached
+through ``RoleLM`` so the model is still selected by role, never a provider SDK or model name
+(Phase 9c, D8). This module owns the candidate-catalog framing and the tag/threshold/dedup
+mapping back to ``KCTag``; the instruction text and few-shot demos live in the DSPy program.
 """
 
-import json
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -17,20 +21,14 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
+from app.llm import LLMClient, ModelRole, Usage
 from app.models.knowledge import KC, Topic
 from app.models.source import Source
+from app.prompts.kc_tagging_program import TagPrediction, load_kc_tagging_program
+from app.prompts.lm import RoleLM
 
 TAGGING_ROLE = ModelRole.FAST
 """KC tagging is a cheap classification task — it runs on the FAST tier (MASTERPLAN §7)."""
-
-_SYSTEM_PROMPT = (
-    "You label a passage with the knowledge components (KCs) it actually teaches. You are given "
-    "a numbered list of candidate KCs and a passage. Choose only the KCs the passage directly "
-    "teaches or assesses — usually zero to three; omit tangential mentions. Respond with ONLY a "
-    'JSON object {"tags": [{"kc": <candidate number>, "confidence": <0.0-1.0>}]} and nothing '
-    "else. If none apply, return an empty list."
-)
 
 
 @dataclass(frozen=True)
@@ -58,59 +56,46 @@ async def tag_chunk(
     min_confidence: float = 0.5,
     max_tokens: int = 256,
 ) -> tuple[list[KCTag], Usage]:
-    """Tag one chunk against ``candidates`` with the FAST model.
+    """Tag one chunk against ``candidates`` with the FAST model via the DSPy program.
 
-    Returns the surviving tags (confidence ≥ ``min_confidence``, de-duplicated keeping the
-    highest confidence, in candidate order) plus the call's ``Usage``. No candidates ⇒ no model
-    call. A malformed/hallucinated reply ⇒ no tags (best-effort; never fails the ingest).
+    Best-effort: no candidates ⇒ no call; any DSPy/exec/parse failure ⇒ no tags (never raises).
+    Returns surviving tags (confidence ≥ ``min_confidence``, de-duped keeping the highest, in
+    candidate order) plus the call's ``Usage`` for cost logging.
     """
     if not candidates:
         return [], Usage()
-    completion = await client.complete(
-        TAGGING_ROLE,
-        [ChatMessage(role=ChatRole.USER, content=_build_prompt(text, candidates))],
-        system=_SYSTEM_PROMPT,
-        max_tokens=max_tokens,
-    )
-    return _parse_tags(completion.content, candidates, min_confidence), completion.usage
-
-
-def _build_prompt(text: str, candidates: Sequence[KCCandidate]) -> str:
+    lm = RoleLM(TAGGING_ROLE, client, max_tokens=max_tokens)
     catalog = "\n".join(
-        f"{i}. {kc.name}{f' — {kc.description}' if kc.description else ''}"
-        for i, kc in enumerate(candidates, start=1)
+        f"{i}. {c.name}{f' — {c.description}' if c.description else ''}"
+        for i, c in enumerate(candidates, start=1)
     )
-    return f"Candidate KCs:\n{catalog}\n\nPassage:\n{text}"
-
-
-def _parse_tags(
-    content: str, candidates: Sequence[KCCandidate], min_confidence: float
-) -> list[KCTag]:
+    program = load_kc_tagging_program()
     try:
-        raw = json.loads(_extract_json(content))["tags"]
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-        return []
-    if not isinstance(raw, list):
-        return []
+        import dspy
+
+        with dspy.context(lm=lm):
+            prediction = await program.acall(passage=text, candidates=catalog)
+        raw = list(prediction.tags)
+    except Exception:  # best-effort — a weak model/parse failure never fails the ingest
+        return [], lm.usage_sum
+    return _surviving_tags(raw, candidates, min_confidence), lm.usage_sum
+
+
+def _surviving_tags(
+    raw: Sequence[TagPrediction], candidates: Sequence[KCCandidate], min_confidence: float
+) -> list[KCTag]:
     best: dict[uuid.UUID, float] = {}
     for entry in raw:
         try:
-            index = int(entry["kc"])
-            confidence = _clamp(float(entry.get("confidence", 1.0)))
-        except (KeyError, TypeError, ValueError):
+            index = int(entry.kc)
+            confidence = _clamp(float(entry.confidence))
+        except (AttributeError, TypeError, ValueError):
             continue
         if not 1 <= index <= len(candidates) or confidence < min_confidence:
             continue
         kc_id = candidates[index - 1].id
         best[kc_id] = max(best.get(kc_id, 0.0), confidence)
     return [KCTag(kc_id=c.id, confidence=best[c.id]) for c in candidates if c.id in best]
-
-
-def _extract_json(content: str) -> str:
-    start, end = content.find("{"), content.rfind("}")
-    if start == -1 or end < start:
-        raise ValueError("no JSON object in reply")
-    return content[start : end + 1]
 
 
 def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
