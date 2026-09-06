@@ -126,7 +126,9 @@ async def test_ocr_against_live_vision_model() -> None:
     from app.llm.registry import LLMClient, ModelSpec
 
     assert _VISION_MODEL is not None
-    provider = OpenAICompatProvider(name="ollama", base_url=_OLLAMA, api_key="")
+    provider = OpenAICompatProvider(
+        name="ollama", base_url=_OLLAMA, api_key="", timeout=30.0, max_retries=0
+    )
     client = LLMClient({"ollama": provider}, {ModelRole.VISION: ModelSpec("ollama", _VISION_MODEL)})
     text, _usage = await ocr_image(client, _PNG, media_type="image/png")
     assert isinstance(text, str)  # a real vision model returns *some* description

@@ -24,6 +24,7 @@ class FakeProvider:
     """
 
     name = "fake"
+    supports_embeddings = True
 
     def __init__(
         self,

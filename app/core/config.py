@@ -102,6 +102,12 @@ class Settings(BaseSettings):
     # the pgvector column. Changing the EMBED model's dim is a schema migration.
     embed_dim: int = 768
 
+    # Transport limits applied to every provider SDK client. The 60s ceiling is per network
+    # read, not per turn, so a long streamed answer is unaffected — it bounds a provider that
+    # has stopped responding. Retries are the SDK's own (connection errors and 429/5xx only).
+    llm_timeout_seconds: float = 60.0
+    llm_max_retries: int = 2
+
     ollama_base_url: str = "http://localhost:11434/v1"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_api_key: str = ""

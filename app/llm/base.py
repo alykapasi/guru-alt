@@ -8,9 +8,15 @@ from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ToolDef
 
 @runtime_checkable
 class LLMProvider(Protocol):
-    """A chat + embeddings backend. Implementations translate to/from their SDK."""
+    """A chat + embeddings backend. Implementations translate to/from their SDK.
+
+    ``supports_embeddings`` is declared rather than discovered: not every chat backend has an
+    embeddings API (Anthropic does not), and routing the EMBED role at one is a configuration
+    mistake that should fail at startup, not on the first document a learner uploads.
+    """
 
     name: str
+    supports_embeddings: bool
 
     async def complete(
         self,

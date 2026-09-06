@@ -50,7 +50,9 @@ _MODEL = _pick_chat_model()
 @pytest.mark.skipif(_MODEL is None, reason="Ollama not running or no model pulled")
 async def test_ollama_streaming_real() -> None:
     assert _MODEL is not None  # narrow for the type checker; skipif guarantees it
-    provider = OpenAICompatProvider(name="ollama", base_url=_OLLAMA, api_key="")
+    provider = OpenAICompatProvider(
+        name="ollama", base_url=_OLLAMA, api_key="", timeout=30.0, max_retries=0
+    )
     chunks = [
         chunk
         async for chunk in provider.stream(

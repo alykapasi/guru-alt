@@ -520,7 +520,7 @@ teaching decisions is S18/S44 and remains open.
 
 ### S49 — Make provider compatibility an explicit contract
 
-**Status:** Partially implemented (branch `fix/tracker-s54-s38`) · **Priority:** High
+**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** High
 
 **Implemented — tool calls no longer depend on a usage chunk.** `stream_options={"include_usage":
 True}` is an OpenAI *extension*; a compatible endpoint may ignore it. The adapter accumulated
@@ -534,9 +534,37 @@ nothing else changes.
 Verified the way it should be: the new test fails against the previous adapter and passes against
 this one.
 
-**Still open:** startup validation of provider names and role capabilities, and the defined
-behavior for truncation, retries, timeouts, rate limits and early disconnect. Those are a contract
-to design, not a bug to fix.
+**Implemented — the configuration is validated before it can fail a learner.** `LLMClient`
+validates its role→provider map on construction and raises `LLMConfigError` naming the offending
+`GURU_MODEL_*` setting and the valid alternatives. A typo previously surfaced as a bare `KeyError`
+inside a learner's turn. `LLMProvider` now *declares* `supports_embeddings` rather than the mismatch
+being discovered when `AnthropicProvider.embed` raised `NotImplementedError` on the first document
+someone uploaded — routing `GURU_MODEL_EMBED` at Anthropic is refused. Validating in `__init__`
+rather than `build_llm_client` also covers `with_roles`, so a sweep cell naming a bad provider fails
+before the run instead of during it. `main.lifespan` builds the client, so a bad map is a refusal to
+start.
+
+**Implemented — transport limits are explicit.** `GURU_LLM_TIMEOUT_SECONDS` (60) and
+`GURU_LLM_MAX_RETRIES` (2) are passed to both SDK clients instead of inheriting whatever the SDK
+happened to default to (600s). The timeout is per network read, not per turn, so a long streamed
+answer is unaffected — it bounds a provider that has stopped responding.
+
+**Implemented — silent failures now say something.** A `max_tokens` cutoff is not an SDK error and
+the caller cannot see it; downstream it appears as a JSON parse failure or a half-finished
+explanation with no clue why, so both providers log `llm.response_truncated`. Tool arguments that
+are not valid JSON still degrade to `{}` — an empty dict and "the model emitted garbage" looked
+identical to the receiving tool, so that now logs too.
+
+**Implemented — the stream is closed when the consumer hangs up.** The OpenAI-compatible stream is
+consumed inside `async with`, so an SSE client navigating away closes the underlying HTTP response
+instead of leaving it open until garbage collection. This happens on ordinary use, not just errors.
+
+Contract tests cover tool-call completion without usage, malformed arguments, truncation, early
+disconnect, unknown provider names, and an embeddings/role capability mismatch.
+
+**Still open:** rate-limit behavior beyond the SDK's own 429 retries — a defined surface for
+"the provider is refusing us right now" that reaches the learner as something other than a 500,
+and per-role rather than per-client limits.
 
 **Evidence:** The OpenAI-compatible streaming adapter emits assembled tool calls only when a chunk includes usage. A compatible endpoint that finishes tool calls without a usage chunk can lose them. Registry configuration does not validate role capabilities or provider names up front.
 

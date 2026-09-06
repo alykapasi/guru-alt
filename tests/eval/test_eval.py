@@ -38,7 +38,9 @@ _MODEL = _pick_chat_model()
 
 def _ollama_client(model: str) -> LLMClient:
     """An LLM client with every role (incl. the SMART grader) routed to a local model."""
-    provider = OpenAICompatProvider(name="ollama", base_url=_OLLAMA, api_key="")
+    provider = OpenAICompatProvider(
+        name="ollama", base_url=_OLLAMA, api_key="", timeout=30.0, max_retries=0
+    )
     return LLMClient({"ollama": provider}, {r: ModelSpec("ollama", model) for r in ModelRole})
 
 

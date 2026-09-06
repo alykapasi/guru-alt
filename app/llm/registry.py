@@ -13,6 +13,14 @@ from app.llm.providers import AnthropicProvider, FakeProvider, FakeTurn, OpenAIC
 from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ModelRole, ToolDef
 
 
+class LLMConfigError(ValueError):
+    """The role→model map cannot be served by the configured providers.
+
+    Raised while *building* the registry, so a typo in ``GURU_MODEL_*`` stops the process at
+    startup instead of surfacing as a ``KeyError`` inside a learner's turn.
+    """
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     provider: str
@@ -27,12 +35,32 @@ def _parse_spec(value: str) -> ModelSpec:
     return ModelSpec(provider=provider, model=model)
 
 
+def _validate(providers: dict[str, LLMProvider], roles: dict[ModelRole, ModelSpec]) -> None:
+    """Every role must name a provider that exists and can do the job that role implies."""
+    known = sorted(providers)
+    for role, spec in roles.items():
+        setting = f"GURU_MODEL_{role.value.upper()}"
+        provider = providers.get(spec.provider)
+        if provider is None:
+            raise LLMConfigError(
+                f"{setting}={spec.provider}:{spec.model} names an unknown provider "
+                f"{spec.provider!r}; known providers are {', '.join(known)}"
+            )
+        if role is ModelRole.EMBED and not provider.supports_embeddings:
+            usable = [p for p in known if providers[p].supports_embeddings]
+            raise LLMConfigError(
+                f"{setting} routes to {spec.provider!r}, which has no embeddings API; "
+                f"use one of {', '.join(usable)}"
+            )
+
+
 class LLMClient:
     def __init__(
         self,
         providers: dict[str, LLMProvider],
         roles: dict[ModelRole, ModelSpec],
     ) -> None:
+        _validate(providers, roles)
         self._providers = providers
         self._roles = roles
 
@@ -85,17 +113,23 @@ class LLMClient:
 
 
 def build_llm_client(settings: Settings) -> LLMClient:
-    """Construct the registry from settings (one provider instance per backend)."""
+    """Construct the registry from settings (one provider instance per backend).
+
+    Raises :class:`LLMConfigError` if any role names a provider that does not exist or cannot
+    serve that role. Called from the app's lifespan so a bad map fails at startup.
+    """
+    limits = {"timeout": settings.llm_timeout_seconds, "max_retries": settings.llm_max_retries}
     providers: dict[str, LLMProvider] = {
         "ollama": OpenAICompatProvider(
-            name="ollama", base_url=settings.ollama_base_url, api_key=""
+            name="ollama", base_url=settings.ollama_base_url, api_key="", **limits
         ),
         "openrouter": OpenAICompatProvider(
             name="openrouter",
             base_url=settings.openrouter_base_url,
             api_key=settings.openrouter_api_key,
+            **limits,
         ),
-        "anthropic": AnthropicProvider(api_key=settings.anthropic_api_key),
+        "anthropic": AnthropicProvider(api_key=settings.anthropic_api_key, **limits),
     }
     roles = {
         ModelRole.FAST: _parse_spec(settings.model_fast),
