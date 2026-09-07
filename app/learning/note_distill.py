@@ -40,10 +40,15 @@ DISTILL_SYSTEM_PROMPT = (
     "learner wrote themselves — carry every one of these forward, keeping its id; you may "
     "lightly edit its wording for flow but never drop one or change its meaning). "
     "Fold the new material and outcomes into the existing atoms: restructure freely, merge "
-    "duplicates, keep ids for atoms you carry forward, omit ids for genuinely new atoms. "
+    "duplicates, keep ids for atoms you carry forward, omit ids for genuinely new atoms.\n\n"
+    "These notes belong to ONE topic, named at the top of the prompt. The study activity you "
+    "are shown is gathered across the learner's whole subject, so much of it may be about "
+    "sibling topics: use only what is genuinely about THIS topic, and reply "
+    '{"no_change": true} if none of it is. Tag atoms only with knowledge-component ids from '
+    "the catalog given. Cite the evidence each atom came from using the bracketed labels in "
+    'the prompt, as "provenance": {"refs": ["m3", "o1"]} — only labels that actually appear.\n\n'
     'Reply with JSON only: {"atoms": [{"id": "...", "kind": "...", "kc_ids": [], "md": "...", '
-    '"provenance": {}}]} — or {"no_change": true} if the new activity contains nothing '
-    "relevant to this topic."
+    '"provenance": {"refs": []}}]} — or {"no_change": true}.'
 )
 
 ABSORB_SYSTEM_PROMPT = (
@@ -75,6 +80,70 @@ class DistillResult:
 
     atoms: list[dict] | None
     no_change: bool
+
+
+@dataclass(frozen=True)
+class TopicContext:
+    """Which topic a note is for, and the only KCs an atom may legitimately be tagged with.
+
+    Without this the merge prompt said "this topic" without ever naming one, and the transcript
+    it was given spans the whole subject — so a conversation about one topic could populate
+    every sibling topic's note, most visibly when those notes started empty and the atom list
+    carried no hint of what the topic was.
+    """
+
+    name: str
+    subject_name: str
+    description: str | None = None
+    kcs: tuple[tuple[str, str], ...] = ()
+    """(kc_id, kc name) for every KC in the topic — the catalog atoms may cite."""
+
+    @property
+    def allowed_kc_ids(self) -> set[str]:
+        return {kc_id for kc_id, _ in self.kcs}
+
+    def as_prompt(self) -> str:
+        described = f" — {self.description}" if self.description else ""
+        catalog = (
+            "\n".join(f"- {kc_id}: {name}" for kc_id, name in self.kcs) or "- (none defined yet)"
+        )
+        return (
+            f"Topic: {self.name!r} in the subject {self.subject_name!r}{described}\n"
+            f"Knowledge components in this topic — use only these ids in kc_ids:\n{catalog}"
+        )
+
+
+def _validated_kc_ids(atom: dict, allowed: set[str]) -> list[str]:
+    """Keep only tags that name a KC of this topic. A model-invented id is not a reference."""
+    kept = [k for k in atom["kc_ids"] if k in allowed]
+    if len(kept) != len(atom["kc_ids"]):
+        log.warning(
+            "note_distill.unknown_kc_ids", dropped=len(atom["kc_ids"]) - len(kept), atom=atom["id"]
+        )
+    return kept
+
+
+def _resolved_provenance(atom: dict, prior: dict | None, refs: dict[str, dict]) -> dict:
+    """Lineage is server-owned: only labels for evidence actually supplied become references.
+
+    The model cites transient labels (``m3``, ``o1``); those resolve to the durable message and
+    attempt ids behind them, so a stored reference still means something after the prompt that
+    produced it is gone. An atom carried forward keeps the lineage it already had, and anything
+    the model wrote into ``provenance`` other than ``refs`` is discarded rather than trusted.
+    """
+    evidence: list[dict] = list((prior or {}).get("provenance", {}).get("evidence", []))
+    seen = {(e.get("kind"), e.get("id")) for e in evidence}
+    cited = atom.get("provenance", {}).get("refs")
+    for ref in cited if isinstance(cited, list) else []:
+        source = refs.get(str(ref))
+        if source is None:
+            log.warning("note_distill.unknown_provenance_ref", ref=str(ref)[:40])
+            continue
+        key = (source["kind"], source["id"])
+        if key not in seen:
+            seen.add(key)
+            evidence.append(source)
+    return {"evidence": evidence}
 
 
 def _extract_json(content: str) -> str:
@@ -154,18 +223,26 @@ def _profile_line(reading_level: object) -> str:
 async def distill(
     llm: LLMClient,
     *,
+    topic: TopicContext,
     atoms: list[dict],
     transcript: str,
     outcomes: str,
+    refs: dict[str, dict] | None = None,
     reading_level: object,
 ) -> tuple[DistillResult | None, Usage]:
     """One merge: current atoms + new material + outcomes -> updated atom list.
 
-    Returns (None, usage) on parse failure or a learner-atom-invariant violation.
+    ``refs`` maps the bracketed labels used in ``transcript``/``outcomes`` to the durable rows
+    behind them; every reference the model cites is resolved through it, and every KC tag is
+    checked against ``topic``. Returns (None, usage) on parse failure or a learner-atom
+    violation.
     """
+    refs = refs or {}
     prompt = (
+        f"{topic.as_prompt()}\n\n"
         f"Current atoms:\n{json.dumps(atoms, indent=2)}\n\n"
-        f"New study activity (transcript excerpts):\n{transcript or '(none)'}\n\n"
+        f"New study activity, from conversations across the whole subject — only some of it "
+        f"may concern this topic:\n{transcript or '(none)'}\n\n"
         f"The learner's graded outcomes on this topic (build 'callout' atoms from real "
         f"mistakes here):\n{outcomes or '(none)'}"
         f"{_profile_line(reading_level)}"
@@ -185,7 +262,13 @@ async def distill(
     if not _learner_atoms_preserved(atoms, new_atoms):
         log.warning("note_distill.learner_atom_dropped")
         return None, completion.usage
-    return DistillResult(atoms=assign_atom_ids(new_atoms), no_change=False), completion.usage
+    new_atoms = assign_atom_ids(new_atoms)
+    prior_by_id = {a["id"]: a for a in atoms if a.get("id")}
+    allowed = topic.allowed_kc_ids
+    for atom in new_atoms:
+        atom["kc_ids"] = _validated_kc_ids(atom, allowed)
+        atom["provenance"] = _resolved_provenance(atom, prior_by_id.get(atom["id"]), refs)
+    return DistillResult(atoms=new_atoms, no_change=False), completion.usage
 
 
 async def absorb(

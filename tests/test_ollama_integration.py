@@ -1,16 +1,16 @@
-"""Real Ollama integration test — skipped automatically when Ollama isn't available.
+"""Real Ollama integration test — opt-in via GURU_LIVE_MODEL_TESTS=1.
 
 Exercises the OpenAICompatProvider against a locally running Ollama, satisfying the
-Phase 2 DoD ("an Ollama integration test exercises real local generation"). Skipped in
-CI and on machines without Ollama or any pulled model.
+Phase 2 DoD ("an Ollama integration test exercises real local generation"). Skipped by
+default so the ordinary suite stays offline — see tests/live_models.py.
 """
 
-import httpx
 import pytest
 
 from app.core.config import get_settings
 from app.llm.providers.openai_compat import OpenAICompatProvider
 from app.llm.types import ChatMessage, ChatRole
+from tests.live_models import SKIP_REASON, pick_model
 
 _OLLAMA = get_settings().ollama_base_url
 
@@ -28,26 +28,10 @@ _CHAT_PREFIXES = (
     "deepseek",
 )
 
-
-def _pick_chat_model() -> str | None:
-    """Return a pulled chat-capable Ollama model id, or None if none/unreachable."""
-    try:
-        resp = httpx.get(f"{_OLLAMA}/models", timeout=2.0)
-        resp.raise_for_status()
-        ids = [m["id"] for m in resp.json().get("data", [])]
-    except Exception:
-        return None
-    for prefix in _CHAT_PREFIXES:
-        for model_id in ids:
-            if model_id.startswith(prefix) and "embed" not in model_id:
-                return model_id
-    return None
+_MODEL = pick_model(_CHAT_PREFIXES)
 
 
-_MODEL = _pick_chat_model()
-
-
-@pytest.mark.skipif(_MODEL is None, reason="Ollama not running or no model pulled")
+@pytest.mark.skipif(_MODEL is None, reason=SKIP_REASON)
 async def test_ollama_streaming_real() -> None:
     assert _MODEL is not None  # narrow for the type checker; skipif guarantees it
     provider = OpenAICompatProvider(

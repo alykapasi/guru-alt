@@ -59,11 +59,23 @@ class TestAssignIds:
         assert atoms[1]["id"].startswith("a-") and len(atoms[1]["id"]) > 2
 
 
+TOPIC = note_distill.TopicContext(
+    name="Integration by parts",
+    subject_name="Calculus",
+    kcs=(("11111111-1111-1111-1111-111111111111", "Choosing u and dv"),),
+)
+
+
 class TestDistill:
     async def test_distill_returns_atoms(self) -> None:
         llm = fake_llm_client(_atoms_reply([CONCEPT]))
         result, _usage = await note_distill.distill(
-            llm, atoms=[], transcript="tutor: dot products…", outcomes="", reading_level=None
+            llm,
+            topic=TOPIC,
+            atoms=[],
+            transcript="tutor: dot products…",
+            outcomes="",
+            reading_level=None,
         )
         assert result is not None and not result.no_change
         assert result.atoms is not None and result.atoms[0]["md"] == CONCEPT["md"]
@@ -71,14 +83,14 @@ class TestDistill:
     async def test_distill_no_change(self) -> None:
         llm = fake_llm_client('{"no_change": true}')
         result, _ = await note_distill.distill(
-            llm, atoms=[CONCEPT], transcript="t", outcomes="", reading_level=None
+            llm, topic=TOPIC, atoms=[CONCEPT], transcript="t", outcomes="", reading_level=None
         )
         assert result is not None and result.no_change and result.atoms is None
 
     async def test_distill_parse_failure_returns_none(self) -> None:
         llm = fake_llm_client("garbage")
         result, _ = await note_distill.distill(
-            llm, atoms=[], transcript="t", outcomes="", reading_level=None
+            llm, topic=TOPIC, atoms=[], transcript="t", outcomes="", reading_level=None
         )
         assert result is None
 
@@ -86,14 +98,24 @@ class TestDistill:
         """THE key regression test: a distill that loses a learner atom is rejected."""
         llm = fake_llm_client(_atoms_reply([CONCEPT]))  # reply omits LEARNER_ATOM
         result, _ = await note_distill.distill(
-            llm, atoms=[CONCEPT, LEARNER_ATOM], transcript="t", outcomes="", reading_level=None
+            llm,
+            topic=TOPIC,
+            atoms=[CONCEPT, LEARNER_ATOM],
+            transcript="t",
+            outcomes="",
+            reading_level=None,
         )
         assert result is None
 
     async def test_learner_atom_carried_is_accepted(self) -> None:
         llm = fake_llm_client(_atoms_reply([CONCEPT, LEARNER_ATOM]))
         result, _ = await note_distill.distill(
-            llm, atoms=[CONCEPT, LEARNER_ATOM], transcript="t", outcomes="", reading_level=None
+            llm,
+            topic=TOPIC,
+            atoms=[CONCEPT, LEARNER_ATOM],
+            transcript="t",
+            outcomes="",
+            reading_level=None,
         )
         assert result is not None and result.atoms is not None
         assert any(a["id"] == "a-L1" for a in result.atoms)
@@ -132,3 +154,80 @@ class TestMechanicalRender:
 
     def test_empty_substrate(self) -> None:
         assert note_distill.mechanical_render([]) == ""
+
+
+class TestTopicScopingAndProvenance:
+    """S39: the merge is told which topic it is for, and every stored reference is real."""
+
+    def test_the_prompt_names_the_topic_and_its_kc_catalog(self) -> None:
+        rendered = TOPIC.as_prompt()
+        assert "Integration by parts" in rendered and "Calculus" in rendered
+        assert "11111111-1111-1111-1111-111111111111: Choosing u and dv" in rendered
+
+    async def test_kc_tags_outside_the_topic_are_dropped(self) -> None:
+        """A model-invented id is not a reference to anything."""
+        atom = {
+            **CONCEPT,
+            "kc_ids": ["11111111-1111-1111-1111-111111111111", "not-a-kc-of-this-topic"],
+        }
+        result, _ = await note_distill.distill(
+            fake_llm_client(_atoms_reply([atom])),
+            topic=TOPIC,
+            atoms=[],
+            transcript="t",
+            outcomes="",
+            reading_level=None,
+        )
+        assert result is not None and result.atoms is not None
+        assert result.atoms[0]["kc_ids"] == ["11111111-1111-1111-1111-111111111111"]
+
+    async def test_cited_evidence_resolves_to_the_row_behind_the_label(self) -> None:
+        atom = {**CONCEPT, "provenance": {"refs": ["m1", "o1"]}}
+        refs = {
+            "m1": {"kind": "message", "id": "msg-1"},
+            "o1": {"kind": "attempt", "id": "att-1", "kc_id": None},
+        }
+        result, _ = await note_distill.distill(
+            fake_llm_client(_atoms_reply([atom])),
+            topic=TOPIC,
+            atoms=[],
+            transcript="[m1] user: hi",
+            outcomes="[o1] KC 'x': score=0.0",
+            refs=refs,
+            reading_level=None,
+        )
+        assert result is not None and result.atoms is not None
+        assert result.atoms[0]["provenance"] == {"evidence": [refs["m1"], refs["o1"]]}
+
+    async def test_a_reference_to_evidence_that_was_never_supplied_is_discarded(self) -> None:
+        atom = {**CONCEPT, "provenance": {"refs": ["m1", "m99"], "note": "invented"}}
+        result, _ = await note_distill.distill(
+            fake_llm_client(_atoms_reply([atom])),
+            topic=TOPIC,
+            atoms=[],
+            transcript="[m1] user: hi",
+            outcomes="",
+            refs={"m1": {"kind": "message", "id": "msg-1"}},
+            reading_level=None,
+        )
+        assert result is not None and result.atoms is not None
+        # The unknown label is gone, and so is the free-text field the model added itself.
+        assert result.atoms[0]["provenance"] == {"evidence": [{"kind": "message", "id": "msg-1"}]}
+
+    async def test_a_carried_forward_atom_keeps_the_lineage_it_already_had(self) -> None:
+        prior = {**CONCEPT, "provenance": {"evidence": [{"kind": "message", "id": "old"}]}}
+        returned = {**CONCEPT, "provenance": {"refs": ["m1"]}}
+        result, _ = await note_distill.distill(
+            fake_llm_client(_atoms_reply([returned])),
+            topic=TOPIC,
+            atoms=[prior],
+            transcript="[m1] user: hi",
+            outcomes="",
+            refs={"m1": {"kind": "message", "id": "new"}},
+            reading_level=None,
+        )
+        assert result is not None and result.atoms is not None
+        assert result.atoms[0]["provenance"]["evidence"] == [
+            {"kind": "message", "id": "old"},
+            {"kind": "message", "id": "new"},
+        ]

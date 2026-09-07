@@ -253,8 +253,11 @@ uv run poe test          # tests only
 ```
 
 The suite runs **fully offline and deterministically**: LLM calls go through a `FakeProvider`, ASR
-and video demux through fakes, and the job broker in-memory. Integration tests use the Postgres
-started by `docker compose` — but on **their own database**, `<your db>_test`, created and migrated
+and video demux through fakes, and the job broker in-memory. A handful of tests do call a real
+local model — the provider integration test, the eval rubric, vision OCR — and those are opt-in
+(`GURU_LIVE_MODEL_TESTS=1`), because a cold model turns a 25-second suite into a 20-minute one and
+makes it fail for reasons unrelated to the code. Integration tests use the Postgres started by
+`docker compose` — but on **their own database**, `<your db>_test`, created and migrated
 automatically by `poe test`. Tests assert on global rows (total LLM calls, event counts) and claim
 the fixed dev learner handle, so a dev server writing to the same database would fail them for
 reasons unrelated to the code. See `tests/testdb.py`.

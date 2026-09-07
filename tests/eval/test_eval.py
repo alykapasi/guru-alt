@@ -6,7 +6,6 @@ when no local Ollama chat model is available (same pattern as test_ollama_integr
 """
 
 import harness  # sibling module in tests/eval/ (pytest prepend mode puts it on sys.path)
-import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,26 +13,12 @@ from app.core.config import get_settings
 from app.llm import LLMClient, ModelRole
 from app.llm.providers.openai_compat import OpenAICompatProvider
 from app.llm.registry import ModelSpec, fake_llm_client
+from tests.live_models import SKIP_REASON, pick_model
 
 _OLLAMA = get_settings().ollama_base_url
 _CHAT_PREFIXES = ("phi3", "phi4", "llama3", "qwen", "mistral", "gemma3", "granite", "deepseek")
 
-
-def _pick_chat_model() -> str | None:
-    try:
-        resp = httpx.get(f"{_OLLAMA}/models", timeout=2.0)
-        resp.raise_for_status()
-        ids = [m["id"] for m in resp.json().get("data", [])]
-    except Exception:
-        return None
-    for prefix in _CHAT_PREFIXES:
-        for model_id in ids:
-            if model_id.startswith(prefix) and "embed" not in model_id:
-                return model_id
-    return None
-
-
-_MODEL = _pick_chat_model()
+_MODEL = pick_model(_CHAT_PREFIXES)
 
 
 def _ollama_client(model: str) -> LLMClient:
@@ -75,7 +60,7 @@ async def test_grounding_eval_gate(db_session: AsyncSession) -> None:
     assert report.pass_rate == 1.0, [r.detail for r in report.results if not r.passed]
 
 
-@pytest.mark.skipif(_MODEL is None, reason="Ollama not running or no model pulled")
+@pytest.mark.skipif(_MODEL is None, reason=SKIP_REASON)
 async def test_rubric_eval_runs_against_live_model() -> None:
     assert _MODEL is not None  # narrow for the type checker; skipif guarantees it
     report = await harness.score_rubric(_ollama_client(_MODEL), harness.load_rubric_cases())
@@ -106,7 +91,7 @@ async def test_kc_tagging_eval_scores_predictions_deterministically() -> None:
     assert {r.case_id for r in report.results if r.passed} == {"hit"}
 
 
-@pytest.mark.skipif(_MODEL is None, reason="Ollama not running or no model pulled")
+@pytest.mark.skipif(_MODEL is None, reason=SKIP_REASON)
 async def test_kc_tagging_eval_runs_against_live_model() -> None:
     assert _MODEL is not None  # narrow for the type checker; skipif guarantees it
     report = await harness.score_kc_tagging(_ollama_client(_MODEL), harness.load_kc_tagging_cases())

@@ -379,7 +379,31 @@ Software correctness only; no educational validation claimed.
 
 ### S39 — Give note distillation explicit topic and validated concept provenance
 
-**Status:** Proposed · **Priority:** First
+**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** First
+
+**Implemented — the merge is told what it is filing.** `distill` now takes a `TopicContext`:
+the topic's name and description, its subject, and the full catalog of its KCs. The prompt said
+"this topic" without ever naming one, and transcripts are gathered *subject-wide* because messages
+are not topic-tagged — so with an empty note, where the atom list carried no hint either, a
+conversation about one topic could be filed into every sibling topic's note. The transcript's scope
+is now stated rather than implied ("from conversations across the whole subject — only some of it
+may concern this topic"), with `no_change` named as the answer when none of it does.
+
+**Implemented — references have to resolve.** KC tags are checked against the topic's catalog and
+anything invented is dropped. Provenance is server-owned: the prompt labels each piece of evidence
+(`[m3]` for a message, `[o1]` for an attempt), the model cites those labels, and the labels are
+resolved back to the durable message and attempt ids behind them — so a stored reference still
+means something once the prompt that produced it is gone. A label that was never supplied is
+discarded, as is anything the model writes into `provenance` other than `refs`. An atom carried
+forward keeps the lineage it already had and gains the new citations.
+
+Outcome lines are keyed by `attempt_id` (S45/S34), so one graded answer is one piece of evidence
+rather than one per tagged KC.
+
+**Honest limit:** whether the model *obeys* the scoping instruction is a model-quality question
+this suite cannot settle — the tests establish that the topic identity, the KC catalog and the
+labelled evidence reach the prompt, and that nothing unresolvable survives into storage. Measuring
+the scoping behaviour itself belongs with S59's model-quality gate.
 
 **Evidence:** Transcript gathering includes all subject conversations. distill receives atoms/transcript/outcomes/reading level, but no topic identity, description, or allowed KC catalog. The prompt says 'this topic' without defining it. Atom KC IDs and provenance are only loosely shape-checked.
 
@@ -710,6 +734,15 @@ depends on `poe test-db-init`, which derives `<database>_test` from `GURU_DATABA
 same credentials, so nothing new to keep in sync), creates it, migrates it, and points the suite
 there via the rootdir `conftest.py` — early enough to beat `app.core.db`'s import-time engine. This
 also re-runs every migration against a genuinely empty database on each CI run.
+
+*Live-model tests are opt-in.* The suite was documented as "fully offline and deterministic" and
+was not: the provider integration test, the eval rubric suite and vision OCR ran automatically
+whenever Ollama happened to be reachable. That made `poe test` mean something different on a laptop
+than in CI — a cold vision model turned a 25-second suite into a 20-minute one with no indication
+why, and left open connections that kept the interpreter alive long after the tests had finished.
+It also produced two order-dependent failures that had nothing to do with the code under test.
+They now require `GURU_LIVE_MODEL_TESTS=1` (`tests/live_models.py`), which also de-duplicates the
+model probe that was copied across three files. Full suite: 667 passed, 4 skipped, **23s**.
 
 **Still open:** browser/e2e journeys, API-contract gates between frontend and backend,
 separate-session concurrency tests (the fixture still shares one savepoint-joined session, so it

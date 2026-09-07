@@ -2,15 +2,18 @@
 
 import json
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.learning import note_distill
 from app.llm import LLMClient
-from app.llm.providers.fake import FakeTurn
-from app.llm.registry import fake_llm_client
+from app.llm.providers.fake import FakeProvider, FakeTurn
+from app.llm.registry import ModelSpec, fake_llm_client
+from app.llm.types import ChatMessage, ChatResponse, ModelRole, ToolDef
 from app.models.chat import Conversation, Message
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
@@ -382,3 +385,87 @@ async def test_refresh_stays_stale_while_truncated_activity_remains(
     view = await notes_svc.refresh_note(db_session, _distill_then_render(ATOMS), learner.id, topic)
 
     assert view.stale is True  # the unread third message is still waiting
+
+
+# --- the merge knows which topic it is for (S39) ------------------------------
+
+
+class _PromptRecordingProvider(FakeProvider):
+    """Records every user prompt the notes role is given."""
+
+    def __init__(self, prompts: list[str], *, script: list[FakeTurn]) -> None:
+        super().__init__(script=script)
+        self._prompts = prompts
+
+    async def complete(
+        self,
+        *,
+        model: str,
+        messages: Sequence[ChatMessage],
+        system: str | None = None,
+        max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
+    ) -> ChatResponse:
+        self._prompts.append(str(messages[-1].content))
+        return await super().complete(
+            model=model, messages=messages, system=system, max_tokens=max_tokens, tools=tools
+        )
+
+
+def _recording_llm(prompts: list[str], atoms: list[dict]) -> LLMClient:
+    provider = _PromptRecordingProvider(
+        prompts, script=[FakeTurn(text=json.dumps({"atoms": atoms})), FakeTurn(text=RENDERED)]
+    )
+    return LLMClient(
+        {"fake": provider}, {role: ModelSpec(provider="fake", model="fake-1") for role in ModelRole}
+    )
+
+
+async def test_the_distill_prompt_names_the_topic_and_its_kcs(db_session: AsyncSession) -> None:
+    """Transcripts are gathered subject-wide, so the merge has to be told what it is filing.
+
+    Without this the prompt said "this topic" and never named one — and on an empty note the
+    atom list carried no hint either, so a conversation about one topic could be filed into
+    every sibling topic's note.
+    """
+    learner, topic, kc = await _seed(db_session)
+    await _add_message(db_session, learner, topic)
+    prompts: list[str] = []
+
+    await notes_svc.refresh_note(db_session, _recording_llm(prompts, ATOMS), learner.id, topic)
+
+    distill_prompt = prompts[0]
+    assert "'Vectors'" in distill_prompt  # the topic, by name
+    assert str(kc.id) in distill_prompt and "Vector addition" in distill_prompt  # its KC catalog
+    assert "whole subject" in distill_prompt  # the transcript's scope is stated, not implied
+
+
+async def test_evidence_is_labelled_so_atoms_can_cite_it(db_session: AsyncSession) -> None:
+    learner, topic, kc = await _seed(db_session)
+    await _add_message(db_session, learner, topic)
+    await _add_observation(db_session, learner, kc)
+    prompts: list[str] = []
+
+    await notes_svc.refresh_note(db_session, _recording_llm(prompts, ATOMS), learner.id, topic)
+
+    distill_prompt = prompts[0]
+    assert "[m1] assistant: Vectors add tip-to-tail." in distill_prompt
+    assert "[o1] KC 'Vector addition': score=0.0" in distill_prompt
+
+
+async def test_stored_atoms_only_reference_evidence_that_was_supplied(
+    db_session: AsyncSession,
+) -> None:
+    """The model cites transient labels; what is stored is the durable row behind them."""
+    learner, topic, _kc = await _seed(db_session)
+    await _add_message(db_session, learner, topic)
+    message_id = await db_session.scalar(select(Message.id))
+    cited = [{**ATOMS[0], "provenance": {"refs": ["m1", "m404"]}}]
+
+    await notes_svc.refresh_note(db_session, _distill_then_render(cited), learner.id, topic)
+
+    note = await notes_svc.get_note(db_session, learner.id, topic.id)
+    assert note is not None
+    assert note.substrate[0]["provenance"] == {
+        "evidence": [{"kind": "message", "id": str(message_id)}]
+    }

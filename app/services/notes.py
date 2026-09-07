@@ -22,7 +22,7 @@ from app.learning.note_distill import FALLBACK_FORMAT, FORMATS, NOTES_ROLE
 from app.llm import LLMClient
 from app.models.assessment import Item
 from app.models.chat import Conversation, Message
-from app.models.knowledge import KC, Topic
+from app.models.knowledge import KC, Subject, Topic
 from app.models.learning import LearningEvent
 from app.models.note import WATERMARK_EPOCH, Note, NoteRender, NoteRevision
 from app.models.profile import ProfileDimension
@@ -179,6 +179,9 @@ async def note_view(session: AsyncSession, learner_id: uuid.UUID, topic: Topic) 
 class _Gathered:
     transcript: str
     outcomes: str
+    refs: dict[str, dict]
+    """The bracketed labels used in ``transcript``/``outcomes`` -> the durable row behind each,
+    so a reference the model cites can be resolved to something that outlives the prompt."""
     messages_watermark: datetime
     events_watermark: datetime
 
@@ -245,10 +248,19 @@ async def _gather(
         rows = (await session.scalars(select(Item).where(Item.id.in_(item_ids)))).all()
         items = {item.id: item for item in rows}
 
+    # Each line is labelled so an atom can cite the evidence it came from, and each label maps
+    # back to a durable row — an attempt id here, a message id below.
+    refs: dict[str, dict] = {}
     outcome_lines: list[str] = []
-    for event in events:
+    for n, event in enumerate(events, start=1):
+        label = f"o{n}"
+        refs[label] = {
+            "kind": "attempt",
+            "id": str(event.attempt_id or event.id),
+            "kc_id": str(event.kc_id) if event.kc_id else None,
+        }
         kc_name = kc_names.get(event.kc_id, "?")
-        line = f"- KC '{kc_name}': score={event.payload.get('score')}, hints={event.payload.get('hints_used', 0)}"
+        line = f"[{label}] KC '{kc_name}': score={event.payload.get('score')}, hints={event.payload.get('hints_used', 0)}"
         item_id = event.payload.get("item_id")
         if item_id and uuid.UUID(item_id) in items:
             line += f"; question: {items[uuid.UUID(item_id)].stem!r}"
@@ -272,13 +284,34 @@ async def _gather(
     messages, new_messages_watermark = _advance(
         messages, settings.note_distill_max_messages, messages_watermark
     )
-    transcript_lines = [f"{m.role}: {m.content}" for m in messages]
+    transcript_lines: list[str] = []
+    for n, message in enumerate(messages, start=1):
+        label = f"m{n}"
+        refs[label] = {"kind": "message", "id": str(message.id)}
+        transcript_lines.append(f"[{label}] {message.role}: {message.content}")
 
     return _Gathered(
         transcript="\n".join(transcript_lines),
         outcomes="\n".join(outcome_lines),
+        refs=refs,
         messages_watermark=new_messages_watermark,
         events_watermark=new_events_watermark,
+    )
+
+
+async def _topic_context(session: AsyncSession, topic: Topic) -> note_distill.TopicContext:
+    """Name the topic and enumerate its KCs for the merge prompt.
+
+    The transcript spans the whole subject (messages are not topic-tagged), so without this the
+    model was asked to keep a note about "this topic" with nothing identifying it.
+    """
+    subject = await session.get(Subject, topic.subject_id)
+    kcs = (await session.scalars(select(KC).where(KC.topic_id == topic.id).order_by(KC.slug))).all()
+    return note_distill.TopicContext(
+        name=topic.name,
+        subject_name=subject.name if subject is not None else "?",
+        description=topic.description,
+        kcs=tuple((str(kc.id), kc.name) for kc in kcs),
     )
 
 
@@ -337,9 +370,11 @@ async def refresh_note(
     atoms = note.substrate if note is not None else []
     result, usage = await note_distill.distill(
         llm,
+        topic=await _topic_context(session, topic),
         atoms=atoms,
         transcript=gathered.transcript,
         outcomes=gathered.outcomes,
+        refs=gathered.refs,
         reading_level=await _reading_level(session, learner_id),
     )
     await log_llm_call(

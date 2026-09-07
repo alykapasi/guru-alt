@@ -264,7 +264,19 @@ uv run poe check     # lint + type-check + full test suite — the gate. Must be
 ```
 
 The suite runs **fully offline** (FakeProvider for LLMs, fakes for ASR/demux, in-memory broker), so
-a green local run means a green CI run. Pre-commit hooks (`uv run poe hooks-install`) catch
+a green local run means a green CI run.
+
+**Live-model tests are opt-in.** The provider integration test, the eval rubric suite and vision
+OCR call a real local model; they skip unless `GURU_LIVE_MODEL_TESTS=1` and Ollama has a matching
+model pulled:
+
+```bash
+GURU_LIVE_MODEL_TESTS=1 uv run poe test
+```
+
+They used to run automatically whenever Ollama happened to be reachable, which is why `poe test`
+could take twenty minutes on a laptop and twenty-five seconds in CI, and could fail on a model's
+mood rather than on the code. Pre-commit hooks (`uv run poe hooks-install`) catch
 format/lint/type issues before they reach a commit.
 
 **Tests run on their own database.** `poe test` first runs `poe test-db-init`, which creates and
