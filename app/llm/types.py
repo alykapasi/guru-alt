@@ -126,3 +126,7 @@ class ChatResponse(BaseModel):
     usage: Usage
     model: str
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    # The model hit ``max_tokens`` mid-answer. Providers always knew this and only logged it,
+    # so a caller could not tell a finished short answer from a severed one — it surfaced as a
+    # parse failure, or as content that silently ended early.
+    truncated: bool = False

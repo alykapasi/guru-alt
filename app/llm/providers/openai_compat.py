@@ -52,14 +52,16 @@ def _parse_arguments(raw: str | None) -> dict[str, Any]:
     return parsed
 
 
-def _warn_if_truncated(finish_reason: str | None, *, model: str, streaming: bool) -> None:
+def _warn_if_truncated(finish_reason: str | None, *, model: str, streaming: bool) -> bool:
     """A ``max_tokens`` cutoff is not an error to the SDK, and the caller cannot see it.
 
     Downstream it surfaces as a JSON parse failure or a half-finished explanation with no clue
     why, so the one place that knows records it.
     """
-    if finish_reason == TRUNCATED:
-        log.warning("llm.response_truncated", model=model, streaming=streaming)
+    if finish_reason != TRUNCATED:
+        return False
+    log.warning("llm.response_truncated", model=model, streaming=streaming)
+    return True
 
 
 class OpenAICompatProvider:
@@ -183,14 +185,16 @@ class OpenAICompatProvider:
                 input_tokens=resp.usage.prompt_tokens,
                 output_tokens=resp.usage.completion_tokens,
             )
-        _warn_if_truncated(resp.choices[0].finish_reason, model=model, streaming=False)
+        truncated = _warn_if_truncated(resp.choices[0].finish_reason, model=model, streaming=False)
         message = resp.choices[0].message
         content = message.content or ""
         tool_calls = [
             ToolCall(id=tc.id, name=tc.function.name, input=_parse_arguments(tc.function.arguments))
             for tc in (message.tool_calls or [])
         ]
-        return ChatResponse(content=content, usage=usage, model=model, tool_calls=tool_calls)
+        return ChatResponse(
+            content=content, usage=usage, model=model, tool_calls=tool_calls, truncated=truncated
+        )
 
     async def stream(
         self,

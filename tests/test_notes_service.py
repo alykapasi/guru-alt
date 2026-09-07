@@ -472,3 +472,56 @@ async def test_stored_atoms_only_reference_evidence_that_was_supplied(
     assert note.substrate[0]["provenance"] == {
         "evidence": [{"kind": "message", "id": str(message_id)}]
     }
+
+
+# --- a render that cannot be trusted never becomes the note ------------------------------------
+
+
+class _BrokenRender(FakeProvider):
+    """Distils normally, then fails on the render call."""
+
+    def __init__(self, atoms: list[dict]) -> None:
+        super().__init__(reply=json.dumps({"atoms": atoms}))
+        self._calls = 0
+
+    async def complete(self, **kwargs) -> ChatResponse:
+        self._calls += 1
+        if self._calls > 1:
+            raise RuntimeError("provider is down")
+        return await super().complete(**kwargs)
+
+
+def _client(provider: FakeProvider) -> LLMClient:
+    return LLMClient({"fake": provider}, {r: ModelSpec("fake", "fake-1") for r in ModelRole})
+
+
+async def test_a_provider_failure_during_render_still_leaves_a_readable_note(
+    db_session: AsyncSession,
+) -> None:
+    """The substrate is the note; a render is a projection of it, and a failed projection is
+    not a reason to show the learner nothing."""
+    learner, topic, kc = await _seed(db_session)
+    await _add_observation(db_session, learner, kc)
+
+    view = await notes_svc.refresh_note(
+        db_session, _client(_BrokenRender(ATOMS)), learner.id, topic
+    )
+
+    assert view.revision_ordinal == 1  # the revision was not lost with the render
+    assert "Vectors add tip-to-tail." in (view.content_md or "")
+
+
+async def test_an_empty_render_does_not_become_the_learners_note(
+    db_session: AsyncSession,
+) -> None:
+    """Free-text markdown has no parse step to fail, so an empty reply used to be cached."""
+    learner, topic, kc = await _seed(db_session)
+    await _add_observation(db_session, learner, kc)
+
+    llm = fake_llm_client(
+        script=[FakeTurn(text=json.dumps({"atoms": ATOMS})), FakeTurn(text="   \n ")]
+    )
+    view = await notes_svc.refresh_note(db_session, llm, learner.id, topic)
+
+    assert (view.content_md or "").strip() != ""
+    assert "Vectors add tip-to-tail." in (view.content_md or "")

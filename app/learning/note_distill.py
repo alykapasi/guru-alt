@@ -22,6 +22,10 @@ from app.llm.types import ModelRole, Usage
 
 log = structlog.get_logger(__name__)
 
+# How many atoms a single merge may see and rewrite. Older atoms are carried through
+# untouched, so a note can grow past this without the merge having to fit in one reply.
+DISTILL_MAX_ATOMS = 60
+
 NOTES_ROLE = ModelRole.SMART
 FORMATS = ("outline", "narrative", "mnemonic", "worked_examples")
 FALLBACK_FORMAT = "outline"
@@ -266,6 +270,7 @@ async def distill(
     outcomes: str,
     refs: dict[str, dict] | None = None,
     reading_level: object,
+    max_atoms: int = DISTILL_MAX_ATOMS,
 ) -> tuple[DistillResult | None, Usage]:
     """One merge: current atoms + new material + outcomes -> updated atom list.
 
@@ -273,8 +278,19 @@ async def distill(
     behind them; every reference the model cites is resolved through it, and every KC tag is
     checked against ``topic``. Returns (None, usage) on parse failure or a learner-atom
     violation.
+
+    ``max_atoms`` bounds how much of the substrate is put in front of the model; anything
+    older is preserved verbatim and rejoined afterwards. The cost is that a merge can no
+    longer revise a settled atom — which is the price of it not being able to lose one.
     """
     refs = refs or {}
+    # Only the tail of a long note is offered for rewriting; everything before it is carried
+    # through untouched. A note used to be resent whole and asked for whole back, under a fixed
+    # 4096-token output cap — so past a certain size the reply could not contain the note, and
+    # what came back was a shorter note that had quietly lost the difference.
+    settled, atoms = atoms[:-max_atoms] if len(atoms) > max_atoms else [], atoms[-max_atoms:]
+    if settled:
+        log.info("note_distill.substrate_windowed", carried=len(settled), offered=len(atoms))
     prompt = (
         f"{topic.as_prompt()}\n\n"
         f"Current atoms:\n{json.dumps(atoms, indent=2)}\n\n"
@@ -307,7 +323,7 @@ async def distill(
     if carried is None:
         log.warning("note_distill.learner_atom_dropped")
         return None, completion.usage
-    return DistillResult(atoms=carried, no_change=False), completion.usage
+    return DistillResult(atoms=settled + carried, no_change=False), completion.usage
 
 
 async def absorb(
@@ -341,8 +357,15 @@ async def render(
     atoms: list[dict],
     note_format: str,
     reading_level: object,
-) -> tuple[str, Usage]:
-    """Project the substrate into one format. Free-text markdown; no parsing to fail."""
+) -> tuple[str | None, Usage]:
+    """Project the substrate into one format, or ``None`` if the projection cannot be trusted.
+
+    Free-text markdown, so there is no parse step to fail — which is exactly why an empty or
+    severed reply used to be cached as the learner's note. Two things disqualify a render:
+    nothing came back, or the model hit its output cap mid-note. In both cases the caller
+    falls back to :func:`mechanical_render`, which is derived from the same substrate and
+    always complete.
+    """
     prompt = (
         f"{_FORMAT_INSTRUCTIONS[note_format]}{_profile_line(reading_level)}\n\n"
         f"Atoms:\n{json.dumps(atoms, indent=2)}"
@@ -353,7 +376,14 @@ async def render(
         system=RENDER_SYSTEM_PROMPT,
         max_tokens=4096,
     )
-    return completion.content.strip(), completion.usage
+    content = completion.content.strip()
+    if not content:
+        log.warning("note_distill.render_empty", note_format=note_format)
+        return None, completion.usage
+    if completion.truncated:
+        log.warning("note_distill.render_truncated", note_format=note_format)
+        return None, completion.usage
+    return content, completion.usage
 
 
 def mechanical_render(atoms: list[dict]) -> str:

@@ -35,11 +35,13 @@ TRUNCATED = "max_tokens"
 """Anthropic's ``stop_reason`` when the model hit ``max_tokens`` mid-answer."""
 
 
-def _warn_if_truncated(stop_reason: str | None, *, model: str, streaming: bool) -> None:
+def _warn_if_truncated(stop_reason: str | None, *, model: str, streaming: bool) -> bool:
     """A ``max_tokens`` cutoff is not an error to the SDK, and the caller cannot see it —
     downstream it surfaces as a JSON parse failure or a half-finished answer with no clue why."""
-    if stop_reason == TRUNCATED:
-        log.warning("llm.response_truncated", model=model, streaming=streaming)
+    if stop_reason != TRUNCATED:
+        return False
+    log.warning("llm.response_truncated", model=model, streaming=streaming)
+    return True
 
 
 class AnthropicProvider:
@@ -142,8 +144,10 @@ class AnthropicProvider:
             if b.type == "tool_use"
         ]
         usage = Usage(input_tokens=msg.usage.input_tokens, output_tokens=msg.usage.output_tokens)
-        _warn_if_truncated(msg.stop_reason, model=model, streaming=False)
-        return ChatResponse(content=content, usage=usage, model=model, tool_calls=tool_calls)
+        truncated = _warn_if_truncated(msg.stop_reason, model=model, streaming=False)
+        return ChatResponse(
+            content=content, usage=usage, model=model, tool_calls=tool_calls, truncated=truncated
+        )
 
     async def stream(
         self,

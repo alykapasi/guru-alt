@@ -1,10 +1,39 @@
 """Notes policy layer: parsing, the learner-atom invariant, distill/absorb/render."""
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from app.learning import note_distill
-from app.llm.registry import fake_llm_client
+from app.llm.providers.fake import FakeProvider
+from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
+from app.llm.types import ChatMessage, ChatResponse, ModelRole, ToolDef
+
+
+class _TruncatingProvider(FakeProvider):
+    """A provider whose completions report having hit the output cap."""
+
+    async def complete(
+        self,
+        *,
+        model: str,
+        messages: Sequence[ChatMessage],
+        system: str | None = None,
+        max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
+    ) -> ChatResponse:
+        response = await super().complete(
+            model=model, messages=messages, system=system, max_tokens=max_tokens, tools=tools
+        )
+        return response.model_copy(update={"truncated": True})
+
+
+def _truncating_client(reply: str) -> LLMClient:
+    return LLMClient(
+        {"fake": _TruncatingProvider(reply=reply)},
+        {r: ModelSpec("fake", "fake-1") for r in ModelRole},
+    )
+
 
 CONCEPT: dict[str, Any] = {
     "id": "a-c1",
@@ -142,7 +171,25 @@ class TestRender:
         md, _usage = await note_distill.render(
             llm, atoms=[CONCEPT], note_format="narrative", reading_level=None
         )
-        assert md.startswith("# Dot products")
+        assert md is not None and md.startswith("# Dot products")
+
+    async def test_an_empty_render_is_refused_rather_than_returned(self) -> None:
+        """Free-text markdown has no parse step to fail, so nothing else catches this."""
+        md, _usage = await note_distill.render(
+            fake_llm_client("   \n  "),
+            atoms=[CONCEPT],
+            note_format="narrative",
+            reading_level=None,
+        )
+        assert md is None
+
+    async def test_a_severed_render_is_refused(self) -> None:
+        """A model that hit its output cap returns half a note and no error."""
+        llm = _truncating_client("# Dot products\n\nThey measure")
+        md, _usage = await note_distill.render(
+            llm, atoms=[CONCEPT], note_format="narrative", reading_level=None
+        )
+        assert md is None
 
 
 class TestMechanicalRender:
@@ -304,3 +351,55 @@ class TestLearnerContentIsTheLearners:
             edited_md="My better mnemonic.",
         )
         assert atoms is not None and atoms[0]["md"] == "My better mnemonic."
+
+
+class TestSubstrateWindow:
+    """A long note is not resent whole and asked for whole back."""
+
+    @staticmethod
+    def _atoms(n: int) -> list[dict]:
+        return [
+            {"id": f"a{i}", "kind": "concept", "kc_ids": [], "md": f"fact {i}", "provenance": {}}
+            for i in range(n)
+        ]
+
+    async def test_atoms_beyond_the_window_are_carried_through_untouched(self) -> None:
+        prior = self._atoms(10)
+        reply = json.dumps(
+            {
+                "atoms": [
+                    {"id": "a8", "kind": "concept", "kc_ids": [], "md": "fact 8 revised"},
+                    {"id": "a9", "kind": "concept", "kc_ids": [], "md": "fact 9"},
+                ]
+            }
+        )
+        result, _usage = await note_distill.distill(
+            fake_llm_client(reply),
+            topic=note_distill.TopicContext(name="t", subject_name="s", description="", kcs=()),
+            atoms=prior,
+            transcript="",
+            outcomes="",
+            reading_level=None,
+            max_atoms=2,
+        )
+
+        assert result is not None and result.atoms is not None
+        # The eight settled atoms survive a merge that never saw them...
+        assert [a["md"] for a in result.atoms[:8]] == [f"fact {i}" for i in range(8)]
+        # ...and the two that were offered come back as the model returned them.
+        assert [a["md"] for a in result.atoms[8:]] == ["fact 8 revised", "fact 9"]
+
+    async def test_a_short_note_is_offered_whole(self) -> None:
+        prior = self._atoms(2)
+        reply = json.dumps({"atoms": [{"id": "a0", "kind": "concept", "kc_ids": [], "md": "one"}]})
+        result, _usage = await note_distill.distill(
+            fake_llm_client(reply),
+            topic=note_distill.TopicContext(name="t", subject_name="s", description="", kcs=()),
+            atoms=prior,
+            transcript="",
+            outcomes="",
+            reading_level=None,
+            max_atoms=60,
+        )
+        assert result is not None and result.atoms is not None
+        assert [a["md"] for a in result.atoms] == ["one"]  # a real merge, nothing carried

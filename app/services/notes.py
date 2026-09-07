@@ -318,15 +318,29 @@ async def _topic_context(session: AsyncSession, topic: Topic) -> note_distill.To
 async def _render_and_cache(
     session: AsyncSession, llm: LLMClient, learner_id: uuid.UUID, note: Note, fmt: str
 ) -> NoteRender:
-    content, usage = await note_distill.render(
-        llm,
-        atoms=note.substrate,
-        note_format=fmt,
-        reading_level=await _reading_level(session, learner_id),
-    )
-    await log_llm_call(
-        learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
-    )
+    """Cache a rendering of the current substrate, falling back when the model cannot give one.
+
+    The substrate is the note; a render is a projection of it. So a failed, empty or severed
+    render is never a reason for a learner to be shown a blank or half a note — the
+    deterministic ``mechanical_render`` of the same atoms is always available and always
+    complete. It reads plainer, and it is the whole note.
+    """
+    content: str | None = None
+    try:
+        content, usage = await note_distill.render(
+            llm,
+            atoms=note.substrate,
+            note_format=fmt,
+            reading_level=await _reading_level(session, learner_id),
+        )
+        await log_llm_call(
+            learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
+        )
+    except Exception as exc:
+        # A provider outage must not cost the learner the revision this render belongs to.
+        log.warning("notes.render_failed", note_id=str(note.id), error=str(exc))
+    if content is None:
+        content = note_distill.mechanical_render(note.substrate)
     render_row = NoteRender(
         note_id=note.id, revision_ordinal=note.revision_ordinal, format=fmt, content_md=content
     )
