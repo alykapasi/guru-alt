@@ -16,6 +16,7 @@ from app.llm.registry import fake_llm_client
 from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.rag.fetch import FetchError
+from tests.embedding import FAKE_SPACE
 
 _FAKE = fake_llm_client()
 
@@ -47,6 +48,7 @@ async def _source(session: AsyncSession, learner: Learner) -> Source:
 
 async def _chunk(session: AsyncSession, source: Source, text: str) -> Chunk:
     chunk = Chunk(
+        embedding_space=FAKE_SPACE,
         source_id=source.id,
         ordinal=0,
         text=text,

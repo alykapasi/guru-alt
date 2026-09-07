@@ -12,7 +12,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.llm import LLMClient, ModelRole
+from app.llm.embedding_space import current_space
 from app.models.memory import Memory
 
 
@@ -38,7 +40,11 @@ async def retrieve(
     rows = (
         await session.execute(
             select(Memory, distance.label("distance"))
-            .where(Memory.learner_id == learner_id)
+            .where(
+                Memory.learner_id == learner_id,
+                # Memories embedded by a previous model are not comparable to this query.
+                Memory.embedding_space == current_space(llm, dim=get_settings().embed_dim),
+            )
             .order_by(distance)
             .limit(limit)
         )

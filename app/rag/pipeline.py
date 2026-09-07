@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.learning.kc_tagging import TAGGING_ROLE, load_candidate_kcs, tag_chunk
 from app.llm import EmbedResult, LLMClient, ModelRole, Usage
+from app.llm.embedding_space import current_space
 from app.models.source import Chunk, ChunkKC, Source
 from app.rag.adapters import ExtractContext, select_adapter
 from app.rag.chunking import chunk_units
@@ -125,9 +126,11 @@ async def run(
     # Idempotent: replace any prior chunks for this source (their KC tags cascade away with them).
     await session.execute(delete(Chunk).where(Chunk.source_id == source.id))
     rows: list[Chunk] = []
+    space = current_space(llm, dim=settings.embed_dim)
     for ordinal, (unit, vector) in enumerate(zip(chunks, embedded.vectors, strict=True)):
         row = Chunk(
             source_id=source.id,
+            embedding_space=space,
             ordinal=ordinal,
             text=unit.text,
             embedding=vector,

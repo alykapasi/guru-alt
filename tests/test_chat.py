@@ -27,6 +27,7 @@ from app.services import chat as chat_svc
 from app.services import lesson_plan as lesson_plan_svc
 from app.services import memory as memory_svc
 from app.services import turn_lock
+from tests.embedding import FAKE_SPACE
 
 API = "/api/v1"
 REPLY = "Let us explore this together."
@@ -623,7 +624,13 @@ async def test_tutor_turn_reflects_a_previously_written_memory(
     content = "Studying for the MCAT, mornings only."
     embedding = (await fake_llm_client().embed(ModelRole.EMBED, [content])).vectors[0]
     db_session.add(
-        Memory(learner_id=learner.id, kind=MemoryKind.FACT, content=content, embedding=embedding)
+        Memory(
+            embedding_space=FAKE_SPACE,
+            learner_id=learner.id,
+            kind=MemoryKind.FACT,
+            content=content,
+            embedding=embedding,
+        )
     )
     await db_session.commit()
 
@@ -728,6 +735,7 @@ async def test_tutor_turn_cites_retrieved_materials(
     await db_session.flush()
     source = await _learner_source(db_session, learner.id, subject_id=subject.id)
     chunk = Chunk(
+        embedding_space=FAKE_SPACE,
         source_id=source.id,
         ordinal=0,
         text="Mitochondria produce ATP through cellular respiration.",
@@ -784,6 +792,7 @@ async def test_general_conversation_has_no_citations(
     source = await _learner_source(db_session, learner.id, subject_id=subject.id)
     db_session.add(
         Chunk(
+            embedding_space=FAKE_SPACE,
             source_id=source.id,
             ordinal=0,
             text="Mitochondria produce ATP.",
@@ -822,6 +831,7 @@ async def test_agentic_mode_cites_search_materials_results(
     learner = await _get_dev_learner(api_client, db_session)
     source = await _learner_source(db_session, learner.id)
     chunk = Chunk(
+        embedding_space=FAKE_SPACE,
         source_id=source.id,
         ordinal=0,
         text="The learner's notes say photosynthesis occurs in chloroplasts.",

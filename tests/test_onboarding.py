@@ -19,6 +19,7 @@ from app.services.onboarding import (
     run_goal_refinement_turn,
 )
 from app.services.turn_common import TurnEvent
+from tests.embedding import FAKE_SPACE
 
 REPLY = "Learn the fundamentals of linear algebra including vectors and matrices."
 CURRICULUM_REPLY = json.dumps(
@@ -250,6 +251,7 @@ class TestGenerateCurriculumForOnboarding:
         )
         embedding = (await llm.embed(ModelRole.EMBED, [chunk_text])).vectors[0]
         chunk = Chunk(
+            embedding_space=FAKE_SPACE,
             source_id=source.id,
             ordinal=0,
             text=chunk_text,

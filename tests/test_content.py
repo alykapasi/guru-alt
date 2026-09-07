@@ -23,6 +23,7 @@ from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.services import content as svc
+from tests.embedding import FAKE_SPACE
 
 API = "/api/v1"
 
@@ -62,6 +63,7 @@ async def _kc(session: AsyncSession, name: str = "Mitochondria") -> KC:
 
 async def _chunk(session: AsyncSession, source: Source, text: str, ordinal: int = 0) -> Chunk:
     chunk = Chunk(
+        embedding_space=FAKE_SPACE,
         source_id=source.id,
         ordinal=ordinal,
         text=text,

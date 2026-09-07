@@ -40,6 +40,7 @@ from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.rag import retrieval
 from app.services import content as content_svc
+from tests.embedding import FAKE_SPACE
 
 CASES_DIR = Path(__file__).parent / "cases"
 
@@ -376,6 +377,7 @@ async def _seed_corpus(
     by_doc: dict[str, uuid.UUID] = {}
     for ordinal, ((doc_id, text), vector) in enumerate(zip(docs, vectors, strict=True)):
         chunk = Chunk(
+            embedding_space=FAKE_SPACE,
             source_id=source.id,
             ordinal=ordinal,
             text=text,

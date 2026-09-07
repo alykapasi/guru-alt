@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.llm import LLMClient, ModelRole
+from app.llm.embedding_space import current_space
 from app.memory.extraction import EXTRACTION_ROLE, extract_memories
 from app.models.chat import Conversation, Message
 from app.models.memory import Memory, MemoryKind
@@ -56,6 +57,7 @@ async def write_back(
         await session.commit()
         return []
 
+    space = current_space(llm, dim=settings.embed_dim)
     embedded = await llm.embed(ModelRole.EMBED, [item.content for item in extracted])
     if embedded.usage.total_tokens:
         await log_llm_call(
@@ -73,9 +75,11 @@ async def write_back(
             item.kind,
             embedding,
             max_distance=settings.memory_dedup_max_distance,
+            space=space,
         ):
             continue
         memory = Memory(
+            embedding_space=space,
             learner_id=conversation.learner_id,
             conversation_id=conversation_id,
             kind=item.kind,
@@ -112,11 +116,21 @@ async def _is_near_duplicate(
     embedding: list[float],
     *,
     max_distance: float,
+    space: str,
 ) -> bool:
+    """Whether an equivalent memory already exists — measured only against its own space.
+
+    A distance to a vector from another embedding model is not a distance to anything: it
+    would both miss real duplicates and suppress genuinely new memories at random.
+    """
     distance = Memory.embedding.cosine_distance(embedding)
     nearest = await session.scalar(
         select(distance)
-        .where(Memory.learner_id == learner_id, Memory.kind == kind)
+        .where(
+            Memory.learner_id == learner_id,
+            Memory.kind == kind,
+            Memory.embedding_space == space,
+        )
         .order_by(distance)
         .limit(1)
     )
