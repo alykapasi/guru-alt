@@ -231,3 +231,76 @@ class TestTopicScopingAndProvenance:
             {"kind": "message", "id": "old"},
             {"kind": "message", "id": "new"},
         ]
+
+
+class TestLearnerContentIsTheLearners:
+    """S40: 'learner' means the learner wrote it, and a merge cannot make that untrue."""
+
+    async def test_a_merge_cannot_reword_a_learner_atom_while_keeping_its_id(self) -> None:
+        """Checking the id survived was never the guarantee — this is."""
+        rewritten = {**LEARNER_ATOM, "md": "A mnemonic I never wrote."}
+        result, _ = await note_distill.distill(
+            fake_llm_client(_atoms_reply([CONCEPT, rewritten])),
+            topic=TOPIC,
+            atoms=[CONCEPT, LEARNER_ATOM],
+            transcript="t",
+            outcomes="",
+            reading_level=None,
+        )
+        assert result is not None and result.atoms is not None
+        carried = next(a for a in result.atoms if a["id"] == "a-L1")
+        assert carried["md"] == LEARNER_ATOM["md"]
+
+    async def test_a_merge_cannot_reclassify_a_learner_atom(self) -> None:
+        reclassified = {**LEARNER_ATOM, "kind": "concept"}
+        result, _ = await note_distill.distill(
+            fake_llm_client(_atoms_reply([reclassified])),
+            topic=TOPIC,
+            atoms=[LEARNER_ATOM],
+            transcript="t",
+            outcomes="",
+            reading_level=None,
+        )
+        assert result is not None and result.atoms is not None
+        assert result.atoms[0]["kind"] == "learner"
+        assert result.atoms[0]["md"] == LEARNER_ATOM["md"]
+
+    async def test_a_merge_cannot_invent_a_learner_atom(self) -> None:
+        """Content in 'Your notes' the learner never wrote is a lie about them."""
+        invented = {"kind": "learner", "kc_ids": [], "md": "I find this easy!", "provenance": {}}
+        result, _ = await note_distill.distill(
+            fake_llm_client(_atoms_reply([invented])),
+            topic=TOPIC,
+            atoms=[],
+            transcript="t",
+            outcomes="",
+            reading_level=None,
+        )
+        assert result is not None and result.atoms is not None
+        # Kept as content, but no longer attributed to the learner.
+        assert result.atoms[0]["kind"] == "concept"
+        assert result.atoms[0]["md"] == "I find this easy!"
+
+    async def test_a_merge_may_still_reorder_learner_atoms(self) -> None:
+        """The invariant is about content, not position."""
+        result, _ = await note_distill.distill(
+            fake_llm_client(_atoms_reply([LEARNER_ATOM, CONCEPT])),
+            topic=TOPIC,
+            atoms=[CONCEPT, LEARNER_ATOM],
+            transcript="t",
+            outcomes="",
+            reading_level=None,
+        )
+        assert result is not None and result.atoms is not None
+        assert [a["id"] for a in result.atoms] == ["a-L1", "a-c1"]
+
+    async def test_absorb_still_lets_the_learner_change_their_own_words(self) -> None:
+        """Their own edit is the authority — the immutability rule is for the *merge*."""
+        edited = {**LEARNER_ATOM, "md": "My better mnemonic."}
+        atoms, _ = await note_distill.absorb(
+            fake_llm_client(_atoms_reply([edited])),
+            atoms=[LEARNER_ATOM],
+            previous_render="whatever",
+            edited_md="My better mnemonic.",
+        )
+        assert atoms is not None and atoms[0]["md"] == "My better mnemonic."

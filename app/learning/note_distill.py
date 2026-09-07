@@ -4,9 +4,11 @@ The substrate/projection split: a format-neutral list of KC-tagged *atoms* is th
 truth; rendered notes are projections of it into a named format. Mirrors ``curriculum.py``'s
 tolerant-parse idiom — policy functions return ``None`` on an unusable reply, never raise.
 
-The one hard guarantee lives here: a **distill** merge that drops a learner-contributed atom
-is rejected in code (``_learner_atoms_preserved``), not merely prompted against. **Absorb**
-deliberately skips that check — the learner's own edit is the authority over their content.
+The one hard guarantee lives here, and it is enforced in code rather than prompted for: a
+**distill** merge cannot drop a learner-contributed atom (the merge is rejected), cannot
+rewrite or reclassify one (the stored copy is carried through verbatim), and cannot invent one
+(``_carry_learner_atoms``, ``_demote_invented_learner_atom``). **Absorb** deliberately skips
+all of that — the learner's own edit is the authority over their own content.
 """
 
 import json
@@ -37,8 +39,9 @@ DISTILL_SYSTEM_PROMPT = (
     "markdown units. Kinds: 'concept' (an explanation of covered material), 'example' (a worked "
     "example, ideally one the learner actually worked through), 'callout' (a warning about "
     "something THIS learner got wrong, naming the actual confusion), 'learner' (content the "
-    "learner wrote themselves — carry every one of these forward, keeping its id; you may "
-    "lightly edit its wording for flow but never drop one or change its meaning). "
+    "learner wrote themselves — carry every one of these forward, keeping its id and its "
+    "text exactly; you may move one, but never drop, reword, or reclassify one, and never "
+    "create a new atom of this kind: it means 'the learner wrote this'). "
     "Fold the new material and outcomes into the existing atoms: restructure freely, merge "
     "duplicates, keep ids for atoms you carry forward, omit ids for genuinely new atoms.\n\n"
     "These notes belong to ONE topic, named at the top of the prompt. The study activity you "
@@ -207,11 +210,45 @@ def assign_atom_ids(atoms: list[dict]) -> list[dict]:
     return atoms
 
 
-def _learner_atoms_preserved(prior: list[dict], new: list[dict]) -> bool:
-    """Every learner-kind atom id in ``prior`` must appear in ``new`` (distill only)."""
-    prior_ids = {a["id"] for a in prior if a.get("kind") == "learner" and a.get("id")}
-    new_ids = {a.get("id") for a in new}
-    return prior_ids <= new_ids
+def _learner_atoms(atoms: list[dict]) -> dict[str, dict]:
+    return {a["id"]: a for a in atoms if a.get("kind") == "learner" and a.get("id")}
+
+
+def _demote_invented_learner_atom(atom: dict, prior_learner: dict[str, dict]) -> None:
+    """A merge may not put words in the learner's mouth.
+
+    'learner' means "the learner wrote this", and only an actual edit (``absorb``) can produce
+    one. A merge that invents one is keeping the content but not the attribution, so it is
+    re-kinded rather than dropped.
+    """
+    if atom["kind"] == "learner" and atom["id"] not in prior_learner:
+        log.warning("note_distill.invented_learner_atom", atom=atom["id"])
+        atom["kind"] = "concept"
+
+
+def _carry_learner_atoms(prior: list[dict], new: list[dict]) -> list[dict] | None:
+    """Copy the learner's own atoms through the merge verbatim. ``None`` if one was dropped.
+
+    Checking that the *id* survived was never the guarantee the docstring claimed: an atom
+    keeping its id while its text changed passed, so the model could rewrite what the learner
+    said and the note would still be presented as theirs. The merge may reorder learner atoms
+    and nothing else about them — text, kind, tags and lineage all come from the stored copy.
+    """
+    prior_learner = _learner_atoms(prior)
+    carried: list[dict] = []
+    seen: set[str] = set()
+    for atom in new:
+        original = prior_learner.get(atom["id"])
+        if original is None:
+            carried.append(atom)
+            continue
+        seen.add(original["id"])
+        if atom.get("md") != original.get("md") or atom.get("kind") != original.get("kind"):
+            log.warning("note_distill.learner_atom_rewritten", atom=original["id"])
+        carried.append(dict(original))
+    if set(prior_learner) - seen:
+        return None
+    return carried
 
 
 def _profile_line(reading_level: object) -> str:
@@ -258,17 +295,19 @@ async def distill(
         return None, completion.usage
     if data.get("no_change"):
         return DistillResult(atoms=None, no_change=True), completion.usage
-    new_atoms = data["atoms"]
-    if not _learner_atoms_preserved(atoms, new_atoms):
-        log.warning("note_distill.learner_atom_dropped")
-        return None, completion.usage
-    new_atoms = assign_atom_ids(new_atoms)
+    new_atoms = assign_atom_ids(data["atoms"])
     prior_by_id = {a["id"]: a for a in atoms if a.get("id")}
+    prior_learner = _learner_atoms(atoms)
     allowed = topic.allowed_kc_ids
     for atom in new_atoms:
         atom["kc_ids"] = _validated_kc_ids(atom, allowed)
         atom["provenance"] = _resolved_provenance(atom, prior_by_id.get(atom["id"]), refs)
-    return DistillResult(atoms=new_atoms, no_change=False), completion.usage
+        _demote_invented_learner_atom(atom, prior_learner)
+    carried = _carry_learner_atoms(atoms, new_atoms)
+    if carried is None:
+        log.warning("note_distill.learner_atom_dropped")
+        return None, completion.usage
+    return DistillResult(atoms=carried, no_change=False), completion.usage
 
 
 async def absorb(

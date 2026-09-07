@@ -229,3 +229,63 @@ async def test_revision_source_success_and_404(
 
     r = await api_client.get(f"{API}/topics/{topic_id}/note/revisions/999")
     assert r.status_code == 404
+
+
+# --- learner edits: conflicts and fidelity (S40) -------------------------------
+
+
+async def test_editing_a_stale_revision_is_a_conflict_not_a_silent_overwrite(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None
+) -> None:
+    _, topic_id, kc_id = await _subject_topic_kc(api_client)
+    await _make_stale(db_session, kc_id)
+    r = await api_client.post(f"{API}/topics/{topic_id}/note/refresh")
+    assert r.json()["revision_ordinal"] == 1
+
+    _override_llm([FakeTurn(text=EDITED_ATOMS_REPLY), FakeTurn(text=EDITED_RENDERED)])
+    r = await api_client.put(
+        f"{API}/topics/{topic_id}/note",
+        json={"content_md": "edited from an old view", "expected_revision_ordinal": 99},
+    )
+    assert r.status_code == 409
+    assert "revision 1" in r.json()["detail"]
+
+    # The note is untouched — the learner still has their text to reapply.
+    r = await api_client.get(f"{API}/topics/{topic_id}/note")
+    assert r.json()["revision_ordinal"] == 1
+
+
+async def test_an_edit_against_the_current_revision_is_accepted(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None
+) -> None:
+    _, topic_id, kc_id = await _subject_topic_kc(api_client)
+    await _make_stale(db_session, kc_id)
+    await api_client.post(f"{API}/topics/{topic_id}/note/refresh")
+
+    _override_llm([FakeTurn(text=EDITED_ATOMS_REPLY), FakeTurn(text=EDITED_RENDERED)])
+    r = await api_client.put(
+        f"{API}/topics/{topic_id}/note",
+        json={"content_md": "my edited note", "expected_revision_ordinal": 1},
+    )
+    assert r.status_code == 200
+    assert r.json()["revision_ordinal"] == 2
+
+
+async def test_the_words_the_learner_typed_are_recoverable(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None
+) -> None:
+    """Absorb reinterprets an edit, so the submitted text is stored beside the result."""
+    _, topic_id, kc_id = await _subject_topic_kc(api_client)
+    await _make_stale(db_session, kc_id)
+    await api_client.post(f"{API}/topics/{topic_id}/note/refresh")
+
+    typed = "SOH-CAH-TOA is how I remember it."
+    _override_llm([FakeTurn(text=EDITED_ATOMS_REPLY), FakeTurn(text=EDITED_RENDERED)])
+    await api_client.put(f"{API}/topics/{topic_id}/note", json={"content_md": typed})
+
+    r = await api_client.get(f"{API}/topics/{topic_id}/note/revisions/2")
+    assert r.status_code == 200
+    assert r.json()["learner_edit_md"] == typed
+    # The distilled revision before it was not the learner's writing and claims nothing.
+    r = await api_client.get(f"{API}/topics/{topic_id}/note/revisions/1")
+    assert r.json()["learner_edit_md"] is None

@@ -34,6 +34,8 @@ export interface NoteRevisionRead {
 export interface NoteRevisionSource {
   ordinal: number;
   content_md: string;
+  /** What the learner actually typed, on a `learner_edit` revision; null on any other. */
+  learner_edit_md: string | null;
 }
 
 // ============================================================================
@@ -99,13 +101,19 @@ export function useRefreshNote(topicId: string) {
   });
 }
 
+/** `expectedRevisionOrdinal` is the revision the draft was started from. Sending it makes the
+ * backend reject an edit written against a note that has since changed (409) rather than
+ * absorbing it into something the learner never saw. */
 export function useEditNote(topicId: string) {
   const invalidate = useInvalidateNote(topicId);
   return useMutation({
-    mutationFn: (content_md: string) =>
+    mutationFn: (edit: { contentMd: string; expectedRevisionOrdinal: number | null }) =>
       jfetch<NoteRead>(`/topics/${topicId}/note`, {
         method: "PUT",
-        body: JSON.stringify({ content_md }),
+        body: JSON.stringify({
+          content_md: edit.contentMd,
+          expected_revision_ordinal: edit.expectedRevisionOrdinal,
+        }),
       }),
     onSuccess: invalidate,
   });

@@ -335,14 +335,33 @@ async def _render_and_cache(
     return render_row
 
 
+class RevisionConflict(Exception):
+    """The note moved on since the client last read it. Carries the ordinal it is at now."""
+
+    def __init__(self, current: int) -> None:
+        super().__init__(f"note is at revision {current}")
+        self.current = current
+
+
 async def _commit_new_revision(
-    session: AsyncSession, note: Note, atoms: list[dict], cause: str
+    session: AsyncSession,
+    note: Note,
+    atoms: list[dict],
+    cause: str,
+    *,
+    learner_edit_md: str | None = None,
 ) -> None:
     """Advance the note to a new substrate revision; drops all cached renders."""
     note.substrate = atoms
     note.revision_ordinal += 1
     session.add(
-        NoteRevision(note_id=note.id, ordinal=note.revision_ordinal, substrate=atoms, cause=cause)
+        NoteRevision(
+            note_id=note.id,
+            ordinal=note.revision_ordinal,
+            substrate=atoms,
+            cause=cause,
+            learner_edit_md=learner_edit_md,
+        )
     )
     await session.execute(delete(NoteRender).where(NoteRender.note_id == note.id))
     await session.flush()
@@ -416,12 +435,27 @@ async def refresh_note(
 
 
 async def absorb_edit(
-    session: AsyncSession, llm: LLMClient, learner_id: uuid.UUID, topic: Topic, content_md: str
+    session: AsyncSession,
+    llm: LLMClient,
+    learner_id: uuid.UUID,
+    topic: Topic,
+    content_md: str,
+    *,
+    expected_revision_ordinal: int | None = None,
 ) -> NoteView | None:
-    """Fold a learner's edit into the substrate. None = no note yet, or absorb failed."""
+    """Fold a learner's edit into the substrate. None = no note yet, or absorb failed.
+
+    ``expected_revision_ordinal`` is the revision the learner was editing. Supplying it turns a
+    concurrent change — a refresh, or another tab — into an explicit
+    :class:`RevisionConflict` instead of silently absorbing an edit against a note that no
+    longer looks like what they saw. Checked again immediately before the write, so a change
+    landing during the model call is caught too.
+    """
     note = await get_note(session, learner_id, topic.id)
     if note is None or note.revision_ordinal == 0:
         return None
+    if expected_revision_ordinal is not None and note.revision_ordinal != expected_revision_ordinal:
+        raise RevisionConflict(note.revision_ordinal)
     fmt = await effective_format(session, learner_id, note)
     render_row = await _current_render(session, note, fmt)
     previous = (
@@ -436,7 +470,11 @@ async def absorb_edit(
     if atoms is None:
         await session.commit()  # persist the cost log; note untouched
         return None
-    await _commit_new_revision(session, note, atoms, "learner_edit")
+    # Re-check after the model call: absorb takes seconds, and a refresh can land inside it.
+    await session.refresh(note)
+    if expected_revision_ordinal is not None and note.revision_ordinal != expected_revision_ordinal:
+        raise RevisionConflict(note.revision_ordinal)
+    await _commit_new_revision(session, note, atoms, "learner_edit", learner_edit_md=content_md)
     await _render_and_cache(session, llm, learner_id, note, fmt)
     await session.commit()
     await session.refresh(note)  # note was updated; onupdate=func.now() expired updated_at
@@ -496,9 +534,16 @@ async def _revision(
 
 async def revision_source(
     session: AsyncSession, learner_id: uuid.UUID, topic: Topic, ordinal: int
-) -> str | None:
+) -> tuple[str, str | None] | None:
+    """(the substrate rendered mechanically, the learner's own submitted markdown if any).
+
+    The second is what they actually typed on a ``learner_edit`` revision — absorb reinterprets
+    an edit, so this is the only place the original survives.
+    """
     revision = await _revision(session, learner_id, topic, ordinal)
-    return note_distill.mechanical_render(revision.substrate) if revision is not None else None
+    if revision is None:
+        return None
+    return note_distill.mechanical_render(revision.substrate), revision.learner_edit_md
 
 
 async def restore_revision(

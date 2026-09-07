@@ -76,7 +76,23 @@ async def edit_note(
     topic = await _topic_404(session, topic_id)
     if await notes_svc.get_note(session, learner.id, topic_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no note to edit yet")
-    view = await notes_svc.absorb_edit(session, llm, learner.id, topic, request.content_md)
+    try:
+        view = await notes_svc.absorb_edit(
+            session,
+            llm,
+            learner.id,
+            topic,
+            request.content_md,
+            expected_revision_ordinal=request.expected_revision_ordinal,
+        )
+    except notes_svc.RevisionConflict as conflict:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This note changed while you were editing (now at revision "
+                f"{conflict.current}). Reload it and reapply your changes."
+            ),
+        ) from conflict
     if view is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -111,7 +127,10 @@ async def revision_source(
     source = await notes_svc.revision_source(session, learner.id, topic, ordinal)
     if source is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="revision not found")
-    return NoteRevisionSource(ordinal=ordinal, content_md=source)
+    content_md, learner_edit_md = source
+    return NoteRevisionSource(
+        ordinal=ordinal, content_md=content_md, learner_edit_md=learner_edit_md
+    )
 
 
 @router.post("/topics/{topic_id}/note/revisions/{ordinal}/restore", response_model=NoteRead)

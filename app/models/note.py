@@ -61,6 +61,10 @@ class NoteRevision(UUIDPrimaryKeyMixin, Base):
     ordinal: Mapped[int] = mapped_column()
     substrate: Mapped[list] = mapped_column(JSONB, default=list)
     cause: Mapped[str] = mapped_column()  # distill | learner_edit | restore
+    # Exactly what the learner submitted, on a learner_edit revision. Absorb *reinterprets* an
+    # edit into atoms through a model, so without this the words they actually typed were the
+    # one version of their note that was never stored.
+    learner_edit_md: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)
 
 

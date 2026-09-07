@@ -415,7 +415,38 @@ the scoping behaviour itself belongs with S59's model-quality gate.
 
 ### S40 — Preserve learner-authored note content and edits faithfully
 
-**Status:** Proposed · **Priority:** High
+**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** High
+
+**Implemented — the guarantee the module claimed is now the guarantee it enforces.**
+`note_distill`'s docstring called learner-atom preservation "the one hard guarantee… rejected in
+code, not merely prompted against", but the check only compared *ids*: an atom that kept its id
+while its text was rewritten passed, so a merge could change what the learner said and the note
+would still present it as theirs. The prompt even granted permission to "lightly edit its wording
+for flow", which is exactly the thing no code can distinguish from changing the meaning.
+
+A learner atom is now copied through a merge verbatim — text, kind, tags and lineage all come from
+the stored copy — and the merge is rejected outright if one is missing. The merge may reorder them
+and nothing else. It also can no longer *invent* one: an atom the model labels `learner` that no
+prior learner atom accounts for is re-kinded to `concept`, keeping the content but not the false
+attribution. `absorb` still bypasses all of this, because a learner's own edit is the authority
+over their own words.
+
+**Implemented — the original edit is recoverable.** Absorbing an edit reinterprets it into atoms
+through a model, so the words the learner typed were the one version of their note that was never
+stored. `note_revisions.learner_edit_md` (migration `0022`) keeps it, and the revision-source
+endpoint returns it alongside the derived view — null on any revision that was not their edit,
+rather than implying a fidelity it never had.
+
+**Implemented — concurrent edits conflict explicitly.** `NoteEditRequest.expected_revision_ordinal`
+is the revision the draft was written against; a mismatch is a 409 naming the current revision
+instead of an edit absorbed against a note the learner never saw. Checked twice — on entry and
+again after the model call, since absorb takes seconds and a background refresh can land inside it.
+The frontend sends the revision it opened the editor on and keeps the editor open on the error, so
+the learner's text is never lost.
+
+**Still open:** `restore` takes no expected revision (its target ordinal is explicit, so the
+ambiguity is smaller), and edits are still absorbed as reinterpreted atoms rather than stored as
+patches — the stored original makes that recoverable rather than lossless.
 
 **Evidence:** _learner_atoms_preserved only checks IDs; a retained ID with changed text/kind passes. Direct learner edits are interpreted by an LLM and rerendered, so exact edits are not stored as the authoritative document. Mutation requests have no expected revision.
 

@@ -227,7 +227,10 @@ async def test_revision_source_is_mechanical(db_session: AsyncSession) -> None:
     await _add_observation(db_session, learner, kc)
     await notes_svc.refresh_note(db_session, _distill_then_render(ATOMS), learner.id, topic)
     src = await notes_svc.revision_source(db_session, learner.id, topic, 1)
-    assert src is not None and "## Concepts" in src
+    assert src is not None
+    content_md, learner_edit_md = src
+    assert "## Concepts" in content_md
+    assert learner_edit_md is None  # a distilled revision is not the learner's own writing
 
 
 async def test_format_cascade(db_session: AsyncSession) -> None:
