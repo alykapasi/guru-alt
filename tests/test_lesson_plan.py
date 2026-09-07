@@ -1,5 +1,6 @@
 """Lesson plan: service + HTTP level (dynamic-revision/orchestration layer)."""
 
+import itertools
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -9,6 +10,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.llm.registry import fake_llm_client
 from app.models.assessment import Item, ItemKC, ItemType
 from app.models.knowledge import KC, KCEdge, Subject, Topic
@@ -490,3 +492,67 @@ async def test_a_healthy_read_still_does_not_recompute(
 
     monkeypatch.setattr(svc, "revise_plan", boom)
     assert await svc.get_lesson_plan(db_session, learner.id, subject.id) is not None
+
+
+# --- a goal bigger than the step cap is worked through, not truncated (S63) ---
+
+
+async def _chain(db_session: AsyncSession, length: int) -> tuple[Learner, Subject, list[KC]]:
+    """A prerequisite chain kc0 -> kc1 -> ... -> kc(n-1), so topo order is exactly that."""
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Long")
+    db_session.add_all([learner, subject])
+    await db_session.flush()
+    topic = Topic(subject_id=subject.id, slug="t", name="T")
+    db_session.add(topic)
+    await db_session.flush()
+    kcs = [KC(topic_id=topic.id, slug=f"kc-{i:03d}", name=f"KC {i}") for i in range(length)]
+    db_session.add_all(kcs)
+    await db_session.flush()
+    for prereq, dependent in itertools.pairwise(kcs):
+        db_session.add(KCEdge(kc_id=dependent.id, prereq_kc_id=prereq.id))
+    await db_session.flush()
+    return learner, subject, kcs
+
+
+async def test_a_goal_deeper_than_the_cap_records_the_whole_objective(
+    db_session: AsyncSession,
+) -> None:
+    learner, subject, kcs = await _chain(db_session, get_settings().lesson_plan_max_steps + 5)
+    plan = await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+
+    assert len(plan.steps) == get_settings().lesson_plan_max_steps  # the horizon is still capped
+    assert plan.objective_kc_count == len(kcs)  # but the goal is not
+    assert plan.deferred_kc_count == 5
+    # The last KC — the one everything else is a prerequisite for — is not in the window yet.
+    assert str(kcs[-1].id) not in {s["kc_id"] for s in plan.steps}
+
+
+async def test_finishing_the_window_advances_it_instead_of_ending_the_plan(
+    db_session: AsyncSession,
+) -> None:
+    """Completing the first twenty prerequisites must not read as completing the goal."""
+    cap = get_settings().lesson_plan_max_steps
+    learner, subject, kcs = await _chain(db_session, cap + 5)
+    await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+    for kc in kcs[:cap]:
+        await _mastered_state(db_session, learner.id, kc.id)
+
+    revised = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert revised is not None
+    planned = {s["kc_id"] for s in revised.steps}
+    assert str(kcs[-1].id) in planned  # the actual target is now in front of the learner
+    assert revised.deferred_kc_count == 0
+    assert any(s["status"] == "active" for s in revised.steps)  # and the plan is not "finished"
+
+
+async def test_a_goal_inside_the_cap_defers_nothing(db_session: AsyncSession) -> None:
+    learner, subject, _kcs = await _chain(db_session, 3)
+    plan = await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+    assert plan.objective_kc_count == 3 and plan.deferred_kc_count == 0

@@ -280,6 +280,30 @@ def scaffolding_from_profile(values: Mapping[str, Any]) -> ScaffoldingHints:
 # --- Step revision -------------------------------------------------------------
 
 
+def horizon_extension(
+    objective_kc_ids: Sequence[str],
+    steps: Sequence[StepDict],
+    *,
+    max_open_steps: int,
+) -> list[str]:
+    """The next objective KCs to pull into the plan, in objective order.
+
+    The step cap bounds how much work is *in front of* the learner at once, not how much of
+    their goal they are allowed to reach. As steps finish, room opens and the next components
+    of the objective move in — so a goal larger than the cap continues through to its actual
+    target instead of ending at the twentieth prerequisite.
+
+    Returns ``[]`` for a plan with no recorded objective (generated before objectives were
+    stored), which leaves its behaviour exactly as it was.
+    """
+    planned = {step["kc_id"] for step in steps if step["step_type"] == "new"}
+    open_steps = sum(1 for step in steps if step["step_type"] == "new" and step["status"] != "done")
+    room = max_open_steps - open_steps
+    if room <= 0:
+        return []
+    return [kc_id for kc_id in objective_kc_ids if kc_id not in planned][:room]
+
+
 def revise_steps(
     steps: Sequence[StepDict],
     *,

@@ -3,6 +3,7 @@
 import json
 import uuid
 
+from app.learning import lesson_plan as engine
 from app.learning.lesson_plan import (
     Edge,
     ScaffoldingHints,
@@ -329,3 +330,63 @@ def test_revise_steps_fully_done_plan_has_no_active_step() -> None:
         steps, mastered_kc_ids=set(), due_review_kc_ids=[], scaffolding=ScaffoldingHints()
     )
     assert all(s["status"] != "active" for s in result)
+
+
+# --- the step cap bounds the horizon, not the goal (S63) ----------------------
+
+
+def _new_step(kc_id: str, status: str = "pending") -> engine.StepDict:
+    return engine.StepDict(
+        kc_id=kc_id,
+        order=0,
+        step_type="new",
+        status=status,  # ty: ignore[invalid-argument-type]
+        target_difficulty=None,
+        hint_density=None,
+        preferred_item_type=None,
+    )
+
+
+def test_a_full_horizon_pulls_in_nothing() -> None:
+    objective = [f"kc-{i}" for i in range(5)]
+    steps = [_new_step(kc) for kc in objective[:3]]
+    assert engine.horizon_extension(objective, steps, max_open_steps=3) == []
+
+
+def test_finished_work_makes_room_for_the_next_of_the_objective() -> None:
+    objective = [f"kc-{i}" for i in range(5)]
+    steps = [_new_step("kc-0", "done"), _new_step("kc-1"), _new_step("kc-2")]
+    assert engine.horizon_extension(objective, steps, max_open_steps=3) == ["kc-3"]
+
+
+def test_the_target_is_eventually_reached_however_deep_the_prerequisites() -> None:
+    """The point of S63: the goal itself topo-sorts last and used to be cut off."""
+    objective = [f"prereq-{i}" for i in range(24)] + ["the-actual-goal"]
+    steps = [_new_step(kc) for kc in objective[:20]]
+    assert "the-actual-goal" not in {s["kc_id"] for s in steps}
+
+    for step in steps:  # the learner works through the first window
+        step["status"] = "done"
+    pulled = engine.horizon_extension(objective, steps, max_open_steps=20)
+    assert pulled == objective[20:]
+    assert "the-actual-goal" in pulled
+
+
+def test_review_steps_do_not_occupy_the_horizon() -> None:
+    """Retention work is added on top of the cap, so it must not crowd out new material."""
+    objective = ["kc-0", "kc-1"]
+    review = engine.StepDict(
+        kc_id="kc-9",
+        order=0,
+        step_type="review",
+        status="pending",
+        target_difficulty=None,
+        hint_density=None,
+        preferred_item_type=None,
+    )
+    assert engine.horizon_extension(objective, [review], max_open_steps=1) == ["kc-0"]
+
+
+def test_a_plan_with_no_recorded_objective_is_left_alone() -> None:
+    """Plans generated before objectives existed keep behaving exactly as they did."""
+    assert engine.horizon_extension([], [_new_step("kc-0", "done")], max_open_steps=20) == []

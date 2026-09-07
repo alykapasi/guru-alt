@@ -838,7 +838,28 @@ tests against representative *existing* data rather than only a fresh database.
 
 ### S63 — Keep the full learning goal visible when planning is capped
 
-**Status:** Proposed · **Priority:** High
+**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** High
+
+**Implemented:** The complete objective is now stored separately from the window being taught.
+Generation topologically sorts the goal's prerequisite closure and then sliced it to
+`lesson_plan_max_steps`; topo order puts prerequisites first, so the slice dropped the tail —
+*including the actual target, which sorts last*. A prerequisite-heavy goal produced a plan that
+never reached the thing the learner asked to learn, and finishing that plan read as finishing the
+goal.
+
+`lesson_plans.objective_kc_ids` (migration `0023`) holds the whole ordered objective; `steps`
+remains the horizon. `revise_plan` extends the horizon as work completes, so the cap bounds how
+much is in front of the learner at once rather than how far they are allowed to get.
+`LessonPlanRead` exposes `objective_kc_count` and `deferred_kc_count`, so a client cannot present a
+finished window as a finished goal.
+
+One thing the tests caught rather than review: the extension has to be computed *after*
+`revise_steps` has flipped newly mastered steps to done. Computed before, the horizon is always
+full and nothing is ever pulled in — the fix would have looked correct and done nothing.
+
+Review steps do not occupy the horizon (retention work is added on top of the cap by design), and
+a plan with no recorded objective — anything generated before `0023` — behaves exactly as it did
+until its next regenerate.
 
 **Evidence:** Plan generation slices prerequisite-ordered KCs to lesson_plan_max_steps (20). There is no explicit remaining-goal continuation in that generation path. A prerequisite-heavy goal may have its target omitted from the current plan.
 

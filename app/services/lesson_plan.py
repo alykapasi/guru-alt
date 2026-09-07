@@ -133,7 +133,10 @@ async def generate_lesson_plan(
         for e in await knowledge_svc.list_edges_for_subject(session, subject_id)
     ]
     closure = engine.prerequisite_closure(target_ids, edges)
-    kc_order = engine.topo_sort(closure, edges, tiebreak)[: get_settings().lesson_plan_max_steps]
+    # The whole objective is recorded; only its first window becomes steps. revise_plan pulls
+    # the rest in as work completes, so the target — which topo-sorts last — is still reached.
+    objective = engine.topo_sort(closure, edges, tiebreak)
+    kc_order = objective[: get_settings().lesson_plan_max_steps]
     bare_steps = engine.build_initial_steps(kc_order)
 
     mastered = await _mastered_kc_ids(session, learner_id, kc_order)
@@ -151,6 +154,7 @@ async def generate_lesson_plan(
         plan = LessonPlan(learner_id=learner_id, subject_id=subject_id)
         session.add(plan)
     plan.goal = goal
+    plan.objective_kc_ids = [str(kc_id) for kc_id in objective]
     plan.steps = cast("list[dict[str, Any]]", steps)
     _apply_plan_level_hints(plan, scaffolding)
 
@@ -166,6 +170,10 @@ async def revise_plan(
     profile — no LLM call, no topo-sort recompute. No-ops (returns ``None``) if the learner
     has no plan for this subject yet; evidence on a subject nobody has planned shouldn't
     create one implicitly.
+
+    Also advances the horizon: components of the objective that did not fit the step cap move
+    in as earlier ones finish, so a goal bigger than the cap is worked through rather than
+    truncated (:func:`engine.horizon_extension`).
     """
     plan = await _get_plan(session, learner_id, subject_id)
     if plan is None:
@@ -177,15 +185,29 @@ async def revise_plan(
     due_reviews = await _due_review_kc_ids(session, learner_id, all_kc_ids)
     scaffolding = await _scaffolding(session, learner_id)
 
-    plan.steps = cast(
-        "list[dict[str, Any]]",
-        engine.revise_steps(
-            cast("list[engine.StepDict]", plan.steps),
+    revised = engine.revise_steps(
+        cast("list[engine.StepDict]", plan.steps),
+        mastered_kc_ids=mastered,
+        due_review_kc_ids=due_reviews,
+        scaffolding=scaffolding,
+    )
+    # Only now is it known which steps this revision finished, and so how much room the
+    # horizon has for the rest of the objective. Extending before that would never see any.
+    extension = engine.horizon_extension(
+        plan.objective_kc_ids, revised, max_open_steps=get_settings().lesson_plan_max_steps
+    )
+    if extension:
+        extension_ids = [uuid.UUID(kc_id) for kc_id in extension]
+        # A KC arriving from the deferred tail may already be mastered (placement, or work in
+        # another plan), so it gets the same status derivation as anything else.
+        mastered |= await _mastered_kc_ids(session, learner_id, extension_ids)
+        revised = engine.revise_steps(
+            [*revised, *engine.build_initial_steps(extension_ids)],
             mastered_kc_ids=mastered,
             due_review_kc_ids=due_reviews,
             scaffolding=scaffolding,
-        ),
-    )
+        )
+    plan.steps = cast("list[dict[str, Any]]", revised)
     _apply_plan_level_hints(plan, scaffolding)
     plan.revision_pending = False  # whatever was owed, this recomputation covers it
 
