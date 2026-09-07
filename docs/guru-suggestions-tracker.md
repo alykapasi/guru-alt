@@ -146,6 +146,8 @@ All repository links below are pinned to the reviewed commit.
 
 | 2026-09-06 | S45 implemented (`d84f69c`) on the same branch, after PR #15 (Phase 9c) merged and the branch was rebased onto it. `uv run poe check` green (626 passed, 1 skipped). Note: an unrelated leftover `dev` learner row from earlier live testing caused 8 spurious failures until removed — the suite itself leaves none behind. |
 
+| 2026-09-07 | S48 (`0a94191`, `ed0ad5e`) and S57 (`8949fff`) implemented on the same branch. `uv run poe check` green (702 passed, 4 skipped). Migration `0024` makes `llm_calls.cost_usd` nullable. Added S76: two vector-retrieval tests failed intermittently during this session; traced far enough to rule out my changes as the cause and to identify a plausible mechanism, but not reproduced on demand and not fixed. The gate is therefore green but not yet proven deterministic. |
+
 ## Remaining architecture autopsy — source pass
 
 Review date: 2026-09-06. Same pinned repository snapshot as above. These findings extend S01–S29. User requested a comprehensive autopsy for later implementation; no application code was changed. S30–S63 are new proposals. Each entry includes a concrete second-pass check. Priorities describe urgency, not permission to implement.
@@ -563,7 +565,42 @@ teaching decisions is S18/S44 and remains open.
 
 ### S48 — Make model-call accounting complete and independent of business transactions
 
-**Status:** Proposed · **Priority:** Before cost decisions
+**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** Before cost decisions
+
+**Implemented — an unpriced model is unknown, not free.** `cost_usd` returned 0.0 for any model
+missing from the price table, so a paid model with no entry was indistinguishable from a locally
+hosted one and real spend read as zero. `price_usd(provider, model, usage)` returns `None` for an
+unpriced model and 0.0 only for providers we host ourselves; `llm_calls.cost_usd` is nullable
+(migration `0024`) to carry the distinction, and an unpriced model is warned about once rather than
+once per request. The sweep felt this most directly: it ranks cells cheapest-first, so an unpriced
+cell scored 0.0 and would have been recommended on the strength of a number nobody measured. Its
+cost is now omitted, and a missing cost already ranks last. Historical rows are left at 0.0 —
+which of them were unpriced cannot be recovered, and inventing the distinction would be worse.
+
+**Implemented — a rolled-back transaction no longer takes the cost record with it.** Accounting
+wrote into the caller's session, so a business transaction failing after a paid call erased the
+record of the money; `answer_item`'s plan-repair rollback (S35) and any failed ingestion did
+exactly that. `log_llm_call` now commits on its own session, and emits its structured log before
+the write so the record survives even a failing write. A failed accounting write is swallowed and
+logged rather than raised: the tokens are already spent and the work already succeeded, so failing
+a learner's turn over bookkeeping is the worse outcome. `turn_common.record_llm_call` — a second
+logger that had drifted into duplicating the pricing call and the structured log at four sites — is
+folded into it.
+
+**Implemented — the calls that reported nothing at all.** Embeddings returned bare vectors, so the
+largest single model bill in the product (embedding a document's chunks) was recorded as zero; the
+pipeline carried a comment saying embeddings had no usage to log. Providers now return an
+`EmbedResult` carrying usage, `embed_in_batches` sums it across batches so splitting a document
+does not divide its bill by the batch count, and ingestion and memory write-back record it.
+Curriculum generation returns `(proposal, usage)` — usage on the parse failures too, since a call
+that produced unusable output still cost what it cost. The onboarding gate, up to five rounds of
+negotiation billed to nobody, now records them: discarding the transcript was never a reason to
+discard the cost.
+
+**Not done.** Reconciliation against actual provider billing, per-call latency and
+failure/partial status on the row, and prompt-version identity. Tests bind accounting to the
+test's own connection, so no service-level test can detect a reintroduced coupling — only the
+direct coverage in `tests/test_llm_log.py` can.
 
 **Evidence:** Unknown models are priced as zero. Embeddings return only vectors and lose usage. Curriculum generation discards usage; onboarding refinement does not persist it. Many logs occur after successful parsing/stream completion or inside transactions that can roll back after paid work.
 
@@ -732,7 +769,24 @@ allowed relative to self-rating, not part of this defect. The whitelist makes it
 
 ### S57 — Ensure sweep settings actually change execution
 
-**Status:** Proposed · **Priority:** High
+**Status:** Implemented (`8949fff`, branch `fix/tracker-s54-s38`) · **Priority:** High
+
+**Implemented — a sweep may only vary what it can apply.** `gen_config` and `toggles` were
+free-form dicts, logged as run parameters and then ignored by everything except one toggle, so a
+sweep could report comparing `temperature: 0.2` against `temperature: 0.9` while running the
+identical configuration twice and attributing the noise between them to a setting that never
+reached a model. Every knob a cell may set is declared in `tests/eval/sweep/settings.py` with the
+suite it reaches; a config naming anything else is refused when it loads, before the first paid
+call, because the failure it prevents is invisible once the run has finished.
+`kc_tag_min_confidence` is now a real numeric setting rather than only the coarse
+`strict_kc_tagging` shorthand, and the two resolve explicitly when both are given.
+
+**Implemented — a run can be reproduced from its own record.** Every role's resolved model is
+logged, not only the swept ones (a cell sweeping SMART said nothing about which model served FAST),
+along with the settings *as applied* and a digest of the golden case file the run scored against.
+
+**Not done.** Nothing tunes the `rubric` or `retrieval` suites — adding a knob means declaring it
+and wiring it through `run_cell`. Prompt-version identity is not yet recorded.
 
 **Evidence:** gen_config is logged but run_cell does not apply it. Only strict_kc_tagging is implemented as a toggle in the runner. Logging unsupported settings can make an experiment appear to compare configurations it never used.
 
@@ -868,6 +922,48 @@ until its next regenerate.
 **Second-pass check:** A goal requiring over 20 components continues through the actual target; completing the first window is not presented as completing the entire goal.
 
 **Code:** [app/services/lesson_plan.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/services/lesson_plan.py), [app/core/config.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/core/config.py).
+
+### S76 — Establish whether the vector arm of retrieval actually returns what it should
+
+**Status:** Open — observed, traced, unresolved · **Priority:** High
+
+**Evidence (observed 2026-09-07, not from a source read):** `tests/test_retrieval.py::
+test_keyword_match_boosts_ranking` and `tests/eval/test_eval.py::test_retrieval_eval_gate` failed
+in 3 of 4 consecutive `poe check` runs and then passed in roughly 50 subsequent runs. Both
+failures were the same shape: the vector arm returned fewer chunks than the test had seeded — in
+the first, one of two — while the assertion `# vector returns both` expects the `ORDER BY
+embedding <=> q LIMIT 50` query to be exhaustive over a two-row scope.
+
+This is not a regression from the accounting work: `app/rag/retrieval.py`'s query, the HNSW index
+definition, and the deterministic fake embeddings that drive the test are byte-identical across
+that change (only `embed()`'s return shape moved).
+
+**What was ruled out.** Not test ordering or parallelism (no `pytest-randomly`, no `xdist`, fixed
+collection order). Not leftover committed rows (`chunks`, `sources`, `learners` all zero between
+runs). Not reproducible by forcing a narrow ANN search width (`hnsw.ef_search = 1`), nor by
+seeding 3,000 competing chunks belonging to another learner, nor by running the suite verbosely,
+nor by repeated runs after `VACUUM ANALYZE chunks`. The failures clustered in one window and
+disappeared after that vacuum, which is suggestive but was not confirmed.
+
+**Why it matters beyond the suite.** The standing hypothesis is filtered-ANN recall: an HNSW scan
+produces its candidate list *before* the `learner_id` join filter is applied, so a learner's own
+relevant chunks can be squeezed out by other learners' chunks as the shared `chunks` table grows.
+pgvector 0.8.3 is installed and `hnsw.iterative_scan` is unset (default `off`), which is the
+configuration in which that failure mode exists. If the hypothesis holds, retrieval silently
+returns less than it should at scale, and the tests are the early warning rather than the problem.
+
+**Suggested change:** Measure recall directly against an exact (sequential-scan) baseline over a
+corpus with many learners, rather than inferring it from an intermittent test. Then decide
+`hnsw.iterative_scan` / partial-index / partitioning on measured recall and latency, and make the
+retrieval suite score recall against the exact baseline so an index-recall regression is visible
+as a number rather than as a flaky assertion.
+
+**Second-pass check:** A scoped query returns the same rows as an exact scan over a corpus large
+enough for the index to be chosen, across many learners; the retrieval gate passes deterministically
+on repeated runs.
+
+**Code:** [app/rag/retrieval.py](app/rag/retrieval.py), [app/models/source.py](app/models/source.py),
+[tests/eval/harness.py](tests/eval/harness.py).
 
 ## Implementation order for consideration
 
