@@ -18,6 +18,7 @@ from app.llm.types import (
     ChatMessage,
     ChatResponse,
     ChatRole,
+    EmbedResult,
     ImagePart,
     TextPart,
     ToolCall,
@@ -178,7 +179,7 @@ class AnthropicProvider:
                 tool_calls=tool_calls,
             )
 
-    async def embed(self, *, model: str, texts: Sequence[str]) -> list[list[float]]:
+    async def embed(self, *, model: str, texts: Sequence[str]) -> EmbedResult:
         raise NotImplementedError(
             "Anthropic has no embeddings API; route the EMBED role to ollama/openrouter."
         )

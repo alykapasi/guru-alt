@@ -6,8 +6,11 @@ Two properties this module exists to hold:
 and committed immediately, so a business transaction that rolls back after a paid call
 still leaves the call recorded. The money left regardless of whether the work survived.
 
-**Every call is also emitted as a structured log**, unconditionally, so the record exists
-even if the database write is the thing that fails.
+**Every call is also emitted as a structured log**, unconditionally and *before* the write,
+so the record exists even when the write is the thing that fails — and a failed write is
+never allowed to propagate. The call has already been paid for and its work has already
+succeeded; losing the audit row is bad, but failing the learner's turn over bookkeeping is
+worse.
 
 Tests rebind the session factory (see ``tests/conftest.py``) so accounting shares the
 test's transaction and rolls back with it.
@@ -63,18 +66,21 @@ async def log_llm_call(
         output_tokens=usage.output_tokens,
         cost_usd=cost,
     )
-    async with _session_factory() as session:
-        session.add(
-            LLMCall(
-                learner_id=learner_id,
-                conversation_id=conversation_id,
-                role=role,
-                provider=spec.provider,
-                model=spec.model,
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                cost_usd=cost,
+    try:
+        async with _session_factory() as session:
+            session.add(
+                LLMCall(
+                    learner_id=learner_id,
+                    conversation_id=conversation_id,
+                    role=role,
+                    provider=spec.provider,
+                    model=spec.model,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    cost_usd=cost,
+                )
             )
-        )
-        await session.commit()
+            await session.commit()
+    except Exception as exc:  # bookkeeping must not fail the work it accounts for
+        log.error("llm.call_not_recorded", role=role, model=spec.model, error=str(exc))
     return cost

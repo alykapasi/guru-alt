@@ -12,6 +12,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from structlog.testing import capture_logs
 
 from app.llm.registry import ModelSpec
 from app.llm.types import Usage
@@ -91,3 +92,32 @@ async def test_a_priced_call_records_its_cost(
         usage=Usage(input_tokens=1, output_tokens=0),
     )
     assert cost == pytest.approx(expected)
+
+
+async def test_a_broken_accounting_write_does_not_fail_the_call_it_is_accounting_for() -> None:
+    """The tokens are already spent and the work already succeeded; the turn must not die here.
+
+    The structured `llm.call` event is emitted before the write, so the record still exists
+    even when the row does not.
+    """
+
+    @asynccontextmanager
+    async def broken() -> AsyncIterator[AsyncSession]:
+        raise RuntimeError("accounting database is down")
+        yield  # pragma: no cover - unreachable, present so this is a generator
+
+    previous = set_accounting_session_factory(broken)
+    try:
+        with capture_logs() as logs:
+            cost = await log_llm_call(
+                learner_id=None,
+                role="smart",
+                spec=SPEC,
+                usage=Usage(input_tokens=1_000_000, output_tokens=0),
+            )
+    finally:
+        set_accounting_session_factory(previous)
+
+    assert cost == pytest.approx(3.0)  # still computed and returned to the caller
+    events = [entry["event"] for entry in logs]
+    assert events == ["llm.call", "llm.call_not_recorded"]

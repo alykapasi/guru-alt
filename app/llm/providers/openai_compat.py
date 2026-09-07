@@ -17,6 +17,7 @@ from app.llm.types import (
     ChatMessage,
     ChatResponse,
     ChatRole,
+    EmbedResult,
     ImagePart,
     TextPart,
     ToolCall,
@@ -247,6 +248,11 @@ class OpenAICompatProvider:
         if usage is not None or tool_calls:
             yield ChatChunk(usage=usage or Usage(), tool_calls=tool_calls)
 
-    async def embed(self, *, model: str, texts: Sequence[str]) -> list[list[float]]:
+    async def embed(self, *, model: str, texts: Sequence[str]) -> EmbedResult:
         resp = await self._client.embeddings.create(model=model, input=list(texts))
-        return [item.embedding for item in resp.data]
+        # Ollama's OpenAI-compatible endpoint omits usage; a missing count is 0, not a crash.
+        prompt_tokens = getattr(resp.usage, "prompt_tokens", 0) if resp.usage else 0
+        return EmbedResult(
+            vectors=[item.embedding for item in resp.data],
+            usage=Usage(input_tokens=prompt_tokens),  # embeddings produce no output tokens
+        )

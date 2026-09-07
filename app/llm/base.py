@@ -3,7 +3,7 @@
 from collections.abc import AsyncIterator, Sequence
 from typing import Protocol, runtime_checkable
 
-from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ToolDef
+from app.llm.types import ChatChunk, ChatMessage, ChatResponse, EmbedResult, ToolDef
 
 
 @runtime_checkable
@@ -38,4 +38,4 @@ class LLMProvider(Protocol):
         tools: Sequence[ToolDef] | None = None,
     ) -> AsyncIterator[ChatChunk]: ...
 
-    async def embed(self, *, model: str, texts: Sequence[str]) -> list[list[float]]: ...
+    async def embed(self, *, model: str, texts: Sequence[str]) -> EmbedResult: ...

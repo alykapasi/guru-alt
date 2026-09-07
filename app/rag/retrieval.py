@@ -66,7 +66,7 @@ async def retrieve(
             stmt = stmt.where(Source.topic_id == topic_id)
         return stmt
 
-    query_vec = (await llm.embed(ModelRole.EMBED, [query]))[0]
+    query_vec = (await llm.embed(ModelRole.EMBED, [query])).vectors[0]
     tsquery = func.plainto_tsquery("english", query)
 
     vector_q = (

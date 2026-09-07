@@ -3,11 +3,13 @@
 import json
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning.curriculum import CurriculumProposal
 from app.llm import ModelRole
 from app.llm.registry import fake_llm_client
+from app.models.chat import LLMCall
 from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.services.knowledge import create_subject_with_graph, list_kcs_for_subject, list_topics
@@ -48,6 +50,7 @@ async def _drain(
     *,
     satisfied: bool = False,
     resume: bool = False,
+    learner_id: uuid.UUID | None = None,
 ) -> list[TurnEvent]:
     """Drain all events from a goal-refinement turn."""
     return [
@@ -58,12 +61,34 @@ async def _drain(
             user_content=user_content,
             satisfied=satisfied,
             resume=resume,
+            learner_id=learner_id,
         )
     ]
 
 
 class TestRunGoalRefinementTurn:
     """Tests for run_goal_refinement_turn orchestration."""
+
+    async def test_the_gate_records_what_the_negotiation_cost(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Onboarding discards its transcript by design; that is not a reason to discard cost."""
+        learner = Learner(handle=f"gate-{uuid.uuid4().hex[:8]}")
+        db_session.add(learner)
+        await db_session.flush()
+
+        await _drain(
+            fake_llm_client(REPLY),
+            str(uuid.uuid4()),
+            user_content="I want to learn linear algebra",
+            learner_id=learner.id,
+        )
+
+        calls = (
+            await db_session.scalars(select(LLMCall).where(LLMCall.learner_id == learner.id))
+        ).all()
+        assert [c.role for c in calls] == ["fast"]
+        assert calls[0].input_tokens > 0
 
     async def test_start_streams_tokens_and_awaits_reply(self) -> None:
         """First turn streams token events and ends with awaiting_reply."""
@@ -211,7 +236,7 @@ class TestGenerateCurriculumForOnboarding:
         chunk_text = (
             "linear algebra fundamentals: vectors and vector spaces, matrices and transformations"
         )
-        embedding = (await llm.embed(ModelRole.EMBED, [chunk_text]))[0]
+        embedding = (await llm.embed(ModelRole.EMBED, [chunk_text])).vectors[0]
         chunk = Chunk(
             source_id=source.id,
             ordinal=0,

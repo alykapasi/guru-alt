@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from app.core.config import Settings
 from app.llm.base import LLMProvider
 from app.llm.providers import AnthropicProvider, FakeProvider, FakeTurn, OpenAICompatProvider
-from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ModelRole, ToolDef
+from app.llm.types import ChatChunk, ChatMessage, ChatResponse, EmbedResult, ModelRole, ToolDef
 
 
 class LLMConfigError(ValueError):
@@ -107,7 +107,7 @@ class LLMClient:
             model=model, messages=messages, system=system, max_tokens=max_tokens, tools=tools
         )
 
-    async def embed(self, role: ModelRole, texts: Sequence[str]) -> list[list[float]]:
+    async def embed(self, role: ModelRole, texts: Sequence[str]) -> EmbedResult:
         provider, model = self._resolve(role)
         return await provider.embed(model=model, texts=texts)
 

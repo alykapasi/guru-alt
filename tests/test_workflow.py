@@ -155,7 +155,7 @@ async def test_present_cites_retrieved_materials(db_session: AsyncSession) -> No
         source_id=source.id,
         ordinal=0,
         text="Photosynthesis converts light energy into chemical energy in chloroplasts.",
-        embedding=(await fake_llm_client().embed(ModelRole.EMBED, ["seed"]))[0],
+        embedding=(await fake_llm_client().embed(ModelRole.EMBED, ["seed"])).vectors[0],
         provenance={},
     )
     db_session.add(chunk)

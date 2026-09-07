@@ -33,7 +33,7 @@ async def retrieve(
     if not query:
         return []
 
-    query_vec = (await llm.embed(ModelRole.EMBED, [query]))[0]
+    query_vec = (await llm.embed(ModelRole.EMBED, [query])).vectors[0]
     distance = Memory.embedding.cosine_distance(query_vec)
     rows = (
         await session.execute(

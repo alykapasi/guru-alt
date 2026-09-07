@@ -21,7 +21,7 @@ _FAKE = fake_llm_client()
 
 
 async def _embed(text: str) -> list[float]:
-    return (await _FAKE.embed(ModelRole.EMBED, [text]))[0]
+    return (await _FAKE.embed(ModelRole.EMBED, [text])).vectors[0]
 
 
 async def _learner(session: AsyncSession) -> Learner:

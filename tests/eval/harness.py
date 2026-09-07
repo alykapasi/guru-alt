@@ -359,7 +359,7 @@ async def _seed_corpus(
     session.add(source)
     await session.flush()
 
-    vectors = await llm.embed(ModelRole.EMBED, [text for _, text in docs])
+    vectors = (await llm.embed(ModelRole.EMBED, [text for _, text in docs])).vectors
     by_doc: dict[str, uuid.UUID] = {}
     for ordinal, ((doc_id, text), vector) in enumerate(zip(docs, vectors, strict=True)):
         chunk = Chunk(

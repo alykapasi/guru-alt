@@ -100,6 +100,17 @@ class Usage(BaseModel):
         return self.input_tokens + self.output_tokens
 
 
+class EmbedResult(BaseModel):
+    """Vectors plus what they cost. Usage travels with them so embedding spend is countable.
+
+    Returning bare vectors made embeddings the one paid call path with nothing to account for,
+    and ingesting a document is the largest single embedding bill the product has.
+    """
+
+    vectors: list[list[float]]
+    usage: Usage = Field(default_factory=Usage)
+
+
 class ChatChunk(BaseModel):
     """One streamed delta. The terminal chunk may carry final ``usage``/``tool_calls``."""
 

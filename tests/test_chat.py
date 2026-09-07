@@ -621,7 +621,7 @@ async def test_tutor_turn_reflects_a_previously_written_memory(
 ) -> None:
     learner = await _get_dev_learner(api_client, db_session)
     content = "Studying for the MCAT, mornings only."
-    embedding = (await fake_llm_client().embed(ModelRole.EMBED, [content]))[0]
+    embedding = (await fake_llm_client().embed(ModelRole.EMBED, [content])).vectors[0]
     db_session.add(
         Memory(learner_id=learner.id, kind=MemoryKind.FACT, content=content, embedding=embedding)
     )
@@ -731,7 +731,7 @@ async def test_tutor_turn_cites_retrieved_materials(
         source_id=source.id,
         ordinal=0,
         text="Mitochondria produce ATP through cellular respiration.",
-        embedding=(await fake_llm_client().embed(ModelRole.EMBED, ["seed"]))[0],
+        embedding=(await fake_llm_client().embed(ModelRole.EMBED, ["seed"])).vectors[0],
         provenance={"method": "text"},
     )
     db_session.add(chunk)
@@ -787,7 +787,7 @@ async def test_general_conversation_has_no_citations(
             source_id=source.id,
             ordinal=0,
             text="Mitochondria produce ATP.",
-            embedding=(await fake_llm_client().embed(ModelRole.EMBED, ["seed"]))[0],
+            embedding=(await fake_llm_client().embed(ModelRole.EMBED, ["seed"])).vectors[0],
             provenance={},
         )
     )
@@ -825,7 +825,7 @@ async def test_agentic_mode_cites_search_materials_results(
         source_id=source.id,
         ordinal=0,
         text="The learner's notes say photosynthesis occurs in chloroplasts.",
-        embedding=(await fake_llm_client().embed(ModelRole.EMBED, ["seed"]))[0],
+        embedding=(await fake_llm_client().embed(ModelRole.EMBED, ["seed"])).vectors[0],
         provenance={},
     )
     db_session.add(chunk)

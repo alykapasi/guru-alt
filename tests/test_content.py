@@ -37,7 +37,7 @@ def _client(reply: str = _BLOCK_REPLY):
 
 
 async def _embed(text: str) -> list[float]:
-    return (await _client().embed(ModelRole.EMBED, [text]))[0]
+    return (await _client().embed(ModelRole.EMBED, [text])).vectors[0]
 
 
 async def _learner(session: AsyncSession, *, handle: str | None = None) -> Learner:

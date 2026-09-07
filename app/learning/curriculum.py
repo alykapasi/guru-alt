@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import structlog
 
 from app.llm import ChatMessage, ChatRole, LLMClient
-from app.llm.types import ModelRole
+from app.llm.types import ModelRole, Usage
 
 log = structlog.get_logger(__name__)
 
@@ -52,8 +52,12 @@ async def generate_curriculum(
     llm: LLMClient,
     goal: str,
     materials: list[str] | None,
-) -> CurriculumProposal | None:
+) -> tuple[CurriculumProposal | None, Usage]:
     """Generate a curriculum proposal from a goal and optional materials.
+
+    Returns ``(proposal, usage)`` — usage on **every** path, including the parse failures.
+    A call that produced unusable output still cost what it cost, and returning only the
+    proposal meant a failed generation was billed to nobody.
 
     Args:
         llm: LLM client (uses SMART role for higher-stakes structural output)
@@ -87,7 +91,7 @@ async def generate_curriculum(
         system=CURRICULUM_SYSTEM_PROMPT,
         max_tokens=2048,
     )
-    reply = completion.content
+    reply, usage = completion.content, completion.usage
 
     try:
         # Tolerant JSON parsing — extract JSON robustly from possibly-wrapped reply
@@ -97,28 +101,28 @@ async def generate_curriculum(
         # Validate required fields
         if not isinstance(data, dict):
             log.warning("curriculum.parse_failed", reason="not_a_dict", reply=reply)
-            return None
+            return None, usage
         if not data.get("subject_name") or not data.get("topics"):
             log.warning("curriculum.parse_failed", reason="missing_fields", reply=reply)
-            return None
+            return None, usage
         if not isinstance(data["topics"], list) or len(data["topics"]) == 0:
             log.warning("curriculum.parse_failed", reason="empty_topics", reply=reply)
-            return None
+            return None, usage
 
         # Parse topics and KCs
         topics = []
         for topic_data in data["topics"]:
             if not isinstance(topic_data, dict):
                 log.warning("curriculum.parse_failed", reason="topic_not_dict")
-                return None
+                return None, usage
             if not topic_data.get("name") or not topic_data.get("kcs"):
                 log.warning("curriculum.parse_failed", reason="topic_missing_fields")
-                return None
+                return None, usage
             kcs = []
             for kc_data in topic_data["kcs"]:
                 if not isinstance(kc_data, dict) or not kc_data.get("name"):
                     log.warning("curriculum.parse_failed", reason="kc_invalid")
-                    return None
+                    return None, usage
                 kcs.append(
                     KCProposal(
                         name=kc_data["name"],
@@ -133,15 +137,18 @@ async def generate_curriculum(
                 )
             )
 
-        return CurriculumProposal(
-            subject_name=data["subject_name"],
-            subject_description=data.get("subject_description", ""),
-            topics=tuple(topics),
+        return (
+            CurriculumProposal(
+                subject_name=data["subject_name"],
+                subject_description=data.get("subject_description", ""),
+                topics=tuple(topics),
+            ),
+            usage,
         )
 
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         log.warning("curriculum.parse_failed", reason="json_or_validation_error", error=str(exc))
-        return None
+        return None, usage
 
 
 def _extract_json(content: str) -> str:

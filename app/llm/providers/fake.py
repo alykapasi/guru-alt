@@ -5,7 +5,16 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 
 from app.core.config import get_settings
-from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ToolCall, ToolDef, Usage, text_of
+from app.llm.types import (
+    ChatChunk,
+    ChatMessage,
+    ChatResponse,
+    EmbedResult,
+    ToolCall,
+    ToolDef,
+    Usage,
+    text_of,
+)
 
 
 @dataclass(frozen=True)
@@ -82,10 +91,15 @@ class FakeProvider:
             yield ChatChunk(text=word if i == 0 else f" {word}")
         yield ChatChunk(usage=self._usage(messages, turn), tool_calls=turn.tool_calls)
 
-    async def embed(self, *, model: str, texts: Sequence[str]) -> list[list[float]]:
+    async def embed(self, *, model: str, texts: Sequence[str]) -> EmbedResult:
         # Match the configured embedding dim so fake vectors fit the pgvector column.
         dim = get_settings().embed_dim
-        return [self._vec(t, dim) for t in texts]
+        return EmbedResult(
+            vectors=[self._vec(t, dim) for t in texts],
+            # One "token" per word, as the fake's chat usage counts — enough for a test to assert
+            # that embedding usage reached accounting at all.
+            usage=Usage(input_tokens=sum(len(t.split()) for t in texts)),
+        )
 
     @staticmethod
     def _vec(text: str, dim: int) -> list[float]:

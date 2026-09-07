@@ -58,6 +58,7 @@ async def goal_refinement_turn(
                 user_content=request.content,
                 satisfied=request.satisfied,
                 resume=request.mode == "resume",
+                learner_id=learner.id,
             ):
                 if event.type == "token":
                     yield _sse({"type": "token", "text": event.text})

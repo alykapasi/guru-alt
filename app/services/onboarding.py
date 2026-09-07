@@ -13,8 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.refinement import RefinementState, build_refinement_graph, refinement_config
 from app.learning.curriculum import CurriculumProposal, generate_curriculum
 from app.llm.registry import LLMClient
-from app.llm.types import ChatMessage, ChatRole, Usage
+from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.rag import retrieval
+from app.services.llm_log import log_llm_call
 from app.services.turn_common import TurnEvent
 
 log = structlog.get_logger(__name__)
@@ -33,6 +34,7 @@ async def run_goal_refinement_turn(
     user_content: str,
     satisfied: bool,
     resume: bool,
+    learner_id: uuid.UUID | None = None,
 ) -> AsyncIterator[TurnEvent]:
     """Start or resume the goal-refinement gate, stream the proposal, then return agreed goal.
 
@@ -42,6 +44,9 @@ async def run_goal_refinement_turn(
         user_content: User's initial goal or feedback on a proposal
         satisfied: True if user has accepted the proposal
         resume: True to resume from existing state; False to start fresh
+        learner_id: Who to bill the negotiation to. This gate is a real, repeated model
+            call — up to `max_rounds` of them — and discarding transcript is not a reason
+            to discard cost.
 
     Yields:
         TurnEvent (token, awaiting_reply, committed, error)
@@ -83,6 +88,15 @@ async def run_goal_refinement_turn(
         return
 
     snapshot = await graph.aget_state(config)
+    usage = snapshot.values["usage"]
+    if usage.total_tokens:
+        await log_llm_call(
+            learner_id=learner_id,
+            role=ModelRole.FAST.value,
+            spec=llm.spec(ModelRole.FAST),
+            usage=usage,
+        )
+
     if snapshot.next:
         # `propose` ran this call and paused awaiting the learner's reply — a new proposal to
         # yield.
@@ -114,7 +128,8 @@ async def generate_curriculum_for_onboarding(
         learner_id: The learner for scoping retrieval
 
     Returns:
-        CurriculumProposal or None if generation fails
+        CurriculumProposal or None if generation fails. The call is recorded either way —
+        a generation that produced unparseable output still cost what it cost.
     """
     materials = None
     if source_ids:
@@ -134,4 +149,12 @@ async def generate_curriculum_for_onboarding(
         if excerpts:
             materials = excerpts[:10]  # Cap total excerpts
 
-    return await generate_curriculum(llm, goal, materials)
+    proposal, usage = await generate_curriculum(llm, goal, materials)
+    if usage.total_tokens:
+        await log_llm_call(
+            learner_id=learner_id,
+            role=ModelRole.SMART.value,
+            spec=llm.spec(ModelRole.SMART),
+            usage=usage,
+        )
+    return proposal

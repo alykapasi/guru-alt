@@ -79,12 +79,15 @@ async def test_write_back_persists_memories_and_logs_the_call(db_session: AsyncS
     rows = (await db_session.scalars(select(Memory).where(Memory.learner_id == learner.id))).all()
     assert len(rows) == 2
 
+    # Both paid calls: extracting the memories, and embedding them. The embedding used to be
+    # invisible because embed() returned bare vectors with no usage attached.
     calls = (
         await db_session.scalars(select(LLMCall).where(LLMCall.learner_id == learner.id))
     ).all()
-    assert len(calls) == 1
-    assert calls[0].role == "fast"
-    assert calls[0].conversation_id == conversation.id
+    assert sorted(c.role for c in calls) == ["embed", "fast"]
+    assert all(c.conversation_id == conversation.id for c in calls)
+    embed_call = next(c for c in calls if c.role == "embed")
+    assert embed_call.input_tokens > 0
 
 
 async def test_write_back_dedupes_against_an_existing_near_duplicate(

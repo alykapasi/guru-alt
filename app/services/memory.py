@@ -56,9 +56,17 @@ async def write_back(
         await session.commit()
         return []
 
-    embeddings = await llm.embed(ModelRole.EMBED, [item.content for item in extracted])
+    embedded = await llm.embed(ModelRole.EMBED, [item.content for item in extracted])
+    if embedded.usage.total_tokens:
+        await log_llm_call(
+            learner_id=conversation.learner_id,
+            role=str(ModelRole.EMBED),
+            spec=llm.spec(ModelRole.EMBED),
+            usage=embedded.usage,
+            conversation_id=conversation_id,
+        )
     created: list[Memory] = []
-    for item, embedding in zip(extracted, embeddings, strict=True):
+    for item, embedding in zip(extracted, embedded.vectors, strict=True):
         if await _is_near_duplicate(
             session,
             conversation.learner_id,

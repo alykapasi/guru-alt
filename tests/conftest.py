@@ -9,15 +9,17 @@ that transaction with savepoints, so application `commit()` calls don't break is
 overridden to share the test's transactional session.
 
 Cost accounting normally commits on its *own* connection (see `app.services.llm_log`), which
-in a test would mean rows referencing learners this transaction has not committed. `accounting`
-gives it a second session on the same connection instead: still a separate session whose
-commits are its own, but inside the test's transaction, so foreign keys resolve and the rows
-roll back with everything else. `test_llm_log.py` covers the real independent-connection
-behaviour directly.
+in a test would mean rows referencing learners this transaction has not committed, and — for
+tests with no database at all — connections from the process-wide pool bound to a previous
+test's event loop. So it is redirected for every test: `accounting_default` sends it nowhere,
+and `db_session` upgrades it to a second session on the test's own connection, where foreign
+keys resolve and the rows roll back with everything else. `test_llm_log.py` covers the real
+independent-connection behaviour directly.
 """
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -39,8 +41,35 @@ async def engine() -> AsyncIterator[AsyncEngine]:
         await eng.dispose()
 
 
+class _DiscardedAccounting:
+    """Stands in for an accounting session in tests that have no database.
+
+    Accounting is deliberately best-effort in production, so a test that never touches the
+    database would otherwise reach the process-wide engine and its cross-loop connections.
+    """
+
+    def add(self, obj: object) -> None:
+        pass
+
+    async def commit(self) -> None:
+        pass
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def accounting_default() -> AsyncIterator[None]:
+    @asynccontextmanager
+    async def factory() -> AsyncIterator[Any]:
+        yield _DiscardedAccounting()
+
+    previous = set_accounting_session_factory(factory)
+    try:
+        yield
+    finally:
+        set_accounting_session_factory(previous)
+
+
 @pytest_asyncio.fixture
-async def db_session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+async def db_session(engine: AsyncEngine, accounting_default: None) -> AsyncIterator[AsyncSession]:
     connection = await engine.connect()
     transaction = await connection.begin()
     session = AsyncSession(
