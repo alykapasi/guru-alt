@@ -306,6 +306,18 @@ CI runs three gates: this suite, `alembic upgrade head` + `db-check` against a f
 service, and a separate **frontend** job (`npm ci && npm run lint && npm run build` — `build` is
 `tsc -b`, so it is the frontend's type-check too).
 
+> **Check the frontend with `npm run build`, never `npx tsc --noEmit`.** The root `tsconfig.json`
+> is solution-style (`"files": []` plus project references), so a bare `tsc --noEmit` type-checks
+> *zero* files and exits 0 on code it never read. Only `tsc -b` follows the references.
+
+After changing any response schema, regenerate the frontend's API types, or the client compiles
+against a contract the server no longer serves:
+
+```bash
+uv run python -c "import json; from app.main import app; json.dump(app.openapi(), open('/tmp/openapi.json','w'))"
+npx --prefix frontend openapi-typescript /tmp/openapi.json -o frontend/src/api/schema.d.ts
+```
+
 ---
 
 ## 8. Data hygiene & cleanup

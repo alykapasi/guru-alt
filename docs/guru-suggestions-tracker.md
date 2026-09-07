@@ -148,6 +148,8 @@ All repository links below are pinned to the reviewed commit.
 
 | 2026-09-07 | S48 (`0a94191`, `ed0ad5e`) and S57 (`8949fff`) implemented on the same branch. `uv run poe check` green (702 passed, 4 skipped). Migration `0024` makes `llm_calls.cost_usd` nullable. Added S76: two vector-retrieval tests failed intermittently during this session; traced far enough to rule out my changes as the cause and to identify a plausible mechanism, but not reproduced on demand and not fixed. The gate is therefore green but not yet proven deterministic. |
 
+| 2026-09-08 | S30 (`7f4b06d`), S32 (`fb0f214`), S47 (`72ca7f5`), S41 (`64ed883`), S46 (`75e12f7`) and S50 (`ad34b79`) implemented on the same branch. `uv run poe check` green (733 passed, 4 skipped); `npm run build` and `npm run lint` green. Migration `0025` adds embedding-space identity to chunks and memories. Note for future verification: `npx tsc --noEmit` checks nothing here (solution-style root tsconfig with `"files": []`) — `npm run build` is the frontend type gate.
+
 ## Remaining architecture autopsy — source pass
 
 Review date: 2026-09-06. Same pinned repository snapshot as above. These findings extend S01–S29. User requested a comprehensive autopsy for later implementation; no application code was changed. S30–S63 are new proposals. Each entry includes a concrete second-pass check. Priorities describe urgency, not permission to implement.
@@ -164,7 +166,23 @@ Coverage: API identity/scope, assessments, knowledge model, ingestion/workers, n
 
 ### S30 — Block unsafe outbound requests on every URL intake path
 
-**Status:** Proposed · **Priority:** Before external access
+**Status:** Implemented (`7f4b06d`, branch `fix/tracker-s54-s38`) · **Priority:** Before external access
+
+**Implemented:** One policy, applied to both intake paths. `safe_fetch` refused non-public
+addresses for model-chosen URLs; `default_fetch` — the one fetching a URL a *learner* types into
+ingestion — checked nothing and let httpx follow redirects wherever they led, so a learner could
+point ingestion at `169.254.169.254` or an internal service and read the response back out of
+their own corpus. A learner-supplied URL is not a trusted URL, and the address check was never
+what distinguished the two callers. Both now check scheme, host and every resolved address, and
+redirects are followed here rather than by httpx — httpx following them meant the check only ever
+saw the first URL, so a public host redirecting to an internal one walked straight past it. What
+differs per caller is only chain length: three revalidated hops for a learner's pasted link
+(routinely a shortened one), none for a model-chosen URL. Bodies, robots.txt included, are read
+incrementally and abandoned on exceeding their cap; a size checked after buffering is not a limit,
+and robots responses had no bound at all.
+
+**Not done:** the DNS-rebinding window between check and connect. Closing it needs connect-time
+pinning of the verified address — a transport change, not a check-order one.
 
 **Evidence:** Learner-supplied URLs use default_fetch, which follows redirects and performs no public-address check. safe_fetch only protects the model-controlled tool and documents a DNS check/connect gap. Both retrieve whole responses before testing MAX_BYTES; robots responses have no size bound.
 
@@ -188,7 +206,20 @@ Coverage: API identity/scope, assessments, knowledge model, ingestion/workers, n
 
 ### S32 — Bind onboarding checkpoint identity to the authenticated learner
 
-**Status:** Proposed · **Priority:** Before multi-user access
+**Status:** Implemented (`fb0f214`, branch `fix/tracker-s54-s38`) · **Priority:** Before multi-user access
+
+**Implemented:** Two changes, because either alone leaves a gap. The session id is issued by the
+server (`POST /onboarding/goal-sessions`) and recorded against the learner who asked for it, so a
+resume is checked rather than assumed; and the checkpointer's thread key is derived from the
+learner *and* the id, so even an unrecorded id cannot address someone else's state — a leaked id
+is worth nothing on its own, including after a restart has emptied the registry. An id that is not
+yours and one that never existed both give 404, so the endpoint cannot enumerate real ids.
+Resuming a thread that no longer exists now says so rather than failing deep in the graph with a
+bare `KeyError` shown to the learner as "generation failed".
+
+**Not done:** durable session state. The registry is in-process, deliberately exactly as strong as
+the `InMemorySaver` behind it — the same reasoning as the turn lock in S34. Both move together
+when the checkpointers do (S17).
 
 **Evidence:** Goal refinement accepts a caller-provided session_id and uses it as the checkpoint key without incorporating learner identity or checking ownership. Ordinary conversations do perform ownership checks.
 
@@ -460,7 +491,20 @@ patches — the stored original makes that recoverable rather than lossless.
 
 ### S41 — Bound cumulative note growth and tolerate rendering failures
 
-**Status:** Proposed · **Priority:** High
+**Status:** Implemented (`64ed883`, branch `fix/tracker-s54-s38`) · **Priority:** High
+
+**Implemented — growth.** Every distillation resent the whole substrate and asked for the whole
+thing back under a fixed 4096-token output cap, so past a certain size the reply could not contain
+the note and what came back was a shorter note that had quietly lost the difference (learner atoms
+were protected by S40; nothing else was). Only the tail is offered for rewriting now; everything
+older is carried through untouched and rejoined. The cost is that a merge can no longer revise a
+settled atom — the price of it not being able to lose one.
+
+**Implemented — rendering.** A render is free-text markdown, so there is no parse step to fail and
+an empty or severed reply was cached as the learner's note. Providers already computed the
+truncation signal and only logged it; `ChatResponse` now carries it, and an empty or severed render
+is refused. Anything refused or failed falls back to `mechanical_render` of the same substrate:
+plainer, complete, always available. A provider outage no longer costs the revision either.
 
 **Evidence:** Every distillation resends the entire substrate and requests a replacement with a fixed 4096-token output cap. render accepts any stripped string, including empty/truncated output, as cacheable content. Revision/render work is coupled in a transaction.
 
@@ -541,7 +585,20 @@ teaching decisions is S18/S44 and remains open.
 
 ### S46 — Make mastery displays match the estimator's meaning
 
-**Status:** Proposed · **Priority:** High
+**Status:** Implemented (`75e12f7`, branch `fix/tracker-s54-s38`) · **Priority:** High
+
+**Implemented:** The estimate and the coverage are now separate facts. `KCMasteryRead.assessed`
+says whether a component has any evidence behind it, topics and subjects carry `assessed_kcs` of
+`total_kcs`, and anything unassessed displays as "not assessed" rather than as the prior's 50%.
+The percentage that remains is named for what it is: under this estimator sigmoid(θ) is expected
+score on a question of average difficulty, not the share of a subject understood.
+
+**Found on the way:** `npx tsc --noEmit` type-checks *nothing* in this repo — the root tsconfig is
+solution-style with `"files": []` — so it had been reporting success on code it never read. The
+gate is `npm run build` (`tsc -b`), which is what CI runs. The OpenAPI-derived frontend types were
+also stale and are regenerated.
+
+**Not done:** calibration. The uncertainty bands remain the v1-arbitrary ones (S18).
 
 **Evidence:** masteryPercent applies sigmoid to ability. An unseen prior of zero displays as 50%; under this estimator sigmoid(theta) is expected performance against difficulty zero, not percentage of a subject understood. Uncertainty labels do not resolve this mismatch.
 
@@ -553,7 +610,24 @@ teaching decisions is S18/S44 and remains open.
 
 ### S47 — Enforce input, context, and total-request budgets
 
-**Status:** Proposed · **Priority:** Before external access
+**Status:** Implemented (`72ca7f5`, branch `fix/tracker-s54-s38`) · **Priority:** Before external access
+
+**Implemented:** Three bounds where there were none. **Message size** is rejected by the schema
+before the turn reaches a provider. **History** is a window of recent messages rather than the
+whole conversation — the client still renders everything, and durable facts outlive the window
+through `app/memory/`. **Spend** is a rolling 24h per-learner ceiling on cost *and* tokens, checked
+before the turn starts; both, because neither subsumes the other — an unpriced model contributes
+nothing to a cost total (S48), and a token count says nothing about how expensive the model was.
+Reading the accounting log for this is only trustworthy because that log now survives the
+transactions it accompanies.
+
+Taking a window from one end of the transcript exposed an ordering assumption that was safe only
+by accident: `created_at` is transaction-start time, so messages written together tie. Both queries
+now break the tie on `id`.
+
+**Not done:** summarising what falls outside the window, per-request deadlines and cancellation,
+and concurrency limits beyond the one-turn-per-conversation lock. Enforcement is pre-turn, so a
+single turn can still overshoot; it bounds accumulation, not one turn's cost.
 
 **Evidence:** Chat content has a minimum length but no maximum. Plain/agentic chat load and forward complete conversation history. Output caps and tool iteration limits exist, but do not bound cumulative input context, learner spend, or concurrent requests.
 
@@ -668,7 +742,19 @@ and per-role rather than per-client limits.
 
 ### S50 — Version embedding spaces and plan migration explicitly
 
-**Status:** Proposed · **Priority:** Before embedding changes
+**Status:** Implemented (`ad34b79`, branch `fix/tracker-s54-s38`) · **Priority:** Before embedding changes
+
+**Implemented:** Chunks and memories carry the space that produced them (`provider:model:dim`,
+migration `0025`). Provider is part of the identity because the same model name from two backends
+is not a promise of the same weights; dimension because it is the one incompatibility that would
+otherwise surface as a database error rather than as silently wrong ranking. Vector search, memory
+retrieval and memory dedup all restrict to the current space. Deliberately, the keyword arm does
+not — only the vector went stale, the words are still the words, which is what makes a re-embedding
+backlog degrade retrieval rather than delete it.
+
+**Not done:** the re-embedding path itself, and extraction/chunking version identity. Existing rows
+are backfilled with the currently configured space — an assertion about history that holds exactly
+if the EMBED model has not changed, and which cannot be recovered from the vectors.
 
 **Evidence:** Chunks and memories store vectors with a configured dimension but no embedding model/version identity. Changing to a same-dimension model via configuration can silently query incompatible stored vectors; a different dimension additionally requires schema changes.
 
