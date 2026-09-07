@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
-from app.services import onboarding
+from app.services import onboarding, onboarding_sessions
 
 router = APIRouter(tags=["onboarding"])
 
@@ -27,6 +27,12 @@ class GoalTurnRequest(BaseModel):
     mode: Literal["start", "resume"] = "start"
 
 
+class GoalSessionResponse(BaseModel):
+    """A server-issued onboarding session, owned by the learner who asked for it."""
+
+    session_id: str
+
+
 class CurriculumRequest(BaseModel):
     goal: str
     source_ids: list[uuid.UUID] | None = None
@@ -36,6 +42,16 @@ class CurriculumResponse(BaseModel):
     subject_name: str
     subject_description: str
     topics: list[dict]  # Topic dicts with 'name', 'description', 'kcs'
+
+
+@router.post("/onboarding/goal-sessions", response_model=GoalSessionResponse)
+async def start_goal_session(learner: CurrentLearner) -> GoalSessionResponse:
+    """Mint the session id a goal-refinement negotiation runs under.
+
+    The client used to invent this id, and the server keyed the negotiation's state on it with
+    no learner attached — so knowing someone's id was enough to resume their onboarding.
+    """
+    return GoalSessionResponse(session_id=onboarding_sessions.issue(learner.id).session_id)
 
 
 @router.post("/onboarding/goal-turns")
@@ -49,6 +65,15 @@ async def goal_refinement_turn(
 
     Streams: token, awaiting_reply, committed, or error events.
     """
+
+    try:
+        onboarding_sessions.require(request.session_id, learner.id)
+    except onboarding_sessions.NotYourSession as exc:
+        # The same answer whether it belongs to someone else or never existed, so this cannot
+        # be used to find out which ids are real.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="onboarding session not found"
+        ) from exc
 
     async def event_stream() -> AsyncIterator[str]:
         try:

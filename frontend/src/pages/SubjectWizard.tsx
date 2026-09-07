@@ -5,14 +5,14 @@ import { GoalStep } from "../components/subject-wizard/GoalStep";
 import { ReviewStep } from "../components/subject-wizard/ReviewStep";
 import { CommitStep } from "../components/subject-wizard/CommitStep";
 import type { CurriculumProposal } from "../api/onboarding";
-import { useGenerateCurriculum } from "../api/onboarding";
+import { useGenerateCurriculum, useGoalSession } from "../api/onboarding";
 
 type WizardStep = "materials" | "goal" | "review" | "commit";
 
 export function SubjectWizard() {
   const [step, setStep] = useState<WizardStep>("materials");
   const [materials, setMaterials] = useState<string[]>([]);
-  const [sessionId] = useState(() => crypto.randomUUID());
+  const { data: sessionId } = useGoalSession();
   const [goal, setGoal] = useState("");
   const [curriculum, setCurriculum] = useState<CurriculumProposal | null>(null);
   const generate = useGenerateCurriculum();

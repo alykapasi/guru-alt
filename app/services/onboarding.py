@@ -15,6 +15,7 @@ from app.learning.curriculum import CurriculumProposal, generate_curriculum
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.rag import retrieval
+from app.services import onboarding_sessions
 from app.services.llm_log import log_llm_call
 from app.services.turn_common import TurnEvent
 
@@ -34,19 +35,22 @@ async def run_goal_refinement_turn(
     user_content: str,
     satisfied: bool,
     resume: bool,
-    learner_id: uuid.UUID | None = None,
+    learner_id: uuid.UUID,
 ) -> AsyncIterator[TurnEvent]:
     """Start or resume the goal-refinement gate, stream the proposal, then return agreed goal.
 
     Args:
         llm: LLM client
-        session_id: Arbitrary UUID/string used by the checkpointer to key state
+        session_id: A server-issued id, owned by ``learner_id`` (see
+            ``app.services.onboarding_sessions``). It is namespaced by learner before it
+            reaches the checkpointer, so it cannot address anyone else's negotiation.
         user_content: User's initial goal or feedback on a proposal
         satisfied: True if user has accepted the proposal
         resume: True to resume from existing state; False to start fresh
-        learner_id: Who to bill the negotiation to. This gate is a real, repeated model
-            call — up to `max_rounds` of them — and discarding transcript is not a reason
-            to discard cost.
+        learner_id: Whose negotiation this is. Keys the checkpoint thread, and is who the
+            gate's model calls are billed to — it is a real, repeated call, up to
+            `max_rounds` of them, and discarding the transcript was never a reason to
+            discard the cost.
 
     Yields:
         TurnEvent (token, awaiting_reply, committed, error)
@@ -54,10 +58,16 @@ async def run_goal_refinement_turn(
     from langgraph.types import Command
 
     graph = build_refinement_graph(llm)
-    config = refinement_config(session_id)
+    config = refinement_config(onboarding_sessions.thread_key(session_id, learner_id))
 
     run_input: RefinementState | Command
     if resume:
+        # The checkpointer is in-memory, so a thread can genuinely be gone: the process
+        # restarted, or this learner is presenting an id that was never theirs. Either way the
+        # graph would fail deep inside with a bare KeyError; say what happened instead.
+        if not (await graph.aget_state(config)).values:
+            yield TurnEvent(type="error", detail="this goal session has expired; start a new one")
+            return
         run_input = Command(resume={"satisfied": satisfied, "feedback": user_content})
     else:
         run_input = {

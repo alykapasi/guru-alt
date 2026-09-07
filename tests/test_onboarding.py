@@ -12,8 +12,12 @@ from app.llm.registry import fake_llm_client
 from app.models.chat import LLMCall
 from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
+from app.services import onboarding_sessions
 from app.services.knowledge import create_subject_with_graph, list_kcs_for_subject, list_topics
-from app.services.onboarding import generate_curriculum_for_onboarding, run_goal_refinement_turn
+from app.services.onboarding import (
+    generate_curriculum_for_onboarding,
+    run_goal_refinement_turn,
+)
 from app.services.turn_common import TurnEvent
 
 REPLY = "Learn the fundamentals of linear algebra including vectors and matrices."
@@ -43,6 +47,10 @@ CURRICULUM_REPLY = json.dumps(
 )
 
 
+API = "/api/v1"
+_ANY_LEARNER = uuid.UUID(int=1)
+
+
 async def _drain(
     llm_client,
     session_id: str,
@@ -50,9 +58,13 @@ async def _drain(
     *,
     satisfied: bool = False,
     resume: bool = False,
-    learner_id: uuid.UUID | None = None,
+    learner_id: uuid.UUID = _ANY_LEARNER,
 ) -> list[TurnEvent]:
-    """Drain all events from a goal-refinement turn."""
+    """Drain all events from a goal-refinement turn.
+
+    The learner is part of the checkpoint key now, so resuming a negotiation means passing the
+    same one — a fresh id addresses a fresh thread, which is the point of the change.
+    """
     return [
         ev
         async for ev in run_goal_refinement_turn(
@@ -352,3 +364,61 @@ async def test_onboarding_end_to_end(db_session: AsyncSession) -> None:
     assert len(kcs) == 4, "Should have 4 KCs total across all topics"
     kc_names = {kc.name for kc in kcs}
     assert kc_names == {"Vector Addition", "Dot Product", "Matrix Multiplication", "Determinants"}
+
+
+# --- a negotiation belongs to the learner who started it --------------------------------------
+
+
+async def test_a_session_id_is_issued_by_the_server(api_client) -> None:
+    first = await api_client.post(f"{API}/onboarding/goal-sessions")
+    second = await api_client.post(f"{API}/onboarding/goal-sessions")
+    assert first.status_code == 200
+    assert first.json()["session_id"] != second.json()["session_id"]
+
+
+async def test_a_turn_on_an_unissued_session_is_refused(api_client) -> None:
+    """The hole this closes: the client invented this id and the server took it on trust."""
+    response = await api_client.post(
+        f"{API}/onboarding/goal-turns",
+        json={"session_id": uuid.uuid4().hex, "content": "teach me algebra", "mode": "start"},
+    )
+    assert response.status_code == 404
+
+
+async def test_another_learners_session_is_refused_and_indistinguishable_from_a_missing_one(
+    api_client,
+) -> None:
+    someone_else = onboarding_sessions.issue(uuid.uuid4())
+
+    stolen = await api_client.post(
+        f"{API}/onboarding/goal-turns",
+        json={"session_id": someone_else.session_id, "content": "hi", "mode": "resume"},
+    )
+    invented = await api_client.post(
+        f"{API}/onboarding/goal-turns",
+        json={"session_id": uuid.uuid4().hex, "content": "hi", "mode": "resume"},
+    )
+    assert stolen.status_code == invented.status_code == 404
+    assert stolen.json() == invented.json()
+
+
+async def test_the_same_session_id_under_two_learners_is_two_negotiations() -> None:
+    """The check that survives an empty registry: the key is namespaced by learner."""
+    shared = uuid.uuid4().hex
+    a, b = uuid.UUID(int=7), uuid.UUID(int=8)
+    assert onboarding_sessions.thread_key(shared, a) != onboarding_sessions.thread_key(shared, b)
+
+    llm = fake_llm_client(REPLY)
+    await _drain(llm, shared, user_content="learn algebra", learner_id=a)
+
+    # A carries on with their own negotiation.
+    mine = await _drain(llm, shared, user_content="carry on", resume=True, learner_id=a)
+    assert [(e.type, e.detail) for e in mine if e.type != "token"] == [
+        ("awaiting_reply", "round 2")
+    ]
+
+    # B presents the same id and reaches nothing — not A's proposal, not A's round.
+    theirs = await _drain(llm, shared, user_content="carry on", resume=True, learner_id=b)
+    assert [(e.type, e.detail) for e in theirs] == [
+        ("error", "this goal session has expired; start a new one")
+    ]

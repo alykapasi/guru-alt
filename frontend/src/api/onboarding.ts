@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { API_BASE_URL } from "./client";
 
 // ============================================================================
@@ -55,6 +55,21 @@ export interface CreatedSubject {
 // ============================================================================
 
 /**
+ * Asks the server for a goal-refinement session id.
+ *
+ * The client used to invent this id, which meant the server keyed a negotiation's state on a
+ * value it had never issued and could not attribute to anyone.
+ */
+export async function createGoalSession(): Promise<string> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/onboarding/goal-sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!res.ok) throw new Error(`could not start a goal session: ${res.status}`);
+  return ((await res.json()) as { session_id: string }).session_id;
+}
+
+/**
  * Streams one goal-refinement turn. Mirrors sse.ts's streamTurn pattern: POST returns an SSE
  * body, so we read the response body's ReadableStream directly and parse `data: {...}\n\n`
  * frames by hand.
@@ -92,6 +107,21 @@ export async function* streamGoalTurn(
 // ============================================================================
 // Hooks
 // ============================================================================
+
+/**
+ * The server-issued session id this wizard's negotiation runs under. Minted once and kept for
+ * the life of the component; a new wizard is a new negotiation.
+ */
+export function useGoalSession() {
+  return useQuery({
+    queryKey: ["goal-session"],
+    queryFn: createGoalSession,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+  });
+}
 
 /**
  * Owns the goal-refinement negotiation: local streaming state, the latest proposal text,
