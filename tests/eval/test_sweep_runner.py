@@ -72,3 +72,32 @@ async def test_strict_kc_tagging_toggle_raises_confidence_gate(monkeypatch) -> N
     assert captured["min_confidence"] == 0.7
     await run_cell(cell(strict=False), base)
     assert captured["min_confidence"] == 0.5
+
+
+async def test_a_swept_gen_config_value_reaches_the_call(monkeypatch) -> None:
+    """The property the whole sweep rests on: a setting a run logs is a setting a run used."""
+    from tests.eval import harness
+    from tests.eval.sweep import runner
+
+    captured: list[float] = []
+
+    async def spy(client, cases, *, min_confidence: float = 0.5):
+        captured.append(min_confidence)
+        return harness.EvalReport(suite="kc_tagging", results=[])
+
+    monkeypatch.setattr(runner.harness, "score_kc_tagging", spy)
+    base = _fake_base("x")
+
+    for value in (0.25, 0.85):
+        await run_cell(
+            Cell(
+                id="t",
+                role_overrides={},
+                gen_config={"kc_tag_min_confidence": value},
+                toggles={},
+                suites=("kc_tagging",),
+            ),
+            base,
+        )
+
+    assert captured == [0.25, 0.85]

@@ -5,6 +5,8 @@ axes:
     - {provider: openrouter, model: claude-opus-4-8}
     - {provider: openrouter, model: claude-sonnet-4-6}
     - {provider: ollama,     model: llama3.1:8b}   # adjust to a model you have pulled
+# Only settings declared in tests/eval/sweep/settings.py are accepted; an unknown one
+# is refused at load time rather than logged and ignored.
 gen_config:
   - {}
 toggles: {}

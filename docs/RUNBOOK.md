@@ -207,9 +207,24 @@ axes:
   smart:                         # candidate models for the SMART role
     - {provider: openrouter, model: claude-sonnet-4-6}
     - {provider: ollama,     model: llama3.2}
-gen_config: [{}]
+gen_config: [{}]                 # see below — only declared settings are accepted
 toggles: {}
 ```
+
+**A sweep may only vary what it can actually apply.** `gen_config` keys and `toggles` names are
+checked against `tests/eval/sweep/settings.py` when the config loads, and an unknown one is
+refused before the first paid call. Varying a setting nothing applies would produce two identical
+runs reported as a comparison — a wrong answer, not a missing one. Currently declared:
+
+| setting | kind | suite | effect |
+| --- | --- | --- | --- |
+| `kc_tag_min_confidence` | `gen_config` | `kc_tagging` | confidence a predicted tag must reach to be kept (0.0–1.0) |
+| `strict_kc_tagging` | `toggle` | `kc_tagging` | shorthand for `kc_tag_min_confidence: 0.7` |
+
+Nothing tunes the `rubric` or `retrieval` suites yet; adding a knob means declaring it there and
+wiring it through `run_cell`. Each run also records every role's resolved `provider:model` (not
+only the swept ones), the settings **as applied**, and a digest of the golden case file it scored
+against, so a run can be reproduced from its own record.
 
 ```bash
 uv run poe sweep tests/eval/experiments/my-sweep.yaml

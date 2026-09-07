@@ -8,6 +8,7 @@ from app.llm import LLMClient
 from tests.eval import harness
 from tests.eval.sweep.config import Cell
 from tests.eval.sweep.cost import CostSummary, CostTrackingClient
+from tests.eval.sweep.settings import kc_tag_min_confidence
 
 
 async def run_cell(
@@ -22,7 +23,7 @@ async def run_cell(
     merged over it (never mutating ``base_client``). A ``retrieval`` suite needs ``session``.
     """
     client = CostTrackingClient(base_client.with_roles(cell.role_overrides))
-    reports = [await _run_suite(suite, client, session, cell.toggles) for suite in cell.suites]
+    reports = [await _run_suite(suite, client, session, cell) for suite in cell.suites]
     return reports, client.cost_summary()
 
 
@@ -30,16 +31,17 @@ async def _run_suite(
     suite: str,
     client: LLMClient,
     session: AsyncSession | None,
-    toggles: dict[str, bool],
+    cell: Cell,
 ) -> harness.EvalReport:
     if suite == "rubric":
         return await harness.score_rubric(client, harness.load_rubric_cases())
     if suite == "kc_tagging":
-        # Concrete toggle wired end-to-end: `strict_kc_tagging` raises the confidence gate
-        # (flips the scorer's existing `min_confidence` seam — no app-code change).
-        min_confidence = 0.7 if toggles.get("strict_kc_tagging") else 0.5
+        # The one knob wired end-to-end, through the scorer's existing `min_confidence` seam.
+        # `tests/eval/sweep/settings.py` is the list of what a cell is allowed to ask for.
         return await harness.score_kc_tagging(
-            client, harness.load_kc_tagging_cases(), min_confidence=min_confidence
+            client,
+            harness.load_kc_tagging_cases(),
+            min_confidence=kc_tag_min_confidence(cell.gen_config, cell.toggles),
         )
     if suite == "retrieval":
         if session is None:

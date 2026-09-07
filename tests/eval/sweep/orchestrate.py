@@ -8,10 +8,12 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm import LLMClient
+from app.llm.types import ModelRole
 from tests.eval import harness
 from tests.eval.sweep.config import Cell, SweepConfig, expand
 from tests.eval.sweep.cost import CostSummary
 from tests.eval.sweep.runner import run_cell
+from tests.eval.sweep.settings import resolved
 from tests.eval.sweep.tracking import Tracker
 
 
@@ -28,10 +30,13 @@ async def run_sweep(
     for cell in expand(config):
         tracker.start_run(cell.id)
         try:
-            tracker.log_params(_cell_params(cell))
+            # Identity first and unconditionally: a cell that fails while its parameters are
+            # being resolved still has to leave a run saying which cell it was.
+            tracker.log_params({"suites": ",".join(cell.suites)})
             try:
+                tracker.log_params(_cell_params(cell, base_client))
                 reports, cost = await run_cell(cell, base_client, session=session)
-            except Exception as exc:  # provider error / timeout / auth / bad suite — keep going
+            except Exception as exc:  # provider error / timeout / auth / bad config — keep going
                 tracker.log_params({"status": "failed", "error": str(exc)[:500]})
                 continue
             tracker.log_params({"status": "ok"})
@@ -41,14 +46,28 @@ async def run_sweep(
             tracker.end_run()
 
 
-def _cell_params(cell: Cell) -> dict[str, str]:
-    params: dict[str, str] = {"suites": ",".join(cell.suites)}
-    for role, spec in cell.role_overrides.items():
+def _cell_params(cell: Cell, base_client: LLMClient) -> dict[str, str]:
+    """What this run asked for, what it resolved to, and what it scored against.
+
+    Every role is recorded, not only the overridden ones: a cell that swept SMART said nothing
+    about which model served FAST, so its result could not be reproduced from its own record.
+    """
+    params: dict[str, str] = {}
+    client = base_client.with_roles(cell.role_overrides)
+    for role in ModelRole:
+        spec = client.spec(role)
         params[f"{role.value}_model"] = f"{spec.provider}:{spec.model}"
     for name, value in cell.toggles.items():
         params[f"toggle_{name}"] = str(value)
     for key, value in cell.gen_config.items():
         params[f"gen_{key}"] = str(value)
+    # The settings as applied, which is what a later reader actually needs: `strict_kc_tagging`
+    # and `kc_tag_min_confidence` can both be set, and only one of them reaches the call.
+    params.update(resolved(cell.suites, cell.gen_config, cell.toggles))
+    for suite in cell.suites:
+        digest = harness.cases_digest(suite)
+        if digest is not None:
+            params[f"dataset_{suite}"] = digest
     return params
 
 

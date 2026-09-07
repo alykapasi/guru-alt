@@ -59,6 +59,51 @@ async def test_run_sweep_survives_a_failing_cell(tmp_path) -> None:
     assert "rubric_pass_rate" not in runs[0].metrics
 
 
+async def test_a_cell_naming_an_unknown_provider_fails_alone(tmp_path) -> None:
+    """Resolving a cell's models can fail too, and it must not take the rest of the matrix down."""
+    config = SweepConfig.model_validate(
+        {
+            "name": "s",
+            "suites": ["rubric"],
+            "axes": {
+                "smart": [
+                    {"provider": "typo", "model": "m"},
+                    {"provider": "openrouter", "model": "claude-opus-4-8"},
+                ]
+            },
+        }
+    )
+    tracker = FakeTracker()
+    await run_sweep(
+        config, _fake_base('{"score": 1.0, "rationale": "ok"}'), tracker, artifact_dir=tmp_path
+    )
+
+    runs = tracker.list_runs()
+    assert [r.params["status"] for r in runs] == ["failed", "ok"]
+    assert "typo" in runs[0].params["error"]
+    assert all(r.params["suites"] == "rubric" for r in runs)  # the failed cell is still identified
+
+
+async def test_a_run_records_every_role_and_the_dataset_it_scored(tmp_path) -> None:
+    """A cell that swept SMART said nothing about the rest of the map, so its own record could
+    not reproduce it; and a run's numbers mean nothing without the golden set behind them."""
+    config = SweepConfig.model_validate(
+        {
+            "name": "s",
+            "suites": ["kc_tagging"],
+            "axes": {"smart": [{"provider": "fake", "model": "fake-1"}]},
+            "toggles": {"strict_kc_tagging": [True]},
+        }
+    )
+    tracker = FakeTracker()
+    await run_sweep(config, _fake_base("[]"), tracker, artifact_dir=tmp_path)
+
+    params = tracker.list_runs()[0].params
+    assert {f"{role.value}_model" for role in ModelRole} <= set(params)
+    assert params["applied_kc_tag_min_confidence"] == "0.7"  # the resolution, not the request
+    assert len(params["dataset_kc_tagging"]) == 12
+
+
 async def test_run_sweep_multi_suite_logs_per_suite_metrics_and_artifacts(tmp_path) -> None:
     config = SweepConfig.model_validate(
         {

@@ -11,6 +11,7 @@ monotonicity, convergence, roll-up), and LLM **rubric** grading reliability (run
 live model). The first two are offline + deterministic (CI gate); rubric needs a model.
 """
 
+import hashlib
 import json
 import uuid
 from collections.abc import Sequence
@@ -174,6 +175,18 @@ class EvalReport(BaseModel):
 def _load[CaseT: BaseModel](name: str, model: type[CaseT]) -> list[CaseT]:
     data = json.loads((CASES_DIR / name).read_text())
     return [model.model_validate(row) for row in data]
+
+
+def cases_digest(suite: str) -> str | None:
+    """Short content hash of a suite's golden case file, or None if it has no file.
+
+    A run's numbers only mean something next to the dataset that produced them; without this,
+    editing the golden set silently made old runs incomparable to new ones.
+    """
+    path = CASES_DIR / f"{suite}.json"
+    if not path.is_file():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
 
 
 def load_grading_cases() -> list[GradingCase]:
