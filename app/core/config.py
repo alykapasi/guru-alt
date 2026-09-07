@@ -116,6 +116,23 @@ class Settings(BaseSettings):
     # Default cap on assistant output tokens for a chat turn.
     chat_max_tokens: int = 2048
 
+    # Largest message a learner may send. Rejected by the schema, before anything is paid for.
+    # Generous enough to paste a long question or a code sample; short of "paste a book".
+    chat_max_input_chars: int = 20_000
+
+    # How many prior messages a turn carries into the prompt. Every turn used to forward the
+    # *entire* conversation, so a long-running conversation's cost and context grew without
+    # bound until the provider refused it. Durable facts survive truncation through
+    # app/memory/, which is the product's existing answer to long-conversation continuity.
+    chat_history_max_messages: int = 40
+
+    # Rolling 24h per-learner ceilings, checked before a turn starts. Both are enforced
+    # because neither covers the other: cost is unknown for a model with no price entry (see
+    # app/llm/pricing.py), and tokens say nothing about how expensive a model is. Either
+    # exceeded refuses the turn. 0 disables that ceiling.
+    learner_daily_cost_usd_limit: float = 5.0
+    learner_daily_token_limit: int = 2_000_000
+
     # Max negotiation rounds for the refinement gate before it auto-commits the latest proposal.
     refinement_max_rounds: int = 3
 

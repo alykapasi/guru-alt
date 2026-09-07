@@ -36,10 +36,10 @@ from app.schemas.chat import (
     MessageRead,
 )
 from app.services import agentic as agentic_svc
+from app.services import budget, turn_lock
 from app.services import chat as svc
 from app.services import knowledge as knowledge_svc
 from app.services import refinement as refinement_svc
-from app.services import turn_lock
 from app.services import workflow as workflow_svc
 
 log = structlog.get_logger(__name__)
@@ -134,8 +134,13 @@ async def _dispatch_turn(
 ) -> AsyncIterator[Any]:
     """Pick the flow this turn belongs to and return its (not yet started) event stream."""
     conversation_id = conversation.id
-    history = await svc.list_messages(session, conversation_id)
     settings = get_settings()
+    # The window a turn carries, not the whole transcript — see svc.recent_messages. The gate
+    # branch below asks whether the conversation is *empty*, which this still answers: a
+    # truncated window is never empty.
+    history = await svc.recent_messages(
+        session, conversation_id, limit=settings.chat_history_max_messages
+    )
     workflow_awaiting = await workflow_svc.is_awaiting_reply(
         llm, session, conversation_id, learner_id=learner_id
     )
@@ -236,6 +241,11 @@ async def send_message(
     conversation = await svc.get_conversation(session, conversation_id)
     if conversation is None or conversation.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+
+    try:
+        await budget.require_budget(session, learner.id, get_settings())
+    except budget.BudgetExceeded as exc:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc)) from exc
 
     if not turn_lock.claim(conversation_id):
         raise HTTPException(

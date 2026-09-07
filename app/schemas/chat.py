@@ -52,7 +52,11 @@ class MessageRead(BaseModel):
 
 
 class ChatTurnRequest(BaseModel):
-    content: str = Field(min_length=1)
+    # A maximum as well as a minimum: an unbounded message is a paid call whose size the
+    # learner chooses. Rejected here, before the turn reaches a provider. The bound is a
+    # config value (`chat_max_input_chars`) mirrored as a literal because Pydantic
+    # constraints are class-level; the two are kept in step by test_chat_budget.py.
+    content: str = Field(min_length=1, max_length=20_000)
     # Explicit learner acceptance of the refinement gate's latest proposal. Ignored once a
     # conversation's goal is already committed (or no gate is in progress).
     satisfied: bool = False

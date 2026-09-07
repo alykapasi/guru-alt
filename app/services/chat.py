@@ -124,12 +124,38 @@ async def list_conversations(
 
 
 async def list_messages(session: AsyncSession, conversation_id: uuid.UUID) -> Sequence[Message]:
+    """Every message in a conversation, oldest first (the transcript the client renders).
+
+    ``id`` breaks the tie because ``created_at`` is transaction-start time: two messages
+    written in one transaction carry the *same* timestamp, and ordering on it alone left their
+    order to the planner. Harmless while rendering a whole transcript; not harmless once a
+    window is taken from one end of it.
+    """
     result = await session.scalars(
         select(Message)
         .where(Message.conversation_id == conversation_id)
-        .order_by(Message.created_at)
+        .order_by(Message.created_at, Message.id)
     )
     return result.all()
+
+
+async def recent_messages(
+    session: AsyncSession, conversation_id: uuid.UUID, *, limit: int
+) -> Sequence[Message]:
+    """The last ``limit`` messages, oldest first — the history a *turn* carries.
+
+    Distinct from :func:`list_messages`, which is what the client displays. A turn used to
+    forward the entire conversation, so a long-running one grew its own cost and context
+    without bound until a provider refused it. Durable facts outlive the window through
+    ``app/memory/``; the raw transcript beyond it does not.
+    """
+    result = await session.scalars(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(limit)
+    )
+    return list(reversed(result.all()))
 
 
 async def run_tutor_turn(
