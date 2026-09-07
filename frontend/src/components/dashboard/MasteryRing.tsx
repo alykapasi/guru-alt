@@ -1,17 +1,23 @@
-import { masteryPercent, masteryQualifier } from "../../lib/mastery";
+import { expectedScorePercent, masteryQualifier } from "../../lib/mastery";
 
-/** The dashboard's "mastery progress ring" (design brief: moderate gamification, tied to
- * learning, not time-on-app). */
+/** The dashboard's progress ring (design brief: moderate gamification, tied to learning, not
+ * time-on-app).
+ *
+ * `assessed` is false when nothing has been observed yet: the ring then shows no figure at
+ * all, because the estimate behind it would be the prior rather than a measurement.
+ */
 export function MasteryRing({
   ability,
   uncertainty,
+  assessed = true,
   size = 120,
 }: {
   ability: number;
   uncertainty: number;
+  assessed?: boolean;
   size?: number;
 }) {
-  const percent = masteryPercent(ability);
+  const percent = assessed ? expectedScorePercent(ability) : 0;
   const stroke = 8;
   const radius = (size - stroke) / 2;
   const circumference = 2 * Math.PI * radius;
@@ -41,10 +47,18 @@ export function MasteryRing({
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-h3">{Math.round(percent)}%</span>
-        <span className="text-base-content/50 text-[11px] tracking-wide uppercase">
-          {masteryQualifier(uncertainty)}
-        </span>
+        {assessed ? (
+          <>
+            <span className="text-h3">{Math.round(percent)}%</span>
+            <span className="text-base-content/50 text-[11px] tracking-wide uppercase">
+              {masteryQualifier(uncertainty)}
+            </span>
+          </>
+        ) : (
+          <span className="text-base-content/50 text-[11px] tracking-wide uppercase">
+            not assessed
+          </span>
+        )}
       </div>
     </div>
   );

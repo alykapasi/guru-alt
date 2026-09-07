@@ -59,6 +59,41 @@ async def test_subject_mastery_unseen_kc_is_unmastered_prior(db_session: AsyncSe
     assert kc_read.kc_name == "Protons"
     assert kc_read.ability == 0.0
     assert kc_read.mastered is False
+    # The prior renders as 50%. Saying so is the difference between a number and a claim.
+    assert kc_read.assessed is False
+    assert (result.assessed_kcs, result.total_kcs) == (0, 1)
+    assert (result.topics[0].assessed_kcs, result.topics[0].total_kcs) == (0, 1)
+
+
+async def test_a_component_with_evidence_behind_it_is_marked_assessed(
+    db_session: AsyncSession,
+) -> None:
+    learner, subject, _topic, kc = await _subject_with_kc(db_session)
+    db_session.add(LearnerKCState(learner_id=learner.id, kc_id=kc.id, ability=0.3, uncertainty=0.5))
+    await db_session.flush()
+
+    result = await svc.subject_mastery(db_session, learner.id, subject.id)
+    assert result.topics[0].kcs[0].assessed is True
+    assert (result.assessed_kcs, result.total_kcs) == (1, 1)
+
+
+async def test_coverage_counts_only_the_components_that_were_assessed(
+    db_session: AsyncSession,
+) -> None:
+    """A subject half-assessed must not read the same as one fully assessed."""
+    learner, subject, topic, kc = await _subject_with_kc(db_session)
+    other = KC(topic_id=topic.id, slug=f"k-{uuid.uuid4().hex[:8]}", name="Neutrons")
+    db_session.add(other)
+    await db_session.flush()
+    db_session.add(LearnerKCState(learner_id=learner.id, kc_id=kc.id, ability=0.3, uncertainty=0.5))
+    await db_session.flush()
+
+    result = await svc.subject_mastery(db_session, learner.id, subject.id)
+    assert (result.assessed_kcs, result.total_kcs) == (1, 2)
+    assert {k.kc_name: k.assessed for k in result.topics[0].kcs} == {
+        "Protons": True,
+        "Neutrons": False,
+    }
 
 
 async def test_subject_mastery_flags_mastered_at_every_level(db_session: AsyncSession) -> None:

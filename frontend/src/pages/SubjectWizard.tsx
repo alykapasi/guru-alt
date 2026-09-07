@@ -90,6 +90,7 @@ export function SubjectWizard() {
             </div>
           ) : (
             <GoalStep
+              // Undefined until the server issues it; GoalStep waits rather than sending.
               sessionId={sessionId}
               onGoalCommitted={handleGoalCommitted}
               onBack={() => setStep("materials")}
