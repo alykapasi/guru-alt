@@ -89,7 +89,11 @@ class Message(UUIDPrimaryKeyMixin, Base):
 
 
 class LLMCall(UUIDPrimaryKeyMixin, Base):
-    """Audit log of every LLM call: token usage + estimated cost, tagged by role/model."""
+    """Audit log of every LLM call: token usage + estimated cost, tagged by role/model.
+
+    Written on its own transaction (``app.services.llm_log``), so a business transaction
+    that rolls back after a paid call still leaves the call recorded.
+    """
 
     __tablename__ = "llm_calls"
 
@@ -104,5 +108,7 @@ class LLMCall(UUIDPrimaryKeyMixin, Base):
     model: Mapped[str] = mapped_column(index=True)
     input_tokens: Mapped[int] = mapped_column(default=0)
     output_tokens: Mapped[int] = mapped_column(default=0)
-    cost_usd: Mapped[float] = mapped_column(default=0.0)
+    # NULL = this model has no known price. Distinct from 0.0, which means "ran locally,
+    # cost nothing" — collapsing the two reported unpriced spend as zero.
+    cost_usd: Mapped[float | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)

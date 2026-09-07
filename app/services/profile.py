@@ -116,7 +116,6 @@ async def refresh_profile(
         result, usage = await spec.estimate(context)
         if usage.total_tokens:
             await log_llm_call(
-                session,
                 learner_id=learner_id,
                 role=PROFILE_LLM_ROLE.value,
                 spec=llm.spec(PROFILE_LLM_ROLE),

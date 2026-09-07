@@ -281,7 +281,6 @@ async def _grade(
         )
         if usage.total_tokens:  # an empty response short-circuits with no model call
             await log_llm_call(
-                session,
                 learner_id=learner_id,
                 role=GRADING_ROLE.value,
                 spec=llm.spec(GRADING_ROLE),

@@ -119,7 +119,6 @@ async def generate_lesson_plan(
         selected, usage = await engine.select_objectives(llm, goal, candidates)
         if usage.total_tokens:
             await log_llm_call(
-                session,
                 learner_id=learner_id,
                 role=engine.OBJECTIVE_ROLE.value,
                 spec=llm.spec(engine.OBJECTIVE_ROLE),

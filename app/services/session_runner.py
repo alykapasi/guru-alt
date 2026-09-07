@@ -101,7 +101,6 @@ async def _generate_and_log(
     item, usage = await generator(session, llm, kc)
     if usage.total_tokens:
         await log_llm_call(
-            session,
             learner_id=learner_id,
             role=item_generation.GENERATION_ROLE.value,
             spec=llm.spec(item_generation.GENERATION_ROLE),

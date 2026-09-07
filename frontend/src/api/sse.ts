@@ -32,7 +32,7 @@ export type TurnEvent =
       type: "done";
       message_id: string | null;
       usage: UsageEvent;
-      cost_usd: number;
+      cost_usd: number | null; // null = the model has no known price
       item: ItemEvent | null;
       detail: string;
       citations: Citation[];

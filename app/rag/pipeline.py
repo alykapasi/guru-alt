@@ -97,7 +97,7 @@ async def run(
     # Log any model calls extraction made (vision-OCR); embeddings carry no usage to log.
     for role, usage in ctx.usage_log:
         await log_llm_call(
-            session, learner_id=source.learner_id, role=str(role), spec=llm.spec(role), usage=usage
+            learner_id=source.learner_id, role=str(role), spec=llm.spec(role), usage=usage
         )
 
     vectors = await embed_in_batches(
@@ -158,7 +158,6 @@ async def _tag_chunks(
             session.add(ChunkKC(chunk_id=row.id, kc_id=tag.kc_id, confidence=tag.confidence))
         if usage.input_tokens or usage.output_tokens:
             await log_llm_call(
-                session,
                 learner_id=source.learner_id,
                 role=str(TAGGING_ROLE),
                 spec=llm.spec(TAGGING_ROLE),

@@ -53,10 +53,11 @@ def _cell_params(cell: Cell) -> dict[str, str]:
 
 
 def _cell_metrics(reports: list[harness.EvalReport], cost: CostSummary) -> dict[str, float]:
-    metrics: dict[str, float] = {
-        "cost_usd": cost.cost_usd,
-        "total_tokens": float(cost.total_tokens),
-    }
+    metrics: dict[str, float] = {"total_tokens": float(cost.total_tokens)}
+    # Omitted, not zeroed, when a model in the cell has no known price: the leaderboard ranks a
+    # missing cost last, which is the right answer for a configuration whose cost is unestablished.
+    if cost.cost_usd is not None:
+        metrics["cost_usd"] = cost.cost_usd
     for report in reports:
         metrics[f"{report.suite}_pass_rate"] = report.pass_rate
         if report.mae is not None:

@@ -46,7 +46,6 @@ async def write_back(
     extracted, usage = await extract_memories(llm, to_chat_messages(window))
     if usage.total_tokens:
         await log_llm_call(
-            session,
             learner_id=conversation.learner_id,
             role=EXTRACTION_ROLE.value,
             spec=llm.spec(EXTRACTION_ROLE),

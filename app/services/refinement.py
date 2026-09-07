@@ -14,11 +14,11 @@ from langgraph.types import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.refinement import RefinementState, build_refinement_graph, refinement_config
-from app.llm.pricing import cost_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.models.chat import Conversation
-from app.services.turn_common import TurnEvent, add_message, record_llm_call
+from app.services.llm_log import log_llm_call
+from app.services.turn_common import TurnEvent, add_message
 
 log = structlog.get_logger(__name__)
 
@@ -101,16 +101,12 @@ async def run_refinement_turn(
         await add_message(
             session, conversation.id, ChatRole.ASSISTANT.value, proposal, model=spec.model
         )
-        cost = cost_usd(spec.model, usage)
-        await record_llm_call(
-            session,
+        await log_llm_call(
             learner_id=learner_id,
             conversation_id=conversation.id,
             role=ModelRole.FAST.value,
-            provider=spec.provider,
-            model=spec.model,
+            spec=spec,
             usage=usage,
-            cost_usd=cost,
         )
         await session.commit()
         round_no = snapshot.values["rounds"] + 1

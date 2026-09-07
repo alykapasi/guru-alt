@@ -325,7 +325,7 @@ async def _render_and_cache(
         reading_level=await _reading_level(session, learner_id),
     )
     await log_llm_call(
-        session, learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
+        learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
     )
     render_row = NoteRender(
         note_id=note.id, revision_ordinal=note.revision_ordinal, format=fmt, content_md=content
@@ -397,12 +397,13 @@ async def refresh_note(
         reading_level=await _reading_level(session, learner_id),
     )
     await log_llm_call(
-        session, learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
+        learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
     )
 
     if result is None:
         # Parse failure or learner-atom violation: keep everything, stay stale, retry later.
-        await session.commit()  # persist the cost log
+        # Nothing to commit — the call this paid for is already recorded on its own
+        # transaction, which is the point of accounting living outside this one.
         return await _view(session, learner_id, topic, note)
 
     if note is None:
@@ -465,11 +466,10 @@ async def absorb_edit(
         llm, atoms=note.substrate, previous_render=previous, edited_md=content_md
     )
     await log_llm_call(
-        session, learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
+        learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
     )
     if atoms is None:
-        await session.commit()  # persist the cost log; note untouched
-        return None
+        return None  # note untouched; the paid call is already recorded independently
     # Re-check after the model call: absorb takes seconds, and a refresh can land inside it.
     await session.refresh(note)
     if expected_revision_ordinal is not None and note.revision_ordinal != expected_revision_ordinal:

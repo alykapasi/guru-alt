@@ -11,15 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.agentic import AgenticState, build_agentic_graph
 from app.agent.tools import CitationAccumulator, build_tools
 from app.core.config import get_settings
-from app.llm.pricing import cost_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, ToolCall, Usage
 from app.models.chat import Message
+from app.services.llm_log import log_llm_call
 from app.services.turn_common import (
     TurnEvent,
     add_message,
     extract_citations,
-    record_llm_call,
     to_chat_messages,
 )
 
@@ -115,27 +114,14 @@ async def run_agentic_turn(
         model=spec.model,
         citations=citations,
     )
-    cost = cost_usd(spec.model, usage)
-    await record_llm_call(
-        session,
+    cost = await log_llm_call(
         learner_id=learner_id,
         conversation_id=conversation_id,
         role=ModelRole.SMART.value,
-        provider=spec.provider,
-        model=spec.model,
+        spec=spec,
         usage=usage,
-        cost_usd=cost,
     )
     await session.commit()
-    log.info(
-        "llm.call",
-        role=ModelRole.SMART.value,
-        provider=spec.provider,
-        model=spec.model,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        cost_usd=cost,
-    )
     yield TurnEvent(
         type="done",
         message_id=str(assistant.id),

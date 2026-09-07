@@ -13,7 +13,7 @@ from typing import Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm.types import ChatMessage, ChatRole, Usage
-from app.models.chat import LLMCall, Message
+from app.models.chat import Message
 from app.rag.retrieval import RetrievalHit
 from app.schemas.assessment import ItemRead
 
@@ -88,32 +88,6 @@ def to_chat_messages(history: Sequence[Message]) -> list[ChatMessage]:
     ]
 
 
-async def record_llm_call(
-    session: AsyncSession,
-    *,
-    learner_id: uuid.UUID,
-    conversation_id: uuid.UUID,
-    role: str,
-    provider: str,
-    model: str,
-    usage: Usage,
-    cost_usd: float,
-) -> LLMCall:
-    call = LLMCall(
-        learner_id=learner_id,
-        conversation_id=conversation_id,
-        role=role,
-        provider=provider,
-        model=model,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        cost_usd=cost_usd,
-    )
-    session.add(call)
-    await session.flush()
-    return call
-
-
 @dataclass(frozen=True)
 class TurnEvent:
     """A streamed step of a conversation turn. The router maps these to SSE frames."""
@@ -123,7 +97,7 @@ class TurnEvent:
     detail: str = ""
     message_id: str | None = None
     usage: Usage = field(default_factory=Usage)
-    cost_usd: float = 0.0
+    cost_usd: float | None = None  # None = the model has no known price
     # The session runner's practice item for the plan's active step, if any — set on "done"
     # for subject-scoped conversations only. See app.services.session_runner.next_item.
     item: ItemRead | None = None
