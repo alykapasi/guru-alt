@@ -1,6 +1,6 @@
 # Guru — Running Suggestions and Decisions
 
-Last updated: 2026-09-06
+Last updated: 2026-09-08
 Repository: https://github.com/alykapasi/guru-alt
 Reviewed snapshot: `0d9b7f8abb1c623d0c46f3a53dda210a4790289f`
 
@@ -14,7 +14,7 @@ This is the ongoing record of suggestions, agreed direction, open decisions, and
 - Mark implementation complete only with evidence; record educational validation separately.
 - Priorities below are provisional assistant recommendations, not an agreed implementation schedule.
 - Accepted means the user agrees with the recommendation; detailed designs, sequencing, implementation, and validation remain outstanding.
-- No repository changes have been made as part of this review.
+- The review itself changed no code. The implementation that followed is recorded per item and dated in the update history below (branch `fix/tracker-s54-s38`, PR #16); the reviewed snapshot above is unchanged so findings stay readable against the source they describe.
 
 Statuses: **Agreed direction**, **Accepted**, **Proposed**, **Open**, **Deferred**, **Implemented**, **Validated**, **Rejected**, **Superseded**.
 
@@ -146,11 +146,15 @@ All repository links below are pinned to the reviewed commit.
 
 | 2026-09-06 | S45 implemented (`d84f69c`) on the same branch, after PR #15 (Phase 9c) merged and the branch was rebased onto it. `uv run poe check` green (626 passed, 1 skipped). Note: an unrelated leftover `dev` learner row from earlier live testing caused 8 spurious failures until removed — the suite itself leaves none behind. |
 
+| 2026-09-06 | S13 (`5043fbc`), S34 (`19fd3dc`, `ccd9919`), S35 (`ccd9919`) and S49 (`2af0dbd`, `70bb587`) implemented on the same branch; S58 partially (`36c16e5`) — the suite now derives its own `<db>_test` database, live-model tests became opt-in, and CI gained a frontend build/lint job plus an `alembic check` gate for models drifting from their migrations; the browser/e2e journeys and separate-session concurrency tests S58 also asks for are not written, and its entry lists what is still open. Migrations `0020` (S34) and `0021` (S35). Two defects found while working here and fixed without tracker ids, since neither was a review finding: the ingestion worker died every 5s on an idle queue (`50b0266`), and a single NUL byte failed a whole ingestion (`d938153`). |
+
+| 2026-09-07 | S39 (`997fc5b`), S40 (`74ac7c4`) and S63 (`eb40c83`) implemented on the same branch. Migrations `0022` (S40) and `0023` (S63). S39 and S40 both constrain the same note merge, and S41 (below) later bounded what it may rewrite at all. |
+
 | 2026-09-07 | S48 (`0a94191`, `ed0ad5e`) and S57 (`8949fff`) implemented on the same branch. `uv run poe check` green (702 passed, 4 skipped). Migration `0024` makes `llm_calls.cost_usd` nullable. Added S76: two vector-retrieval tests failed intermittently during this session; traced far enough to rule out my changes as the cause and to identify a plausible mechanism, but not reproduced on demand and not fixed. The gate is therefore green but not yet proven deterministic. |
 
-| 2026-09-08 | S30 (`7f4b06d`), S32 (`fb0f214`), S47 (`72ca7f5`), S41 (`64ed883`), S46 (`75e12f7`) and S50 (`ad34b79`) implemented on the same branch. `uv run poe check` green (733 passed, 4 skipped); `npm run build` and `npm run lint` green. Migration `0025` adds embedding-space identity to chunks and memories. Note for future verification: `npx tsc --noEmit` checks nothing here (solution-style root tsconfig with `"files": []`) — `npm run build` is the frontend type gate.
+| 2026-09-08 | S30 (`7f4b06d`), S32 (`fb0f214`), S47 (`72ca7f5`), S41 (`64ed883`), S46 (`75e12f7`) and S50 (`ad34b79`) implemented on the same branch. `uv run poe check` green (733 passed, 4 skipped); `npm run build` and `npm run lint` green. Migration `0025` adds embedding-space identity to chunks and memories. Note for future verification: `npx tsc --noEmit` checks nothing here (solution-style root tsconfig with `"files": []`) — `npm run build` is the frontend type gate. |
 
-| 2026-09-08 | S76 measured rather than fixed. The hypothesis recorded on 2026-09-07 — filtered-ANN recall — is **disproven**: the scoped vector query never uses the HNSW index at any size tried, because the join to `sources` keeps the planner on an exact `ix_chunks_source_id` path. The flaky tests remain unexplained. What the measurement did surface: exact search costs ~4 µs per chunk owned (185 ms at 45k), the index-reachable query shape is 80× faster at 38–88% recall depending on `ef_search`, `candidates` (50) exceeds the default `ef_search` (40), and the HNSW index is about the size of the table while no query reads it. `poe retrieval-recall` makes all of it repeatable. No production code changed — pricing the recall trade needs a real corpus, not hash-derived vectors.
+| 2026-09-08 | S76 measured rather than fixed. The hypothesis recorded on 2026-09-07 — filtered-ANN recall — is **disproven**: the scoped vector query never uses the HNSW index at any size tried, because the join to `sources` keeps the planner on an exact `ix_chunks_source_id` path. The flaky tests remain unexplained. What the measurement did surface: exact search costs ~4 µs per chunk owned (185 ms at 45k), the index-reachable query shape is 11–116× faster at 44–86% recall depending on `ef_search`, `candidates` (50) exceeds the default `ef_search` (40), and the HNSW index is about the size of the table while no query reads it. `poe retrieval-recall` makes all of it repeatable. No production code changed — pricing the recall trade needs a real corpus, not hash-derived vectors. |
 
 ## Remaining architecture autopsy — source pass
 
@@ -245,7 +249,7 @@ when the checkpointers do (S17).
 
 ### S13 — Distinguish assisted retries from independent demonstrations
 
-**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** First
+**Status:** Implemented (`5043fbc`, branch `fix/tracker-s54-s38`) · **Priority:** First
 
 **Implemented:** Both halves of the gap. The guided-practice workflow now reports the help it gave
 — every round past the first follows a hint on the same problem, so the round count *is* the
@@ -285,7 +289,7 @@ as a *retrieval*, which is a pedagogy call rather than a bug fix. Left open.
 
 ### S34 — Make attempts and turns idempotent and concurrency-safe
 
-**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** First
+**Status:** Implemented (`19fd3dc`, `ccd9919`, branch `fix/tracker-s54-s38`) · **Priority:** First
 
 **Implemented — attempts.** `AnswerSubmit.attempt_id` is an optional idempotency key: a client
 generates one per attempt and reuses it across retries. `answer_item` returns the grade already
@@ -336,7 +340,7 @@ release after success and after a dispatch failure.
 
 ### S35 — Repair derived plans after committed assessments without regrading
 
-**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** High
+**Status:** Implemented (`ccd9919`, branch `fix/tracker-s54-s38`) · **Priority:** High
 
 **Implemented:** The authoritative-event/derived-plan split is kept; what changes is that a failure
 on the derived side can no longer be reported as a failure of the authoritative one. A plan revision
@@ -414,7 +418,7 @@ Software correctness only; no educational validation claimed.
 
 ### S39 — Give note distillation explicit topic and validated concept provenance
 
-**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** First
+**Status:** Implemented (`997fc5b`, branch `fix/tracker-s54-s38`) · **Priority:** First
 
 **Implemented — the merge is told what it is filing.** `distill` now takes a `TopicContext`:
 the topic's name and description, its subject, and the full catalog of its KCs. The prompt said
@@ -450,7 +454,7 @@ the scoping behaviour itself belongs with S59's model-quality gate.
 
 ### S40 — Preserve learner-authored note content and edits faithfully
 
-**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** High
+**Status:** Implemented (`74ac7c4`, branch `fix/tracker-s54-s38`) · **Priority:** High
 
 **Implemented — the guarantee the module claimed is now the guarantee it enforces.**
 `note_distill`'s docstring called learner-atom preservation "the one hard guarantee… rejected in
@@ -641,7 +645,7 @@ single turn can still overshoot; it bounds accumulation, not one turn's cost.
 
 ### S48 — Make model-call accounting complete and independent of business transactions
 
-**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** Before cost decisions
+**Status:** Implemented (`0a94191`, `ed0ad5e`, branch `fix/tracker-s54-s38`) · **Priority:** Before cost decisions
 
 **Implemented — an unpriced model is unknown, not free.** `cost_usd` returned 0.0 for any model
 missing from the price table, so a paid model with no entry was indistinguishable from a locally
@@ -688,7 +692,7 @@ direct coverage in `tests/test_llm_log.py` can.
 
 ### S49 — Make provider compatibility an explicit contract
 
-**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** High
+**Status:** Implemented (`2af0dbd`, `70bb587`, branch `fix/tracker-s54-s38`) · **Priority:** High
 
 **Implemented — tool calls no longer depend on a usage chunk.** `stream_options={"include_usage":
 True}` is an OpenAI *extension*; a compatible endpoint may ignore it. The adapter accumulated
@@ -886,7 +890,7 @@ and wiring it through `run_cell`. Prompt-version identity is not yet recorded.
 
 ### S58 — Expand CI to cover the delivered product and actual failure boundaries
 
-**Status:** Partially implemented (branch `fix/tracker-s54-s38`) · **Priority:** Before release
+**Status:** Partially implemented (`36c16e5`, branch `fix/tracker-s54-s38`) · **Priority:** Before release
 
 **Implemented:** Three gates that were missing entirely.
 
@@ -980,7 +984,7 @@ tests against representative *existing* data rather than only a fresh database.
 
 ### S63 — Keep the full learning goal visible when planning is capped
 
-**Status:** Implemented (branch `fix/tracker-s54-s38`) · **Priority:** High
+**Status:** Implemented (`eb40c83`, branch `fix/tracker-s54-s38`) · **Priority:** High
 
 **Implemented:** The complete objective is now stored separately from the window being taught.
 Generation topologically sorts the goal's prerequisite closure and then sliced it to
@@ -1066,8 +1070,8 @@ is unreachable.
 (145 MB against 151 MB of heap+TOAST at 37,005 rows), and ingestion pays HNSW insert cost on
 every chunk, for an index no query currently reads.
 
-**Deliberately not changed.** Restructuring the query to reach the index is an 80× latency win
-at a recall cost this evidence cannot price, because synthetic vectors are the wrong instrument
+**Deliberately not changed.** Restructuring the query to reach the index buys 11× (at
+`ef_search` 1000) to 116× (at the default 40), at a recall cost this evidence cannot price, because synthetic vectors are the wrong instrument
 for a relevance question. Dropping the index would foreclose that option to save storage we are
 not short of. Both decisions want a real corpus and real relevance judgements.
 
