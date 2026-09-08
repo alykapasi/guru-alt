@@ -1013,6 +1013,10 @@ export interface components {
             subject_id: string | null;
             /** Source Ids */
             source_ids: string[];
+            /** Phase */
+            phase: string;
+            /** Active Item Id */
+            active_item_id: string | null;
             /**
              * Created At
              * Format: date-time

@@ -36,6 +36,11 @@ class ConversationRead(BaseModel):
     goal: str | None
     subject_id: uuid.UUID | None
     source_ids: list[uuid.UUID]
+    # What the conversation is waiting for, and the practice item in play if it is waiting on
+    # one — recorded by the turn that produced the last reply, so a reload restores what the
+    # live stream showed instead of guessing from the transcript's shape (S52).
+    phase: str
+    active_item_id: uuid.UUID | None
     created_at: datetime
 
 

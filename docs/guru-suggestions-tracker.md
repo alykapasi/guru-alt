@@ -887,7 +887,47 @@ if the EMBED model has not changed, and which cannot be recovered from the vecto
 
 ### S52 — Persist conversation phase instead of inferring it from missing goals
 
-**Status:** Proposed · **Priority:** High
+**Status:** Partially implemented (branch `fix/tracker-s36-s42`) · **Priority:** High
+
+**Implemented — the phase is recorded, not inferred.** `Conversation.phase` (migration `0027`)
+is written by the turn that produced the last assistant message, from what actually happened
+rather than from the transcript's shape. The frontend's guess — "no goal committed and the last
+message is from the assistant" — was true of a goal proposal and equally true of an agentic
+reply given before any goal existed, so a tool-using answer was presented to the learner with
+accept/refine buttons under it. The backend always knew which flow ran; it just never said.
+
+**Implemented — two signals, because one is ambiguous.** `awaiting_reply` says the turn ended
+by asking the learner for something instead of answering them, but *both* the refinement gate
+and the practice workflow emit it, for entirely different things. The flow says which. Writing
+this found that the first version of the rule — treat any `awaiting_reply` as a practice item —
+marked every goal proposal as an awaited answer. A test caught it, not review.
+
+**Implemented — an agentic interjection does not un-pause a practice item.** `mode="agentic"`
+is checked *before* a paused workflow, so an agentic turn steps around the item rather than
+answering it, and the next message resumes it. Reporting `chatting` there would have been a
+phase that disagreed with what the very next turn does, so the dispatcher carries whether a
+workflow was paused into the decision.
+
+**Implemented — a refresh restores the item.** `Conversation.active_item_id` holds the item in
+play while the phase is `awaiting_answer`; before this the item existed only inside one SSE
+event, so reloading a paused session showed an empty panel next to a question the learner was
+still expected to answer. The frontend fetches it by id when there is no live stream, and the
+conversations query is now invalidated after *every* turn rather than only on commit — a stale
+cached phase is precisely the bug this replaced.
+
+**Not done — mode switching while a workflow is paused is described, not redesigned.** The
+existing rule (agentic bypasses a paused workflow; every other mode resumes it) is now at
+least *visible*, because the phase keeps saying `awaiting_answer` through the interjection.
+Whether bypassing should be allowed at all is a product question this does not answer.
+
+**Not done — turn-level phase.** S51 asks for pending/failed/cancelled turn states; this is
+conversation-level only. An interrupted stream leaves the previous phase standing, which is
+the safe direction but is not the same as recording that a turn was interrupted.
+
+**Not verified — the frontend behaviour itself.** `npm run build` and `npm run lint` pass and
+the hook now reads `conversation.phase`, but there is no browser test asserting that an
+agentic reply renders without accept/refine buttons. S58 lists browser/e2e journeys as still
+open, and this is one of the things they would cover.
 
 **Evidence:** awaitingGoalAccept treats any last assistant message with no committed goal as a proposal, including an agentic response. Backend modes can bypass refinement. Practice state and outcome remain local to live SSE in the frontend.
 
@@ -895,7 +935,7 @@ if the EMBED model has not changed, and which cannot be recovered from the vecto
 
 **Second-pass check:** An agentic answer is not displayed as a goal proposal; refresh restores active item and completed status; mode switches do not resume the wrong state.
 
-**Code:** [frontend/src/hooks/useChatConversation.ts](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/frontend/src/hooks/useChatConversation.ts), [app/api/v1/chat.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/api/v1/chat.py), [frontend/src/pages/Session.tsx](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/frontend/src/pages/Session.tsx).
+**Code:** [app/api/v1/chat.py](../app/api/v1/chat.py), [app/models/chat.py](../app/models/chat.py), [app/services/chat.py](../app/services/chat.py), [frontend/src/hooks/useChatConversation.ts](../frontend/src/hooks/useChatConversation.ts), [tests/test_conversation_phase.py](../tests/test_conversation_phase.py).
 
 ### S53 — Support technical content rendering and working citations in practice
 

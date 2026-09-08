@@ -18,7 +18,7 @@ from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.memory import retrieval as memory_retrieval
 from app.memory.retrieval import MemoryHit
-from app.models.chat import Conversation, ConversationSource, Message
+from app.models.chat import Conversation, ConversationPhase, ConversationSource, Message
 from app.rag.retrieval import retrieve
 from app.services import session_runner as session_runner_svc
 from app.services.assessment import item_to_read
@@ -286,3 +286,28 @@ async def run_tutor_turn(
         item=item_read,
         citations=citations,
     )
+
+
+async def record_phase(
+    session: AsyncSession,
+    conversation_id: uuid.UUID,
+    phase: ConversationPhase,
+    *,
+    active_item_id: uuid.UUID | None = None,
+) -> None:
+    """Persist what the conversation is waiting for, and which item if it is waiting on one.
+
+    Best-effort: a turn that has already streamed its whole reply must not fail because the
+    bookkeeping write did. A phase that fails to land degrades to the frontend's old
+    behaviour for that one conversation, which is worse than correct but far better than a
+    broken stream.
+    """
+    try:
+        conversation = await session.get(Conversation, conversation_id)
+        if conversation is None:
+            return
+        conversation.phase = phase
+        conversation.active_item_id = active_item_id
+        await session.commit()
+    except Exception:
+        log.warning("chat.phase_not_recorded", conversation_id=str(conversation_id))

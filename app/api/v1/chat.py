@@ -15,6 +15,8 @@ workflow turn.
 import json
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 import structlog
@@ -26,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
 from app.core.config import get_settings
 from app.llm import LLMClient
-from app.models.chat import Conversation
+from app.models.chat import Conversation, ConversationPhase
 from app.models.source import Source
 from app.schemas.chat import (
     ChatTurnRequest,
@@ -124,6 +126,54 @@ async def list_messages(conversation_id: uuid.UUID, session: SessionDep, learner
     return await svc.list_messages(session, conversation_id)
 
 
+class TurnFlow(StrEnum):
+    """Which of the four flows a turn was routed to."""
+
+    REFINEMENT = "refinement"
+    TUTOR = "tutor"
+    AGENTIC = "agentic"
+    WORKFLOW = "workflow"
+
+
+@dataclass(frozen=True)
+class DispatchedTurn:
+    """The chosen flow, its not-yet-started stream, and the state the choice was made against."""
+
+    flow: TurnFlow
+    stream: AsyncIterator[Any]
+    workflow_paused: bool
+
+
+def _phase_after(
+    flow: TurnFlow, *, awaiting_reply: bool, workflow_paused: bool
+) -> ConversationPhase:
+    """What the conversation is waiting for now the turn has ended.
+
+    Two signals, and both are needed. ``awaiting_reply`` says the turn ended by asking the
+    learner for something rather than answering them — but the gate and the workflow both emit
+    it, for entirely different things, so the flow says *what* is being asked for. A tutor or
+    agentic reply asks for nothing, which is exactly the case the frontend's old inference got
+    wrong: it read "no goal, assistant spoke last" as a goal proposal.
+
+    A committing gate turn emits ``committed`` and never ``awaiting_reply`` (see
+    ``app/services/refinement.py``), so commitment needs no separate flag here.
+
+    ``workflow_paused`` covers the one case where this turn's own events are not the whole
+    story: ``mode="agentic"`` is checked before a paused workflow, so an agentic interjection
+    steps *around* a practice item without answering it. The item is still in play afterwards,
+    and the next message resumes it — so reporting CHATTING would be a phase that disagrees
+    with what the very next turn does.
+    """
+    if awaiting_reply:
+        if flow is TurnFlow.WORKFLOW:
+            return ConversationPhase.AWAITING_ANSWER
+        if flow is TurnFlow.REFINEMENT:
+            return ConversationPhase.GOAL_PROPOSED
+    if workflow_paused and flow is not TurnFlow.WORKFLOW:
+        return ConversationPhase.AWAITING_ANSWER
+    return ConversationPhase.CHATTING
+
+
 async def _dispatch_turn(
     session: AsyncSession,
     llm: LLMClient,
@@ -131,8 +181,12 @@ async def _dispatch_turn(
     learner_id: uuid.UUID,
     conversation: Conversation,
     data: ChatTurnRequest,
-) -> AsyncIterator[Any]:
-    """Pick the flow this turn belongs to and return its (not yet started) event stream."""
+) -> DispatchedTurn:
+    """Pick the flow this turn belongs to and return it with its (not yet started) stream.
+
+    The flow is returned rather than inferred later because only here is the choice actually
+    made; downstream, a refinement proposal and a tutor reply are both "an assistant message".
+    """
     conversation_id = conversation.id
     settings = get_settings()
     # The window a turn carries, not the whole transcript — see svc.recent_messages. The gate
@@ -146,81 +200,105 @@ async def _dispatch_turn(
     )
 
     if data.mode == "agentic":
-        return agentic_svc.run_agentic_turn(
-            session,
-            llm,
-            learner_id=learner_id,
-            conversation_id=conversation_id,
-            history=history,
-            user_content=data.content,
-            max_tokens=settings.chat_max_tokens,
-            subject_id=conversation.subject_id,
-            source_ids=conversation.source_ids,
+        return DispatchedTurn(
+            TurnFlow.AGENTIC,
+            workflow_paused=workflow_awaiting,
+            stream=agentic_svc.run_agentic_turn(
+                session,
+                llm,
+                learner_id=learner_id,
+                conversation_id=conversation_id,
+                history=history,
+                user_content=data.content,
+                max_tokens=settings.chat_max_tokens,
+                subject_id=conversation.subject_id,
+                source_ids=conversation.source_ids,
+            ),
         )
     if data.mode == "workflow" or workflow_awaiting:
-        return workflow_svc.run_workflow_turn(
-            session,
-            llm,
-            learner_id=learner_id,
-            conversation=conversation,
-            user_content=data.content,
-            max_tokens=settings.chat_max_tokens,
-            max_rounds=settings.workflow_max_rounds,
-            resume=workflow_awaiting,
-            source_ids=conversation.source_ids,
+        return DispatchedTurn(
+            TurnFlow.WORKFLOW,
+            workflow_paused=workflow_awaiting,
+            stream=workflow_svc.run_workflow_turn(
+                session,
+                llm,
+                learner_id=learner_id,
+                conversation=conversation,
+                user_content=data.content,
+                max_tokens=settings.chat_max_tokens,
+                max_rounds=settings.workflow_max_rounds,
+                resume=workflow_awaiting,
+                source_ids=conversation.source_ids,
+            ),
         )
     if conversation.goal is not None:
-        return svc.run_tutor_turn(
-            session,
-            llm,
-            learner_id=learner_id,
-            conversation_id=conversation_id,
-            history=history,
-            user_content=data.content,
-            max_tokens=settings.chat_max_tokens,
-            goal=conversation.goal,
-            subject_id=conversation.subject_id,
-            source_ids=conversation.source_ids,
+        return DispatchedTurn(
+            TurnFlow.TUTOR,
+            workflow_paused=workflow_awaiting,
+            stream=svc.run_tutor_turn(
+                session,
+                llm,
+                learner_id=learner_id,
+                conversation_id=conversation_id,
+                history=history,
+                user_content=data.content,
+                max_tokens=settings.chat_max_tokens,
+                goal=conversation.goal,
+                subject_id=conversation.subject_id,
+                source_ids=conversation.source_ids,
+            ),
         )
     if await refinement_svc.is_awaiting_reply(llm, conversation_id):
-        return refinement_svc.run_refinement_turn(
-            session,
-            llm,
-            learner_id=learner_id,
-            conversation=conversation,
-            user_content=data.content,
-            satisfied=data.satisfied,
-            max_tokens=settings.chat_max_tokens,
-            max_rounds=settings.refinement_max_rounds,
-            resume=True,
+        return DispatchedTurn(
+            TurnFlow.REFINEMENT,
+            workflow_paused=workflow_awaiting,
+            stream=refinement_svc.run_refinement_turn(
+                session,
+                llm,
+                learner_id=learner_id,
+                conversation=conversation,
+                user_content=data.content,
+                satisfied=data.satisfied,
+                max_tokens=settings.chat_max_tokens,
+                max_rounds=settings.refinement_max_rounds,
+                resume=True,
+            ),
         )
     if not history:
-        return refinement_svc.run_refinement_turn(
-            session,
-            llm,
-            learner_id=learner_id,
-            conversation=conversation,
-            user_content=data.content,
-            satisfied=data.satisfied,
-            max_tokens=settings.chat_max_tokens,
-            max_rounds=settings.refinement_max_rounds,
-            resume=False,
+        return DispatchedTurn(
+            TurnFlow.REFINEMENT,
+            workflow_paused=workflow_awaiting,
+            stream=refinement_svc.run_refinement_turn(
+                session,
+                llm,
+                learner_id=learner_id,
+                conversation=conversation,
+                user_content=data.content,
+                satisfied=data.satisfied,
+                max_tokens=settings.chat_max_tokens,
+                max_rounds=settings.refinement_max_rounds,
+                resume=False,
+            ),
         )
     # Goal never committed, gate not mid-flight, but the conversation already has history —
     # the gate's in-memory checkpoint was lost (e.g. a restart) or this conversation predates
     # the gate. Degrade to plain chat rather than re-asking "what do you want to learn?"
     # mid-conversation.
     log.warning("refinement.gate_state_lost", conversation_id=str(conversation_id))
-    return svc.run_tutor_turn(
-        session,
-        llm,
-        learner_id=learner_id,
-        conversation_id=conversation_id,
-        history=history,
-        user_content=data.content,
-        max_tokens=settings.chat_max_tokens,
-        subject_id=conversation.subject_id,
-        source_ids=conversation.source_ids,
+    return DispatchedTurn(
+        TurnFlow.TUTOR,
+        workflow_paused=workflow_awaiting,
+        stream=svc.run_tutor_turn(
+            session,
+            llm,
+            learner_id=learner_id,
+            conversation_id=conversation_id,
+            history=history,
+            user_content=data.content,
+            max_tokens=settings.chat_max_tokens,
+            subject_id=conversation.subject_id,
+            source_ids=conversation.source_ids,
+        ),
     )
 
 
@@ -252,7 +330,7 @@ async def send_message(
             status.HTTP_409_CONFLICT, "a turn is already in progress for this conversation"
         )
     try:
-        turn = await _dispatch_turn(
+        dispatched = await _dispatch_turn(
             session, llm, learner_id=learner.id, conversation=conversation, data=data
         )
     except Exception:
@@ -260,7 +338,9 @@ async def send_message(
         raise
 
     async def event_stream() -> AsyncIterator[str]:
-        async for ev in turn:
+        awaiting_reply = False
+        active_item: uuid.UUID | None = None
+        async for ev in dispatched.stream:
             if ev.type == "token":
                 yield _sse({"type": "token", "text": ev.text})
             elif ev.type == "error":
@@ -281,6 +361,8 @@ async def send_message(
                     }
                 )
             elif ev.type == "awaiting_reply":
+                awaiting_reply = True
+                active_item = ev.item.id if ev.item else None
                 yield _sse(
                     {
                         "type": "awaiting_reply",
@@ -294,6 +376,19 @@ async def send_message(
                 yield _sse({"type": "committed", "goal": ev.text, "detail": ev.detail})
             elif ev.type == "tool_call":
                 yield _sse({"type": "tool_call", "detail": ev.detail})
+
+        # Record the phase only after the stream drains, so an interrupted turn leaves the
+        # previous phase standing rather than a half-decided one.
+        await svc.record_phase(
+            session,
+            conversation_id,
+            _phase_after(
+                dispatched.flow,
+                awaiting_reply=awaiting_reply,
+                workflow_paused=dispatched.workflow_paused,
+            ),
+            active_item_id=active_item,
+        )
 
     async def guarded_stream() -> AsyncIterator[str]:
         try:
