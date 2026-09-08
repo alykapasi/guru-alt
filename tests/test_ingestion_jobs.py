@@ -221,10 +221,14 @@ async def test_a_source_over_the_chunk_budget_fails_before_embedding(
     assert "chunks, over the" in (failed.error or "")
 
 
-async def test_the_job_deadline_fails_the_source_rather_than_holding_the_worker(
-    db_session: AsyncSession,
-) -> None:
-    """A pathologically slow source must not occupy a worker indefinitely."""
+async def test_the_job_deadline_releases_the_worker(db_session: AsyncSession) -> None:
+    """A pathologically slow source must not occupy a worker indefinitely.
+
+    The deadline hands the source back rather than condemning it: a timeout is usually a
+    statement about the moment (a slow provider), so it is retryable — and ``attempts`` is
+    what stops that from being unbounded. What the deadline guarantees is that the *worker*
+    is released, which is why this asserts on the lease, not on FAILED.
+    """
     store = InMemoryBlobStore()
     source = await _source(db_session, store)
 
@@ -236,9 +240,10 @@ async def test_the_job_deadline_fails_the_source_rather_than_holding_the_worker(
             await asyncio.sleep(3600)
 
         mp.setattr("app.rag.pipeline.run", _never)
-        failed = await _run(
+        timed_out = await _run(
             db_session, store, source.id, settings=Settings(ingest_job_timeout_seconds=0)
         )
 
-    assert failed is not None
-    assert failed.status == SourceStatus.FAILED
+    assert timed_out is not None
+    assert timed_out.status != SourceStatus.PROCESSING
+    assert timed_out.lease_expires_at is None  # the worker is not holding it any more

@@ -73,6 +73,17 @@ class Settings(BaseSettings):
     ingest_max_extracted_chars: int = 20_000_000
     ingest_max_chunks: int = 5_000
 
+    # Reconciliation (S36). A source row is committed before its job is enqueued, so a queue
+    # outage between the two leaves a source nobody will ever process. The sweep re-enqueues
+    # anything stranded that long — PENDING with nothing happening to it, or PROCESSING with a
+    # lapsed lease — and parks what has exhausted its attempts as FAILED, so an abandoned
+    # source is visible rather than sitting in PENDING where nothing would look at it again.
+    # The grace must exceed normal queue latency, or the sweep re-enqueues jobs merely waiting
+    # their turn. Interval 0 disables the worker's background sweep.
+    ingest_reconcile_grace_seconds: int = 300
+    ingest_reconcile_interval_seconds: int = 120
+    ingest_reconcile_batch: int = 100
+
     # Ingestion concurrency/batching (Phase A large-doc speed). Scanned-PDF pages are OCR'd
     # with at most ``ocr_concurrency`` vision calls in flight; chunk embeddings are sent in
     # batches of ``embed_batch_size`` with at most ``embed_concurrency`` batches in flight.

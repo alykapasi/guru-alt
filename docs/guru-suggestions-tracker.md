@@ -363,7 +363,62 @@ not review.
 
 ### S36 — Make database-to-queue delivery recoverable
 
-**Status:** Proposed · **Priority:** Before reliable external use
+**Status:** Implemented (branch `fix/tracker-s36-s42`) · **Priority:** Before reliable external use
+
+**Implemented — the durable dispatch intent is the source row.** A source commits before its
+job is enqueued, and they cannot be one transaction because Redis is not in the database.
+Every scheme that pretends otherwise is really this one with an extra table: something durable
+records the intent, something later notices it was never carried out. `sources` already *is*
+that record — a PENDING row nothing is working on is a dispatch that did not happen — so a
+separate outbox table would have added a table without adding a guarantee. Deliberate choice,
+recorded here so it reads as a decision rather than an omission.
+
+**Implemented — a queue outage no longer loses an upload or fails it.** `dispatch()` reports
+whether the enqueue landed instead of raising. The row is already durable, so the upload
+genuinely succeeded; a 500 would have been a lie that also invites the learner to upload the
+same file again.
+
+**Implemented — reconciliation.** `reconcile_stranded` finds the two ways a source strands,
+which look identical from the outside because in both nothing is happening to it: the enqueue
+never landed, or the worker holding it died (lapsed lease, S37). Both are re-enqueued, which
+is safe precisely because the *claim* decides who runs — a duplicate delivery finds nothing to
+take. The worker runs the sweep on a timer, wrapped so that the one failure it must survive is
+the outage it exists to recover from; `poe reconcile-ingestion` runs it on demand.
+
+Sources that have burned through `ingest_max_attempts` are parked as FAILED rather than swept.
+Left PENDING they would be re-enqueued every tick forever; left as they were they would read
+as pending to the learner indefinitely. The last real error is preserved rather than replaced
+by a generic give-up message.
+
+**Implemented — retry classification, and the distinction it rests on.** A failure is terminal
+when it is a statement about the *source* (no adapter, extracted to nothing, over budget,
+robots forbids the URL, the URL resolves somewhere private) and transient when it is a
+statement about the *moment*. Terminal lands as FAILED; transient goes back to PENDING, which
+is what makes it eligible for redelivery, bounded by `attempts` — and the final attempt is
+recorded as FAILED, because a PENDING source with no attempts left is one nothing will ever
+look at again.
+
+This required splitting `FetchTransportError` out of `FetchError`. Everything else that class
+reported was a permanent fact about a URL; only the wrapped `httpx` failure describes the
+network. Without the split a robots block was retried three times — caught by an existing test
+rather than by review, which is the second time on this branch that the tests found what the
+design did not.
+
+**Implemented — blobs are not orphaned by a failed commit.** `create_source` uploads, then
+commits. If the commit failed the bytes stayed in the store with no row referencing them:
+nothing would ever look for that key again, so it sat there billed and unattributable. The
+upload is now undone on that path, best-effort and never masking the real error.
+
+**Not done — no dead-letter queue, and no operator surface beyond the log.** An abandoned
+source is FAILED with its last error and a learner can retry it (`POST
+/sources/{id}/retry`, 409 while a claim is live). There is no queue-level inspection, no
+bulk requeue, and nothing that surfaces "twelve sources abandoned this hour" other than log
+lines. S60's operational work is where that belongs.
+
+**Not verified — the sweep against a real Redis outage.** The tests simulate the queue by
+raising from the enqueue callable, which proves the *policy* (row survives, sweep re-enqueues,
+still-down queue leaves it for next time). Whether taskiq's Redis client raises where the
+fake does, on every failure mode, is not demonstrated here.
 
 **Evidence:** Source creation commits before enqueue. A queue failure can leave a pending source without a job. Ingestion catches errors, marks FAILED, and returns normally; the task wrapper does not turn that state into a retry decision.
 
@@ -371,7 +426,7 @@ not review.
 
 **Second-pass check:** Simulate Redis failure immediately after upload commit; the same source is eventually processed without duplicate uploads. Transient failures retry and terminal failures remain diagnosable.
 
-**Code:** [app/api/v1/sources.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/api/v1/sources.py), [app/services/ingestion.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/services/ingestion.py), [app/workers/tasks.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/workers/tasks.py).
+**Code:** [app/services/ingestion.py](../app/services/ingestion.py), [app/workers/tasks.py](../app/workers/tasks.py), [app/workers/reconcile.py](../app/workers/reconcile.py), [app/api/v1/sources.py](../app/api/v1/sources.py), [app/rag/fetch.py](../app/rag/fetch.py), [tests/test_ingestion_recovery.py](../tests/test_ingestion_recovery.py).
 
 ### S37 — Give long ingestion jobs visible state, ownership, and resource budgets
 

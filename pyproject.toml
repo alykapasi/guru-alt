@@ -77,6 +77,7 @@ build-calibration-dataset = "python -m tests.eval.datasets"
 retrieval-recall = "python -m tests.eval.retrieval.recall"
 compile-prompt = "python -m tests.eval.prompts.compile"
 prompt-report = "python -m tests.eval.prompts.report"
+reconcile-ingestion = "python -m app.workers.reconcile"
 hooks-install = "pre-commit install"
 hooks = "pre-commit run --all-files"
 check.sequence = ["lint", "type-check", "test"]

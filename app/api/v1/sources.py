@@ -68,7 +68,7 @@ async def upload_source(
         )
     finally:
         tmp_path.unlink(missing_ok=True)
-    await enqueue(source.id)
+    await svc.dispatch(enqueue, source.id)
     return source
 
 
@@ -87,8 +87,34 @@ async def link_source(
         subject_id=data.subject_id,
         topic_id=data.topic_id,
     )
-    await enqueue(source.id)
+    await svc.dispatch(enqueue, source.id)
     return source
+
+
+@router.post(
+    "/sources/{source_id}/retry",
+    response_model=SourceRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def retry_source(
+    source_id: uuid.UUID,
+    session: SessionDep,
+    learner: CurrentLearner,
+    enqueue: IngestionEnqueuerDep,
+):
+    """Re-run ingestion for a finished or failed source.
+
+    A completed source is deliberately not claimable by a job (S37), so re-ingesting one has
+    to be asked for. 409 while a claim is live rather than yanking work in flight.
+    """
+    source = await session.get(Source, source_id)
+    if source is None or source.learner_id != learner.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    reset = await svc.reset_for_reingest(session, source_id)
+    if reset is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "this source is being ingested right now")
+    await svc.dispatch(enqueue, reset.id)
+    return reset
 
 
 @router.get("/sources", response_model=list[SourceRead])

@@ -68,6 +68,17 @@ class RobotsDisallowed(FetchError):
     """robots.txt forbids fetching this URL with our user agent."""
 
 
+class FetchTransportError(FetchError):
+    """The request itself failed — connection refused, reset, timed out.
+
+    Split from ``FetchError`` because every *other* thing that class reports is a permanent
+    fact about the URL: robots forbids it, the scheme is wrong, it resolves somewhere private,
+    it is too big. Those are worth reporting to the learner and never worth retrying. This one
+    is a statement about the moment, and retrying it is exactly right. Ingestion's retry
+    classifier depends on being able to tell the two apart.
+    """
+
+
 def robots_allows(robots_txt: str, user_agent: str, url: str) -> bool:
     """Whether ``robots_txt`` permits ``user_agent`` to fetch ``url`` (pure)."""
     parser = RobotFileParser()
@@ -180,7 +191,7 @@ async def fetch_url(url: str, policy: FetchPolicy) -> FetchResult:
                     data = await _read_bounded(resp, policy.max_bytes, url)
                     content_type = resp.headers.get("content-type", "text/html")
             except httpx.HTTPError as exc:
-                raise FetchError(f"failed to fetch {url}: {exc}") from exc
+                raise FetchTransportError(f"failed to fetch {url}: {exc}") from exc
             return data, content_type.split(";", 1)[0].strip() or "text/html"
     raise FetchError(f"too many redirects fetching {url}")  # pragma: no cover - unreachable
 

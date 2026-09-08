@@ -16,6 +16,8 @@ import asyncio
 import hashlib
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
@@ -27,7 +29,7 @@ from app.llm import LLMClient
 from app.models.source import Source, SourceKind, SourceStatus
 from app.rag import pipeline
 from app.rag.demux import MediaDemuxer
-from app.rag.fetch import Fetcher, default_fetch
+from app.rag.fetch import Fetcher, FetchError, FetchTransportError, default_fetch
 from app.rag.transcription import Transcriber
 from app.storage import DEFAULT_CONTENT_TYPE, BlobStore
 
@@ -84,7 +86,13 @@ async def create_source(
         key = f"{learner_id}/{source.id}/{hashlib.sha256(data).hexdigest()}"
         await blobstore.put(key, data, content_type=ctype)
     source.blob_key = key
-    await session.commit()
+    try:
+        await session.commit()
+    except Exception:
+        # The bytes are already in the store but no row will reference them. Nothing will ever
+        # look for that key again, so it would sit there permanently, billed and unattributable.
+        await _discard_blob(blobstore, key)
+        raise
     return source
 
 
@@ -176,6 +184,112 @@ async def claim_source(
     return await session.get(Source, source_id, populate_existing=True)
 
 
+async def dispatch(enqueue: Callable[[uuid.UUID], Awaitable[None]], source_id: uuid.UUID) -> bool:
+    """Best-effort enqueue of an already-committed source. Returns whether it landed.
+
+    A queue failure here must not fail the caller: the source row is already durable, so the
+    upload genuinely succeeded and telling the learner otherwise would be a lie that also
+    invites them to upload the same file again. Reconciliation collects what never dispatched.
+    """
+    try:
+        await enqueue(source_id)
+        return True
+    except Exception:
+        logger.warning(
+            "could not enqueue ingestion for source %s; left for reconciliation",
+            source_id,
+            exc_info=True,
+        )
+        return False
+
+
+@dataclass(frozen=True)
+class ReconcileReport:
+    """What one reconciliation sweep did. Returned so a caller can log or assert on it."""
+
+    requeued: int
+    abandoned: int
+
+
+async def reconcile_stranded(
+    session: AsyncSession,
+    enqueue: Callable[[uuid.UUID], Awaitable[None]],
+    *,
+    settings: Settings,
+) -> ReconcileReport:
+    """Find sources nobody is working on and put them back in the queue's reach.
+
+    A source row commits *before* its job is enqueued — they cannot be one transaction,
+    because Redis is not in the database. Every scheme that pretends otherwise is really this
+    one with an extra table: something durable records the intent, and something later notices
+    the intent was never carried out. The ``sources`` row already is that durable record, so a
+    separate outbox would add a table without adding a guarantee.
+
+    Two ways a source strands, and both look the same from here — nothing is happening to it:
+    the enqueue never landed (queue outage between commit and dispatch), or the worker holding
+    it died (lapsed lease). Re-enqueueing is safe for both because the claim, not this sweep,
+    decides who actually runs: a duplicate delivery finds nothing to take.
+
+    Sources that have burned through ``ingest_max_attempts`` are parked as FAILED instead.
+    Left PENDING they would be swept forever, and left invisible they would look pending to a
+    learner indefinitely.
+    """
+    exhausted = await session.execute(
+        update(Source)
+        .where(
+            Source.status.in_([SourceStatus.PENDING, SourceStatus.PROCESSING]),
+            Source.attempts >= settings.ingest_max_attempts,
+            or_(Source.lease_expires_at.is_(None), Source.lease_expires_at < func.now()),
+        )
+        .values(
+            status=SourceStatus.FAILED,
+            lease_expires_at=None,
+            error=func.coalesce(
+                Source.error,
+                f"abandoned after {settings.ingest_max_attempts} ingestion attempts",
+            ),
+        )
+        .returning(Source.id)
+    )
+    abandoned = len(exhausted.scalars().all())
+
+    grace = timedelta(seconds=settings.ingest_reconcile_grace_seconds)
+    stranded = (
+        await session.scalars(
+            select(Source.id)
+            .where(
+                Source.attempts < settings.ingest_max_attempts,
+                or_(
+                    and_(
+                        Source.status == SourceStatus.PENDING,
+                        Source.updated_at < func.now() - grace,
+                    ),
+                    and_(
+                        Source.status == SourceStatus.PROCESSING,
+                        Source.lease_expires_at < func.now(),
+                    ),
+                ),
+            )
+            .order_by(Source.updated_at)
+            .limit(settings.ingest_reconcile_batch)
+        )
+    ).all()
+    await session.commit()
+
+    requeued = 0
+    for source_id in stranded:
+        try:
+            await enqueue(source_id)
+            requeued += 1
+        except Exception:
+            # The queue is still down. The row stays exactly as it is, so the next sweep
+            # finds it again — that is the whole point of reconciling from durable state.
+            logger.warning("could not re-enqueue stranded source %s", source_id, exc_info=True)
+    if requeued or abandoned:
+        logger.info("ingestion reconcile: requeued=%d abandoned=%d", requeued, abandoned)
+    return ReconcileReport(requeued=requeued, abandoned=abandoned)
+
+
 async def reset_for_reingest(session: AsyncSession, source_id: uuid.UUID) -> Source | None:
     """Put a finished or failed source back within the claim's reach, clearing its attempts.
 
@@ -244,7 +358,7 @@ async def ingest_source(
             )
     except Exception as exc:
         await session.rollback()  # discard partial chunk writes
-        return await _mark_failed(session, source_id, exc)
+        return await _record_failure(session, source_id, exc, settings=settings)
 
     source.status = SourceStatus.DONE
     source.error = None
@@ -267,8 +381,42 @@ async def _fetch_into_blob(
     await session.flush()
 
 
-async def _mark_failed(session: AsyncSession, source_id: uuid.UUID, exc: Exception) -> Source:
-    """Record the failure and release the claim.
+async def _discard_blob(blobstore: BlobStore, key: str) -> None:
+    """Best-effort delete of a blob nothing will ever reference. Never masks the real error."""
+    try:
+        await blobstore.delete(key)
+    except Exception:
+        logger.warning("could not delete orphaned blob %s", key, exc_info=True)
+
+
+def _is_terminal(exc: Exception) -> bool:
+    """Would running this source again produce anything but the same failure?
+
+    Terminal failures are statements about the *source*: no adapter handles this content type,
+    it extracted to nothing, it is over the per-job budget, robots forbids the URL, the URL
+    resolves somewhere private. Retrying any of those is pure cost, and the learner deserves
+    to be told rather than watched to spin.
+
+    Everything else — a provider timeout, a dropped connection, a transient store error — is a
+    statement about the moment and is worth another attempt. ``FetchTransportError`` is
+    carved out of ``FetchError`` for exactly this reason: it is the one member of that family
+    that describes the network rather than the URL.
+    """
+    if isinstance(exc, FetchTransportError):
+        return False
+    return isinstance(exc, pipeline.IngestionError | FetchError)
+
+
+async def _record_failure(
+    session: AsyncSession, source_id: uuid.UUID, exc: Exception, *, settings: Settings
+) -> Source:
+    """Record the failure, release the claim, and decide whether it is worth another go.
+
+    A **terminal** failure lands as FAILED — a diagnosable end state a learner can be shown.
+    A **transient** one goes back to PENDING, which is what makes it eligible for both a queue
+    redelivery and reconciliation; the already-incremented ``attempts`` is what stops that from
+    being infinite, and the last attempt is recorded as FAILED so an exhausted source is
+    visible rather than parked in PENDING forever where nothing would ever look at it again.
 
     If *this* write also fails — a cancelled query can leave the connection unusable, which is
     exactly the case a job timeout produces — the original exception is re-raised rather than
@@ -280,7 +428,9 @@ async def _mark_failed(session: AsyncSession, source_id: uuid.UUID, exc: Excepti
         source = await session.get(Source, source_id, populate_existing=True)
         if source is None:
             raise LookupError(f"source {source_id} vanished during ingestion")
-        source.status = SourceStatus.FAILED
+        exhausted = source.attempts >= settings.ingest_max_attempts
+        retryable = not _is_terminal(exc) and not exhausted
+        source.status = SourceStatus.PENDING if retryable else SourceStatus.FAILED
         source.error = str(exc)[:1000]
         source.lease_expires_at = None
         await session.commit()
