@@ -1,6 +1,6 @@
 # Guru — Running Suggestions and Decisions
 
-Last updated: 2026-09-08
+Last updated: 2026-09-09
 Repository: https://github.com/alykapasi/guru-alt
 Reviewed snapshot: `0d9b7f8abb1c623d0c46f3a53dda210a4790289f`
 
@@ -147,6 +147,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-07 | S48 (`0a94191`, `ed0ad5e`) and S57 (`8949fff`) implemented on the same branch. `uv run poe check` green (702 passed, 4 skipped). Migration `0024` makes `llm_calls.cost_usd` nullable. Added S76: two vector-retrieval tests failed intermittently during this session; traced far enough to rule out my changes as the cause and to identify a plausible mechanism, but not reproduced on demand and not fixed. The gate is therefore green but not yet proven deterministic. |
 | 2026-09-08 | S30 (`7f4b06d`), S32 (`fb0f214`), S47 (`72ca7f5`), S41 (`64ed883`), S46 (`75e12f7`) and S50 (`ad34b79`) implemented on the same branch. `uv run poe check` green (733 passed, 4 skipped); `npm run build` and `npm run lint` green. Migration `0025` adds embedding-space identity to chunks and memories. Note for future verification: `npx tsc --noEmit` checks nothing here (solution-style root tsconfig with `"files": []`) — `npm run build` is the frontend type gate. |
 | 2026-09-08 | S76 measured rather than fixed. The hypothesis recorded on 2026-09-07 — filtered-ANN recall — is **disproven**: the scoped vector query never uses the HNSW index at any size tried, because the join to `sources` keeps the planner on an exact `ix_chunks_source_id` path. The flaky tests remain unexplained. What the measurement did surface: exact search costs ~4 µs per chunk owned (185 ms at 45k), the index-reachable query shape is 11–116× faster at 44–86% recall depending on `ef_search`, `candidates` (50) exceeds the default `ef_search` (40), and the HNSW index is about the size of the table while no query reads it. `poe retrieval-recall` makes all of it repeatable. No production code changed — pricing the recall trade needs a real corpus, not hash-derived vectors. |
+| 2026-09-09 | Second implementation pass, branch `fix/tracker-s36-s42`: S37 (`2564907`), S36 (`2206fbd`), S52 (`bf0a92c`), S55 (`9b58575`), S43 (`ec8ce48`) and S42 (`875b55e`). `uv run poe check` green (808 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0026`–`0029`. Four of the six are marked *partially* implemented and each entry says what it left: exact global concurrency (S37), a dead-letter surface (S36), turn-level phase (S52), retrieval-side use of KC tags (S55), an incremental recompute and an automatic trigger (S43), and contradiction-based rather than distance-based supersession (S42). Three defects were found by tests rather than by design during this pass — a robots block being retried three times, every goal proposal being marked as an awaited answer, and a reset dimension never being recomputed — which is recorded here because in each case the design read as correct. Also verified the suite no longer depends on a running MinIO: one new test reached the real endpoint and passed locally while failing in CI. |
 
 ## Remaining architecture autopsy — source pass
 
