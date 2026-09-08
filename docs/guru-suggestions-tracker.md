@@ -980,7 +980,54 @@ allowed relative to self-rating, not part of this defect. The whitelist makes it
 
 ### S55 — Validate source scope changes and refresh derived tags
 
-**Status:** Proposed · **Priority:** High
+**Status:** Implemented (branch `fix/tracker-s36-s42`) · **Priority:** High
+
+**Implemented — a source cannot be scoped into a topic from another subject.** Retrieval
+filters on subject *and* topic, so a source whose two disagreed was reachable through neither:
+extracted, chunked, embedded, tagged, indexed, paid for, and invisible. `resolve_source_scope`
+now checks parentage at creation and the upload/link routes turn a conflict into a 422. A
+topic given without a subject is filled in rather than refused — a topic belongs to exactly
+one subject, so there is nothing ambiguous to reject.
+
+**Implemented — reassignment no longer leaves derived data describing the wrong graph.**
+Curriculum commit reassigned a source's `subject_id` and stopped there. Its `topic_id` still
+named a topic in the subject it had just left, and its chunks' KC tags still named KCs from
+that graph — which is worse than having no tags, because it asserts this material teaches
+concepts it was never read against. Both are cleared in the same transaction as the move.
+Sources that did not actually move are skipped, because nothing derived from them went stale.
+
+**Implemented — retagging is a job, not a re-ingest.** Rebuilding tags is a FAST call per
+chunk, so it runs in the background rather than holding the commit request open, and until it
+lands the source simply has no tags — the honest state rather than a wrong one.
+`pipeline.retag_source` redoes only the tagging: the text is already extracted and the
+embeddings are still correct, since moving a source changes which concepts describe it, not
+what it says.
+
+**Implemented — the KC tags finally have a reader.** Ingestion has been paying a model call
+per chunk to write `ChunkKC` rows that *nothing read* — a recurring bill with no consumer.
+`GET /subjects/{id}/coverage` reports, per KC, how many of the learner's own chunks are tagged
+to it, zeros included. It answers "can this KC be taught from what the learner uploaded, or
+only from the model's own knowledge?", which the planner and the learner both want, and a gap
+is the more actionable half of the answer.
+
+Writing the query surfaced a bug the tests caught: joining the ownership filter dropped a KC
+covered only by *another* learner's chunks out of the report entirely, instead of showing it
+as uncovered. It is a correlated subquery now, which keeps every KC unconditionally.
+
+**Deliberately not done — KC tags are not wired into retrieval ranking.** The item offered
+"retrieval/coverage" and coverage is the half that can be justified today. Whether tag
+filtering *improves* what retrieval returns is a relevance question, and S76 is the standing
+lesson here: hash-derived vectors and a synthetic corpus cannot price relevance, so adding an
+unvalidated signal to ranking would be a change nobody could evaluate. Coverage makes the tags
+load-bearing without gambling on that.
+
+**Not done — no backfill, and no scope check on the topics of *existing* sources.** A source
+that already sits in a mismatched topic from before this change stays mismatched until it is
+reassigned; nothing sweeps for them. The validation is at the boundary only.
+
+**Not verified — the retag job end to end.** `retag_source` is tested directly, and dispatch
+is the same best-effort path S36 covers, but no test drives curriculum-commit → queue →
+worker → rebuilt tags as one flow.
 
 **Evidence:** Source subject/topic IDs are not checked for consistent parentage. Onboarding reassigns subject but does not clear a conflicting topic or retag existing chunks. Unscoped ingestion has no candidate KCs; retrieval currently does not use ChunkKC joins despite paying for tags where present.
 
@@ -988,7 +1035,7 @@ allowed relative to self-rating, not part of this defect. The whitelist makes it
 
 **Second-pass check:** A source cannot belong to a topic in a different subject; reassignment leaves consistent tags; tag-based retrieval shows measured value over its baseline.
 
-**Code:** [app/api/v1/sources.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/api/v1/sources.py), [app/services/knowledge.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/services/knowledge.py), [app/learning/kc_tagging.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/learning/kc_tagging.py), [app/rag/retrieval.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/rag/retrieval.py).
+**Code:** [app/services/knowledge.py](../app/services/knowledge.py), [app/services/ingestion.py](../app/services/ingestion.py), [app/rag/pipeline.py](../app/rag/pipeline.py), [app/api/v1/knowledge.py](../app/api/v1/knowledge.py), [tests/test_source_scope.py](../tests/test_source_scope.py).
 
 ### S56 — Make event replay reproduce production learner state
 

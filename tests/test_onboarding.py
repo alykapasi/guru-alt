@@ -343,14 +343,16 @@ async def test_onboarding_end_to_end(db_session: AsyncSession) -> None:
         for t in proposal.topics
     ]
 
-    subject = await create_subject_with_graph(
-        db_session,
-        subject_name=proposal.subject_name,
-        subject_description=proposal.subject_description,
-        topics_data=topics_data,
-        source_ids=None,
-        learner_id=learner.id,
-    )
+    subject = (
+        await create_subject_with_graph(
+            db_session,
+            subject_name=proposal.subject_name,
+            subject_description=proposal.subject_description,
+            topics_data=topics_data,
+            source_ids=None,
+            learner_id=learner.id,
+        )
+    ).subject
 
     assert subject.id is not None, "Subject should have an id"
     assert subject.name == "Linear Algebra"

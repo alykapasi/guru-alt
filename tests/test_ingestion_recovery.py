@@ -78,9 +78,12 @@ async def test_dispatch_reports_failure_instead_of_raising(db_session: AsyncSess
 async def test_upload_still_succeeds_when_the_queue_is_down(
     api_client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    from app.api.deps import get_ingestion_enqueuer
+    from app.api.deps import get_blob_store, get_ingestion_enqueuer
     from app.main import app
 
+    # The object store has to be overridden too: without it this reaches the real S3/MinIO
+    # endpoint, which passes on a laptop running docker compose and fails in CI.
+    app.dependency_overrides[get_blob_store] = lambda: InMemoryBlobStore()
     app.dependency_overrides[get_ingestion_enqueuer] = lambda: _DeadQueue()
     try:
         response = await api_client.post(
@@ -88,6 +91,7 @@ async def test_upload_still_succeeds_when_the_queue_is_down(
         )
     finally:
         app.dependency_overrides.pop(get_ingestion_enqueuer, None)
+        app.dependency_overrides.pop(get_blob_store, None)
 
     assert response.status_code == 202
     assert response.json()["status"] == SourceStatus.PENDING

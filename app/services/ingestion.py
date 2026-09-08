@@ -31,6 +31,7 @@ from app.rag import pipeline
 from app.rag.demux import MediaDemuxer
 from app.rag.fetch import Fetcher, FetchError, FetchTransportError, default_fetch
 from app.rag.transcription import Transcriber
+from app.services import knowledge
 from app.storage import DEFAULT_CONTENT_TYPE, BlobStore
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,9 @@ async def create_source(
     ``data`` is either bytes (small, in-memory) or a local file ``Path`` (large uploads,
     streamed to the store without buffering). Either way the blob key is content-addressed.
     """
+    subject_id, topic_id = await knowledge.resolve_source_scope(
+        session, subject_id=subject_id, topic_id=topic_id
+    )
     source = Source(
         learner_id=learner_id,
         kind=kind,
@@ -105,6 +109,9 @@ async def create_url_source(
     topic_id: uuid.UUID | None = None,
 ) -> Source:
     """Record a pending URL source. The fetch happens in the ingestion job."""
+    subject_id, topic_id = await knowledge.resolve_source_scope(
+        session, subject_id=subject_id, topic_id=topic_id
+    )
     source = Source(
         learner_id=learner_id,
         kind=SourceKind.URL,

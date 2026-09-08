@@ -15,6 +15,8 @@ from taskiq import TaskiqEvents, TaskiqState
 from app.core.config import get_settings
 from app.core.db import SessionFactory
 from app.llm import build_llm_client
+from app.models.source import Source
+from app.rag import pipeline
 from app.rag.demux import build_demuxer
 from app.rag.transcription import build_transcriber
 from app.services import ingestion
@@ -54,6 +56,17 @@ async def _memory_write_back_task(conversation_id: str) -> None:
 async def _enqueue_ingestion(source_id: uuid.UUID) -> None:
     """Enqueue by id, discarding the task handle — reconciliation only needs it dispatched."""
     await ingest_source_task.kiq(str(source_id))
+
+
+async def _retag_source_task(source_id: str) -> None:
+    """Rebuild one source's KC tags after its subject changed (enqueued by S55's reassign)."""
+    settings = get_settings()
+    llm = build_llm_client(settings)
+    async with SessionFactory() as session:
+        source = await session.get(Source, uuid.UUID(source_id))
+        if source is None:
+            return
+        await pipeline.retag_source(session, llm, source, settings=settings)
 
 
 async def _reconcile_once() -> None:
@@ -104,6 +117,7 @@ async def _stop_reconciler(state: TaskiqState) -> None:
 # calling `broker.task(...)` afterward as an ordinary assignment sidesteps this entirely, since
 # beartype's claw hook only rewrites `def`/`async def` nodes, never plain assignment statements.
 ingest_source_task = broker.task(_ingest_source_task)
+retag_source_task = broker.task(_retag_source_task)
 memory_write_back_task = broker.task(_memory_write_back_task)
 
 

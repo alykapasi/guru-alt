@@ -12,7 +12,7 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -209,3 +209,32 @@ async def _tag_chunks(
                 usage=usage,
             )
     await session.flush()
+
+
+async def retag_source(
+    session: AsyncSession,
+    llm: LLMClient,
+    source: Source,
+    *,
+    settings: Settings | None = None,
+) -> int:
+    """Rebuild one source's chunk KC tags against its *current* subject graph. Commits.
+
+    Cheaper than a re-ingest by everything except the tagging itself: the text is already
+    extracted and the embeddings are already correct, since moving a source between subjects
+    changes which concepts describe it and not what it says. Returns the chunk count tagged.
+    """
+    settings = settings or get_settings()
+    rows = list(
+        (
+            await session.scalars(
+                select(Chunk).where(Chunk.source_id == source.id).order_by(Chunk.ordinal)
+            )
+        ).all()
+    )
+    if not rows:
+        return 0
+    await session.execute(delete(ChunkKC).where(ChunkKC.chunk_id.in_([r.id for r in rows])))
+    await _tag_chunks(session, llm, source, rows, settings)
+    await session.commit()
+    return len(rows)

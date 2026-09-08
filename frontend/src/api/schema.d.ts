@@ -44,6 +44,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/subjects/{subject_id}/coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Subject Coverage
+         * @description Which KCs in this subject the learner's own library actually covers.
+         *
+         *     A zero here means the KC can only be taught from the model's own knowledge, with no
+         *     citable passage behind it — which is the more actionable half of the answer.
+         */
+        get: operations["subject_coverage_api_v1_subjects__subject_id__coverage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/subjects/{subject_id}": {
         parameters: {
             query?: never;
@@ -1202,6 +1225,20 @@ export interface components {
          * @enum {string}
          */
         ItemType: "mcq" | "cloze" | "fill_blank" | "short" | "long" | "flashcard";
+        /** KCCoverageRead */
+        KCCoverageRead: {
+            /**
+             * Kc Id
+             * Format: uuid
+             */
+            kc_id: string;
+            /** Slug */
+            slug: string;
+            /** Name */
+            name: string;
+            /** Chunk Count */
+            chunk_count: number;
+        };
         /** KCCreate */
         KCCreate: {
             /** Slug */
@@ -1888,6 +1925,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SubjectRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    subject_coverage_api_v1_subjects__subject_id__coverage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KCCoverageRead"][];
                 };
             };
             /** @description Validation Error */

@@ -8,13 +8,28 @@ the router to translate into 409s.
 import re
 import uuid
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.knowledge import KC, KCEdge, Subject, Topic
-from app.models.source import Source
+from app.models.source import Chunk, ChunkKC, Source
 from app.schemas.knowledge import KCCreate, SubjectCreate, TopicCreate
+
+
+@dataclass(frozen=True)
+class CurriculumResult:
+    """The new subject, plus the sources whose scope this call invalidated.
+
+    The caller needs the second list: moving a source between subjects makes its chunk KC tags
+    describe the wrong graph, and rebuilding them is a model call per chunk — background work,
+    not something to hold a curriculum-creation request open for.
+    """
+
+    subject: Subject
+    reassigned_source_ids: list[uuid.UUID]
+
 
 # --- Helpers ----------------------------------------------------------------
 
@@ -57,7 +72,7 @@ async def create_subject_with_graph(
     topics_data: list[dict],
     source_ids: list[uuid.UUID] | None,
     learner_id: uuid.UUID,
-) -> Subject:
+) -> CurriculumResult:
     """Create a Subject with Topics and KCs in one atomic transaction.
 
     Handles multi-level slug deduplication and reassigns owned sources.
@@ -146,18 +161,67 @@ async def create_subject_with_graph(
             session.add(kc)
         await session.flush()
 
-    # Reassign owned sources to this subject
+    # Reassign owned sources to this subject.
+    reassigned: list[uuid.UUID] = []
     if source_ids:
         for source_id in source_ids:
             source = await session.get(Source, source_id)
-            if source is not None and source.learner_id == learner_id:
-                source.subject_id = subject.id
+            if source is None or source.learner_id != learner_id:
+                continue
+            if source.subject_id == subject.id:
+                continue  # nothing moved, so nothing derived from it is stale
+            source.subject_id = subject.id
+            # A topic from the old subject cannot describe a source in this one, and a source
+            # scoped to a topic outside its subject is retrievable through neither filter.
+            source.topic_id = None
+            reassigned.append(source.id)
+    # Chunk KC tags name KCs in the *previous* graph, so after a move they are worse than
+    # absent: they assert this material teaches concepts it was never read against. Drop them
+    # here, in the same transaction as the move, and let retagging rebuild them.
+    if reassigned:
+        await session.execute(
+            delete(ChunkKC).where(
+                ChunkKC.chunk_id.in_(select(Chunk.id).where(Chunk.source_id.in_(reassigned)))
+            )
+        )
 
     # Single atomic commit
     await session.commit()
     # Refresh to get all relationships populated
     await session.refresh(subject)
-    return subject
+    return CurriculumResult(subject=subject, reassigned_source_ids=reassigned)
+
+
+class ScopeConflict(ValueError):
+    """A source was scoped to a topic that does not belong to its subject."""
+
+
+async def resolve_source_scope(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None,
+    topic_id: uuid.UUID | None,
+) -> tuple[uuid.UUID | None, uuid.UUID | None]:
+    """Check a source's scope is internally consistent, filling in what it implies.
+
+    A topic belongs to exactly one subject, so a source claiming both must agree with the
+    graph. Nothing checked this: a source could sit in a topic from a different subject, and
+    since retrieval filters on *both*, such a source was reachable through neither — indexed,
+    embedded, paid for, and invisible.
+
+    A topic given without a subject is not an error; the topic determines the subject, so it
+    is filled in rather than rejected.
+    """
+    if topic_id is None:
+        return subject_id, None
+    topic = await session.get(Topic, topic_id)
+    if topic is None:
+        raise ScopeConflict(f"topic {topic_id} does not exist")
+    if subject_id is not None and topic.subject_id != subject_id:
+        raise ScopeConflict(
+            f"topic {topic_id} belongs to subject {topic.subject_id}, not {subject_id}"
+        )
+    return topic.subject_id, topic_id
 
 
 async def list_subjects(session: AsyncSession) -> Sequence[Subject]:
@@ -292,3 +356,53 @@ async def subjects_for_kcs(session: AsyncSession, kc_ids: Iterable[uuid.UUID]) -
         .distinct()
     )
     return set(result.all())
+
+
+@dataclass(frozen=True)
+class KCCoverage:
+    """How much of a learner's own library is tagged to one KC."""
+
+    kc_id: uuid.UUID
+    slug: str
+    name: str
+    chunk_count: int
+
+
+async def kc_coverage(
+    session: AsyncSession, *, learner_id: uuid.UUID, subject_id: uuid.UUID
+) -> list[KCCoverage]:
+    """Per-KC count of the learner's chunks tagged to it, zeros included.
+
+    Ingestion pays a FAST model call per chunk to write ``ChunkKC`` rows, and until this
+    nothing read them — the tags were a recurring bill with no consumer (S55). This is the
+    cheapest honest consumer: it answers "can this KC be taught from what the learner actually
+    uploaded, or only from the model's own knowledge?", which is a question the planner and
+    the learner both have, and it does it without letting an unvalidated signal touch
+    retrieval ranking. Whether tags *improve retrieval* is a separate question that needs a
+    real corpus to answer, and is deliberately not assumed here.
+
+    Zero-coverage KCs are kept: a gap in the library is the more actionable half of the answer.
+    """
+    # A correlated subquery rather than a chain of outer joins: with joins, a KC covered only
+    # by *another* learner's chunks produced a row that the ownership filter then removed,
+    # taking the KC out of the report entirely instead of showing it as uncovered. Counting
+    # per KC keeps every KC unconditionally, which is the whole point.
+    covered = (
+        select(func.count(func.distinct(Chunk.id)))
+        .select_from(ChunkKC)
+        .join(Chunk, Chunk.id == ChunkKC.chunk_id)
+        .join(Source, Source.id == Chunk.source_id)
+        .where(ChunkKC.kc_id == KC.id, Source.learner_id == learner_id)
+        .correlate(KC)
+        .scalar_subquery()
+    )
+    rows = await session.execute(
+        select(KC.id, KC.slug, KC.name, covered)
+        .join(Topic, KC.topic_id == Topic.id)
+        .where(Topic.subject_id == subject_id)
+        .order_by(KC.slug)
+    )
+    return [
+        KCCoverage(kc_id=kc_id, slug=slug, name=name, chunk_count=count)
+        for kc_id, slug, name, count in rows.all()
+    ]

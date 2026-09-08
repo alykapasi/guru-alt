@@ -74,6 +74,22 @@ def get_ingestion_enqueuer() -> IngestionEnqueuer:
 
 IngestionEnqueuerDep = Annotated[IngestionEnqueuer, Depends(get_ingestion_enqueuer)]
 
+RetagEnqueuer = Callable[[uuid.UUID], Awaitable[None]]
+
+
+async def _enqueue_retag(source_id: uuid.UUID) -> None:
+    from app.workers.tasks import retag_source_task  # lazy: avoids an import cycle
+
+    await retag_source_task.kiq(str(source_id))
+
+
+def get_retag_enqueuer() -> RetagEnqueuer:
+    """Returns the callable that queues a KC-retag job. Overridden in tests."""
+    return _enqueue_retag
+
+
+RetagEnqueuerDep = Annotated[RetagEnqueuer, Depends(get_retag_enqueuer)]
+
 MemoryWriteBackEnqueuer = Callable[[uuid.UUID], Awaitable[None]]
 
 
