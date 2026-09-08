@@ -86,6 +86,7 @@ async def test_ingest_image_ocrs_and_logs_cost(db_session: AsyncSession) -> None
     result = await ingestion.ingest_source(
         db_session, store, fake_llm_client("transcribed handwriting"), source.id
     )
+    assert result is not None  # the source was claimable
     assert result.status == SourceStatus.DONE
 
     chunks = (await db_session.scalars(select(Chunk).where(Chunk.source_id == source.id))).all()

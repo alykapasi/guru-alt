@@ -7,6 +7,7 @@ retrieval. The raw bytes live in object storage (``blob_key``); the DB holds onl
 """
 
 import uuid
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
@@ -40,6 +41,11 @@ class Source(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """One ingestible artifact (a file or a URL) and its ingestion status."""
 
     __tablename__ = "sources"
+    __table_args__ = (
+        # Reconciliation scans "what is claimable / what has been abandoned" — both are a
+        # status plus a lease comparison, so they belong in one index.
+        Index("ix_sources_status_lease", "status", "lease_expires_at"),
+    )
 
     learner_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("learners.id", ondelete="CASCADE"), index=True
@@ -58,6 +64,12 @@ class Source(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("topics.id", ondelete="SET NULL"), index=True, default=None
     )
     meta: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # How many times ingestion has been *claimed* for this source. Bounded, so a source that
+    # crashes its worker every time is eventually parked as FAILED instead of cycling forever.
+    attempts: Mapped[int] = mapped_column(default=0)
+    # When the current claim lapses. A worker that dies mid-job leaves PROCESSING behind with
+    # no one working on it; the lease is what makes that state distinguishable from progress.
+    lease_expires_at: Mapped[datetime | None] = mapped_column(default=None)
 
     chunks: Mapped[list["Chunk"]] = relationship(
         back_populates="source", cascade="all, delete-orphan"

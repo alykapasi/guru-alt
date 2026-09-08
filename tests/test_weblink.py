@@ -100,6 +100,7 @@ async def test_url_ingest_fetches_extracts_and_traces(db_session: AsyncSession) 
     result = await ingestion.ingest_source(
         db_session, store, fake_llm_client(), source.id, fetch=_fake_fetch
     )
+    assert result is not None  # the source was claimable
     assert result.status == SourceStatus.DONE
     assert result.content_type == "text/html"
     assert result.blob_key is not None  # fetched page was stored
@@ -121,6 +122,7 @@ async def test_url_ingest_robots_blocked_fails(db_session: AsyncSession) -> None
     result = await ingestion.ingest_source(
         db_session, store, fake_llm_client(), source.id, fetch=_blocked_fetch
     )
+    assert result is not None  # the source was claimable
     assert result.status == SourceStatus.FAILED
     assert "robots" in (result.error or "").lower()
     assert result.blob_key is None

@@ -194,6 +194,7 @@ async def test_ingest_pdf_records_page_provenance(db_session: AsyncSession) -> N
         data=data,
     )
     result = await ingestion.ingest_source(db_session, store, fake_llm_client(), source.id)
+    assert result is not None  # the source was claimable
     assert result.status == SourceStatus.DONE
 
     chunks = (
@@ -263,6 +264,7 @@ async def test_ingest_scanned_pdf_records_ocr_provenance(db_session: AsyncSessio
     result = await ingestion.ingest_source(
         db_session, store, fake_llm_client("scanned page text"), source.id
     )
+    assert result is not None  # the source was claimable
     assert result.status == SourceStatus.DONE
 
     chunks = (
@@ -387,6 +389,7 @@ async def test_ingest_epub_records_chapter_provenance(db_session: AsyncSession) 
         data=_epub([("Intro", "Welcome to the book."), ("Body", "The main material here.")]),
     )
     result = await ingestion.ingest_source(db_session, store, fake_llm_client(), source.id)
+    assert result is not None  # the source was claimable
     assert result.status == SourceStatus.DONE
 
     chunks = (

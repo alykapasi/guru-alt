@@ -375,7 +375,63 @@ not review.
 
 ### S37 — Give long ingestion jobs visible state, ownership, and resource budgets
 
-**Status:** Proposed · **Priority:** Before reliable external use
+**Status:** Partially implemented (branch `fix/tracker-s36-s42`) · **Priority:** Before reliable external use
+
+**Implemented — the job is claimed, not assumed.** `PROCESSING` was flushed and never
+committed, so it was invisible to every other session until the job that set it finished — a
+status nobody could read, describing work nobody else could see. `claim_source` now takes the
+source in one atomic `UPDATE ... RETURNING` that commits *before* any work starts. A second
+delivery of the same job comes away with `None` and does nothing, which is the point: a
+duplicate no longer re-runs the extraction and re-pays for the embeddings.
+
+A consequence worth stating plainly: a DONE source is no longer claimable, so re-ingesting one
+is now an explicit act (`reset_for_reingest`) rather than something a repeated message can
+cause. Two tests were changed to say so.
+
+**Implemented — an expired lease is what tells you the worker died.** `PROCESSING` alone
+cannot distinguish a slow job from a dead one. The claim carries `lease_expires_at`, and the
+lease is *derived* as `ingest_job_timeout_seconds + ingest_lease_grace_seconds` rather than
+configured separately, so it strictly dominates the job's own deadline. That equivalence is
+load-bearing: a job that is still running cannot have a lapsed lease, so a lapsed lease means
+recovery is safe rather than a race with live work. It also removes any need to renew a lease
+mid-job — renewal has to commit, and the only transaction available to commit is the one
+holding the job's half-written chunks.
+
+`attempts` bounds re-claiming, so a source that kills its worker every time is parked rather
+than cycling forever. Both statuses release the lease on the way out.
+
+**Implemented — the failure path is allowed to fail.** A cancelled query can leave the
+connection unusable, which is exactly what a job timeout produces, so `_mark_failed` may not
+be able to record anything. It now re-raises the original exception rather than replacing it
+with the bookkeeping error; the source stays `PROCESSING` with a lease about to lapse, and
+recovery collects it. The lease is the backstop that makes this acceptable.
+
+**Implemented — budgets on the work, not just the bytes.** `max_upload_bytes` (1 GiB) bounds
+what arrives and nothing about what it expands into: a modest scanned PDF becomes millions of
+OCR'd characters and thousands of embed calls, and it is those that cost money and hold the
+worker. `ingest_max_extracted_chars` is checked after extraction and before chunking;
+`ingest_max_chunks` after chunking and before embedding — each guards the expensive step that
+follows it. The whole job additionally runs under `asyncio.timeout`.
+
+**Not done — global concurrency is a soft cap, and says so.** `ingest_max_concurrent_jobs` is
+enforced by a subquery inside the claim's own `UPDATE`, which is much tighter than
+read-then-write but still not a semaphore: under READ COMMITTED two claims racing can both see
+room and both take it. It bounds runaway concurrency; it does not guarantee a ceiling. Exact
+enforcement needs advisory locks over a fixed slot set, held on a dedicated connection for the
+job's lifetime — worth building when the cap has to be a guarantee rather than a guard.
+
+**Not done — cost budgets, stage checkpoints, and long work outside the transaction.** There
+is still no per-job *spend* limit (the character and chunk caps are proxies for it, not the
+thing itself), no resumable stage checkpointing, and extraction and model calls still run
+inside the job's transaction — the claim is committed separately, but the pipeline's own work
+is not chunked into short transactions. What changed is that a job holding a transaction open
+is now bounded and recoverable, not that it stopped holding one.
+
+**Not verified — real cross-connection concurrency.** The suite's savepoint-joined session
+cannot run two workers (S58 lists this as still open). The tests prove the claim's *logic* —
+second claim empty, expired lease reclaimable, attempts bounded, cap refused — on one
+connection. That the atomic `UPDATE` also serialises across connections is a property of
+Postgres, not of anything demonstrated here.
 
 **Evidence:** PROCESSING is flushed but not committed until completion, so other sessions cannot reliably observe it. Long extraction/model work runs inside the transaction. There is no explicit job claim/lease preventing duplicate processing. A 1 GiB byte cap does not bound pages, decoded media, chunks, model calls, or total spend.
 
@@ -383,7 +439,7 @@ not review.
 
 **Second-pass check:** Polling sees progress; killed jobs are recovered; duplicate deliveries do not run the same work concurrently; adversarially large documents hit explicit resource limits.
 
-**Code:** [app/services/ingestion.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/services/ingestion.py), [app/rag/pipeline.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/rag/pipeline.py), [app/workers/broker.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/workers/broker.py), [app/core/config.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/core/config.py).
+**Code:** [app/services/ingestion.py](../app/services/ingestion.py), [app/rag/pipeline.py](../app/rag/pipeline.py), [app/models/source.py](../app/models/source.py), [app/core/config.py](../app/core/config.py), [tests/test_ingestion_jobs.py](../tests/test_ingestion_jobs.py).
 
 ### S38 — Fix note catch-up cursors so activity cannot be skipped
 

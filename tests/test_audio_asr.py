@@ -96,6 +96,7 @@ async def test_ingest_audio_records_timestamp_provenance(db_session: AsyncSessio
     result = await ingestion.ingest_source(
         db_session, store, fake_llm_client(), source.id, transcriber=transcriber
     )
+    assert result is not None  # the source was claimable
     assert result.status == SourceStatus.DONE
 
     chunks = (

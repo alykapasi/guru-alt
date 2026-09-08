@@ -4,14 +4,25 @@
 ``{learner_id}/{source_id}/{sha256}`` — learner-scoped + content-addressed). ``ingest_source``
 drives PENDING → PROCESSING → DONE|FAILED, replacing the source's chunks atomically; on any
 error it rolls back the partial write and records the failure.
+
+The status machine is **claimed, not assumed** (S37). A job takes the source with one atomic
+UPDATE that commits before any work starts, so PROCESSING is observable by other sessions
+while it means something, and a duplicate delivery of the same job finds nothing to claim
+instead of running the same extraction twice. The claim carries a lease; an expired lease is
+the only evidence that distinguishes a dead worker from a slow one.
 """
 
+import asyncio
 import hashlib
+import logging
 import uuid
+from datetime import timedelta
 from pathlib import Path
 
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings, get_settings
 from app.llm import LLMClient
 from app.models.source import Source, SourceKind, SourceStatus
 from app.rag import pipeline
@@ -19,6 +30,8 @@ from app.rag.demux import MediaDemuxer
 from app.rag.fetch import Fetcher, default_fetch
 from app.rag.transcription import Transcriber
 from app.storage import DEFAULT_CONTENT_TYPE, BlobStore
+
+logger = logging.getLogger(__name__)
 
 _HASH_CHUNK = 1024 * 1024  # 1 MiB — stream large files past the hasher without buffering them
 
@@ -99,6 +112,92 @@ async def create_url_source(
     return source
 
 
+def lease_seconds(settings: Settings) -> int:
+    """How long a claim is honoured. Strictly longer than the job's own deadline."""
+    return settings.ingest_job_timeout_seconds + settings.ingest_lease_grace_seconds
+
+
+async def claim_source(
+    session: AsyncSession, source_id: uuid.UUID, *, settings: Settings
+) -> Source | None:
+    """Atomically take ownership of one source's ingestion, committing the claim.
+
+    Returns the claimed source, or ``None`` when there is nothing for this job to do — the
+    source is already DONE, someone else holds a live lease, it has burned through
+    ``ingest_max_attempts``, or the concurrency cap is full. ``None`` is not an error: a
+    duplicate delivery of an already-finished job is the *expected* case, not a failure.
+
+    Claimable means PENDING, or PROCESSING with a lapsed lease. Since the lease outlives the
+    job timeout by construction, a lapsed lease can only mean the worker died — so re-claiming
+    it is recovery, not a race with a running job.
+
+    ``ingest_max_concurrent_jobs`` is enforced by a subquery inside this same UPDATE, which is
+    tighter than a read-then-write but still a **soft** cap: under READ COMMITTED two claims
+    racing can both see room and both take it. It bounds runaway concurrency; it is not a
+    semaphore. An exact one needs advisory locks over a fixed slot set, held on a dedicated
+    connection for the job's lifetime — worth doing when the cap has to be a guarantee.
+    """
+    lease = timedelta(seconds=lease_seconds(settings))
+    live_jobs = (
+        select(func.count())
+        .select_from(Source)
+        .where(Source.status == SourceStatus.PROCESSING, Source.lease_expires_at > func.now())
+        .scalar_subquery()
+    )
+    claimed = await session.execute(
+        update(Source)
+        .where(
+            Source.id == source_id,
+            or_(
+                Source.status == SourceStatus.PENDING,
+                and_(
+                    Source.status == SourceStatus.PROCESSING,
+                    Source.lease_expires_at < func.now(),
+                ),
+            ),
+            Source.attempts < settings.ingest_max_attempts,
+            live_jobs < settings.ingest_max_concurrent_jobs,
+        )
+        .values(
+            status=SourceStatus.PROCESSING,
+            attempts=Source.attempts + 1,
+            lease_expires_at=func.now() + lease,
+            error=None,
+        )
+        .returning(Source.id)
+    )
+    if claimed.scalar_one_or_none() is None:
+        # Commit, not rollback: the UPDATE matched nothing so there is no work to undo, and
+        # rollback expires every object the caller has loaded — a failed claim must not
+        # invalidate the session of whoever asked.
+        await session.commit()
+        return None
+    await session.commit()  # PROCESSING is only meaningful to other sessions once committed
+    return await session.get(Source, source_id, populate_existing=True)
+
+
+async def reset_for_reingest(session: AsyncSession, source_id: uuid.UUID) -> Source | None:
+    """Put a finished or failed source back within the claim's reach, clearing its attempts.
+
+    A DONE source is deliberately *not* claimable — that is what makes a duplicate job
+    delivery free. Re-ingesting one is therefore an explicit act, not something a repeated
+    message can cause. Refuses a source with a live claim, so this cannot yank a running job.
+    """
+    source = await session.get(Source, source_id, populate_existing=True)
+    if source is None:
+        return None
+    if source.status == SourceStatus.PROCESSING and source.lease_expires_at is not None:
+        live = await session.scalar(select(func.now() < source.lease_expires_at))
+        if live:
+            return None
+    source.status = SourceStatus.PENDING
+    source.attempts = 0
+    source.error = None
+    source.lease_expires_at = None
+    await session.commit()
+    return source
+
+
 async def ingest_source(
     session: AsyncSession,
     blobstore: BlobStore,
@@ -108,32 +207,48 @@ async def ingest_source(
     transcriber: Transcriber | None = None,
     demuxer: MediaDemuxer | None = None,
     fetch: Fetcher = default_fetch,
-) -> Source:
-    """Run the pipeline for ``source_id``, recording DONE or FAILED.
+    settings: Settings | None = None,
+) -> Source | None:
+    """Claim ``source_id`` and run the pipeline, recording DONE or FAILED.
+
+    Returns ``None`` without doing anything if the source is not claimable (see
+    ``claim_source``) — the caller must treat that as success, not as work to retry.
 
     For an un-fetched URL source, fetch the page (robots-aware) into the blob store first;
     a re-ingest reuses the stored bytes rather than re-hitting the URL. ``transcriber`` (ASR)
     and ``demuxer`` (video → audio track + keyframes) are used by the media path — built by the
     worker; None when no audio/video is expected.
-    """
-    source = await session.get(Source, source_id)
-    if source is None:
-        raise LookupError(f"source {source_id} not found")
 
-    source.status = SourceStatus.PROCESSING
-    await session.flush()
+    The whole job runs under a wall-clock deadline. Without one, a source that makes the
+    pipeline pathologically slow (a huge scanned PDF, an unresponsive model) occupies a worker
+    indefinitely, and no byte cap on the upload bounds that — the cost is in what the bytes
+    expand into.
+    """
+    settings = settings or get_settings()
+    source = await claim_source(session, source_id, settings=settings)
+    if source is None:
+        return None
+
     try:
-        if source.kind == SourceKind.URL and not source.blob_key:
-            await _fetch_into_blob(session, blobstore, source, fetch)
-        count = await pipeline.run(
-            session, blobstore, llm, source, transcriber=transcriber, demuxer=demuxer
-        )
+        async with asyncio.timeout(settings.ingest_job_timeout_seconds):
+            if source.kind == SourceKind.URL and not source.blob_key:
+                await _fetch_into_blob(session, blobstore, source, fetch)
+            count = await pipeline.run(
+                session,
+                blobstore,
+                llm,
+                source,
+                transcriber=transcriber,
+                demuxer=demuxer,
+                settings=settings,
+            )
     except Exception as exc:
-        await session.rollback()  # discard partial chunk writes + the PROCESSING flag
+        await session.rollback()  # discard partial chunk writes
         return await _mark_failed(session, source_id, exc)
 
     source.status = SourceStatus.DONE
     source.error = None
+    source.lease_expires_at = None  # done: the row is nobody's job any more
     source.meta = {**source.meta, "chunk_count": count}
     await session.commit()
     return source
@@ -153,10 +268,25 @@ async def _fetch_into_blob(
 
 
 async def _mark_failed(session: AsyncSession, source_id: uuid.UUID, exc: Exception) -> Source:
-    source = await session.get(Source, source_id)
-    if source is None:
-        raise LookupError(f"source {source_id} vanished during ingestion")
-    source.status = SourceStatus.FAILED
-    source.error = str(exc)[:1000]
-    await session.commit()
-    return source
+    """Record the failure and release the claim.
+
+    If *this* write also fails — a cancelled query can leave the connection unusable, which is
+    exactly the case a job timeout produces — the original exception is re-raised rather than
+    replaced by the bookkeeping error. The source then stays PROCESSING with a lease that
+    lapses shortly after, and reconciliation picks it up: the lease is the backstop precisely
+    so the failure path is allowed to fail.
+    """
+    try:
+        source = await session.get(Source, source_id, populate_existing=True)
+        if source is None:
+            raise LookupError(f"source {source_id} vanished during ingestion")
+        source.status = SourceStatus.FAILED
+        source.error = str(exc)[:1000]
+        source.lease_expires_at = None
+        await session.commit()
+        return source
+    except LookupError:
+        raise
+    except Exception:
+        logger.exception("could not record ingestion failure for source %s", source_id)
+        raise exc from None

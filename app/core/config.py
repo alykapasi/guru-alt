@@ -52,6 +52,27 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 1_073_741_824
     ingest_tmp_dir: str | None = None
 
+    # Ingestion job control (S37). ``max_upload_bytes`` bounds the bytes that arrive; it bounds
+    # nothing about what they *expand into* — a 40 MB PDF can be tens of millions of characters
+    # and thousands of embed calls. These cap the work itself, per job.
+    #
+    # A claim's lease is derived as ``ingest_job_timeout_seconds + ingest_lease_grace_seconds``
+    # rather than configured separately, so the lease *strictly dominates* the job's own
+    # deadline: a job still running cannot have an expired lease, and an expired lease
+    # therefore means the worker died. That removes any need to renew a lease mid-job —
+    # renewal would have to commit, and the only transaction available to commit is the one
+    # holding the job's half-written chunks. The grace covers the gap between the timeout
+    # firing and the FAILED status landing.
+    #
+    # ``ingest_max_attempts`` stops a source that kills its worker every time from cycling
+    # forever. ``ingest_max_concurrent_jobs`` is a *soft* cap — see claim_source.
+    ingest_job_timeout_seconds: int = 3600
+    ingest_lease_grace_seconds: int = 120
+    ingest_max_attempts: int = 3
+    ingest_max_concurrent_jobs: int = 4
+    ingest_max_extracted_chars: int = 20_000_000
+    ingest_max_chunks: int = 5_000
+
     # Ingestion concurrency/batching (Phase A large-doc speed). Scanned-PDF pages are OCR'd
     # with at most ``ocr_concurrency`` vision calls in flight; chunk embeddings are sent in
     # batches of ``embed_batch_size`` with at most ``embed_concurrency`` batches in flight.
