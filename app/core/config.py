@@ -197,6 +197,16 @@ class Settings(BaseSettings):
     # memory is at or below this threshold. How many memories a tutor turn retrieves for context.
     memory_extraction_window: int = 20
     memory_dedup_max_distance: float = 0.05
+    # Relevance floor for memory retrieval (S42). Without one, `limit` guarantees the nearest
+    # memories come back whether or not any of them are about the question — a learner with
+    # five memories had all five injected into every turn regardless of topic.
+    #
+    # 1.0 in cosine distance is orthogonality, so this excludes only memories that are
+    # *unrelated or contrary* to the query, not merely weak matches. That is deliberately
+    # conservative: a tighter floor is a relevance judgement, and the only instrument available
+    # here is hash-derived test vectors, which cannot make one (the same reason S76 declined to
+    # reshape retrieval). Tighten it against a real corpus, not against this default.
+    memory_retrieval_max_distance: float = 1.0
     memory_retrieval_limit: int = 5
 
     # Max tool-execution rounds per agentic turn (Phase 6) — bounds worst-case LLM calls

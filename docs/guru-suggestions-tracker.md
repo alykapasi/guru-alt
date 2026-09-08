@@ -625,7 +625,56 @@ plainer, complete, always available. A provider outage no longer costs the revis
 
 ### S42 — Make memory correction and forgetting durable
 
-**Status:** Proposed · **Priority:** Before trusted longitudinal use
+**Status:** Partially implemented (branch `fix/tracker-s36-s42`) · **Priority:** Before trusted longitudinal use
+
+**Implemented — a correction now wins, instead of losing to what it corrects.** Extraction
+treated a near-duplicate as a duplicate and skipped it. So a learner who said "actually, I
+study evenings now" had that discarded and the *stale* entry kept — precisely backwards, and
+silent. The three cases are now distinguished: identical content is skipped, different content
+supersedes, and the superseded row is kept with `superseded_by_id` pointing at its replacement,
+so a correction is on the record as a correction rather than a bare overwrite.
+
+**Implemented — a deleted memory stays deleted.** Deletion was a hard delete, which removed the
+only thing capable of recognising the same fact arriving again: the embedding. A later
+write-back over overlapping history re-extracted it and it came back. Rows are soft-deleted
+now, and a new extraction matching a tombstone is suppressed. The model file documented this
+gap as "not fixed this slice"; this is that slice.
+
+The trade is explicit: forgetting a memory means it stops being visible and stops being
+retrievable, not that the row is gone. A learner asking for *erasure* is asking a different
+question — one that has to cover chat history and events too, and belongs with S61.
+
+**Implemented — retrieval has a relevance floor and a status filter.** `limit` alone guarantees
+the *nearest* memories come back whether or not any of them are about the question, so a
+learner with five memories had all five injected into every turn regardless of topic. Only
+`current` rows are retrievable, and a distance floor excludes the rest.
+
+**Deliberately conservative — the floor is set at orthogonality, not at a tuned threshold.**
+`memory_retrieval_max_distance` defaults to 1.0, which excludes memories *unrelated or contrary*
+to the query rather than merely weak matches. A tighter floor is a relevance judgement, and the
+only instrument available here is hash-derived test vectors, which cannot make one — the same
+reason S76 declined to reshape retrieval. It is a knob positioned to be tightened against a
+real corpus, not a calibrated value.
+
+**Not done — supersession is decided by distance, not by contradiction.** Two genuinely
+different preferences of the same kind that happen to embed close together will supersede one
+another rather than coexist, and two contradictory ones phrased dissimilarly will not. Deciding
+"does this contradict that?" properly is a model call this does not make. The current rule is
+at least the *right way round*, which the old one was not.
+
+**Not done — conversation deletion still leaves memories.** Defined rather than changed: a
+memory is a durable fact about the learner, not a property of the conversation that revealed
+it, which is why `conversation_id` is `SET NULL` and not `CASCADE`. That is defensible, and it
+is also a surprise waiting for a learner who deletes a conversation for privacy reasons and
+expects what was learned from it to go too. The mechanism to offer both now exists — memories
+carry their `conversation_id`, and forgetting is soft — but no "delete this and what it taught
+you" option is wired up.
+
+**Not verified — the distance threshold against real embeddings.** The lifecycle tests widen
+`memory_dedup_max_distance` deliberately, because the fake provider hashes text into vectors
+and puts a preference and its correction nowhere near each other. That isolates what changed
+(skip vs supersede vs suppress) from a distance the harness cannot make meaningful — it does
+not show the threshold is right.
 
 **Evidence:** Memory dedup skips semantically similar entries rather than reconciling corrections. Retrieval always returns nearest entries without a relevance floor. Deletions have no tombstone and can be re-extracted from the same history; conversation deletion deliberately leaves memories behind.
 
@@ -633,7 +682,7 @@ plainer, complete, always available. A provider outage no longer costs the revis
 
 **Second-pass check:** A corrected preference replaces outdated guidance; irrelevant memories are omitted; deleting a memory prevents its recreation from the same evidence.
 
-**Code:** [app/services/memory.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/services/memory.py), [app/models/memory.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/models/memory.py), [app/memory/retrieval.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/memory/retrieval.py).
+**Code:** [app/services/memory.py](../app/services/memory.py), [app/models/memory.py](../app/models/memory.py), [app/memory/retrieval.py](../app/memory/retrieval.py), [tests/test_memory_lifecycle.py](../tests/test_memory_lifecycle.py).
 
 ### S43 — Make memory/profile refresh scheduling explicit and incremental
 

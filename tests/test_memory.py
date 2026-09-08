@@ -14,7 +14,7 @@ from app.llm.registry import fake_llm_client
 from app.main import app
 from app.models.chat import Conversation, LLMCall, Message
 from app.models.learner import Learner
-from app.models.memory import Memory, MemoryKind
+from app.models.memory import Memory, MemoryKind, MemoryStatus
 from app.services import memory as svc
 from tests.embedding import FAKE_SPACE
 
@@ -184,7 +184,11 @@ async def test_delete_memory_own_row(db_session: AsyncSession) -> None:
     await db_session.flush()
 
     assert await svc.delete_memory(db_session, learner.id, memory.id) is True
-    assert await db_session.get(Memory, memory.id) is None
+    # The row survives as a tombstone (S42) — its embedding is the only thing that can
+    # recognise the same fact being extracted again. What must be gone is its visibility.
+    assert await svc.list_memories(db_session, learner.id) == []
+    tombstone = await db_session.get(Memory, memory.id)
+    assert tombstone is not None and tombstone.status == MemoryStatus.DELETED
 
 
 async def test_delete_memory_foreign_row_is_a_noop(db_session: AsyncSession) -> None:

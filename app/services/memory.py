@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, delete, select
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -28,7 +28,7 @@ from app.llm import LLMClient, ModelRole
 from app.llm.embedding_space import current_space
 from app.memory.extraction import EXTRACTION_ROLE, extract_memories
 from app.models.chat import Conversation, Message
-from app.models.memory import Memory, MemoryKind
+from app.models.memory import Memory, MemoryKind, MemoryStatus
 from app.services.llm_log import log_llm_call
 from app.services.turn_common import to_chat_messages
 
@@ -86,15 +86,34 @@ async def write_back(
         )
     created: list[Memory] = []
     for item, embedding in zip(extracted, embedded.vectors, strict=True):
-        if await _is_near_duplicate(
+        # Two separate questions, deliberately not one nearest-row lookup. Superseded rows are
+        # excluded from both: one has already been replaced, so its replacement is the thing
+        # this should be compared against, and a superseded row that happens to sit closer
+        # would otherwise be answered for.
+        tombstone = await _nearest(
             session,
             conversation.learner_id,
             item.kind,
             embedding,
             max_distance=settings.memory_dedup_max_distance,
             space=space,
-        ):
+            status=MemoryStatus.DELETED,
+        )
+        if tombstone is not None:
+            # The learner removed this. Re-extracting it from the same history is how a
+            # deleted memory used to come back; the tombstone is what stops that.
             continue
+        prior = await _nearest(
+            session,
+            conversation.learner_id,
+            item.kind,
+            embedding,
+            max_distance=settings.memory_dedup_max_distance,
+            space=space,
+            status=MemoryStatus.CURRENT,
+        )
+        if prior is not None and prior.content.strip() == item.content.strip():
+            continue  # genuinely nothing new
         memory = Memory(
             embedding_space=space,
             learner_id=conversation.learner_id,
@@ -107,6 +126,13 @@ async def write_back(
         # intentional intra-batch dedup, not an accident. Don't collapse this into one batched
         # check; that would silently disable it.
         session.add(memory)
+        if prior is not None:
+            # Close but not identical: the learner said something that revises this. Skipping
+            # kept the *stale* entry and discarded the correction — precisely backwards. The
+            # link makes it a correction on the record rather than a silent overwrite.
+            await session.flush()
+            prior.status = MemoryStatus.SUPERSEDED
+            prior.superseded_by_id = memory.id
         created.append(memory)
     await session.commit()
     return created
@@ -137,7 +163,7 @@ async def _unprocessed_messages(
     return list(rows)
 
 
-async def _is_near_duplicate(
+async def _nearest(
     session: AsyncSession,
     learner_id: uuid.UUID,
     kind: MemoryKind,
@@ -145,32 +171,49 @@ async def _is_near_duplicate(
     *,
     max_distance: float,
     space: str,
-) -> bool:
-    """Whether an equivalent memory already exists — measured only against its own space.
+    status: MemoryStatus,
+) -> Memory | None:
+    """The learner's closest memory of ``kind`` in ``status``, if it is close enough.
 
-    A distance to a vector from another embedding model is not a distance to anything: it
-    would both miss real duplicates and suppress genuinely new memories at random.
+    Returns the row rather than a boolean because what to do depends on which row it is: a
+    deleted one means suppress, a current one with different wording means supersede, an
+    identical one means skip. Collapsing all three to "duplicate, skip" is what discarded
+    corrections and let deleted memories return.
+
+    Measured only against its own embedding space: a distance to a vector from another model
+    is not a distance to anything, and would both miss real duplicates and suppress genuinely
+    new memories at random.
     """
     distance = Memory.embedding.cosine_distance(embedding)
-    nearest = await session.scalar(
-        select(distance)
-        .where(
-            Memory.learner_id == learner_id,
-            Memory.kind == kind,
-            Memory.embedding_space == space,
+    row = (
+        await session.execute(
+            select(Memory, distance.label("distance"))
+            .where(
+                Memory.learner_id == learner_id,
+                Memory.kind == kind,
+                Memory.embedding_space == space,
+                Memory.status == status,
+            )
+            .order_by(distance)
+            .limit(1)
         )
-        .order_by(distance)
-        .limit(1)
-    )
-    return nearest is not None and nearest <= max_distance
+    ).first()
+    if row is None:
+        return None
+    memory, dist = row
+    return memory if dist <= max_distance else None
 
 
 async def list_memories(
     session: AsyncSession, learner_id: uuid.UUID, *, limit: int = 50
 ) -> Sequence[Memory]:
+    """What the learner would recognise as their memory: current entries only.
+
+    Superseded and deleted rows exist to make extraction well-behaved, not to be shown back.
+    """
     result = await session.scalars(
         select(Memory)
-        .where(Memory.learner_id == learner_id)
+        .where(Memory.learner_id == learner_id, Memory.status == MemoryStatus.CURRENT)
         .order_by(Memory.created_at.desc())
         .limit(limit)
     )
@@ -178,17 +221,36 @@ async def list_memories(
 
 
 async def delete_memory(session: AsyncSession, learner_id: uuid.UUID, memory_id: uuid.UUID) -> bool:
-    """Delete one memory the learner owns. ``False`` (no-op) if missing or not theirs."""
+    """Forget one memory the learner owns. ``False`` (no-op) if missing or not theirs.
+
+    Soft, and that is the point: the row's embedding is the only thing that can recognise the
+    same fact being extracted again from the same history. Hard-deleting it is what let a
+    deleted memory reappear. It stops being retrievable immediately either way.
+    """
     memory = await session.get(Memory, memory_id)
     if memory is None or memory.learner_id != learner_id:
         return False
-    await session.delete(memory)
+    if memory.status == MemoryStatus.DELETED:
+        return False
+    memory.status = MemoryStatus.DELETED
     await session.commit()
     return True
 
 
 async def delete_all_memories(session: AsyncSession, learner_id: uuid.UUID) -> int:
-    """Erase every memory for ``learner_id`` — the bulk "forget me" endpoint."""
-    result = await session.execute(delete(Memory).where(Memory.learner_id == learner_id))
+    """Forget every memory for ``learner_id`` — the bulk "forget me" endpoint.
+
+    Soft, for the same reason as the single-row case: these have to stay recognisable or the
+    next write-back over the same conversations rebuilds what was just erased.
+
+    A learner who wants the rows *gone* rather than forgotten is asking a different question —
+    data erasure, which has to cover chat history and events too, and belongs with S61's
+    retention policy rather than here.
+    """
+    result = await session.execute(
+        update(Memory)
+        .where(Memory.learner_id == learner_id, Memory.status != MemoryStatus.DELETED)
+        .values(status=MemoryStatus.DELETED)
+    )
     await session.commit()
     return cast("CursorResult[Any]", result).rowcount
