@@ -315,8 +315,14 @@ against a contract the server no longer serves:
 
 ```bash
 uv run python -c "import json; from app.main import app; json.dump(app.openapi(), open('/tmp/openapi.json','w'))"
-npx --prefix frontend openapi-typescript /tmp/openapi.json -o frontend/src/api/schema.d.ts
+npx -y openapi-typescript@7.13.0 /tmp/openapi.json -o frontend/src/api/schema.d.ts
 ```
+
+`openapi-typescript` is fetched per-run rather than installed: it declares a peer dependency on
+TypeScript 5, the frontend is on 6, and `npm ci` refuses the conflict. It generates correct output
+against 6 — the constraint is stale, not real — but keeping it out of the dependency graph means
+`npm ci` stays strict instead of being run with `--legacy-peer-deps`, which would hide the next
+conflict too. The version is pinned at the call site.
 
 ---
 
