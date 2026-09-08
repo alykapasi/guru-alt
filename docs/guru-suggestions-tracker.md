@@ -139,21 +139,13 @@ All repository links below are pinned to the reviewed commit.
 | Date | Change |
 | --- | --- |
 | 2026-09-06 | Created tracker from the mission discussion and first adaptive-loop source review. Recorded 8 agreed directions, 21 proposals, and 6 open decisions. No implementation proposals marked approved, implemented, or validated. |
-
 | 2026-09-06 | User accepted prior recommendations S01–S21. Added new proposals S22–S29 from the knowledge graph and content pipeline review; these remain proposed. No code modified or tests executed. |
-
 | 2026-09-06 | First implementation pass. S54 (`929c390`) and S38 (`889df5f`) implemented on branch `fix/tracker-s54-s38`, originally off `0d9b7f8` (the same snapshot this review inspected) and later rebased onto merged `main`; the SHAs here are the post-rebase ones. Both claims were re-verified against current source before any change. `uv run poe check` green (604 passed, 3 skipped). Implemented means software correctness with tests, not educational validation. All other suggestions unchanged. |
-
 | 2026-09-06 | S45 implemented (`d84f69c`) on the same branch, after PR #15 (Phase 9c) merged and the branch was rebased onto it. `uv run poe check` green (626 passed, 1 skipped). Note: an unrelated leftover `dev` learner row from earlier live testing caused 8 spurious failures until removed — the suite itself leaves none behind. |
-
 | 2026-09-06 | S13 (`5043fbc`), S34 (`19fd3dc`, `ccd9919`), S35 (`ccd9919`) and S49 (`2af0dbd`, `70bb587`) implemented on the same branch; S58 partially (`36c16e5`) — the suite now derives its own `<db>_test` database, live-model tests became opt-in, and CI gained a frontend build/lint job plus an `alembic check` gate for models drifting from their migrations; the browser/e2e journeys and separate-session concurrency tests S58 also asks for are not written, and its entry lists what is still open. Migrations `0020` (S34) and `0021` (S35). Two defects found while working here and fixed without tracker ids, since neither was a review finding: the ingestion worker died every 5s on an idle queue (`50b0266`), and a single NUL byte failed a whole ingestion (`d938153`). |
-
 | 2026-09-07 | S39 (`997fc5b`), S40 (`74ac7c4`) and S63 (`eb40c83`) implemented on the same branch. Migrations `0022` (S40) and `0023` (S63). S39 and S40 both constrain the same note merge, and S41 (below) later bounded what it may rewrite at all. |
-
 | 2026-09-07 | S48 (`0a94191`, `ed0ad5e`) and S57 (`8949fff`) implemented on the same branch. `uv run poe check` green (702 passed, 4 skipped). Migration `0024` makes `llm_calls.cost_usd` nullable. Added S76: two vector-retrieval tests failed intermittently during this session; traced far enough to rule out my changes as the cause and to identify a plausible mechanism, but not reproduced on demand and not fixed. The gate is therefore green but not yet proven deterministic. |
-
 | 2026-09-08 | S30 (`7f4b06d`), S32 (`fb0f214`), S47 (`72ca7f5`), S41 (`64ed883`), S46 (`75e12f7`) and S50 (`ad34b79`) implemented on the same branch. `uv run poe check` green (733 passed, 4 skipped); `npm run build` and `npm run lint` green. Migration `0025` adds embedding-space identity to chunks and memories. Note for future verification: `npx tsc --noEmit` checks nothing here (solution-style root tsconfig with `"files": []`) — `npm run build` is the frontend type gate. |
-
 | 2026-09-08 | S76 measured rather than fixed. The hypothesis recorded on 2026-09-07 — filtered-ANN recall — is **disproven**: the scoped vector query never uses the HNSW index at any size tried, because the join to `sources` keeps the planner on an exact `ix_chunks_source_id` path. The flaky tests remain unexplained. What the measurement did surface: exact search costs ~4 µs per chunk owned (185 ms at 45k), the index-reachable query shape is 11–116× faster at 44–86% recall depending on `ef_search`, `candidates` (50) exceeds the default `ef_search` (40), and the HNSW index is about the size of the table while no query reads it. `poe retrieval-recall` makes all of it repeatable. No production code changed — pricing the recall trade needs a real corpus, not hash-derived vectors. |
 
 ## Remaining architecture autopsy — source pass
@@ -1080,8 +1072,8 @@ chosen, its recall against an exact baseline, and the `ef_search` curve — enou
 between exact search, an index-reachable query shape, partial indexes, or partitioning, on
 numbers rather than on this entry's original guess.
 
-**Code:** [app/rag/retrieval.py](app/rag/retrieval.py), [app/models/source.py](app/models/source.py),
-[tests/eval/retrieval/recall.py](tests/eval/retrieval/recall.py).
+**Code:** [app/rag/retrieval.py](../app/rag/retrieval.py), [app/models/source.py](../app/models/source.py),
+[tests/eval/retrieval/recall.py](../tests/eval/retrieval/recall.py).
 
 ## Implementation order for consideration
 
