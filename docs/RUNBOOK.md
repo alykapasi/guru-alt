@@ -270,6 +270,25 @@ uv run poe check     # confirm the committed artifact loads cleanly
 If the delta is negative or zero, leave the artifact uncommitted — the runtime keeps using the
 uncompiled fallback, which is the safe default.
 
+### 6.5 Retrieval recall + plan (S76) — needs a live DB, no model
+
+```bash
+uv run poe retrieval-recall                # 40k synthetic chunks (a few minutes)
+uv run poe retrieval-recall --rows 5000    # quicker, less representative
+```
+
+Seeds its own throwaway database (`<db>_recall`) and reports three things about the vector arm:
+which plan Postgres actually chooses for the scoped query, that plan's recall against the same
+query forced onto an exact scan, and what the HNSW index would give instead across
+`hnsw.ef_search`. It exists because whether retrieval is exact or approximate is the planner's
+decision, not ours, and the two fail in completely different ways.
+
+As of 2026-09-08 the answer is **exact**: the join to `sources` keeps the planner on
+`ix_chunks_source_id`, so the HNSW index is never reached and costs about 4 µs per chunk the
+learner owns. Recall figures for the index-reachable shape are a *lower bound* — the vectors are
+synthetic and near-uniform, which is close to worst case for a graph index. See S76 in the
+suggestions tracker for the numbers and what they do and do not license.
+
 ---
 
 ## 7. Before you merge

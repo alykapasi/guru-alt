@@ -201,6 +201,13 @@ metadata filters (KC, source, learner scope). Results fused (e.g. reciprocal-ran
 re-rank later. Retrieval is always **scoped** (by guru/KC/learner) and returns provenance for
 grounded, citable generation.
 
+> Measured 2026-09-08 (S76): because retrieval is always scoped, the vector arm is answered
+> **exactly** — the join to `sources` keeps the planner on `ix_chunks_source_id` and the HNSW
+> index is never reached. That is correct and, per pgvector's own guidance, appropriate for a
+> selective filter; it costs about 4 µs per chunk the learner owns. `poe retrieval-recall`
+> reports the plan, its recall against an exact baseline, and the `ef_search` trade if we ever
+> want the index instead.
+
 ---
 
 ## 7. The Learning Engine

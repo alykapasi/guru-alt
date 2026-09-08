@@ -150,6 +150,8 @@ All repository links below are pinned to the reviewed commit.
 
 | 2026-09-08 | S30 (`7f4b06d`), S32 (`fb0f214`), S47 (`72ca7f5`), S41 (`64ed883`), S46 (`75e12f7`) and S50 (`ad34b79`) implemented on the same branch. `uv run poe check` green (733 passed, 4 skipped); `npm run build` and `npm run lint` green. Migration `0025` adds embedding-space identity to chunks and memories. Note for future verification: `npx tsc --noEmit` checks nothing here (solution-style root tsconfig with `"files": []`) — `npm run build` is the frontend type gate.
 
+| 2026-09-08 | S76 measured rather than fixed. The hypothesis recorded on 2026-09-07 — filtered-ANN recall — is **disproven**: the scoped vector query never uses the HNSW index at any size tried, because the join to `sources` keeps the planner on an exact `ix_chunks_source_id` path. The flaky tests remain unexplained. What the measurement did surface: exact search costs ~4 µs per chunk owned (185 ms at 45k), the index-reachable query shape is 80× faster at 38–88% recall depending on `ef_search`, `candidates` (50) exceeds the default `ef_search` (40), and the HNSW index is about the size of the table while no query reads it. `poe retrieval-recall` makes all of it repeatable. No production code changed — pricing the recall trade needs a real corpus, not hash-derived vectors.
+
 ## Remaining architecture autopsy — source pass
 
 Review date: 2026-09-06. Same pinned repository snapshot as above. These findings extend S01–S29. User requested a comprehensive autopsy for later implementation; no application code was changed. S30–S63 are new proposals. Each entry includes a concrete second-pass check. Priorities describe urgency, not permission to implement.
@@ -1011,45 +1013,71 @@ until its next regenerate.
 
 ### S76 — Establish whether the vector arm of retrieval actually returns what it should
 
-**Status:** Open — observed, traced, unresolved · **Priority:** High
+**Status:** Measured (`poe retrieval-recall`) — no code change; a decision is now possible on
+evidence · **Priority:** Revisit before the first learner with a large corpus
 
-**Evidence (observed 2026-09-07, not from a source read):** `tests/test_retrieval.py::
-test_keyword_match_boosts_ranking` and `tests/eval/test_eval.py::test_retrieval_eval_gate` failed
-in 3 of 4 consecutive `poe check` runs and then passed in roughly 50 subsequent runs. Both
-failures were the same shape: the vector arm returned fewer chunks than the test had seeded — in
-the first, one of two — while the assertion `# vector returns both` expects the `ORDER BY
-embedding <=> q LIMIT 50` query to be exhaustive over a two-row scope.
+**Why this was opened.** Two vector-retrieval tests failed intermittently on 2026-09-07 and I
+recorded a hypothesis — filtered-ANN recall, where an HNSW scan cuts its candidate list before
+the learner filter is applied. **That hypothesis is wrong**, and the measurements below say so.
+The tests' intermittency remains unexplained; nothing found here accounts for it, and it is not
+worth inventing a mechanism to close the entry. `poe retrieval-recall` is the measurement, kept
+so this stays a question with a method rather than a worry.
 
-This is not a regression from the accounting work: `app/rag/retrieval.py`'s query, the HNSW index
-definition, and the deterministic fake embeddings that drive the test are byte-identical across
-that change (only `embed()`'s return shape moved).
+**Measured — the vector arm is exact, not approximate.** The scoped query never uses the HNSW
+index. Postgres takes `ix_sources_learner_id` → `ix_chunks_source_id` → `Sort`, at every size
+tried (5 / 5,005 / 25,005 / 75,005 rows) and whether the learner owns five chunks or all of
+them (5 / 2,005 / 10,005 / 30,005 owned). Recall against a forced exact scan was 50/50 in every
+case. This is what pgvector's own README recommends for a selective filter — "an index on the
+filter column... can provide fast, exact nearest neighbor search" — and `ix_chunks_source_id`
+is that index. `hnsw.iterative_scan` makes no difference, because no approximate scan happens.
 
-**What was ruled out.** Not test ordering or parallelism (no `pytest-randomly`, no `xdist`, fixed
-collection order). Not leftover committed rows (`chunks`, `sources`, `learners` all zero between
-runs). Not reproducible by forcing a narrow ANN search width (`hnsw.ef_search = 1`), nor by
-seeding 3,000 competing chunks belonging to another learner, nor by running the suite verbosely,
-nor by repeated runs after `VACUUM ANALYZE chunks`. The failures clustered in one window and
-disappeared after that vacuum, which is suggestive but was not confirmed.
+**Measured — it is the join, not selectivity, that keeps the index out.** At 34,005 rows owned
+by one learner, three shapes over identical rows:
 
-**Why it matters beyond the suite.** The standing hypothesis is filtered-ANN recall: an HNSW scan
-produces its candidate list *before* the `learner_id` join filter is applied, so a learner's own
-relevant chunks can be squeezed out by other learners' chunks as the shared `chunks` table grows.
-pgvector 0.8.3 is installed and `hnsw.iterative_scan` is unset (default `off`), which is the
-configuration in which that failure mode exists. If the hypothesis holds, retrieval silently
-returns less than it should at scale, and the tests are the early warning rather than the problem.
+| query | plan | latency | agrees with exact |
+| --- | --- | --- | --- |
+| joins `sources`, filters by learner (what we run) | exact | 160 ms | — |
+| same rows as `chunks.source_id = ANY(...)` | HNSW | 2 ms | 13/50 |
+| no filter at all | HNSW | 2 ms | 13/50 |
 
-**Suggested change:** Measure recall directly against an exact (sequential-scan) baseline over a
-corpus with many learners, rather than inferring it from an intermittent test. Then decide
-`hnsw.iterative_scan` / partial-index / partitioning on measured recall and latency, and make the
-retrieval suite score recall against the exact baseline so an index-recall regression is visible
-as a number rather than as a flaky assertion.
+**Measured — exact search costs about 4 µs per chunk owned**, linear: 102 ms at 23k, 125 ms at
+28k, 168 ms at 39k, 185 ms at 45k. Per retrieval, on the critical path of every turn. Fine now;
+a problem for one heavy user, not for many ordinary ones.
 
-**Second-pass check:** A scoped query returns the same rows as an exact scan over a corpus large
-enough for the index to be chosen, across many learners; the retrieval gate passes deterministically
-on repeated runs.
+**Measured — the speed is available, but not for free.** `poe retrieval-recall --rows 40000`,
+one learner owning all 40,050 chunks, asking for 50. The query as written: exact, 50/50,
+**162 ms**. The same rows reached through the index instead:
+
+| `hnsw.ef_search` | recall vs exact | latency |
+| --- | --- | --- |
+| 40 (default) | 44% | 1.4 ms |
+| 100 | 50% | 3.1 ms |
+| 200 | 64% | 4.7 ms |
+| 400 | 72% | 6.9 ms |
+| 1000 | 86% | 15.0 ms |
+
+Read these as a **lower bound**: the vectors are hash-derived and near-uniform, roughly worst
+case for a graph index, and real embeddings cluster. Note also that `candidates = 50` in
+`app/rag/retrieval.py` is larger than the default `ef_search` of 40 — a candidate list smaller
+than the result set it is asked for. That mismatch costs nothing today only because the index
+is unreachable.
+
+**Also measured:** `ix_chunks_embedding_hnsw` is about the size of the table it indexes
+(145 MB against 151 MB of heap+TOAST at 37,005 rows), and ingestion pays HNSW insert cost on
+every chunk, for an index no query currently reads.
+
+**Deliberately not changed.** Restructuring the query to reach the index is an 80× latency win
+at a recall cost this evidence cannot price, because synthetic vectors are the wrong instrument
+for a relevance question. Dropping the index would foreclose that option to save storage we are
+not short of. Both decisions want a real corpus and real relevance judgements.
+
+**Second-pass check:** on a real corpus, `poe retrieval-recall` reports the plan actually
+chosen, its recall against an exact baseline, and the `ef_search` curve — enough to choose
+between exact search, an index-reachable query shape, partial indexes, or partitioning, on
+numbers rather than on this entry's original guess.
 
 **Code:** [app/rag/retrieval.py](app/rag/retrieval.py), [app/models/source.py](app/models/source.py),
-[tests/eval/harness.py](tests/eval/harness.py).
+[tests/eval/retrieval/recall.py](tests/eval/retrieval/recall.py).
 
 ## Implementation order for consideration
 
