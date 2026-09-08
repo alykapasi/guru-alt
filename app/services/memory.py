@@ -3,7 +3,13 @@
 ``write_back`` is triggered on-demand (``POST /conversations/{id}/memory/write-back``, queued —
 see ``app.workers.tasks.memory_write_back_task``), not automatically on every turn: extraction
 costs one FAST call, and firing it per-message would pay that repeatedly for no accumulated
-benefit (same reasoning already applied to ``POST /profile/refresh``). Retrieval
+benefit (same reasoning already applied to ``POST /profile/refresh``).
+
+It is **incremental** (S43): each conversation carries a ``memory_watermark`` naming the newest
+message already extracted from, and a run reads the *oldest* unprocessed messages forward from
+there. Before this it read the most recent N messages regardless, so a conversation that grew
+by more than N between runs had the middle skipped entirely, and one that grew by nothing paid
+a model call to rediscover it had nothing to do. Retrieval
 (``app.memory.retrieval``) is what actually "wires memory into sessions" — it runs on every
 tutor turn instead, since it's cheap (one EMBED call + one DB query, same tier RAG retrieval
 already pays).
@@ -11,6 +17,7 @@ already pays).
 
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, delete, select
@@ -41,9 +48,19 @@ async def write_back(
         return []
 
     settings = get_settings()
-    window = await _recent_messages(
-        session, conversation_id, window=settings.memory_extraction_window
+    window = await _unprocessed_messages(
+        session,
+        conversation_id,
+        after=conversation.memory_watermark,
+        limit=settings.memory_extraction_window,
     )
+    if not window:
+        # Nothing new since the last run. Returning here is the difference between a repeated
+        # write-back being free and it costing a FAST call to rediscover it had nothing to do.
+        return []
+    # Advance to what this run actually read, not to "now": a message written while extraction
+    # is in flight must still be picked up by the next run rather than stepped over.
+    conversation.memory_watermark = window[-1].created_at
     extracted, usage = await extract_memories(llm, to_chat_messages(window))
     if usage.total_tokens:
         await log_llm_call(
@@ -95,18 +112,29 @@ async def write_back(
     return created
 
 
-async def _recent_messages(
-    session: AsyncSession, conversation_id: uuid.UUID, *, window: int
+async def _unprocessed_messages(
+    session: AsyncSession,
+    conversation_id: uuid.UUID,
+    *,
+    after: datetime | None,
+    limit: int,
 ) -> list[Message]:
-    rows = (
-        await session.scalars(
-            select(Message)
-            .where(Message.conversation_id == conversation_id)
-            .order_by(Message.created_at.desc())
-            .limit(window)
-        )
-    ).all()
-    return list(reversed(rows))  # oldest-first, matching conversation reading order
+    """The oldest messages this conversation has not been extracted from yet, up to ``limit``.
+
+    Oldest-first rather than newest-first, which is the whole fix: taking the *most recent*
+    ``limit`` messages meant a conversation that grew by more than ``limit`` between runs had
+    the middle silently dropped — never read, never extracted, gone. Taking the oldest
+    unprocessed ones instead leaves a backlog for the next run rather than a hole.
+
+    Ties on ``created_at`` are broken by id, because messages written in one transaction share
+    an instant (``server_default=func.now()`` is transaction-start time) and a cursor that
+    cannot order within an instant either re-reads or skips.
+    """
+    stmt = select(Message).where(Message.conversation_id == conversation_id)
+    if after is not None:
+        stmt = stmt.where(Message.created_at > after)
+    rows = (await session.scalars(stmt.order_by(Message.created_at, Message.id).limit(limit))).all()
+    return list(rows)
 
 
 async def _is_near_duplicate(

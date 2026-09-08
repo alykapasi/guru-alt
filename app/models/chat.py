@@ -57,6 +57,11 @@ class Conversation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     active_item_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("items.id", ondelete="SET NULL"), default=None
     )
+    # The newest message memory extraction has already read. Extraction used to take the last
+    # N messages regardless, so a conversation that grew by more than N between write-backs
+    # had the middle silently skipped — and one that grew by nothing paid a model call to
+    # re-read what it had already extracted (S43). Same cursor idea as Note's watermarks (S38).
+    memory_watermark: Mapped[datetime | None] = mapped_column(default=None)
 
     messages: Mapped[list["Message"]] = relationship(
         back_populates="conversation",

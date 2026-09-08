@@ -637,7 +637,57 @@ plainer, complete, always available. A provider outage no longer costs the revis
 
 ### S43 — Make memory/profile refresh scheduling explicit and incremental
 
-**Status:** Proposed · **Priority:** High
+**Status:** Partially implemented (branch `fix/tracker-s36-s42`) · **Priority:** High
+
+**Implemented — memory extraction has a cursor, and reads forward from it.** It took the most
+recent `memory_extraction_window` messages regardless of what it had already seen. A
+conversation that grew by more than that between runs had the middle **silently dropped** —
+never read, never extracted, and nothing recorded that it had been passed over. Each
+conversation now carries a `memory_watermark` (migration `0028`, the same idea as S38's note
+cursors), and a run reads the *oldest* unprocessed messages forward. Oldest-first is the whole
+fix: newest-first leaves a hole, oldest-first leaves a backlog the next run continues.
+
+The watermark advances to the last message the run **actually read**, not to "now" — a message
+written while extraction is in flight must be picked up next time rather than stepped over.
+Ties are broken on id, because messages written in one transaction share an instant
+(`server_default=func.now()` is transaction-start time) and a cursor that cannot order within
+an instant either re-reads or skips.
+
+**Implemented — a repeat run over unchanged history is free.** It used to pay a FAST call to
+rediscover it had nothing to do. It now returns before the model call.
+
+**Implemented — a profile refresh over unchanged evidence does nothing.** Every dimension is
+recomputed from scratch on each refresh, several model calls at a time, so repeating it over
+an unchanged history bought exactly the values already stored. `latest_evidence_at` answers
+"has anything happened?" with two `MAX()` reads instead of loading the history to find out,
+and the refresh returns the existing snapshot when that matches `evidence_watermark`.
+`force=true` runs anyway — the cursor tracks the *evidence*, and cannot know the estimators
+reading it have changed.
+
+**Implemented — resetting a dimension invalidates the cursor.** Found by a test, not by
+design: a reset makes the stored values wrong without touching the evidence, so the next
+refresh would have skipped the very recomputation the reset asked for.
+
+**Implemented — a failed refresh says so.** `last_error` and `refreshed_at` are recorded, and
+the watermark deliberately does not advance, so a failed run does not mark its evidence
+processed. Without this a profile that quietly stopped updating is indistinguishable from one
+nothing has changed for.
+
+**Not done — the recompute itself is still whole-history.** A refresh that *does* run still
+loads every event and every user message. Making the estimators incremental means changing
+each one's math, and their growth is S62's subject; what is fixed here is paying for the
+recompute when nothing changed, not the cost of the recompute itself.
+
+**Not done — the trigger is still a request.** Both remain on-demand endpoints. The item asked
+to "choose an explicit session/turn/job trigger", and choosing turn-end would now be safe
+(both are cheap when there is nothing to do, which is what previously made per-turn firing
+wasteful) — but wiring it is a behavioural change about *when* a learner's profile moves, and
+that belongs with S44's question of whether these dimensions should drive teaching at all.
+What has changed is that the cost objection to doing it no longer holds.
+
+**Not done — no sweep for conversations nobody revisits.** A conversation whose backlog is
+never written back keeps it forever; nothing looks for stale watermarks. The same
+reconciliation shape as S36 would fit, and is not built.
 
 **Evidence:** Memory write-back and profile refresh are on-demand service operations. Memory extraction revisits only a recent-message window; profile refresh loads all learner events and user messages. Neither service establishes a durable incremental processing cursor.
 
@@ -645,7 +695,7 @@ plainer, complete, always available. A provider outage no longer costs the revis
 
 **Second-pass check:** A completed session produces intended updates without visiting a special screen; repeated refreshes do not repeatedly pay for unchanged evidence; old unprocessed material is not silently dropped.
 
-**Code:** [app/services/memory.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/services/memory.py), [app/services/profile.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/services/profile.py).
+**Code:** [app/services/memory.py](../app/services/memory.py), [app/services/profile.py](../app/services/profile.py), [app/models/chat.py](../app/models/chat.py), [app/models/profile.py](../app/models/profile.py), [tests/test_refresh_cursors.py](../tests/test_refresh_cursors.py).
 
 ### S44 — Treat learner profile measures as provisional proxies, not measured traits
 

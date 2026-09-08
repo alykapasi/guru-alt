@@ -8,9 +8,10 @@ pruned once real usage data shows which dimensions are actually predictive.
 """
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ForeignKey, UniqueConstraint
+from sqlalchemy import ForeignKey, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,6 +27,15 @@ class LearnerProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     learner_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("learners.id", ondelete="CASCADE"), unique=True, index=True
     )
+    # The newest piece of evidence the last refresh actually read. A refresh recomputes every
+    # dimension from the whole history, so repeating it over unchanged evidence buys nothing
+    # and costs several model calls; this is what makes "nothing new" answerable without
+    # paying to find out (S43).
+    evidence_watermark: Mapped[datetime | None] = mapped_column(default=None)
+    # When a refresh last completed, and why the last one did not. Without these, a profile
+    # that silently stopped updating is indistinguishable from one nothing has changed for.
+    refreshed_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_error: Mapped[str | None] = mapped_column(Text, default=None)
 
 
 class ProfileDimension(UUIDPrimaryKeyMixin, TimestampMixin, Base):

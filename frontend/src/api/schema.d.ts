@@ -551,7 +551,13 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Refresh Profile */
+        /**
+         * Refresh Profile
+         * @description Recompute the profile, skipping the work when no new evidence has arrived.
+         *
+         *     ``force=true`` recomputes anyway — the cursor tracks the learner's evidence and cannot
+         *     know the estimators reading it have changed.
+         */
         post: operations["refresh_profile_api_v1_profile_refresh_post"];
         delete?: never;
         options?: never;
@@ -2908,7 +2914,9 @@ export interface operations {
     };
     refresh_profile_api_v1_profile_refresh_post: {
         parameters: {
-            query?: never;
+            query?: {
+                force?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2922,6 +2930,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProfileSnapshotRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

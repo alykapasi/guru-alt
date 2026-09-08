@@ -393,6 +393,10 @@ async def test_a_memory_from_another_embedding_model_is_not_retrieved_or_deduped
     await db_session.flush()
 
     # Same conversation, same facts: dedup cannot see the old space, so they are written again.
+    # The extraction cursor (S43) would otherwise make a second run over the same messages a
+    # no-op, which is correct but not what this test is about.
+    conversation.memory_watermark = None
+    await db_session.flush()
     second = await svc.write_back(db_session, llm, conversation_id=conversation.id)
     assert len(second) == 2
     assert all(m.embedding_space == FAKE_SPACE for m in second)
