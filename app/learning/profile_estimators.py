@@ -102,9 +102,29 @@ def _cluster_sessions(
 
 
 def _observations(events: Sequence[LearningEvent]) -> list[LearningEvent]:
-    """Graded interactions only — excludes ``placement_seed`` rows, which carry a different
-    payload shape (ability/uncertainty, not score/difficulty/latency)."""
-    return [e for e in events if e.event_type == "observation"]
+    """One row per graded *attempt*.
+
+    Excludes ``placement_seed`` rows, which carry a different payload shape
+    (ability/uncertainty, not score/difficulty/latency), and collapses the per-KC fan-out a
+    multi-KC answer produces. Every payload field the estimators read — score, difficulty,
+    latency_ms, hints_used, item_id — is item-level and identical across that fan-out (only
+    ``weight`` differs, which no estimator uses), so leaving it expanded would weight one
+    answer once per tagged KC. A row with no ``attempt_id`` (written before the column
+    existed) stands as its own attempt.
+    """
+    seen: set[uuid.UUID] = set()
+    attempts: list[LearningEvent] = []
+    for event in events:
+        if event.event_type != "observation":
+            continue
+        if event.attempt_id is None:  # unattributed row: it *is* its own attempt
+            attempts.append(event)
+            continue
+        if event.attempt_id in seen:
+            continue
+        seen.add(event.attempt_id)
+        attempts.append(event)
+    return attempts
 
 
 # --- Cognitive & pace -----------------------------------------------------
@@ -309,10 +329,8 @@ async def _estimate_help_seeking(ctx: EstimatorContext) -> tuple[DimensionEstima
 
 
 async def _estimate_persistence(ctx: EstimatorContext) -> tuple[DimensionEstimate | None, Usage]:
-    # A single graded interaction fans out into one LearningEvent per tagged KC on a
-    # multi-KC item (mastery.record_observation) — all sharing the same created_at. Collapse
-    # those back into one attempt per (item_id, created_at) before counting attempts, or a
-    # single multi-KC answer would masquerade as multiple retries below.
+    # _observations already collapses the per-KC fan-out; this groups an item's *retries*
+    # over time, keyed by instant, so repeated tries at the same question can be compared.
     by_item: dict[str, dict[datetime, LearningEvent]] = {}
     for e in _observations(ctx.events):
         item_id = e.payload.get("item_id")

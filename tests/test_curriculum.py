@@ -40,7 +40,9 @@ async def test_parse_well_formed_curriculum():
     goal = "Learn linear algebra fundamentals"
     materials = ["Vector spaces are sets of vectors...", "Matrices are rectangular arrays..."]
 
-    result = await generate_curriculum(_client_with_reply(VALID_CURRICULUM_REPLY), goal, materials)
+    result, _usage = await generate_curriculum(
+        _client_with_reply(VALID_CURRICULUM_REPLY), goal, materials
+    )
 
     assert result is not None
     assert result.subject_name == "Linear Algebra"
@@ -54,9 +56,17 @@ async def test_parse_malformed_json_returns_none():
     """Malformed JSON reply returns None (not fatal)."""
     goal = "Learn calculus"
 
-    result = await generate_curriculum(_client_with_reply("not json at all"), goal, None)
+    result, _usage = await generate_curriculum(_client_with_reply("not json at all"), goal, None)
 
     assert result is None
+
+
+async def test_a_generation_that_could_not_be_parsed_still_reports_what_it_cost():
+    """The tokens were spent before anyone looked at the reply; None must not mean free."""
+    result, usage = await generate_curriculum(_client_with_reply("not json at all"), "goal", None)
+
+    assert result is None
+    assert usage.total_tokens > 0
 
 
 async def test_empty_topics_returns_none():
@@ -70,7 +80,7 @@ async def test_empty_topics_returns_none():
         }
     )
 
-    result = await generate_curriculum(_client_with_reply(bad_reply), goal, None)
+    result, _usage = await generate_curriculum(_client_with_reply(bad_reply), goal, None)
 
     assert result is None
 
@@ -92,7 +102,7 @@ async def test_missing_required_fields_returns_none():
         }
     )
 
-    result = await generate_curriculum(_client_with_reply(bad_reply), goal, None)
+    result, _usage = await generate_curriculum(_client_with_reply(bad_reply), goal, None)
 
     assert result is None
 
@@ -102,7 +112,9 @@ async def test_materials_included_in_prompt_when_provided():
     goal = "Learn Python"
     materials = ["Python is a high-level language...", "Functions are reusable blocks of code..."]
 
-    result = await generate_curriculum(_client_with_reply(VALID_CURRICULUM_REPLY), goal, materials)
+    result, _usage = await generate_curriculum(
+        _client_with_reply(VALID_CURRICULUM_REPLY), goal, materials
+    )
 
     # Should successfully parse the curriculum with materials provided
     assert result is not None
@@ -113,7 +125,9 @@ async def test_materials_none_omits_materials_section():
     """When materials is None, curriculum is purely knowledge-based."""
     goal = "Learn basic statistics"
 
-    result = await generate_curriculum(_client_with_reply(VALID_CURRICULUM_REPLY), goal, None)
+    result, _usage = await generate_curriculum(
+        _client_with_reply(VALID_CURRICULUM_REPLY), goal, None
+    )
 
     # Should succeed without materials
     assert result is not None
@@ -131,6 +145,6 @@ async def test_non_list_topics_returns_none():
         }
     )
 
-    result = await generate_curriculum(_client_with_reply(bad_reply), goal, None)
+    result, _usage = await generate_curriculum(_client_with_reply(bad_reply), goal, None)
 
     assert result is None

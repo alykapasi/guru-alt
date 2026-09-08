@@ -16,7 +16,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, cast
 
-from sqlalchemy import select
+import structlog
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -29,6 +30,8 @@ from app.models.lesson_plan import LessonPlan
 from app.services import knowledge as knowledge_svc
 from app.services import profile as profile_svc
 from app.services.llm_log import log_llm_call
+
+log = structlog.get_logger(__name__)
 
 MASTERY_ABILITY_THRESHOLD = 1.0
 MASTERY_UNCERTAINTY_THRESHOLD = 0.5
@@ -116,7 +119,6 @@ async def generate_lesson_plan(
         selected, usage = await engine.select_objectives(llm, goal, candidates)
         if usage.total_tokens:
             await log_llm_call(
-                session,
                 learner_id=learner_id,
                 role=engine.OBJECTIVE_ROLE.value,
                 spec=llm.spec(engine.OBJECTIVE_ROLE),
@@ -130,7 +132,10 @@ async def generate_lesson_plan(
         for e in await knowledge_svc.list_edges_for_subject(session, subject_id)
     ]
     closure = engine.prerequisite_closure(target_ids, edges)
-    kc_order = engine.topo_sort(closure, edges, tiebreak)[: get_settings().lesson_plan_max_steps]
+    # The whole objective is recorded; only its first window becomes steps. revise_plan pulls
+    # the rest in as work completes, so the target — which topo-sorts last — is still reached.
+    objective = engine.topo_sort(closure, edges, tiebreak)
+    kc_order = objective[: get_settings().lesson_plan_max_steps]
     bare_steps = engine.build_initial_steps(kc_order)
 
     mastered = await _mastered_kc_ids(session, learner_id, kc_order)
@@ -148,6 +153,7 @@ async def generate_lesson_plan(
         plan = LessonPlan(learner_id=learner_id, subject_id=subject_id)
         session.add(plan)
     plan.goal = goal
+    plan.objective_kc_ids = [str(kc_id) for kc_id in objective]
     plan.steps = cast("list[dict[str, Any]]", steps)
     _apply_plan_level_hints(plan, scaffolding)
 
@@ -163,6 +169,10 @@ async def revise_plan(
     profile — no LLM call, no topo-sort recompute. No-ops (returns ``None``) if the learner
     has no plan for this subject yet; evidence on a subject nobody has planned shouldn't
     create one implicitly.
+
+    Also advances the horizon: components of the objective that did not fit the step cap move
+    in as earlier ones finish, so a goal bigger than the cap is worked through rather than
+    truncated (:func:`engine.horizon_extension`).
     """
     plan = await _get_plan(session, learner_id, subject_id)
     if plan is None:
@@ -174,27 +184,78 @@ async def revise_plan(
     due_reviews = await _due_review_kc_ids(session, learner_id, all_kc_ids)
     scaffolding = await _scaffolding(session, learner_id)
 
-    plan.steps = cast(
-        "list[dict[str, Any]]",
-        engine.revise_steps(
-            cast("list[engine.StepDict]", plan.steps),
+    revised = engine.revise_steps(
+        cast("list[engine.StepDict]", plan.steps),
+        mastered_kc_ids=mastered,
+        due_review_kc_ids=due_reviews,
+        scaffolding=scaffolding,
+    )
+    # Only now is it known which steps this revision finished, and so how much room the
+    # horizon has for the rest of the objective. Extending before that would never see any.
+    extension = engine.horizon_extension(
+        plan.objective_kc_ids, revised, max_open_steps=get_settings().lesson_plan_max_steps
+    )
+    if extension:
+        extension_ids = [uuid.UUID(kc_id) for kc_id in extension]
+        # A KC arriving from the deferred tail may already be mastered (placement, or work in
+        # another plan), so it gets the same status derivation as anything else.
+        mastered |= await _mastered_kc_ids(session, learner_id, extension_ids)
+        revised = engine.revise_steps(
+            [*revised, *engine.build_initial_steps(extension_ids)],
             mastered_kc_ids=mastered,
             due_review_kc_ids=due_reviews,
             scaffolding=scaffolding,
-        ),
-    )
+        )
+    plan.steps = cast("list[dict[str, Any]]", revised)
     _apply_plan_level_hints(plan, scaffolding)
+    plan.revision_pending = False  # whatever was owed, this recomputation covers it
 
     await session.commit()
     await session.refresh(plan)
     return plan
 
 
+async def mark_revision_pending(
+    session: AsyncSession, *, learner_id: uuid.UUID, subject_id: uuid.UUID
+) -> None:
+    """Record that this plan is behind the evidence, so the next read brings it up to date.
+
+    Set only when a revision failed *after* its triggering answer had already committed: the
+    grade is authoritative and gets reported, and the derived plan carries the debt instead of
+    the learner being told their answer failed. See ``services.assessment.answer_item``.
+    """
+    await session.execute(
+        update(LessonPlan)
+        .where(LessonPlan.learner_id == learner_id, LessonPlan.subject_id == subject_id)
+        .values(revision_pending=True)
+    )
+    await session.commit()
+
+
 async def get_lesson_plan(
     session: AsyncSession, learner_id: uuid.UUID, subject_id: uuid.UUID
 ) -> LessonPlan | None:
-    """Read-only — no recompute."""
-    return await _get_plan(session, learner_id, subject_id)
+    """Read-only — no recompute, unless the plan is carrying an unpaid revision.
+
+    ``revision_pending`` means a revision this plan was owed failed after its triggering
+    answer had committed, so the plan is behind evidence the learner has already produced.
+    Repairing it here is what lets it catch up without the learner having to answer anything
+    else — and, like the revision that failed, it is best-effort: a stale plan is worth
+    showing, a 500 is not.
+    """
+    plan = await _get_plan(session, learner_id, subject_id)
+    if plan is None or not plan.revision_pending:
+        return plan
+    try:
+        return await revise_plan(session, learner_id=learner_id, subject_id=subject_id) or plan
+    except Exception:
+        log.exception(
+            "lesson_plan.pending_revision_repair_failed",
+            learner_id=str(learner_id),
+            subject_id=str(subject_id),
+        )
+        await session.rollback()
+        return plan
 
 
 async def get_active_step_context(

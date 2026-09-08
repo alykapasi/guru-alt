@@ -38,3 +38,25 @@ class LessonPlan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # list[dict]: kc_id, order, step_type ("new"|"review"), status ("pending"|"active"|"done"),
     # target_difficulty, hint_density, preferred_item_type.
     steps: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    # The complete prerequisite-ordered objective, as KC id strings. `steps` is only the
+    # window of it the learner is working on now: a goal needing more components than
+    # lesson_plan_max_steps used to have its tail — including the actual target, which sorts
+    # last — silently dropped, so finishing the plan looked like finishing the goal. Empty on
+    # plans generated before this existed; they gain one on their next regenerate.
+    objective_kc_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
+
+    @property
+    def objective_kc_count(self) -> int:
+        """How many components the goal actually needs (0 on plans predating objectives)."""
+        return len(self.objective_kc_ids)
+
+    @property
+    def deferred_kc_count(self) -> int:
+        """Objective components not yet in ``steps``: work finishing the plan will not cover."""
+        planned = {step["kc_id"] for step in self.steps if step["step_type"] == "new"}
+        return sum(1 for kc_id in self.objective_kc_ids if kc_id not in planned)
+
+    # Set when a revision this plan was owed failed *after* its triggering answer had already
+    # committed. Mastery is authoritative and must be reported; the plan is derived, so it
+    # records the debt instead and the next read pays it (see services.lesson_plan).
+    revision_pending: Mapped[bool] = mapped_column(default=False)

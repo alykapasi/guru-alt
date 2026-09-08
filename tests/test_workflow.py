@@ -27,6 +27,7 @@ from app.services import assessment as assessment_svc
 from app.services import lesson_plan as lesson_plan_svc
 from app.services.turn_common import TurnEvent
 from app.services.workflow import is_awaiting_reply, run_workflow_turn
+from tests.embedding import FAKE_SPACE
 
 API = "/api/v1"
 PRESENT = "Here's a worked example. Now try: explain photosynthesis."
@@ -152,10 +153,11 @@ async def test_present_cites_retrieved_materials(db_session: AsyncSession) -> No
     db_session.add(source)
     await db_session.flush()
     chunk = Chunk(
+        embedding_space=FAKE_SPACE,
         source_id=source.id,
         ordinal=0,
         text="Photosynthesis converts light energy into chemical energy in chloroplasts.",
-        embedding=(await fake_llm_client().embed(ModelRole.EMBED, ["seed"]))[0],
+        embedding=(await fake_llm_client().embed(ModelRole.EMBED, ["seed"])).vectors[0],
         provenance={},
     )
     db_session.add(chunk)

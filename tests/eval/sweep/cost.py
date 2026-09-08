@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from pydantic import BaseModel
 
 from app.llm import LLMClient
-from app.llm.pricing import cost_usd
+from app.llm.pricing import price_usd
 from app.llm.types import ChatMessage, ChatResponse, ModelRole, ToolDef, Usage
 
 
@@ -16,11 +16,17 @@ class RoleCost(BaseModel):
     model: str
     input_tokens: int
     output_tokens: int
-    cost_usd: float
+    cost_usd: float | None  # None = no known price for this model
 
 
 class CostSummary(BaseModel):
-    cost_usd: float
+    """``cost_usd`` is None when any role in the cell ran on a model we cannot price.
+
+    A sweep ranks cheapest-first, so pricing an unknown model at 0.0 would have made it the
+    recommended configuration on the strength of a number nobody measured.
+    """
+
+    cost_usd: float | None
     total_tokens: int
     per_role: list[RoleCost]
 
@@ -70,12 +76,13 @@ class CostTrackingClient(LLMClient):
                 model=model,
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
-                cost_usd=cost_usd(model, usage),
+                cost_usd=price_usd(self.spec(role).provider, model, usage),
             )
             for (role, model), usage in sorted(self._usage.items())
         ]
+        priced = [rc.cost_usd for rc in per_role]
         return CostSummary(
-            cost_usd=sum(rc.cost_usd for rc in per_role),
+            cost_usd=None if any(c is None for c in priced) else sum(priced),
             total_tokens=sum(rc.input_tokens + rc.output_tokens for rc in per_role),
             per_role=per_role,
         )

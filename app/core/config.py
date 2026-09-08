@@ -102,6 +102,12 @@ class Settings(BaseSettings):
     # the pgvector column. Changing the EMBED model's dim is a schema migration.
     embed_dim: int = 768
 
+    # Transport limits applied to every provider SDK client. The 60s ceiling is per network
+    # read, not per turn, so a long streamed answer is unaffected — it bounds a provider that
+    # has stopped responding. Retries are the SDK's own (connection errors and 429/5xx only).
+    llm_timeout_seconds: float = 60.0
+    llm_max_retries: int = 2
+
     ollama_base_url: str = "http://localhost:11434/v1"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_api_key: str = ""
@@ -110,6 +116,23 @@ class Settings(BaseSettings):
     # Default cap on assistant output tokens for a chat turn.
     chat_max_tokens: int = 2048
 
+    # Largest message a learner may send. Rejected by the schema, before anything is paid for.
+    # Generous enough to paste a long question or a code sample; short of "paste a book".
+    chat_max_input_chars: int = 20_000
+
+    # How many prior messages a turn carries into the prompt. Every turn used to forward the
+    # *entire* conversation, so a long-running conversation's cost and context grew without
+    # bound until the provider refused it. Durable facts survive truncation through
+    # app/memory/, which is the product's existing answer to long-conversation continuity.
+    chat_history_max_messages: int = 40
+
+    # Rolling 24h per-learner ceilings, checked before a turn starts. Both are enforced
+    # because neither covers the other: cost is unknown for a model with no price entry (see
+    # app/llm/pricing.py), and tokens say nothing about how expensive a model is. Either
+    # exceeded refuses the turn. 0 disables that ceiling.
+    learner_daily_cost_usd_limit: float = 5.0
+    learner_daily_token_limit: int = 2_000_000
+
     # Max negotiation rounds for the refinement gate before it auto-commits the latest proposal.
     refinement_max_rounds: int = 3
 
@@ -117,7 +140,9 @@ class Settings(BaseSettings):
     placement_light_test_size: int = 3
 
     # Gap (minutes) beyond which two consecutive learning events are treated as different
-    # sessions — shared by every profile estimator that reasons about session-scoped behavior.
+    # sessions — shared by every profile estimator that reasons about session-scoped behavior,
+    # and by the tracer's repeat-exposure discount (mastery.recent_attempts_at_item): one
+    # notion of "the same sitting", not two that can drift apart.
     profile_session_gap_minutes: int = 30
 
     # Cap on how many KCs a generated lesson plan targets at once — cost/UX bound on a

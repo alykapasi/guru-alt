@@ -16,6 +16,7 @@ from app.models.chat import Conversation, LLMCall, Message
 from app.models.learner import Learner
 from app.models.memory import Memory, MemoryKind
 from app.services import memory as svc
+from tests.embedding import FAKE_SPACE
 
 API = "/api/v1"
 
@@ -79,12 +80,15 @@ async def test_write_back_persists_memories_and_logs_the_call(db_session: AsyncS
     rows = (await db_session.scalars(select(Memory).where(Memory.learner_id == learner.id))).all()
     assert len(rows) == 2
 
+    # Both paid calls: extracting the memories, and embedding them. The embedding used to be
+    # invisible because embed() returned bare vectors with no usage attached.
     calls = (
         await db_session.scalars(select(LLMCall).where(LLMCall.learner_id == learner.id))
     ).all()
-    assert len(calls) == 1
-    assert calls[0].role == "fast"
-    assert calls[0].conversation_id == conversation.id
+    assert sorted(c.role for c in calls) == ["embed", "fast"]
+    assert all(c.conversation_id == conversation.id for c in calls)
+    embed_call = next(c for c in calls if c.role == "embed")
+    assert embed_call.input_tokens > 0
 
 
 async def test_write_back_dedupes_against_an_existing_near_duplicate(
@@ -152,6 +156,7 @@ async def test_list_memories_most_recent_first_respects_limit(db_session: AsyncS
     for i in range(3):
         db_session.add(
             Memory(
+                embedding_space=FAKE_SPACE,
                 learner_id=learner.id,
                 conversation_id=conversation.id,
                 kind=MemoryKind.FACT,
@@ -168,7 +173,13 @@ async def test_list_memories_most_recent_first_respects_limit(db_session: AsyncS
 
 async def test_delete_memory_own_row(db_session: AsyncSession) -> None:
     learner = await _learner(db_session)
-    memory = Memory(learner_id=learner.id, kind=MemoryKind.FACT, content="x", embedding=[0.0] * 768)
+    memory = Memory(
+        embedding_space=FAKE_SPACE,
+        learner_id=learner.id,
+        kind=MemoryKind.FACT,
+        content="x",
+        embedding=[0.0] * 768,
+    )
     db_session.add(memory)
     await db_session.flush()
 
@@ -178,7 +189,13 @@ async def test_delete_memory_own_row(db_session: AsyncSession) -> None:
 
 async def test_delete_memory_foreign_row_is_a_noop(db_session: AsyncSession) -> None:
     owner, other = await _learner(db_session), await _learner(db_session)
-    memory = Memory(learner_id=owner.id, kind=MemoryKind.FACT, content="x", embedding=[0.0] * 768)
+    memory = Memory(
+        embedding_space=FAKE_SPACE,
+        learner_id=owner.id,
+        kind=MemoryKind.FACT,
+        content="x",
+        embedding=[0.0] * 768,
+    )
     db_session.add(memory)
     await db_session.flush()
 
@@ -195,9 +212,27 @@ async def test_delete_all_memories_scoped_to_the_learner(db_session: AsyncSessio
     mine, theirs = await _learner(db_session), await _learner(db_session)
     db_session.add_all(
         [
-            Memory(learner_id=mine.id, kind=MemoryKind.FACT, content="a", embedding=[0.0] * 768),
-            Memory(learner_id=mine.id, kind=MemoryKind.FACT, content="b", embedding=[0.0] * 768),
-            Memory(learner_id=theirs.id, kind=MemoryKind.FACT, content="c", embedding=[0.0] * 768),
+            Memory(
+                embedding_space=FAKE_SPACE,
+                learner_id=mine.id,
+                kind=MemoryKind.FACT,
+                content="a",
+                embedding=[0.0] * 768,
+            ),
+            Memory(
+                embedding_space=FAKE_SPACE,
+                learner_id=mine.id,
+                kind=MemoryKind.FACT,
+                content="b",
+                embedding=[0.0] * 768,
+            ),
+            Memory(
+                embedding_space=FAKE_SPACE,
+                learner_id=theirs.id,
+                kind=MemoryKind.FACT,
+                content="c",
+                embedding=[0.0] * 768,
+            ),
         ]
     )
     await db_session.flush()
@@ -252,7 +287,13 @@ async def test_get_memory_omits_the_embedding(
     db_session.add(learner)
     await db_session.flush()
     db_session.add(
-        Memory(learner_id=learner.id, kind=MemoryKind.FACT, content="x", embedding=[0.0] * 768)
+        Memory(
+            embedding_space=FAKE_SPACE,
+            learner_id=learner.id,
+            kind=MemoryKind.FACT,
+            content="x",
+            embedding=[0.0] * 768,
+        )
     )
     await db_session.flush()
 
@@ -268,7 +309,13 @@ async def test_delete_memory_endpoint(api_client: AsyncClient, db_session: Async
     learner = Learner(handle=DEV_LEARNER_HANDLE, display_name="Dev")
     db_session.add(learner)
     await db_session.flush()
-    memory = Memory(learner_id=learner.id, kind=MemoryKind.FACT, content="x", embedding=[0.0] * 768)
+    memory = Memory(
+        embedding_space=FAKE_SPACE,
+        learner_id=learner.id,
+        kind=MemoryKind.FACT,
+        content="x",
+        embedding=[0.0] * 768,
+    )
     db_session.add(memory)
     await db_session.flush()
 
@@ -284,7 +331,13 @@ async def test_delete_memory_endpoint_404s_on_foreign_row(
     other = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
     db_session.add(other)
     await db_session.flush()
-    memory = Memory(learner_id=other.id, kind=MemoryKind.FACT, content="x", embedding=[0.0] * 768)
+    memory = Memory(
+        embedding_space=FAKE_SPACE,
+        learner_id=other.id,
+        kind=MemoryKind.FACT,
+        content="x",
+        embedding=[0.0] * 768,
+    )
     db_session.add(memory)
     await db_session.flush()
 
@@ -300,8 +353,20 @@ async def test_bulk_delete_memory_endpoint(
     await db_session.flush()
     db_session.add_all(
         [
-            Memory(learner_id=learner.id, kind=MemoryKind.FACT, content="a", embedding=[0.0] * 768),
-            Memory(learner_id=learner.id, kind=MemoryKind.FACT, content="b", embedding=[0.0] * 768),
+            Memory(
+                embedding_space=FAKE_SPACE,
+                learner_id=learner.id,
+                kind=MemoryKind.FACT,
+                content="a",
+                embedding=[0.0] * 768,
+            ),
+            Memory(
+                embedding_space=FAKE_SPACE,
+                learner_id=learner.id,
+                kind=MemoryKind.FACT,
+                content="b",
+                embedding=[0.0] * 768,
+            ),
         ]
     )
     await db_session.flush()
@@ -310,3 +375,24 @@ async def test_bulk_delete_memory_endpoint(
     assert r.status_code == 204
 
     assert (await api_client.get(f"{API}/memory")).json() == []
+
+
+async def test_a_memory_from_another_embedding_model_is_not_retrieved_or_deduped_against(
+    db_session: AsyncSession,
+) -> None:
+    """Distance to a vector from a different model is not a distance to anything: it would both
+    miss real duplicates and suppress genuinely new memories at random."""
+    learner = await _learner(db_session)
+    conversation = await _conversation_with_messages(db_session, learner)
+    llm = fake_llm_client(FACT_REPLY)
+
+    first = await svc.write_back(db_session, llm, conversation_id=conversation.id)
+    assert len(first) == 2
+    for memory in first:
+        memory.embedding_space = "ollama:some-other-embedder:768"
+    await db_session.flush()
+
+    # Same conversation, same facts: dedup cannot see the old space, so they are written again.
+    second = await svc.write_back(db_session, llm, conversation_id=conversation.id)
+    assert len(second) == 2
+    assert all(m.embedding_space == FAKE_SPACE for m in second)

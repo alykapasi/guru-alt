@@ -8,7 +8,7 @@ that later feeds the tracer, the learner profile, and (eventually) DKT.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Index, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -45,6 +45,20 @@ class LearningEvent(UUIDPrimaryKeyMixin, Base):
     """
 
     __tablename__ = "learning_events"
+    # An ``attempt_id`` supplied by a caller is an idempotency key: a retried submission must
+    # update mastery once, not once per retry. Uniqueness is per (learner, attempt, KC) because
+    # one attempt legitimately writes one row per tagged KC. Partial, since ``attempt_id`` is
+    # NULL on pre-migration rows and on non-attempt events, which are not deduplicated.
+    __table_args__ = (
+        Index(
+            "uq_learning_events_learner_attempt_kc",
+            "learner_id",
+            "attempt_id",
+            "kc_id",
+            unique=True,
+            postgresql_where=text("attempt_id IS NOT NULL"),
+        ),
+    )
 
     learner_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("learners.id", ondelete="CASCADE"), index=True
@@ -53,5 +67,12 @@ class LearningEvent(UUIDPrimaryKeyMixin, Base):
         ForeignKey("kcs.id", ondelete="SET NULL"), index=True, default=None
     )
     event_type: Mapped[str] = mapped_column(index=True)
+    # One graded answer fans out into one row per tagged KC — same score, latency, hints and
+    # item, differing only in ``payload["weight"]``. ``attempt_id`` ties that fan-out back
+    # together so anything measuring the *learner's action* (activity volume, latency, hints,
+    # format effectiveness) counts it once, while each KC keeps its own evidence row.
+    # NULL on rows written before the column existed, and on non-attempt events like
+    # ``placement_seed``; treat such a row as its own attempt.
+    attempt_id: Mapped[uuid.UUID | None] = mapped_column(index=True, default=None)
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)

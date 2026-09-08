@@ -17,7 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.learning.kc_tagging import TAGGING_ROLE, load_candidate_kcs, tag_chunk
-from app.llm import LLMClient, ModelRole
+from app.llm import EmbedResult, LLMClient, ModelRole, Usage
+from app.llm.embedding_space import current_space
 from app.models.source import Chunk, ChunkKC, Source
 from app.rag.adapters import ExtractContext, select_adapter
 from app.rag.chunking import chunk_units
@@ -30,19 +31,27 @@ from app.storage import BlobStore
 
 async def embed_in_batches(
     llm: LLMClient, texts: Sequence[str], *, batch_size: int, concurrency: int
-) -> list[list[float]]:
+) -> EmbedResult:
     """Embed ``texts`` in batches of ``batch_size``, at most ``concurrency`` batches in flight.
 
-    Returns one vector per text, **in input order**. Splitting a large document's chunks keeps
-    each embed request bounded and lets batches overlap instead of one giant serial call.
+    Returns one vector per text, **in input order**, plus the summed usage across batches —
+    embedding a document is the largest single model bill in ingestion and has to be countable.
+    Splitting a large document's chunks keeps each embed request bounded and lets batches
+    overlap instead of one giant serial call.
     """
     if not texts:
-        return []
+        return EmbedResult(vectors=[])
     batches = [texts[i : i + batch_size] for i in range(0, len(texts), batch_size)]
     results = await gather_bounded(
         [llm.embed(ModelRole.EMBED, batch) for batch in batches], concurrency
     )
-    return [vector for batch_vectors in results for vector in batch_vectors]
+    return EmbedResult(
+        vectors=[vector for batch in results for vector in batch.vectors],
+        usage=Usage(
+            input_tokens=sum(batch.usage.input_tokens for batch in results),
+            output_tokens=sum(batch.usage.output_tokens for batch in results),
+        ),
+    )
 
 
 class IngestionError(RuntimeError):
@@ -94,25 +103,34 @@ async def run(
     if not chunks:
         raise EmptyExtraction("no text extracted from source")
 
-    # Log any model calls extraction made (vision-OCR); embeddings carry no usage to log.
+    # Log any model calls extraction made (vision-OCR).
     for role, usage in ctx.usage_log:
         await log_llm_call(
-            session, learner_id=source.learner_id, role=str(role), spec=llm.spec(role), usage=usage
+            learner_id=source.learner_id, role=str(role), spec=llm.spec(role), usage=usage
         )
 
-    vectors = await embed_in_batches(
+    embedded = await embed_in_batches(
         llm,
         [c.text for c in chunks],
         batch_size=settings.embed_batch_size,
         concurrency=settings.embed_concurrency,
     )
+    if embedded.usage.total_tokens:
+        await log_llm_call(
+            learner_id=source.learner_id,
+            role=str(ModelRole.EMBED),
+            spec=llm.spec(ModelRole.EMBED),
+            usage=embedded.usage,
+        )
 
     # Idempotent: replace any prior chunks for this source (their KC tags cascade away with them).
     await session.execute(delete(Chunk).where(Chunk.source_id == source.id))
     rows: list[Chunk] = []
-    for ordinal, (unit, vector) in enumerate(zip(chunks, vectors, strict=True)):
+    space = current_space(llm, dim=settings.embed_dim)
+    for ordinal, (unit, vector) in enumerate(zip(chunks, embedded.vectors, strict=True)):
         row = Chunk(
             source_id=source.id,
+            embedding_space=space,
             ordinal=ordinal,
             text=unit.text,
             embedding=vector,
@@ -158,7 +176,6 @@ async def _tag_chunks(
             session.add(ChunkKC(chunk_id=row.id, kc_id=tag.kc_id, confidence=tag.confidence))
         if usage.input_tokens or usage.output_tokens:
             await log_llm_call(
-                session,
                 learner_id=source.learner_id,
                 role=str(TAGGING_ROLE),
                 spec=llm.spec(TAGGING_ROLE),

@@ -13,7 +13,9 @@ from pydantic import BaseModel
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.llm import LLMClient, ModelRole
+from app.llm.embedding_space import current_space
 from app.models.source import Chunk, Source
 
 _RRF_K = 60  # standard reciprocal-rank-fusion constant
@@ -52,6 +54,8 @@ async def retrieve(
     if not query:
         return []
 
+    space = current_space(llm, dim=get_settings().embed_dim)
+
     def scoped(stmt: Select) -> Select:
         stmt = stmt.join(Source, Chunk.source_id == Source.id).where(
             Source.learner_id == learner_id
@@ -66,11 +70,17 @@ async def retrieve(
             stmt = stmt.where(Source.topic_id == topic_id)
         return stmt
 
-    query_vec = (await llm.embed(ModelRole.EMBED, [query]))[0]
+    query_vec = (await llm.embed(ModelRole.EMBED, [query])).vectors[0]
     tsquery = func.plainto_tsquery("english", query)
 
+    # Only vectors from the query's own space are comparable to it. Chunks embedded by a
+    # previous model are excluded rather than ranked — a wrong answer that looks right is
+    # worse than a missing one, and the keyword arm still reaches them.
     vector_q = (
-        scoped(select(Chunk)).order_by(Chunk.embedding.cosine_distance(query_vec)).limit(candidates)
+        scoped(select(Chunk))
+        .where(Chunk.embedding_space == space)
+        .order_by(Chunk.embedding.cosine_distance(query_vec))
+        .limit(candidates)
     )
     keyword_q = (
         scoped(select(Chunk))

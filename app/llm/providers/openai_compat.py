@@ -9,6 +9,7 @@ import json
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, cast
 
+import structlog
 from openai import AsyncOpenAI
 
 from app.llm.types import (
@@ -16,6 +17,7 @@ from app.llm.types import (
     ChatMessage,
     ChatResponse,
     ChatRole,
+    EmbedResult,
     ImagePart,
     TextPart,
     ToolCall,
@@ -25,23 +27,57 @@ from app.llm.types import (
     Usage,
 )
 
+log = structlog.get_logger(__name__)
+
+TRUNCATED = "length"
+"""OpenAI's ``finish_reason`` when the model hit ``max_tokens`` mid-answer."""
+
 
 def _parse_arguments(raw: str | None) -> dict[str, Any]:
-    """Tool-call arguments arrive as a JSON string; tolerate a malformed one from the model."""
+    """Tool-call arguments arrive as a JSON string; tolerate a malformed one from the model.
+
+    Tolerate, but say so: an empty argument dict and "the model produced invalid JSON" look
+    identical to the tool that receives them, and only one of those is worth investigating.
+    """
     if not raw:
         return {}
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
+        log.warning("llm.tool_arguments_unparseable", raw=raw[:200])
         return {}
-    return parsed if isinstance(parsed, dict) else {}
+    if not isinstance(parsed, dict):
+        log.warning("llm.tool_arguments_not_an_object", raw=raw[:200])
+        return {}
+    return parsed
+
+
+def _warn_if_truncated(finish_reason: str | None, *, model: str, streaming: bool) -> bool:
+    """A ``max_tokens`` cutoff is not an error to the SDK, and the caller cannot see it.
+
+    Downstream it surfaces as a JSON parse failure or a half-finished explanation with no clue
+    why, so the one place that knows records it.
+    """
+    if finish_reason != TRUNCATED:
+        return False
+    log.warning("llm.response_truncated", model=model, streaming=streaming)
+    return True
 
 
 class OpenAICompatProvider:
-    def __init__(self, *, name: str, base_url: str, api_key: str) -> None:
+    supports_embeddings = True
+
+    def __init__(
+        self, *, name: str, base_url: str, api_key: str, timeout: float, max_retries: int
+    ) -> None:
         self.name = name
         # Ollama ignores the key but the SDK requires a non-empty string.
-        self._client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed")
+        self._client = AsyncOpenAI(
+            base_url=base_url,
+            api_key=api_key or "not-needed",
+            timeout=timeout,
+            max_retries=max_retries,
+        )
 
     @staticmethod
     def _content(content: str | list) -> str | list[dict[str, Any]]:
@@ -149,13 +185,16 @@ class OpenAICompatProvider:
                 input_tokens=resp.usage.prompt_tokens,
                 output_tokens=resp.usage.completion_tokens,
             )
+        truncated = _warn_if_truncated(resp.choices[0].finish_reason, model=model, streaming=False)
         message = resp.choices[0].message
         content = message.content or ""
         tool_calls = [
             ToolCall(id=tc.id, name=tc.function.name, input=_parse_arguments(tc.function.arguments))
             for tc in (message.tool_calls or [])
         ]
-        return ChatResponse(content=content, usage=usage, model=model, tool_calls=tool_calls)
+        return ChatResponse(
+            content=content, usage=usage, model=model, tool_calls=tool_calls, truncated=truncated
+        )
 
     async def stream(
         self,
@@ -176,38 +215,48 @@ class OpenAICompatProvider:
         )
         # Unlike Anthropic, OpenAI has no server-side accumulation helper: tool calls stream
         # as index-keyed partial deltas (id/name typically only on the first delta for that
-        # index, arguments as string fragments) — accumulate per index, finalize on the
-        # usage-carrying terminal chunk.
+        # index, arguments as string fragments) — accumulate per index and finalize once.
         pending: dict[int, dict[str, str]] = {}
-        async for chunk in stream:
-            if chunk.choices:
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    yield ChatChunk(text=delta.content)
-                for tc in delta.tool_calls or []:
-                    acc = pending.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
-                    if tc.id:
-                        acc["id"] = tc.id
-                    if tc.function is not None:
-                        if tc.function.name:
-                            acc["name"] = tc.function.name
-                        if tc.function.arguments:
-                            acc["arguments"] += tc.function.arguments
-            if chunk.usage is not None:
-                tool_calls = [
-                    ToolCall(
-                        id=acc["id"], name=acc["name"], input=_parse_arguments(acc["arguments"])
-                    )
-                    for acc in pending.values()
-                ]
-                yield ChatChunk(
-                    usage=Usage(
+        usage: Usage | None = None
+        # `async with` matters here: an SSE client hanging up closes *this* generator, and
+        # without it the underlying HTTP response is left open until garbage collection.
+        async with stream:
+            async for chunk in stream:
+                if chunk.choices:
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+                    _warn_if_truncated(choice.finish_reason, model=model, streaming=True)
+                    if delta.content:
+                        yield ChatChunk(text=delta.content)
+                    for tc in delta.tool_calls or []:
+                        acc = pending.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
+                        if tc.id:
+                            acc["id"] = tc.id
+                        if tc.function is not None:
+                            if tc.function.name:
+                                acc["name"] = tc.function.name
+                            if tc.function.arguments:
+                                acc["arguments"] += tc.function.arguments
+                if chunk.usage is not None:
+                    usage = Usage(
                         input_tokens=chunk.usage.prompt_tokens,
                         output_tokens=chunk.usage.completion_tokens,
-                    ),
-                    tool_calls=tool_calls,
-                )
+                    )
+        # Finalize when the stream ends, not when usage happens to arrive. `include_usage` is
+        # an OpenAI extension: a compatible endpoint is free to ignore it, and one that does
+        # used to have every tool call it had just streamed silently discarded here.
+        tool_calls = [
+            ToolCall(id=acc["id"], name=acc["name"], input=_parse_arguments(acc["arguments"]))
+            for acc in pending.values()
+        ]
+        if usage is not None or tool_calls:
+            yield ChatChunk(usage=usage or Usage(), tool_calls=tool_calls)
 
-    async def embed(self, *, model: str, texts: Sequence[str]) -> list[list[float]]:
+    async def embed(self, *, model: str, texts: Sequence[str]) -> EmbedResult:
         resp = await self._client.embeddings.create(model=model, input=list(texts))
-        return [item.embedding for item in resp.data]
+        # Ollama's OpenAI-compatible endpoint omits usage; a missing count is 0, not a crash.
+        prompt_tokens = getattr(resp.usage, "prompt_tokens", 0) if resp.usage else 0
+        return EmbedResult(
+            vectors=[item.embedding for item in resp.data],
+            usage=Usage(input_tokens=prompt_tokens),  # embeddings produce no output tokens
+        )

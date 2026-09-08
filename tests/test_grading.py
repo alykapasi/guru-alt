@@ -2,7 +2,13 @@
 
 import pytest
 
-from app.learning.grading import NotAutoGradable, SelfGradeError, auto_grade, grade_flashcard
+from app.learning.grading import (
+    InvalidResponse,
+    NotAutoGradable,
+    SelfGradeError,
+    auto_grade,
+    grade_flashcard,
+)
 from app.models.assessment import ItemType
 
 
@@ -15,9 +21,14 @@ def test_mcq_correct_and_wrong() -> None:
     assert wrong.detail == {"chosen": 0, "correct_choice": 1}
 
 
-def test_mcq_no_answer_is_wrong() -> None:
-    result = auto_grade(ItemType.MCQ, {"correct": 1}, {})
-    assert result.score == 0.0
+def test_mcq_no_answer_is_rejected_not_scored_zero() -> None:
+    """Changed by S54: an unanswered item must not become evidence of not knowing it.
+
+    Previously this scored 0.0, which fed the tracer a wrong-answer observation for a
+    question the learner never actually answered.
+    """
+    with pytest.raises(InvalidResponse):
+        auto_grade(ItemType.MCQ, {"correct": 1}, {})
 
 
 def test_cloze_partial_credit() -> None:
@@ -69,3 +80,35 @@ def test_flashcard_bad_rating_raises() -> None:
     for bad in ({"rating": 5}, {"rating": "good"}, {}):
         with pytest.raises(SelfGradeError):
             grade_flashcard(bad)
+
+
+# --- response validation: bad input is not a wrong answer --------------------
+
+
+def test_mcq_missing_choice_raises_rather_than_scoring_zero() -> None:
+    key = {"choices": ["a", "b"], "correct": 1}
+    with pytest.raises(InvalidResponse):
+        auto_grade(ItemType.MCQ, key, {})
+
+
+def test_mcq_non_integer_choice_raises() -> None:
+    key = {"choices": ["a", "b"], "correct": 1}
+    with pytest.raises(InvalidResponse):
+        auto_grade(ItemType.MCQ, key, {"choice": "b"})
+
+
+def test_mcq_out_of_range_choice_raises() -> None:
+    key = {"choices": ["a", "b"], "correct": 1}
+    with pytest.raises(InvalidResponse):
+        auto_grade(ItemType.MCQ, key, {"choice": 7})
+
+
+def test_blanks_missing_key_raises() -> None:
+    with pytest.raises(InvalidResponse):
+        auto_grade(ItemType.CLOZE, {"blanks": ["a"]}, {})
+
+
+def test_short_blanks_list_still_grades_partially() -> None:
+    """A too-short answer is a real (partial) attempt, not malformed input."""
+    result = auto_grade(ItemType.FILL_BLANK, {"blanks": ["a", "b"]}, {"blanks": ["a"]})
+    assert result.score == 0.5

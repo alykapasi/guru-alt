@@ -29,6 +29,10 @@ export function NoteView() {
   const setFormat = useSetFormat(id);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  // The revision this draft was written against — sent on save so a note that changed
+  // underneath (a background refresh, another tab) is a conflict rather than a silent
+  // overwrite. The editor stays open on that error, so the text is never lost.
+  const [draftBase, setDraftBase] = useState<number | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const refreshedRef = useRef(false);
 
@@ -80,6 +84,7 @@ export function NoteView() {
               className="btn btn-ghost btn-sm"
               onClick={() => {
                 setDraft(note.content_md ?? "");
+                setDraftBase(note.revision_ordinal);
                 setEditing(true);
               }}
             >
@@ -114,7 +119,12 @@ export function NoteView() {
               type="button"
               className="btn btn-primary btn-sm"
               disabled={edit.isPending || draft.trim().length === 0}
-              onClick={() => edit.mutate(draft, { onSuccess: () => setEditing(false) })}
+              onClick={() =>
+                edit.mutate(
+                  { contentMd: draft, expectedRevisionOrdinal: draftBase },
+                  { onSuccess: () => setEditing(false) },
+                )
+              }
             >
               {edit.isPending ? "Saving…" : "Save"}
             </button>

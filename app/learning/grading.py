@@ -19,6 +19,15 @@ class SelfGradeError(ValueError):
     """A flashcard self-rating was missing or malformed."""
 
 
+class InvalidResponse(ValueError):
+    """The response does not fit the item type — bad input, not a wrong answer.
+
+    Grading a malformed submission as 0.0 would feed the tracer evidence that the learner
+    does not know the material, when in fact nothing was answered. Callers surface this as a
+    client error instead of an observation.
+    """
+
+
 _RATING_SCORE: dict[int, float] = {1: 0.2, 2: 0.5, 3: 0.8, 4: 1.0}
 """FSRS-style self rating (1=Again … 4=Easy) → a continuous score for the tracer."""
 
@@ -64,7 +73,12 @@ def grade_flashcard(response: dict) -> GradeResult:
 def _grade_mcq(answer_key: dict, response: dict) -> GradeResult:
     correct_choice = answer_key.get("correct")
     chosen = response.get("choice")
-    correct = chosen is not None and chosen == correct_choice
+    if not isinstance(chosen, int) or isinstance(chosen, bool):
+        raise InvalidResponse("mcq response needs an integer 'choice'")
+    choices = answer_key.get("choices") or []
+    if choices and not 0 <= chosen < len(choices):
+        raise InvalidResponse(f"'choice' {chosen} is outside the item's {len(choices)} choices")
+    correct = chosen == correct_choice
     return GradeResult(
         score=1.0 if correct else 0.0,
         correct=correct,
@@ -76,7 +90,9 @@ def _grade_blanks(answer_key: dict, response: dict) -> GradeResult:
     key_blanks = answer_key.get("blanks") or []
     if not key_blanks:
         raise NotAutoGradable("item has no answer-key blanks")
-    given = response.get("blanks") or []
+    given = response.get("blanks")
+    if not isinstance(given, list):
+        raise InvalidResponse("cloze/fill_blank response needs a 'blanks' list")
     hits = []
     for i, accepted in enumerate(key_blanks):
         options = [accepted] if isinstance(accepted, str) else list(accepted)

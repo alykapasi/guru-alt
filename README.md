@@ -172,8 +172,10 @@ All backend tasks run through `poethepoet`. List them with `uv run poe --help`.
 | Command | Description |
 | ------- | ----------- |
 | `uv run poe check` | **The green gate:** lint + type-check + test |
-| `uv run poe test` | Run the test suite |
+| `uv run poe test` | Run the test suite (on its own `_test` database) |
 | `uv run poe test-watch` | Run tests fail-fast in watch mode |
+| `uv run poe test-db-init` | Create + migrate the test database (implied by `poe test`) |
+| `uv run poe db-check` | Fail if a model has drifted from the migrations |
 | `uv run poe lint` | Lint with ruff |
 | `uv run poe format` | Auto-format with ruff |
 | `uv run poe format-check` | Check formatting without modifying |
@@ -251,8 +253,14 @@ uv run poe test          # tests only
 ```
 
 The suite runs **fully offline and deterministically**: LLM calls go through a `FakeProvider`, ASR
-and video demux through fakes, and the job broker in-memory. Integration tests use the Postgres
-started by `docker compose`.
+and video demux through fakes, and the job broker in-memory. A handful of tests do call a real
+local model — the provider integration test, the eval rubric, vision OCR — and those are opt-in
+(`GURU_LIVE_MODEL_TESTS=1`), because a cold model turns a 25-second suite into a 20-minute one and
+makes it fail for reasons unrelated to the code. Integration tests use the Postgres started by
+`docker compose` — but on **their own database**, `<your db>_test`, created and migrated
+automatically by `poe test`. Tests assert on global rows (total LLM calls, event counts) and claim
+the fixed dev learner handle, so a dev server writing to the same database would fail them for
+reasons unrelated to the code. See `tests/testdb.py`.
 
 Beyond the pass/fail suite, `tests/eval/` holds the measurement layer — a golden/live **harness**,
 the config **sweep** runner + MLflow tracking, real-data **datasets** mined from the event log, and

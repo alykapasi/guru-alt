@@ -201,6 +201,13 @@ metadata filters (KC, source, learner scope). Results fused (e.g. reciprocal-ran
 re-rank later. Retrieval is always **scoped** (by guru/KC/learner) and returns provenance for
 grounded, citable generation.
 
+> Measured 2026-09-08 (S76): because retrieval is always scoped, the vector arm is answered
+> **exactly** — the join to `sources` keeps the planner on `ix_chunks_source_id` and the HNSW
+> index is never reached. That is correct and, per pgvector's own guidance, appropriate for a
+> selective filter; it costs about 4 µs per chunk the learner owns. `poe retrieval-recall`
+> reports the plan, its recall against an exact baseline, and the `ef_search` trade if we ever
+> want the index instead.
+
 ---
 
 ## 7. The Learning Engine
@@ -238,6 +245,15 @@ class KnowledgeTracer(Protocol):
 `Observation` carries `learner_id`, `kc_ids` (+weights for multi-KC items), `score ∈ [0,1]` (partial
 credit), `item difficulty`, latency, hints. Implementations are swappable (Elo/Glicko now → DKT
 later) and may be ensembled.
+
+**Assistance discount.** Mastery is a claim about unaided ability, so an assisted attempt is a
+noisier measurement of it, not a smaller success. Hints reported by the caller plus prior attempts
+at the same item *in the same sitting* scale the observation's weight by `1 / (1 + scaffolds)`
+(`app/learning/assistance.py`), which in a Glicko update reduces both the ability move and the
+uncertainty shrinkage — symmetrically, in either direction. Guided practice hints and re-asks the
+same problem, so without this three scaffolded rounds read as three independent demonstrations.
+Repeat exposure is windowed: meeting the same item weeks later is the retention practice FSRS
+schedules and counts fully.
 
 ### 7.3 Continuous estimator (Elo/Glicko-style) — baseline
 

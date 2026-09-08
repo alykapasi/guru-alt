@@ -80,7 +80,12 @@ uv run alembic revision --autogenerate -m "short description"
 
 uv run alembic current                # which revision is applied
 uv run alembic history --verbose      # full migration history
+uv run poe db-check                   # fail if a model has drifted from the migrations
 ```
+
+`db-check` is `alembic check`: it autogenerates against the live database and fails if that
+would produce any operation — i.e. someone changed `app/models/` without writing the migration.
+CI runs it, so a drifted model is caught before it reaches anyone else's database.
 
 **Open a psql shell:**
 
@@ -202,9 +207,24 @@ axes:
   smart:                         # candidate models for the SMART role
     - {provider: openrouter, model: claude-sonnet-4-6}
     - {provider: ollama,     model: llama3.2}
-gen_config: [{}]
+gen_config: [{}]                 # see below — only declared settings are accepted
 toggles: {}
 ```
+
+**A sweep may only vary what it can actually apply.** `gen_config` keys and `toggles` names are
+checked against `tests/eval/sweep/settings.py` when the config loads, and an unknown one is
+refused before the first paid call. Varying a setting nothing applies would produce two identical
+runs reported as a comparison — a wrong answer, not a missing one. Currently declared:
+
+| setting | kind | suite | effect |
+| --- | --- | --- | --- |
+| `kc_tag_min_confidence` | `gen_config` | `kc_tagging` | confidence a predicted tag must reach to be kept (0.0–1.0) |
+| `strict_kc_tagging` | `toggle` | `kc_tagging` | shorthand for `kc_tag_min_confidence: 0.7` |
+
+Nothing tunes the `rubric` or `retrieval` suites yet; adding a knob means declaring it there and
+wiring it through `run_cell`. Each run also records every role's resolved `provider:model` (not
+only the swept ones), the settings **as applied**, and a digest of the golden case file it scored
+against, so a run can be reproduced from its own record.
 
 ```bash
 uv run poe sweep tests/eval/experiments/my-sweep.yaml
@@ -250,6 +270,25 @@ uv run poe check     # confirm the committed artifact loads cleanly
 If the delta is negative or zero, leave the artifact uncommitted — the runtime keeps using the
 uncompiled fallback, which is the safe default.
 
+### 6.5 Retrieval recall + plan (S76) — needs a live DB, no model
+
+```bash
+uv run poe retrieval-recall                # 40k synthetic chunks (a few minutes)
+uv run poe retrieval-recall --rows 5000    # quicker, less representative
+```
+
+Seeds its own throwaway database (`<db>_recall`) and reports three things about the vector arm:
+which plan Postgres actually chooses for the scoped query, that plan's recall against the same
+query forced onto an exact scan, and what the HNSW index would give instead across
+`hnsw.ef_search`. It exists because whether retrieval is exact or approximate is the planner's
+decision, not ours, and the two fail in completely different ways.
+
+As of 2026-09-08 the answer is **exact**: the join to `sources` keeps the planner on
+`ix_chunks_source_id`, so the HNSW index is never reached and costs about 4 µs per chunk the
+learner owns. Recall figures for the index-reachable shape are a *lower bound* — the vectors are
+synthetic and near-uniform, which is close to worst case for a graph index. See S76 in the
+suggestions tracker for the numbers and what they do and do not license.
+
 ---
 
 ## 7. Before you merge
@@ -259,9 +298,50 @@ uv run poe check     # lint + type-check + full test suite — the gate. Must be
 ```
 
 The suite runs **fully offline** (FakeProvider for LLMs, fakes for ASR/demux, in-memory broker), so
-a green local run means a green CI run. CI additionally applies migrations against a pgvector
-service. Pre-commit hooks (`uv run poe hooks-install`) catch format/lint/type issues before they
-reach a commit.
+a green local run means a green CI run.
+
+**Live-model tests are opt-in.** The provider integration test, the eval rubric suite and vision
+OCR call a real local model; they skip unless `GURU_LIVE_MODEL_TESTS=1` and Ollama has a matching
+model pulled:
+
+```bash
+GURU_LIVE_MODEL_TESTS=1 uv run poe test
+```
+
+They used to run automatically whenever Ollama happened to be reachable, which is why `poe test`
+could take twenty minutes on a laptop and twenty-five seconds in CI, and could fail on a model's
+mood rather than on the code. Pre-commit hooks (`uv run poe hooks-install`) catch
+format/lint/type issues before they reach a commit.
+
+**Tests run on their own database.** `poe test` first runs `poe test-db-init`, which creates and
+migrates `<your database>_test` (derived from `GURU_DATABASE_URL` — same host, same credentials)
+and points the suite at it. This is not cosmetic: several tests assert on *global* rows (total
+`llm_calls`, event counts) and claim the fixed `dev` learner handle, so a dev server writing to the
+same database makes them fail for reasons that have nothing to do with the code. If you see a burst
+of unrelated failures, check you aren't overriding `GURU_DATABASE_URL` to a database something else
+is using.
+
+CI runs three gates: this suite, `alembic upgrade head` + `db-check` against a fresh pgvector
+service, and a separate **frontend** job (`npm ci && npm run lint && npm run build` — `build` is
+`tsc -b`, so it is the frontend's type-check too).
+
+> **Check the frontend with `npm run build`, never `npx tsc --noEmit`.** The root `tsconfig.json`
+> is solution-style (`"files": []` plus project references), so a bare `tsc --noEmit` type-checks
+> *zero* files and exits 0 on code it never read. Only `tsc -b` follows the references.
+
+After changing any response schema, regenerate the frontend's API types, or the client compiles
+against a contract the server no longer serves:
+
+```bash
+uv run python -c "import json; from app.main import app; json.dump(app.openapi(), open('/tmp/openapi.json','w'))"
+npx -y openapi-typescript@7.13.0 /tmp/openapi.json -o frontend/src/api/schema.d.ts
+```
+
+`openapi-typescript` is fetched per-run rather than installed: it declares a peer dependency on
+TypeScript 5, the frontend is on 6, and `npm ci` refuses the conflict. It generates correct output
+against 6 — the constraint is stale, not real — but keeping it out of the dependency graph means
+`npm ci` stays strict instead of being run with `--legacy-peer-deps`, which would hide the next
+conflict too. The version is pinned at the call site.
 
 ---
 

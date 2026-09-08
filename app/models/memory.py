@@ -62,3 +62,7 @@ class Memory(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     kind: Mapped[str] = mapped_column(index=True)  # MemoryKind
     content: Mapped[str] = mapped_column(Text)
     embedding: Mapped[Any] = mapped_column(Vector(_EMBED_DIM))
+    # Which embedding model produced `embedding` ("provider:model:dim"). Vectors are only
+    # comparable within one space, and swapping to a same-dimension model is a config edit
+    # that would otherwise leave no trace — see app/llm/embedding_space.py.
+    embedding_space: Mapped[str] = mapped_column(index=True)

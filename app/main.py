@@ -6,6 +6,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.deps import get_llm_client
 from app.api.v1 import api_router
 from app.core.config import get_settings
 from app.core.db import engine
@@ -19,7 +20,10 @@ log = structlog.get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Startup/shutdown: log lifecycle and dispose the DB engine on exit."""
+    """Startup/shutdown: validate the model registry, log lifecycle, dispose the engine."""
+    # Building the registry validates the role→provider map (see llm.registry). Doing it here
+    # turns a typo in GURU_MODEL_* into a refusal to start, not a 500 mid-conversation.
+    get_llm_client()
     log.info("app.startup", env=str(settings.env))
     yield
     await engine.dispose()

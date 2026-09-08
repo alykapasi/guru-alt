@@ -14,12 +14,13 @@ from app.llm.registry import fake_llm_client
 from app.memory import retrieval
 from app.models.learner import Learner
 from app.models.memory import Memory, MemoryKind
+from tests.embedding import FAKE_SPACE
 
 _FAKE = fake_llm_client()
 
 
 async def _embed(text: str) -> list[float]:
-    return (await _FAKE.embed(ModelRole.EMBED, [text]))[0]
+    return (await _FAKE.embed(ModelRole.EMBED, [text])).vectors[0]
 
 
 async def _learner(session: AsyncSession) -> Learner:
@@ -38,6 +39,7 @@ async def _memory(
     embedding: list[float] | None = None,
 ) -> Memory:
     memory = Memory(
+        embedding_space=FAKE_SPACE,
         learner_id=learner.id,
         kind=kind,
         content=content,

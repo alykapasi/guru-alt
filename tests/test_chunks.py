@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
+from tests.embedding import FAKE_SPACE
 
 _DIM = 768
 
@@ -36,6 +37,7 @@ async def _seed_source(session: AsyncSession) -> Source:
 async def test_source_and_chunk_roundtrip(db_session: AsyncSession) -> None:
     source = await _seed_source(db_session)
     chunk = Chunk(
+        embedding_space=FAKE_SPACE,
         source_id=source.id,
         ordinal=0,
         text="The mitochondria is the powerhouse of the cell.",
@@ -58,8 +60,20 @@ async def test_source_and_chunk_roundtrip(db_session: AsyncSession) -> None:
 
 async def test_cosine_search_returns_nearest(db_session: AsyncSession) -> None:
     source = await _seed_source(db_session)
-    near = Chunk(source_id=source.id, ordinal=0, text="alpha", embedding=_vec(1.0, 0.0))
-    far = Chunk(source_id=source.id, ordinal=1, text="beta", embedding=_vec(0.0, 1.0))
+    near = Chunk(
+        embedding_space=FAKE_SPACE,
+        source_id=source.id,
+        ordinal=0,
+        text="alpha",
+        embedding=_vec(1.0, 0.0),
+    )
+    far = Chunk(
+        embedding_space=FAKE_SPACE,
+        source_id=source.id,
+        ordinal=1,
+        text="beta",
+        embedding=_vec(0.0, 1.0),
+    )
     db_session.add_all([near, far])
     await db_session.flush()
 
@@ -75,12 +89,14 @@ async def test_generated_tsv_supports_full_text_search(db_session: AsyncSession)
     db_session.add_all(
         [
             Chunk(
+                embedding_space=FAKE_SPACE,
                 source_id=source.id,
                 ordinal=0,
                 text="Photosynthesis converts light to energy.",
                 embedding=_vec(1.0),
             ),
             Chunk(
+                embedding_space=FAKE_SPACE,
                 source_id=source.id,
                 ordinal=1,
                 text="Newton described the laws of motion.",
@@ -102,7 +118,15 @@ async def test_generated_tsv_supports_full_text_search(db_session: AsyncSession)
 
 async def test_deleting_source_cascades_to_chunks(db_session: AsyncSession) -> None:
     source = await _seed_source(db_session)
-    db_session.add(Chunk(source_id=source.id, ordinal=0, text="x", embedding=_vec(1.0)))
+    db_session.add(
+        Chunk(
+            embedding_space=FAKE_SPACE,
+            source_id=source.id,
+            ordinal=0,
+            text="x",
+            embedding=_vec(1.0),
+        )
+    )
     await db_session.flush()
 
     await db_session.delete(source)

@@ -15,7 +15,7 @@ from app.learning import mastery
 from app.learning.activity import momentum_trend, streak_days
 from app.learning.tracer import Estimate, aggregate
 from app.models.knowledge import KC, Topic
-from app.models.learning import LearningEvent
+from app.models.learning import LearnerKCState, LearningEvent
 from app.schemas.analytics import ActivityRead, KCMasteryRead, SubjectMasteryRead, TopicMasteryRead
 from app.services.lesson_plan import MASTERY_ABILITY_THRESHOLD, MASTERY_UNCERTAINTY_THRESHOLD
 
@@ -34,8 +34,23 @@ async def subject_mastery(
     "Calculus 62% (wide)" down into "Integrals 40%, integration-by-parts weakest")."""
     now = datetime.now(UTC)
     topics = (await session.scalars(select(Topic).where(Topic.subject_id == subject_id))).all()
+    # One query for "which components has this learner ever been observed on". An unseen
+    # component estimates to the prior (ability 0), which renders as 50% — indistinguishable
+    # from a measured average unless the coverage is reported alongside it.
+    assessed = set(
+        (
+            await session.scalars(
+                select(LearnerKCState.kc_id)
+                .join(KC, KC.id == LearnerKCState.kc_id)
+                .join(Topic, Topic.id == KC.topic_id)
+                .where(LearnerKCState.learner_id == learner_id, Topic.subject_id == subject_id)
+            )
+        ).all()
+    )
 
     topic_reads: list[TopicMasteryRead] = []
+    subject_assessed = 0
+    subject_total = 0
     subject_estimates: list[Estimate] = []
     subject_weights: list[float] = []
     for topic in topics:
@@ -52,9 +67,13 @@ async def subject_mastery(
                     ability=estimate.ability,
                     uncertainty=estimate.uncertainty,
                     mastered=_is_mastered(estimate),
+                    assessed=kc.id in assessed,
                 )
             )
         topic_estimate = await mastery.rollup_topic(session, learner_id, topic.id, now=now)
+        topic_assessed = sum(1 for kc in kc_reads if kc.assessed)
+        subject_assessed += topic_assessed
+        subject_total += len(kc_reads)
         topic_reads.append(
             TopicMasteryRead(
                 topic_id=topic.id,
@@ -62,6 +81,8 @@ async def subject_mastery(
                 ability=topic_estimate.ability,
                 uncertainty=topic_estimate.uncertainty,
                 mastered=_is_mastered(topic_estimate),
+                assessed_kcs=topic_assessed,
+                total_kcs=len(kc_reads),
                 kcs=kc_reads,
             )
         )
@@ -74,6 +95,8 @@ async def subject_mastery(
         ability=subject_estimate.ability,
         uncertainty=subject_estimate.uncertainty,
         mastered=_is_mastered(subject_estimate),
+        assessed_kcs=subject_assessed,
+        total_kcs=subject_total,
         topics=topic_reads,
     )
 
@@ -90,15 +113,26 @@ async def get_activity(session: AsyncSession, learner_id: uuid.UUID) -> Activity
     today = now.date()
     naive_now = now.replace(tzinfo=None)
     lookback_start = naive_now - timedelta(days=90)
-    timestamps = (
-        await session.scalars(
-            select(LearningEvent.created_at).where(
+    rows = (
+        await session.execute(
+            select(LearningEvent.created_at, LearningEvent.attempt_id, LearningEvent.id).where(
                 LearningEvent.learner_id == learner_id,
                 LearningEvent.event_type == "observation",
                 LearningEvent.created_at >= lookback_start,
             )
         )
     ).all()
+    # One answer fans out into a row per tagged KC. Count the attempt, not the evidence, or
+    # momentum would reward broad KC tagging over learner effort. Rows written before
+    # attempt_id existed have none and each stand alone.
+    seen: set[uuid.UUID] = set()
+    timestamps: list[datetime] = []
+    for created_at, attempt_id, _event_id in rows:
+        if attempt_id is not None:
+            if attempt_id in seen:
+                continue
+            seen.add(attempt_id)
+        timestamps.append(created_at)  # no attempt id: the row is its own attempt
 
     active_days = {ts.date() for ts in timestamps}
     last_7d_start = naive_now - timedelta(days=7)

@@ -9,7 +9,6 @@ import base64
 import uuid
 from pathlib import Path
 
-import httpx
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +23,7 @@ from app.rag.adapters.image import ImageOcrAdapter
 from app.rag.ocr import ocr_image
 from app.services import ingestion
 from app.storage import InMemoryBlobStore
+from tests.live_models import SKIP_REASON, pick_model
 
 # A 1x1 PNG — enough bytes to exercise the image path (and a real vision call).
 _PNG = base64.b64decode(
@@ -100,33 +100,26 @@ async def test_ingest_image_ocrs_and_logs_cost(db_session: AsyncSession) -> None
     assert calls[0].learner_id == learner.id
 
 
-# --- live vision model (skipped without one) --------------------------------
+# --- live vision model (opt-in via GURU_LIVE_MODEL_TESTS=1) ------------------
 
 _OLLAMA = get_settings().ollama_base_url
 _VISION_PREFIXES = ("llama3.2-vision", "llava", "moondream", "bakllava", "qwen2.5vl", "minicpm-v")
 
-
-def _pick_vision_model() -> str | None:
-    try:
-        resp = httpx.get(f"{_OLLAMA}/models", timeout=2.0)
-        resp.raise_for_status()
-        ids = [m["id"] for m in resp.json().get("data", [])]
-    except Exception:
-        return None
-    return next((m for m in ids for p in _VISION_PREFIXES if m.startswith(p)), None)
+# A vision model is the slowest thing this repo can ask a laptop to load, which makes it the
+# most important one to keep out of the default run.
+_VISION_MODEL = pick_model(_VISION_PREFIXES, exclude=None)
 
 
-_VISION_MODEL = _pick_vision_model()
-
-
-@pytest.mark.skipif(_VISION_MODEL is None, reason="no local Ollama vision model pulled")
+@pytest.mark.skipif(_VISION_MODEL is None, reason=SKIP_REASON)
 async def test_ocr_against_live_vision_model() -> None:
     from app.llm import ModelRole
     from app.llm.providers.openai_compat import OpenAICompatProvider
     from app.llm.registry import LLMClient, ModelSpec
 
     assert _VISION_MODEL is not None
-    provider = OpenAICompatProvider(name="ollama", base_url=_OLLAMA, api_key="")
+    provider = OpenAICompatProvider(
+        name="ollama", base_url=_OLLAMA, api_key="", timeout=30.0, max_retries=0
+    )
     client = LLMClient({"ollama": provider}, {ModelRole.VISION: ModelSpec("ollama", _VISION_MODEL)})
     text, _usage = await ocr_image(client, _PNG, media_type="image/png")
     assert isinstance(text, str)  # a real vision model returns *some* description

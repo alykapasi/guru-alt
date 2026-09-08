@@ -10,6 +10,7 @@ import base64
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, cast
 
+import structlog
 from anthropic import AsyncAnthropic
 
 from app.llm.types import (
@@ -17,6 +18,7 @@ from app.llm.types import (
     ChatMessage,
     ChatResponse,
     ChatRole,
+    EmbedResult,
     ImagePart,
     TextPart,
     ToolCall,
@@ -27,12 +29,29 @@ from app.llm.types import (
     text_of,
 )
 
+log = structlog.get_logger(__name__)
+
+TRUNCATED = "max_tokens"
+"""Anthropic's ``stop_reason`` when the model hit ``max_tokens`` mid-answer."""
+
+
+def _warn_if_truncated(stop_reason: str | None, *, model: str, streaming: bool) -> bool:
+    """A ``max_tokens`` cutoff is not an error to the SDK, and the caller cannot see it —
+    downstream it surfaces as a JSON parse failure or a half-finished answer with no clue why."""
+    if stop_reason != TRUNCATED:
+        return False
+    log.warning("llm.response_truncated", model=model, streaming=streaming)
+    return True
+
 
 class AnthropicProvider:
     name = "anthropic"
+    supports_embeddings = False
 
-    def __init__(self, *, api_key: str) -> None:
-        self._client = AsyncAnthropic(api_key=api_key or "missing")
+    def __init__(self, *, api_key: str, timeout: float, max_retries: int) -> None:
+        self._client = AsyncAnthropic(
+            api_key=api_key or "missing", timeout=timeout, max_retries=max_retries
+        )
 
     @staticmethod
     def _content(content: str | list) -> str | list[dict[str, Any]]:
@@ -125,7 +144,10 @@ class AnthropicProvider:
             if b.type == "tool_use"
         ]
         usage = Usage(input_tokens=msg.usage.input_tokens, output_tokens=msg.usage.output_tokens)
-        return ChatResponse(content=content, usage=usage, model=model, tool_calls=tool_calls)
+        truncated = _warn_if_truncated(msg.stop_reason, model=model, streaming=False)
+        return ChatResponse(
+            content=content, usage=usage, model=model, tool_calls=tool_calls, truncated=truncated
+        )
 
     async def stream(
         self,
@@ -147,6 +169,7 @@ class AnthropicProvider:
             # get_final_message() accumulates streamed input_json_delta fragments for us —
             # final.content's ToolUseBlock.input is already a fully-parsed dict.
             final = await stream.get_final_message()
+            _warn_if_truncated(final.stop_reason, model=model, streaming=True)
             tool_calls = [
                 ToolCall(id=b.id, name=b.name, input=b.input)
                 for b in final.content
@@ -160,7 +183,7 @@ class AnthropicProvider:
                 tool_calls=tool_calls,
             )
 
-    async def embed(self, *, model: str, texts: Sequence[str]) -> list[list[float]]:
+    async def embed(self, *, model: str, texts: Sequence[str]) -> EmbedResult:
         raise NotImplementedError(
             "Anthropic has no embeddings API; route the EMBED role to ollama/openrouter."
         )

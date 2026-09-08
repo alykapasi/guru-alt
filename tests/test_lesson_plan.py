@@ -1,12 +1,16 @@
 """Lesson plan: service + HTTP level (dynamic-revision/orchestration layer)."""
 
+import itertools
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.llm.registry import fake_llm_client
 from app.models.assessment import Item, ItemKC, ItemType
 from app.models.knowledge import KC, KCEdge, Subject, Topic
@@ -403,3 +407,152 @@ async def test_lesson_plan_endpoints_round_trip(
     assert r.status_code == 404
     r = await api_client.get(f"{API}/subjects/{uuid.uuid4()}/lesson-plan")
     assert r.status_code == 404
+
+
+# --- a failed revision must not lose a committed grade (S35) ------------------
+
+
+async def test_a_failed_revision_still_reports_the_grade_and_records_the_debt(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mastery is authoritative and already committed; the derived plan carries the failure."""
+    learner, subject, root, _dependent = await _graph(db_session)
+    # The repair path rolls the session back, expiring loaded rows — hold plain ids, not ORM
+    # objects, across the call (the states answer_item returns are re-read for exactly this).
+    learner_id, subject_id = learner.id, subject.id
+    await _due_review_state(db_session, learner_id, root.id)
+    await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner_id, subject_id=subject_id, goal=None
+    )
+    item = await _mcq_item(db_session, root.id)
+
+    async def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("revision exploded")
+
+    monkeypatch.setattr(assessment_svc.lesson_plan_svc, "revise_plan", boom)
+    result, states = await assessment_svc.answer_item(
+        db_session, learner_id, item, AnswerSubmit(response={"choice": 0}), llm=fake_llm_client()
+    )
+
+    # The learner is told what they earned, once.
+    assert result.score == 1.0 and len(states) == 1
+    events = (
+        await db_session.scalars(
+            select(LearningEvent).where(LearningEvent.learner_id == learner_id)
+        )
+    ).all()
+    assert len(events) == 1
+
+    plan = await svc._get_plan(db_session, learner_id, subject_id)
+    assert plan is not None and plan.revision_pending is True
+
+
+async def test_a_pending_plan_repairs_itself_on_the_next_read(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plan catches up without the learner having to answer anything else."""
+    learner, subject, root, _dependent = await _graph(db_session)
+    learner_id, subject_id, root_id = learner.id, subject.id, root.id
+    await _due_review_state(db_session, learner_id, root_id)
+    plan = await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner_id, subject_id=subject_id, goal=None
+    )
+    assert plan.steps[0]["status"] == "active"
+    item = await _mcq_item(db_session, root_id)
+
+    async def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("revision exploded")
+
+    monkeypatch.setattr(assessment_svc.lesson_plan_svc, "revise_plan", boom)
+    await assessment_svc.answer_item(
+        db_session, learner_id, item, AnswerSubmit(response={"choice": 0}), llm=fake_llm_client()
+    )
+    monkeypatch.undo()
+
+    repaired = await svc.get_lesson_plan(db_session, learner_id, subject_id)
+    assert repaired is not None
+    assert repaired.revision_pending is False
+    review_step = next(
+        s for s in repaired.steps if s["kc_id"] == str(root_id) and s["step_type"] == "review"
+    )
+    assert review_step["status"] == "done"  # the revision the failed one owed
+
+
+async def test_a_healthy_read_still_does_not_recompute(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repair-on-read must not turn every plan read into a revision."""
+    learner, subject, _root, _dependent = await _graph(db_session)
+    await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+
+    async def boom(*args: object, **kwargs: object) -> None:
+        raise AssertionError("get_lesson_plan recomputed a plan that owed nothing")
+
+    monkeypatch.setattr(svc, "revise_plan", boom)
+    assert await svc.get_lesson_plan(db_session, learner.id, subject.id) is not None
+
+
+# --- a goal bigger than the step cap is worked through, not truncated (S63) ---
+
+
+async def _chain(db_session: AsyncSession, length: int) -> tuple[Learner, Subject, list[KC]]:
+    """A prerequisite chain kc0 -> kc1 -> ... -> kc(n-1), so topo order is exactly that."""
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Long")
+    db_session.add_all([learner, subject])
+    await db_session.flush()
+    topic = Topic(subject_id=subject.id, slug="t", name="T")
+    db_session.add(topic)
+    await db_session.flush()
+    kcs = [KC(topic_id=topic.id, slug=f"kc-{i:03d}", name=f"KC {i}") for i in range(length)]
+    db_session.add_all(kcs)
+    await db_session.flush()
+    for prereq, dependent in itertools.pairwise(kcs):
+        db_session.add(KCEdge(kc_id=dependent.id, prereq_kc_id=prereq.id))
+    await db_session.flush()
+    return learner, subject, kcs
+
+
+async def test_a_goal_deeper_than_the_cap_records_the_whole_objective(
+    db_session: AsyncSession,
+) -> None:
+    learner, subject, kcs = await _chain(db_session, get_settings().lesson_plan_max_steps + 5)
+    plan = await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+
+    assert len(plan.steps) == get_settings().lesson_plan_max_steps  # the horizon is still capped
+    assert plan.objective_kc_count == len(kcs)  # but the goal is not
+    assert plan.deferred_kc_count == 5
+    # The last KC — the one everything else is a prerequisite for — is not in the window yet.
+    assert str(kcs[-1].id) not in {s["kc_id"] for s in plan.steps}
+
+
+async def test_finishing_the_window_advances_it_instead_of_ending_the_plan(
+    db_session: AsyncSession,
+) -> None:
+    """Completing the first twenty prerequisites must not read as completing the goal."""
+    cap = get_settings().lesson_plan_max_steps
+    learner, subject, kcs = await _chain(db_session, cap + 5)
+    await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+    for kc in kcs[:cap]:
+        await _mastered_state(db_session, learner.id, kc.id)
+
+    revised = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert revised is not None
+    planned = {s["kc_id"] for s in revised.steps}
+    assert str(kcs[-1].id) in planned  # the actual target is now in front of the learner
+    assert revised.deferred_kc_count == 0
+    assert any(s["status"] == "active" for s in revised.steps)  # and the plan is not "finished"
+
+
+async def test_a_goal_inside_the_cap_defers_nothing(db_session: AsyncSession) -> None:
+    learner, subject, _kcs = await _chain(db_session, 3)
+    plan = await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+    assert plan.objective_kc_count == 3 and plan.deferred_kc_count == 0

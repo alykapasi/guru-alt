@@ -7,8 +7,10 @@ pure reads — the work happens behind explicit refresh/edit calls, avoiding the
 """
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 from sqlalchemy import delete, select
@@ -20,7 +22,7 @@ from app.learning.note_distill import FALLBACK_FORMAT, FORMATS, NOTES_ROLE
 from app.llm import LLMClient
 from app.models.assessment import Item
 from app.models.chat import Conversation, Message
-from app.models.knowledge import KC, Topic
+from app.models.knowledge import KC, Subject, Topic
 from app.models.learning import LearningEvent
 from app.models.note import WATERMARK_EPOCH, Note, NoteRender, NoteRevision
 from app.models.profile import ProfileDimension
@@ -86,8 +88,19 @@ async def _reading_level(session: AsyncSession, learner_id: uuid.UUID) -> object
     return await _dimension_value(session, learner_id, "reading_level")
 
 
+def _cursors(note: Note | None) -> tuple[datetime, datetime]:
+    """This note's (messages, events) cursors — EPOCH for a note that does not exist yet."""
+    if note is None:
+        return EPOCH, EPOCH
+    return note.messages_watermark, note.events_watermark
+
+
 async def _has_new_activity(
-    session: AsyncSession, learner_id: uuid.UUID, topic: Topic, watermark: datetime
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    topic: Topic,
+    messages_watermark: datetime,
+    events_watermark: datetime,
 ) -> bool:
     kc_ids = select(KC.id).where(KC.topic_id == topic.id).scalar_subquery()
     event = await session.scalar(
@@ -95,7 +108,7 @@ async def _has_new_activity(
         .where(
             LearningEvent.learner_id == learner_id,
             LearningEvent.kc_id.in_(kc_ids),
-            LearningEvent.created_at > watermark,
+            LearningEvent.created_at > events_watermark,
             LearningEvent.event_type == "observation",
         )
         .limit(1)
@@ -108,7 +121,7 @@ async def _has_new_activity(
         .where(
             Conversation.learner_id == learner_id,
             Conversation.subject_id == topic.subject_id,
-            Message.created_at > watermark,
+            Message.created_at > messages_watermark,
         )
         .limit(1)
     )
@@ -128,8 +141,7 @@ async def _current_render(session: AsyncSession, note: Note, note_format: str) -
 async def _is_stale(
     session: AsyncSession, learner_id: uuid.UUID, topic: Topic, note: Note | None, fmt: str
 ) -> bool:
-    watermark = note.watermark if note is not None else EPOCH
-    if await _has_new_activity(session, learner_id, topic, watermark):
+    if await _has_new_activity(session, learner_id, topic, *_cursors(note)):
         return True
     # Render-failure recovery: substrate current but no cached render for the effective format.
     if note is not None and note.revision_ordinal > 0:
@@ -167,11 +179,47 @@ async def note_view(session: AsyncSession, learner_id: uuid.UUID, topic: Topic) 
 class _Gathered:
     transcript: str
     outcomes: str
-    latest: datetime | None
+    refs: dict[str, dict]
+    """The bracketed labels used in ``transcript``/``outcomes`` -> the durable row behind each,
+    so a reference the model cites can be resolved to something that outlives the prompt."""
+    messages_watermark: datetime
+    events_watermark: datetime
+
+
+def _advance(rows: Sequence[Any], limit: int, current: datetime) -> tuple[list[Any], datetime]:
+    """Trim one fetched page to a safe boundary and return its new cursor.
+
+    Rows arrive ordered by ``created_at`` with one extra row fetched, so ``len(rows) > limit``
+    means more activity is waiting. Two rules keep a cursor from stepping over unread rows:
+
+    * A page that ends mid-timestamp drops that trailing group — ``created_at`` is
+      transaction-start time, so one answer tagged to several KCs writes several events at the
+      identical instant, and a ``> watermark`` cursor landing inside that group would skip its
+      remainder forever. The group is left whole for the next pass.
+    * The cursor only ever advances to a row this page actually consumed, never to the newest
+      row in some *other* stream.
+    """
+    if len(rows) <= limit:
+        return list(rows), max((r.created_at for r in rows), default=current)
+    page = list(rows[:limit])
+    boundary = page[-1].created_at
+    if rows[limit].created_at > boundary:
+        return page, boundary  # the page happens to end on a complete group
+    trimmed = [r for r in page if r.created_at < boundary]
+    if trimmed:
+        return trimmed, trimmed[-1].created_at
+    log.warning(  # one instant holds more rows than a whole page; taking it splits the group
+        "notes.same_timestamp_group_exceeds_page", limit=limit, at=boundary.isoformat()
+    )
+    return page, boundary
 
 
 async def _gather(
-    session: AsyncSession, learner_id: uuid.UUID, topic: Topic, watermark: datetime
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    topic: Topic,
+    messages_watermark: datetime,
+    events_watermark: datetime,
 ) -> _Gathered:
     settings = get_settings()
     kcs = (await session.scalars(select(KC).where(KC.topic_id == topic.id))).all()
@@ -183,13 +231,16 @@ async def _gather(
             .where(
                 LearningEvent.learner_id == learner_id,
                 LearningEvent.kc_id.in_(list(kc_names)),
-                LearningEvent.created_at > watermark,
+                LearningEvent.created_at > events_watermark,
                 LearningEvent.event_type == "observation",
             )
             .order_by(LearningEvent.created_at)
-            .limit(settings.note_distill_max_outcome_events)
+            .limit(settings.note_distill_max_outcome_events + 1)
         )
     ).all()
+    events, new_events_watermark = _advance(
+        events, settings.note_distill_max_outcome_events, events_watermark
+    )
 
     item_ids = {uuid.UUID(e.payload["item_id"]) for e in events if e.payload.get("item_id")}
     items: dict[uuid.UUID, Item] = {}
@@ -197,10 +248,19 @@ async def _gather(
         rows = (await session.scalars(select(Item).where(Item.id.in_(item_ids)))).all()
         items = {item.id: item for item in rows}
 
+    # Each line is labelled so an atom can cite the evidence it came from, and each label maps
+    # back to a durable row — an attempt id here, a message id below.
+    refs: dict[str, dict] = {}
     outcome_lines: list[str] = []
-    for event in events:
+    for n, event in enumerate(events, start=1):
+        label = f"o{n}"
+        refs[label] = {
+            "kind": "attempt",
+            "id": str(event.attempt_id or event.id),
+            "kc_id": str(event.kc_id) if event.kc_id else None,
+        }
         kc_name = kc_names.get(event.kc_id, "?")
-        line = f"- KC '{kc_name}': score={event.payload.get('score')}, hints={event.payload.get('hints_used', 0)}"
+        line = f"[{label}] KC '{kc_name}': score={event.payload.get('score')}, hints={event.payload.get('hints_used', 0)}"
         item_id = event.payload.get("item_id")
         if item_id and uuid.UUID(item_id) in items:
             line += f"; question: {items[uuid.UUID(item_id)].stem!r}"
@@ -215,34 +275,72 @@ async def _gather(
             .where(
                 Conversation.learner_id == learner_id,
                 Conversation.subject_id == topic.subject_id,
-                Message.created_at > watermark,
+                Message.created_at > messages_watermark,
             )
             .order_by(Message.created_at)
-            .limit(settings.note_distill_max_messages)
+            .limit(settings.note_distill_max_messages + 1)
         )
     ).all()
-    transcript_lines = [f"{m.role}: {m.content}" for m in messages]
+    messages, new_messages_watermark = _advance(
+        messages, settings.note_distill_max_messages, messages_watermark
+    )
+    transcript_lines: list[str] = []
+    for n, message in enumerate(messages, start=1):
+        label = f"m{n}"
+        refs[label] = {"kind": "message", "id": str(message.id)}
+        transcript_lines.append(f"[{label}] {message.role}: {message.content}")
 
-    timestamps = [e.created_at for e in events] + [m.created_at for m in messages]
     return _Gathered(
         transcript="\n".join(transcript_lines),
         outcomes="\n".join(outcome_lines),
-        latest=max(timestamps) if timestamps else None,
+        refs=refs,
+        messages_watermark=new_messages_watermark,
+        events_watermark=new_events_watermark,
+    )
+
+
+async def _topic_context(session: AsyncSession, topic: Topic) -> note_distill.TopicContext:
+    """Name the topic and enumerate its KCs for the merge prompt.
+
+    The transcript spans the whole subject (messages are not topic-tagged), so without this the
+    model was asked to keep a note about "this topic" with nothing identifying it.
+    """
+    subject = await session.get(Subject, topic.subject_id)
+    kcs = (await session.scalars(select(KC).where(KC.topic_id == topic.id).order_by(KC.slug))).all()
+    return note_distill.TopicContext(
+        name=topic.name,
+        subject_name=subject.name if subject is not None else "?",
+        description=topic.description,
+        kcs=tuple((str(kc.id), kc.name) for kc in kcs),
     )
 
 
 async def _render_and_cache(
     session: AsyncSession, llm: LLMClient, learner_id: uuid.UUID, note: Note, fmt: str
 ) -> NoteRender:
-    content, usage = await note_distill.render(
-        llm,
-        atoms=note.substrate,
-        note_format=fmt,
-        reading_level=await _reading_level(session, learner_id),
-    )
-    await log_llm_call(
-        session, learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
-    )
+    """Cache a rendering of the current substrate, falling back when the model cannot give one.
+
+    The substrate is the note; a render is a projection of it. So a failed, empty or severed
+    render is never a reason for a learner to be shown a blank or half a note — the
+    deterministic ``mechanical_render`` of the same atoms is always available and always
+    complete. It reads plainer, and it is the whole note.
+    """
+    content: str | None = None
+    try:
+        content, usage = await note_distill.render(
+            llm,
+            atoms=note.substrate,
+            note_format=fmt,
+            reading_level=await _reading_level(session, learner_id),
+        )
+        await log_llm_call(
+            learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
+        )
+    except Exception as exc:
+        # A provider outage must not cost the learner the revision this render belongs to.
+        log.warning("notes.render_failed", note_id=str(note.id), error=str(exc))
+    if content is None:
+        content = note_distill.mechanical_render(note.substrate)
     render_row = NoteRender(
         note_id=note.id, revision_ordinal=note.revision_ordinal, format=fmt, content_md=content
     )
@@ -251,14 +349,33 @@ async def _render_and_cache(
     return render_row
 
 
+class RevisionConflict(Exception):
+    """The note moved on since the client last read it. Carries the ordinal it is at now."""
+
+    def __init__(self, current: int) -> None:
+        super().__init__(f"note is at revision {current}")
+        self.current = current
+
+
 async def _commit_new_revision(
-    session: AsyncSession, note: Note, atoms: list[dict], cause: str
+    session: AsyncSession,
+    note: Note,
+    atoms: list[dict],
+    cause: str,
+    *,
+    learner_edit_md: str | None = None,
 ) -> None:
     """Advance the note to a new substrate revision; drops all cached renders."""
     note.substrate = atoms
     note.revision_ordinal += 1
     session.add(
-        NoteRevision(note_id=note.id, ordinal=note.revision_ordinal, substrate=atoms, cause=cause)
+        NoteRevision(
+            note_id=note.id,
+            ordinal=note.revision_ordinal,
+            substrate=atoms,
+            cause=cause,
+            learner_edit_md=learner_edit_md,
+        )
     )
     await session.execute(delete(NoteRender).where(NoteRender.note_id == note.id))
     await session.flush()
@@ -267,12 +384,14 @@ async def _commit_new_revision(
 async def refresh_note(
     session: AsyncSession, llm: LLMClient, learner_id: uuid.UUID, topic: Topic
 ) -> NoteView:
-    """The catch-up: distill anything past the watermark, then ensure a render exists."""
+    """The catch-up: distill anything past the per-stream cursors, then ensure a render exists."""
     note = await get_note(session, learner_id, topic.id)
     fmt = await effective_format(session, learner_id, note)
-    watermark = note.watermark if note is not None else EPOCH
+    messages_watermark, events_watermark = _cursors(note)
 
-    if not await _has_new_activity(session, learner_id, topic, watermark):
+    if not await _has_new_activity(
+        session, learner_id, topic, messages_watermark, events_watermark
+    ):
         # Render-only heal (render missing for a current substrate), or nothing to do.
         if note is not None and note.revision_ordinal > 0:
             if await _current_render(session, note, fmt) is None:
@@ -280,35 +399,44 @@ async def refresh_note(
                 await session.commit()
         return await _view(session, learner_id, topic, note)
 
-    gathered = await _gather(session, learner_id, topic, watermark)
+    gathered = await _gather(session, learner_id, topic, messages_watermark, events_watermark)
     atoms = note.substrate if note is not None else []
     result, usage = await note_distill.distill(
         llm,
+        topic=await _topic_context(session, topic),
         atoms=atoms,
         transcript=gathered.transcript,
         outcomes=gathered.outcomes,
+        refs=gathered.refs,
         reading_level=await _reading_level(session, learner_id),
     )
     await log_llm_call(
-        session, learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
+        learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
     )
 
     if result is None:
         # Parse failure or learner-atom violation: keep everything, stay stale, retry later.
-        await session.commit()  # persist the cost log
+        # Nothing to commit — the call this paid for is already recorded on its own
+        # transaction, which is the point of accounting living outside this one.
         return await _view(session, learner_id, topic, note)
 
-    new_watermark = gathered.latest or _now()
     if note is None:
-        note = Note(learner_id=learner_id, topic_id=topic.id, substrate=[], watermark=new_watermark)
+        note = Note(
+            learner_id=learner_id,
+            topic_id=topic.id,
+            substrate=[],
+            messages_watermark=gathered.messages_watermark,
+            events_watermark=gathered.events_watermark,
+        )
         session.add(note)
         await session.flush()
     else:
-        note.watermark = new_watermark
+        note.messages_watermark = gathered.messages_watermark
+        note.events_watermark = gathered.events_watermark
 
     if result.no_change:
         await session.commit()
-        # note.watermark just changed -> the row's onupdate=func.now() updated_at is expired;
+        # the note's cursors just changed -> the row's onupdate=func.now() updated_at is expired;
         # refresh before _view reads it (a bare attribute access can't await the reload).
         await session.refresh(note)
         return await _view(session, learner_id, topic, note)
@@ -322,12 +450,27 @@ async def refresh_note(
 
 
 async def absorb_edit(
-    session: AsyncSession, llm: LLMClient, learner_id: uuid.UUID, topic: Topic, content_md: str
+    session: AsyncSession,
+    llm: LLMClient,
+    learner_id: uuid.UUID,
+    topic: Topic,
+    content_md: str,
+    *,
+    expected_revision_ordinal: int | None = None,
 ) -> NoteView | None:
-    """Fold a learner's edit into the substrate. None = no note yet, or absorb failed."""
+    """Fold a learner's edit into the substrate. None = no note yet, or absorb failed.
+
+    ``expected_revision_ordinal`` is the revision the learner was editing. Supplying it turns a
+    concurrent change — a refresh, or another tab — into an explicit
+    :class:`RevisionConflict` instead of silently absorbing an edit against a note that no
+    longer looks like what they saw. Checked again immediately before the write, so a change
+    landing during the model call is caught too.
+    """
     note = await get_note(session, learner_id, topic.id)
     if note is None or note.revision_ordinal == 0:
         return None
+    if expected_revision_ordinal is not None and note.revision_ordinal != expected_revision_ordinal:
+        raise RevisionConflict(note.revision_ordinal)
     fmt = await effective_format(session, learner_id, note)
     render_row = await _current_render(session, note, fmt)
     previous = (
@@ -337,12 +480,15 @@ async def absorb_edit(
         llm, atoms=note.substrate, previous_render=previous, edited_md=content_md
     )
     await log_llm_call(
-        session, learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
+        learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
     )
     if atoms is None:
-        await session.commit()  # persist the cost log; note untouched
-        return None
-    await _commit_new_revision(session, note, atoms, "learner_edit")
+        return None  # note untouched; the paid call is already recorded independently
+    # Re-check after the model call: absorb takes seconds, and a refresh can land inside it.
+    await session.refresh(note)
+    if expected_revision_ordinal is not None and note.revision_ordinal != expected_revision_ordinal:
+        raise RevisionConflict(note.revision_ordinal)
+    await _commit_new_revision(session, note, atoms, "learner_edit", learner_edit_md=content_md)
     await _render_and_cache(session, llm, learner_id, note, fmt)
     await session.commit()
     await session.refresh(note)  # note was updated; onupdate=func.now() expired updated_at
@@ -359,7 +505,13 @@ async def set_format(
     """Set (or clear, None=auto) the explicit format; render the new format if missing."""
     note = await get_note(session, learner_id, topic.id)
     if note is None:
-        note = Note(learner_id=learner_id, topic_id=topic.id, substrate=[], watermark=EPOCH)
+        note = Note(
+            learner_id=learner_id,
+            topic_id=topic.id,
+            substrate=[],
+            messages_watermark=EPOCH,
+            events_watermark=EPOCH,
+        )
         session.add(note)
         await session.flush()
     note.format = note_format
@@ -396,9 +548,16 @@ async def _revision(
 
 async def revision_source(
     session: AsyncSession, learner_id: uuid.UUID, topic: Topic, ordinal: int
-) -> str | None:
+) -> tuple[str, str | None] | None:
+    """(the substrate rendered mechanically, the learner's own submitted markdown if any).
+
+    The second is what they actually typed on a ``learner_edit`` revision — absorb reinterprets
+    an edit, so this is the only place the original survives.
+    """
     revision = await _revision(session, learner_id, topic, ordinal)
-    return note_distill.mechanical_render(revision.substrate) if revision is not None else None
+    if revision is None:
+        return None
+    return note_distill.mechanical_render(revision.substrate), revision.learner_edit_md
 
 
 async def restore_revision(

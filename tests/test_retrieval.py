@@ -21,13 +21,14 @@ from app.models.knowledge import Subject
 from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.rag import retrieval
+from tests.embedding import FAKE_SPACE
 
 API = "/api/v1"
 _FAKE = fake_llm_client()
 
 
 async def _embed(text: str) -> list[float]:
-    return (await _FAKE.embed(ModelRole.EMBED, [text]))[0]
+    return (await _FAKE.embed(ModelRole.EMBED, [text])).vectors[0]
 
 
 async def _learner(session: AsyncSession) -> Learner:
@@ -63,6 +64,7 @@ async def _chunk(
     ordinal: int = 0,
 ) -> Chunk:
     chunk = Chunk(
+        embedding_space=FAKE_SPACE,
         source_id=source.id,
         ordinal=ordinal,
         text=text,
@@ -200,3 +202,59 @@ async def test_retrieve_endpoint(
     hits = r.json()
     assert len(hits) >= 1
     assert hits[0]["text"] and "score" in hits[0] and "provenance" in hits[0]
+
+
+# --- vectors are only compared within their own embedding space --------------------------------
+
+
+async def test_a_vector_from_another_embedding_model_is_not_ranked_against_this_query(
+    db_session: AsyncSession,
+) -> None:
+    """A same-dimension model swap is a config edit with no error and no schema change; without
+    the space recorded, its vectors would be ranked confidently against queries they have
+    nothing to do with.
+
+    Both chunks carry the query's own vector but text that shares no word with it, so the
+    keyword arm cannot reach either: whatever comes back, the vector arm put it there.
+    """
+    learner = await _learner(db_session)
+    source = await _source(db_session, learner)
+    vector = await _embed("mitochondria")
+    reachable = await _chunk(
+        db_session, source, "quiet rivers reach the sea", embedding=vector, ordinal=0
+    )
+    stale = await _chunk(db_session, source, "distant hills at dusk", embedding=vector, ordinal=1)
+    stale.embedding_space = "ollama:some-other-embedder:768"
+    await db_session.flush()
+
+    hits = await retrieval.retrieve(
+        db_session, fake_llm_client(), "mitochondria", learner_id=learner.id
+    )
+
+    ids = {h.chunk_id for h in hits}
+    assert reachable.id in ids
+    assert stale.id not in ids
+
+
+async def test_an_old_vector_does_not_make_its_text_unsearchable(
+    db_session: AsyncSession,
+) -> None:
+    """Only the vector went stale. The words are still the words, and the keyword arm is the
+    reason a re-embedding backlog degrades retrieval rather than deleting it."""
+    learner = await _learner(db_session)
+    source = await _source(db_session, learner)
+    stale = await _chunk(db_session, source, "the powerhouse mitochondria of the cell", ordinal=0)
+    stale.embedding_space = "ollama:some-other-embedder:768"
+    await db_session.flush()
+
+    hits = await retrieval.retrieve(
+        db_session, fake_llm_client(), "mitochondria", learner_id=learner.id
+    )
+    assert {h.chunk_id for h in hits} == {stale.id}
+
+
+async def test_the_space_names_the_provider_the_model_and_the_dimension() -> None:
+    """Two backends serving the same model name are not a promise of the same weights."""
+    from app.llm.embedding_space import current_space
+
+    assert current_space(fake_llm_client(), dim=768) == "fake:fake-1:768"

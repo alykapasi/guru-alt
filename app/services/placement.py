@@ -63,7 +63,6 @@ async def run_placement(
     levels, infer_usage = await infer_levels(llm, background, candidates[:MAX_CANDIDATES])
     if infer_usage.total_tokens:
         await log_llm_call(
-            session,
             learner_id=learner_id,
             role=INFERENCE_ROLE.value,
             spec=llm.spec(INFERENCE_ROLE),
@@ -78,7 +77,6 @@ async def run_placement(
             item, gen_usage = await item_generation.generate_mcq_item(session, llm, kc)
             if gen_usage.total_tokens:
                 await log_llm_call(
-                    session,
                     learner_id=learner_id,
                     role=item_generation.GENERATION_ROLE.value,
                     spec=llm.spec(item_generation.GENERATION_ROLE),

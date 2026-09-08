@@ -14,7 +14,6 @@ from sqlalchemy.orm import selectinload
 
 from app.agent.tutor import TutorState, build_tutor_graph
 from app.core.config import get_settings
-from app.llm.pricing import cost_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.memory import retrieval as memory_retrieval
@@ -24,12 +23,12 @@ from app.rag.retrieval import retrieve
 from app.services import session_runner as session_runner_svc
 from app.services.assessment import item_to_read
 from app.services.lesson_plan import PlanGroundingContext, get_active_step_context
+from app.services.llm_log import log_llm_call
 from app.services.turn_common import (
     TurnEvent,
     add_message,
     extract_citations,
     format_grounding,
-    record_llm_call,
     to_chat_messages,
 )
 
@@ -125,12 +124,38 @@ async def list_conversations(
 
 
 async def list_messages(session: AsyncSession, conversation_id: uuid.UUID) -> Sequence[Message]:
+    """Every message in a conversation, oldest first (the transcript the client renders).
+
+    ``id`` breaks the tie because ``created_at`` is transaction-start time: two messages
+    written in one transaction carry the *same* timestamp, and ordering on it alone left their
+    order to the planner. Harmless while rendering a whole transcript; not harmless once a
+    window is taken from one end of it.
+    """
     result = await session.scalars(
         select(Message)
         .where(Message.conversation_id == conversation_id)
-        .order_by(Message.created_at)
+        .order_by(Message.created_at, Message.id)
     )
     return result.all()
+
+
+async def recent_messages(
+    session: AsyncSession, conversation_id: uuid.UUID, *, limit: int
+) -> Sequence[Message]:
+    """The last ``limit`` messages, oldest first — the history a *turn* carries.
+
+    Distinct from :func:`list_messages`, which is what the client displays. A turn used to
+    forward the entire conversation, so a long-running one grew its own cost and context
+    without bound until a provider refused it. Durable facts outlive the window through
+    ``app/memory/``; the raw transcript beyond it does not.
+    """
+    result = await session.scalars(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(limit)
+    )
+    return list(reversed(result.all()))
 
 
 async def run_tutor_turn(
@@ -244,27 +269,14 @@ async def run_tutor_turn(
         model=spec.model,
         citations=citations,
     )
-    cost = cost_usd(spec.model, usage)
-    await record_llm_call(
-        session,
+    cost = await log_llm_call(
         learner_id=learner_id,
         conversation_id=conversation_id,
         role=ModelRole.SMART.value,
-        provider=spec.provider,
-        model=spec.model,
+        spec=spec,
         usage=usage,
-        cost_usd=cost,
     )
     await session.commit()
-    log.info(
-        "llm.call",
-        role=ModelRole.SMART.value,
-        provider=spec.provider,
-        model=spec.model,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        cost_usd=cost,
-    )
     item_read = item_to_read(practice_item) if practice_item is not None else None
     yield TurnEvent(
         type="done",

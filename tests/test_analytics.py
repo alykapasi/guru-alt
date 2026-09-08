@@ -59,6 +59,41 @@ async def test_subject_mastery_unseen_kc_is_unmastered_prior(db_session: AsyncSe
     assert kc_read.kc_name == "Protons"
     assert kc_read.ability == 0.0
     assert kc_read.mastered is False
+    # The prior renders as 50%. Saying so is the difference between a number and a claim.
+    assert kc_read.assessed is False
+    assert (result.assessed_kcs, result.total_kcs) == (0, 1)
+    assert (result.topics[0].assessed_kcs, result.topics[0].total_kcs) == (0, 1)
+
+
+async def test_a_component_with_evidence_behind_it_is_marked_assessed(
+    db_session: AsyncSession,
+) -> None:
+    learner, subject, _topic, kc = await _subject_with_kc(db_session)
+    db_session.add(LearnerKCState(learner_id=learner.id, kc_id=kc.id, ability=0.3, uncertainty=0.5))
+    await db_session.flush()
+
+    result = await svc.subject_mastery(db_session, learner.id, subject.id)
+    assert result.topics[0].kcs[0].assessed is True
+    assert (result.assessed_kcs, result.total_kcs) == (1, 1)
+
+
+async def test_coverage_counts_only_the_components_that_were_assessed(
+    db_session: AsyncSession,
+) -> None:
+    """A subject half-assessed must not read the same as one fully assessed."""
+    learner, subject, topic, kc = await _subject_with_kc(db_session)
+    other = KC(topic_id=topic.id, slug=f"k-{uuid.uuid4().hex[:8]}", name="Neutrons")
+    db_session.add(other)
+    await db_session.flush()
+    db_session.add(LearnerKCState(learner_id=learner.id, kc_id=kc.id, ability=0.3, uncertainty=0.5))
+    await db_session.flush()
+
+    result = await svc.subject_mastery(db_session, learner.id, subject.id)
+    assert (result.assessed_kcs, result.total_kcs) == (1, 2)
+    assert {k.kc_name: k.assessed for k in result.topics[0].kcs} == {
+        "Protons": True,
+        "Neutrons": False,
+    }
 
 
 async def test_subject_mastery_flags_mastered_at_every_level(db_session: AsyncSession) -> None:
@@ -218,3 +253,57 @@ async def test_activity_endpoint_reflects_seeded_events(
     assert body["observations_last_7d"] == 1
     assert body["streak_days"] == 1
     assert body["momentum"] == "up"
+
+
+async def test_activity_counts_a_multi_kc_answer_once(db_session: AsyncSession) -> None:
+    """S45: one answer tagged to three KCs is one attempt, not three observations.
+
+    Otherwise momentum and streak reward broad KC tagging rather than learner effort.
+    """
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    attempt = uuid.uuid4()
+
+    for _ in range(3):  # the per-KC fan-out of ONE graded answer
+        db_session.add(
+            LearningEvent(
+                learner_id=learner.id,
+                event_type="observation",
+                attempt_id=attempt,
+                payload={"score": 1.0},
+                created_at=now - timedelta(days=1),
+            )
+        )
+    await db_session.flush()
+
+    result = await svc.get_activity(db_session, learner.id)
+
+    assert result.observations_last_7d == 1
+
+
+async def test_activity_still_counts_legacy_events_without_an_attempt_id(
+    db_session: AsyncSession,
+) -> None:
+    """Rows predating the attempt_id column each stand alone rather than collapsing to one."""
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    for _ in range(2):
+        db_session.add(
+            LearningEvent(
+                learner_id=learner.id,
+                event_type="observation",
+                attempt_id=None,
+                payload={"score": 1.0},
+                created_at=now - timedelta(days=1),
+            )
+        )
+    await db_session.flush()
+
+    result = await svc.get_activity(db_session, learner.id)
+
+    assert result.observations_last_7d == 2

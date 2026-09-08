@@ -14,13 +14,6 @@
     "expected_score": 0.0
   },
   {
-    "id": "mcq-no-answer",
-    "item_type": "mcq",
-    "answer_key": {"choices": ["3", "4", "5"], "correct": 1},
-    "response": {},
-    "expected_score": 0.0
-  },
-  {
     "id": "cloze-all-correct",
     "item_type": "cloze",
     "answer_key": {"blanks": ["mitochondria", "ATP", "respiration"]},

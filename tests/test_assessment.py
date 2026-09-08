@@ -6,7 +6,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import Integer, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_llm_client
@@ -111,6 +112,55 @@ async def test_create_item_hides_answer_key(
     assert body["item_type"] == "mcq"
     assert body["kcs"][0]["kc_id"] == str(kc.id)
     assert "answer_key" not in body  # never leak the key to a learner
+
+
+async def test_mcq_presentation_exposes_choices_without_the_answer(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """An MCQ is unanswerable without its options, but the correct index stays secret."""
+    (kc,) = await _seed_kcs(db_session)
+    item_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
+
+    body = (await api_client.get(f"{API}/items/{item_id}")).json()
+
+    assert body["presentation"] == {"choices": ["3", "4", "5"]}
+    assert "answer_key" not in body
+    assert "correct" not in (body["presentation"] or {})  # the key itself is never public
+
+
+async def test_cloze_presentation_withholds_the_blanks(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A cloze answer key IS the answer — nothing in it is public."""
+    (kc,) = await _seed_kcs(db_session)
+    r = await api_client.post(
+        f"{API}/items",
+        json={
+            "item_type": "cloze",
+            "stem": "The powerhouse is the ___.",
+            "kcs": [{"kc_id": str(kc.id)}],
+            "answer_key": {"blanks": ["mitochondria"]},
+            "difficulty": 0.0,
+        },
+    )
+    body = (await api_client.get(f"{API}/items/{r.json()['id']}")).json()
+
+    assert body["presentation"] is None
+
+
+async def test_malformed_mcq_response_is_rejected_not_graded_wrong(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A missing choice is bad input, not evidence the learner does not know the answer."""
+    (kc,) = await _seed_kcs(db_session)
+    item_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
+
+    r = await api_client.post(f"{API}/items/{item_id}/answer", json={"response": {}})
+
+    assert r.status_code == 422
+    # nothing was traced: a malformed submission must not become mastery evidence
+    events = (await db_session.scalars(select(LearningEvent))).all()
+    assert events == []
 
 
 async def test_get_item_404(api_client: AsyncClient) -> None:
@@ -366,3 +416,136 @@ async def test_answer_missing_item_404(api_client: AsyncClient) -> None:
         f"{API}/items/{uuid.uuid4()}/answer", json={"response": {"choice": 0}}
     )
     assert r.status_code == 404
+
+
+# --- idempotent attempts (S34) ------------------------------------------------
+
+
+async def test_retrying_an_attempt_id_grades_once(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A resubmitted attempt returns the first grade and adds no second observation.
+
+    Without the key, a dropped response or a double-click hands the learner a second full
+    mastery update for one piece of work.
+    """
+    (kc,) = await _seed_kcs(db_session)
+    item_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
+    body = {"response": {"choice": 1}, "attempt_id": str(uuid.uuid4())}
+
+    first = (await api_client.post(f"{API}/items/{item_id}/answer", json=body)).json()
+    second = (await api_client.post(f"{API}/items/{item_id}/answer", json=body)).json()
+
+    assert first == second
+    events = (
+        await db_session.scalars(select(LearningEvent).where(LearningEvent.kc_id == kc.id))
+    ).all()
+    assert len(events) == 1
+    state = await db_session.scalar(select(LearnerKCState).where(LearnerKCState.kc_id == kc.id))
+    assert state is not None
+    assert state.ability == pytest.approx(first["estimates"][0]["ability"])
+
+
+async def test_distinct_attempt_ids_are_separate_evidence(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Deduplication is per key — two real answers still count twice."""
+    (kc,) = await _seed_kcs(db_session)
+    item_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
+    for _ in range(2):
+        r = await api_client.post(
+            f"{API}/items/{item_id}/answer",
+            json={"response": {"choice": 1}, "attempt_id": str(uuid.uuid4())},
+        )
+        assert r.status_code == 200
+
+    events = (
+        await db_session.scalars(select(LearningEvent).where(LearningEvent.kc_id == kc.id))
+    ).all()
+    assert len(events) == 2
+    assert len({e.attempt_id for e in events}) == 2
+
+
+async def test_retrying_a_rubric_attempt_does_not_call_the_model_again(
+    api_client: AsyncClient, db_session: AsyncSession, fake_grader: None
+) -> None:
+    """The replay short-circuits before grading, so the retry is free as well as safe."""
+    (kc,) = await _seed_kcs(db_session)
+    body = {"item_type": "short", "stem": "Define inertia.", "kcs": [{"kc_id": str(kc.id)}]}
+    item_id = (await api_client.post(f"{API}/items", json=body)).json()["id"]
+    answer = {
+        "response": {"text": "Resistance to change in motion."},
+        "attempt_id": str(uuid.uuid4()),
+    }
+
+    first = (await api_client.post(f"{API}/items/{item_id}/answer", json=answer)).json()
+    second = (await api_client.post(f"{API}/items/{item_id}/answer", json=answer)).json()
+
+    assert first == second and first["score"] == 0.75
+    calls = (await db_session.scalars(select(LLMCall).where(LLMCall.role == "smart"))).all()
+    assert len(calls) == 1
+
+
+async def test_the_database_rejects_a_duplicate_attempt_row(
+    db_session: AsyncSession,
+) -> None:
+    """The unique index — not the read-then-write check — is what settles a concurrent retry."""
+    (kc,) = await _seed_kcs(db_session)
+    learner = Learner(handle=f"idem-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+    attempt = uuid.uuid4()
+    for _ in range(2):
+        db_session.add(
+            LearningEvent(
+                learner_id=learner.id,
+                kc_id=kc.id,
+                event_type="observation",
+                attempt_id=attempt,
+                payload={"score": 1.0},
+            )
+        )
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+    await db_session.rollback()
+
+
+# --- assisted attempts are weaker evidence (S13) ------------------------------
+
+
+async def test_answering_the_same_item_again_in_one_sitting_counts_for_less(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Re-answering a question you were just graded on is not a fresh demonstration.
+
+    The repeat is counted server-side from the learner's own history, so a client cannot
+    present a second run at the same question as an independent one.
+    """
+    (kc,) = await _seed_kcs(db_session)
+    item_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
+    for _ in range(2):
+        r = await api_client.post(f"{API}/items/{item_id}/answer", json={"response": {"choice": 1}})
+        assert r.status_code == 200
+
+    events = (
+        await db_session.scalars(
+            select(LearningEvent)
+            .where(LearningEvent.kc_id == kc.id)
+            .order_by(LearningEvent.payload["prior_attempts"].astext.cast(Integer))
+        )
+    ).all()
+    assert [e.payload["prior_attempts"] for e in events] == [0, 1]
+    assert [e.payload["credit"] for e in events] == [1.0, 0.5]
+
+
+async def test_a_first_answer_is_full_strength_evidence(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The discount must not quietly tax ordinary unaided practice."""
+    (kc,) = await _seed_kcs(db_session)
+    item_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
+    await api_client.post(f"{API}/items/{item_id}/answer", json={"response": {"choice": 1}})
+
+    event = await db_session.scalar(select(LearningEvent).where(LearningEvent.kc_id == kc.id))
+    assert event is not None
+    assert event.payload["credit"] == 1.0

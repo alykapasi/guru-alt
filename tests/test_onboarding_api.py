@@ -70,7 +70,7 @@ def fake_llm_invalid() -> Iterator[None]:
 
 async def test_goal_turns_streams_sse(api_client: AsyncClient, fake_llm_goal: None) -> None:
     """Test goal refinement endpoint streams SSE frames."""
-    session_id = str(uuid.uuid4())
+    session_id = (await api_client.post(f"{API}/onboarding/goal-sessions")).json()["session_id"]
     response = await api_client.post(
         f"{API}/onboarding/goal-turns",
         json={

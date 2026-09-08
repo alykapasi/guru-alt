@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.llm.registry import ModelSpec
 from app.llm.types import ModelRole
+from tests.eval.sweep.settings import validate_settings
 
 
 class ModelCandidate(BaseModel):
@@ -50,7 +51,14 @@ def load_sweep_config(path: str | Path) -> SweepConfig:
 
 
 def expand(config: SweepConfig) -> list[Cell]:
-    """Cartesian product of every axis (roles x gen_config x toggles) -> one Cell per combination."""
+    """Cartesian product of every axis (roles x gen_config x toggles) -> one Cell per combination.
+
+    Raises :class:`~tests.eval.sweep.settings.UnsupportedSetting` if the config names a knob no
+    suite applies. This fires before the first paid call, because the failure mode it prevents —
+    a sweep that reports comparing settings it never varied — is invisible once the run finishes.
+    """
+    for gen in config.gen_config or [{}]:
+        validate_settings(gen, config.toggles)
     roles = list(config.axes)
     role_choices = [config.axes[r] for r in roles]
     toggle_names = list(config.toggles)

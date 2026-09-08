@@ -35,7 +35,7 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -58,5 +58,39 @@ jobs:
       - name: Apply migrations
         run: uv run alembic upgrade head
 
+      # Catches a model changed without a matching migration — the class of drift that
+      # only shows up when someone else's fresh database won't match their ORM.
+      - name: Check for un-migrated model drift
+        run: uv run poe db-check
+
+      # `poe test` creates and migrates its own `_test` database (tests/testdb.py), so this
+      # also exercises the migrations a second time against a genuinely empty database.
       - name: Test
         run: uv run poe test
+
+  frontend:
+    name: frontend lint · build
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      # `tsc -b && vite build` — the type-check gate for the frontend as well as the build.
+      - name: Build
+        run: npm run build

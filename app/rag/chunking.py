@@ -12,11 +12,16 @@ DEFAULT_SIZE = 1000  # characters (~250 tokens)
 DEFAULT_OVERLAP = 150
 
 _WHITESPACE = re.compile(r"\s+")
+# Postgres rejects 0x00 in text/varchar outright ("invalid byte sequence for encoding UTF8"),
+# and it is not whitespace, so \s+ leaves it in place. Extractors do emit it — one stray NUL
+# in a PDF failed the whole chunk INSERT and with it the entire ingestion. Drop it here, at
+# the one point every adapter's text passes through, rather than per adapter.
+_NUL = "\x00"
 
 
 def normalize(text: str) -> str:
-    """Collapse runs of whitespace to single spaces and trim."""
-    return _WHITESPACE.sub(" ", text).strip()
+    """Collapse runs of whitespace to single spaces, drop NUL bytes, and trim."""
+    return _WHITESPACE.sub(" ", text.replace(_NUL, "")).strip()
 
 
 def chunk_units(

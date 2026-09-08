@@ -100,9 +100,7 @@ async def generate_block(
         model=llm.spec(role).model,
     )
     session.add(block)
-    await log_llm_call(
-        session, learner_id=learner_id, role=str(role), spec=llm.spec(role), usage=usage
-    )
+    await log_llm_call(learner_id=learner_id, role=str(role), spec=llm.spec(role), usage=usage)
     await session.commit()
     return block
 

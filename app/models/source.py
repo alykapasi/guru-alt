@@ -84,6 +84,10 @@ class Chunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     ordinal: Mapped[int]  # position within the source
     text: Mapped[str] = mapped_column(Text)
     embedding: Mapped[Any] = mapped_column(Vector(_EMBED_DIM))
+    # Which embedding model produced `embedding` ("provider:model:dim"). Vectors are only
+    # comparable within one space, and swapping to a same-dimension model is a config edit
+    # that would otherwise leave no trace — see app/llm/embedding_space.py.
+    embedding_space: Mapped[str] = mapped_column(index=True)
     # Generated full-text vector for hybrid keyword retrieval (GIN-indexed above).
     tsv: Mapped[Any] = mapped_column(
         TSVECTOR, Computed("to_tsvector('english', text)", persisted=True)

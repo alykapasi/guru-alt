@@ -9,7 +9,7 @@
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "preview": "vite preview",
-    "gen:api": "openapi-typescript http://localhost:8000/openapi.json -o src/api/schema.d.ts"
+    "gen:api": "npx -y openapi-typescript@7.13.0 http://localhost:8000/openapi.json -o src/api/schema.d.ts"
   },
   "dependencies": {
     "@fontsource/fraunces": "^5.2.9",
@@ -35,7 +35,6 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
     "globals": "^17.7.0",
-    "openapi-typescript": "^7.13.0",
     "prettier": "^3.9.5",
     "tailwindcss": "^4.3.2",
     "typescript": "~6.0.2",

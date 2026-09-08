@@ -10,6 +10,8 @@ from app.learning.kc_tagging import load_candidate_kcs
 from app.llm import ChatMessage, ChatResponse, ModelRole, ToolDef
 from app.llm.providers import FakeProvider
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
+from app.llm.types import EmbedResult
+from app.models.chat import LLMCall
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
 from app.models.source import Chunk, ChunkKC, Source, SourceKind, SourceStatus
@@ -28,7 +30,7 @@ class _CountingEmbedProvider(FakeProvider):
         self.calls = 0
         self.batch_sizes: list[int] = []
 
-    async def embed(self, *, model: str, texts: Sequence[str]) -> list[list[float]]:
+    async def embed(self, *, model: str, texts: Sequence[str]) -> EmbedResult:
         self.calls += 1
         self.batch_sizes.append(len(texts))
         return await super().embed(model=model, texts=texts)
@@ -39,18 +41,23 @@ async def test_embed_in_batches_splits_into_ceil_batches_and_preserves_order() -
     client = LLMClient({"fake": provider}, {r: ModelSpec("fake", "fake-1") for r in ModelRole})
     texts = [f"chunk number {i}" for i in range(5)]
 
-    vectors = await embed_in_batches(client, texts, batch_size=2, concurrency=4)
+    embedded = await embed_in_batches(client, texts, batch_size=2, concurrency=4)
 
     assert provider.calls == 3  # ceil(5 / 2)
     assert provider.batch_sizes == [2, 2, 1]
     # Batched embedding equals one big embed — same vectors, same order.
-    assert vectors == await fake_llm_client().embed(ModelRole.EMBED, texts)
+    whole = await fake_llm_client().embed(ModelRole.EMBED, texts)
+    assert embedded.vectors == whole.vectors
+    # ...and the usage of the parts adds up to the usage of the whole, or splitting a document
+    # into batches would quietly divide its bill by the number of batches.
+    assert embedded.usage == whole.usage
 
 
 async def test_embed_in_batches_empty_makes_no_calls() -> None:
     provider = _CountingEmbedProvider()
     client = LLMClient({"fake": provider}, {r: ModelSpec("fake", "fake-1") for r in ModelRole})
-    assert await embed_in_batches(client, [], batch_size=2, concurrency=4) == []
+    embedded = await embed_in_batches(client, [], batch_size=2, concurrency=4)
+    assert embedded.vectors == [] and embedded.usage.total_tokens == 0
     assert provider.calls == 0
 
 
@@ -90,6 +97,18 @@ def test_normalize_collapses_whitespace() -> None:
     assert normalize("a\n\n  b\tc ") == "a b c"
 
 
+def test_normalize_strips_nul_bytes() -> None:
+    """Postgres text columns reject 0x00 outright, and \\s does not match it, so a single
+    stray NUL from PDF extraction failed the whole chunk INSERT and the entire ingestion."""
+    assert normalize("clean\x00text") == "cleantext"
+    assert "\x00" not in normalize("a\x00\x00b c")
+
+
+def test_chunk_units_output_never_contains_nul() -> None:
+    units = chunk_units([ExtractedUnit(text="page one\x00 body text")], size=200, overlap=50)
+    assert units and all("\x00" not in u.text for u in units)
+
+
 def test_chunk_units_windows_long_text_with_overlap() -> None:
     text = " ".join(f"word{i}" for i in range(800))
     units = chunk_units([ExtractedUnit(text=text)], size=200, overlap=50)
@@ -124,6 +143,25 @@ async def test_ingest_txt_creates_embedded_chunks(db_session: AsyncSession) -> N
     assert len(chunks[0].embedding) == 768
     assert chunks[0].provenance["source_id"] == str(source.id)
     assert chunks[0].provenance["method"] == "text"
+
+
+async def test_ingesting_a_document_records_what_the_embeddings_cost(
+    db_session: AsyncSession,
+) -> None:
+    """Embedding a corpus is ingestion's largest model bill and used to be recorded as nothing."""
+    store = InMemoryBlobStore()
+    big = " ".join(f"sentence number {i} about photosynthesis." for i in range(200)).encode()
+    source = await _make_source(db_session, store, data=big)
+
+    await ingestion.ingest_source(db_session, store, fake_llm_client(), source.id)
+
+    calls = (
+        await db_session.scalars(
+            select(LLMCall).where(LLMCall.learner_id == source.learner_id, LLMCall.role == "embed")
+        )
+    ).all()
+    assert len(calls) == 1  # one record for the whole batched embedding pass, not one per batch
+    assert calls[0].input_tokens > 0
 
 
 async def test_ingest_is_idempotent(db_session: AsyncSession) -> None:

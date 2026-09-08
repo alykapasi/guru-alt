@@ -36,7 +36,12 @@ class ItemKCRead(BaseModel):
 
 
 class ItemRead(BaseModel):
-    """An item as presented to a learner — the ``answer_key`` is deliberately withheld."""
+    """An item as presented to a learner — the ``answer_key`` is deliberately withheld.
+
+    ``presentation`` carries the part of the answer key the learner legitimately needs to
+    answer (an MCQ's ``choices``, never its ``correct`` index). See
+    :func:`app.learning.item_presentation.public_presentation`.
+    """
 
     id: uuid.UUID
     item_type: ItemType
@@ -44,14 +49,22 @@ class ItemRead(BaseModel):
     difficulty: float
     rubric_id: uuid.UUID | None
     kcs: list[ItemKCRead]
+    presentation: dict | None = None
 
 
 class AnswerSubmit(BaseModel):
-    """A learner's response. ``response`` shape depends on the item type (see grading)."""
+    """A learner's response. ``response`` shape depends on the item type (see grading).
+
+    ``attempt_id`` is an optional idempotency key. Generate one per attempt on the client and
+    reuse it across retries: the same id submitted twice grades and updates mastery once, and
+    the second request returns the first one's grade. Without it a dropped response or an
+    impatient double-click hands the learner extra mastery evidence for one piece of work.
+    """
 
     response: dict
     latency_ms: int | None = Field(default=None, ge=0)
     hints_used: int | None = Field(default=None, ge=0)
+    attempt_id: uuid.UUID | None = None
 
 
 class KCEstimateRead(BaseModel):

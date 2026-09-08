@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.workflow import WorkflowState, build_workflow_graph, workflow_config
 from app.core.config import get_settings
-from app.llm.pricing import cost_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.models.chat import Conversation
@@ -24,13 +23,13 @@ from app.rag.retrieval import RetrievalHit, retrieve
 from app.services import assessment as assessment_svc
 from app.services.assessment import item_to_read
 from app.services.lesson_plan import get_active_step_context
+from app.services.llm_log import log_llm_call
 from app.services.session_runner import short_answer_item_for_kc
 from app.services.turn_common import (
     TurnEvent,
     add_message,
     extract_citations,
     format_grounding,
-    record_llm_call,
 )
 
 log = structlog.get_logger(__name__)
@@ -167,16 +166,12 @@ async def run_workflow_turn(
         model=spec.model,
         citations=citations,
     )
-    cost = cost_usd(spec.model, usage)
-    await record_llm_call(
-        session,
+    cost = await log_llm_call(
         learner_id=learner_id,
         conversation_id=conversation.id,
         role=ModelRole.SMART.value,
-        provider=spec.provider,
-        model=spec.model,
+        spec=spec,
         usage=usage,
-        cost_usd=cost,
     )
     await session.commit()
 

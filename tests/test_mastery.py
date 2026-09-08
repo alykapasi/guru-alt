@@ -4,6 +4,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -249,3 +250,124 @@ async def test_tracer_facade_update_estimate_and_due(db_session: AsyncSession) -
 
     est = await mastery.DEFAULT_TRACER.estimate(db_session, learner.id, kc.id)
     assert est.ability == state.ability
+
+
+# --- S45: one graded answer is one attempt, however many KCs it is tagged to ---
+
+
+async def test_multi_kc_observation_shares_one_attempt_id(db_session: AsyncSession) -> None:
+    """The fan-out is per-KC *evidence*, not three separate learner actions."""
+    learner, _subject, _topic, (a, b, c) = await _seed(db_session, kc_slugs=("a", "b", "c"))
+    obs = Observation(
+        learner_id=learner.id, kc_weights={a.id: 1.0, b.id: 1.0, c.id: 1.0}, score=1.0
+    )
+
+    states = await mastery.record_observation(db_session, obs)
+
+    events = (
+        await db_session.scalars(
+            select(LearningEvent).where(LearningEvent.learner_id == learner.id)
+        )
+    ).all()
+    assert len(states) == 3  # every component still gets its own state
+    assert len(events) == 3  # and its own replayable evidence row
+    attempt_ids = {e.attempt_id for e in events}
+    assert len(attempt_ids) == 1 and None not in attempt_ids  # but one shared attempt
+
+
+async def test_separate_observations_get_separate_attempt_ids(db_session: AsyncSession) -> None:
+    learner, _subject, _topic, (kc,) = await _seed(db_session)
+    obs = Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=1.0)
+
+    await mastery.record_observation(db_session, obs)
+    await mastery.record_observation(db_session, obs)
+
+    events = (
+        await db_session.scalars(
+            select(LearningEvent).where(LearningEvent.learner_id == learner.id)
+        )
+    ).all()
+    assert len({e.attempt_id for e in events}) == 2  # two real attempts
+
+
+# --- S13: assistance and repeat exposure are not independent demonstrations ---
+
+
+async def test_a_hinted_success_moves_mastery_less_than_an_unaided_one(
+    db_session: AsyncSession,
+) -> None:
+    learner, _subject, _topic, (unaided_kc, hinted_kc) = await _seed(
+        db_session, kc_slugs=("unaided", "hinted")
+    )
+    (unaided,) = await mastery.record_observation(
+        db_session, Observation(learner_id=learner.id, kc_weights={unaided_kc.id: 1.0}, score=1.0)
+    )
+    (hinted,) = await mastery.record_observation(
+        db_session,
+        Observation(learner_id=learner.id, kc_weights={hinted_kc.id: 1.0}, score=1.0, hints_used=2),
+    )
+
+    assert 0.0 < hinted.ability < unaided.ability
+    # And — the point of S13 — it buys less confidence, not just less credit.
+    assert hinted.uncertainty > unaided.uncertainty
+
+
+async def test_a_hinted_failure_is_also_weaker_evidence(db_session: AsyncSession) -> None:
+    """The discount is symmetric: an assisted attempt measures unaided ability poorly either way."""
+    learner, _subject, _topic, (unaided_kc, hinted_kc) = await _seed(
+        db_session, kc_slugs=("unaided", "hinted")
+    )
+    (unaided,) = await mastery.record_observation(
+        db_session, Observation(learner_id=learner.id, kc_weights={unaided_kc.id: 1.0}, score=0.0)
+    )
+    (hinted,) = await mastery.record_observation(
+        db_session,
+        Observation(learner_id=learner.id, kc_weights={hinted_kc.id: 1.0}, score=0.0, hints_used=2),
+    )
+
+    assert unaided.ability < hinted.ability < 0.0
+    assert hinted.uncertainty > unaided.uncertainty
+
+
+async def test_the_event_records_the_discount_it_applied(db_session: AsyncSession) -> None:
+    learner, _subject, _topic, (kc,) = await _seed(db_session)
+    await mastery.record_observation(
+        db_session,
+        Observation(
+            learner_id=learner.id,
+            kc_weights={kc.id: 1.0},
+            score=1.0,
+            hints_used=1,
+            prior_attempts=1,
+        ),
+    )
+
+    event = await db_session.scalar(
+        select(LearningEvent).where(LearningEvent.learner_id == learner.id)
+    )
+    assert event is not None
+    assert event.payload["hints_used"] == 1
+    assert event.payload["prior_attempts"] == 1
+    assert event.payload["credit"] == pytest.approx(1 / 3)
+    assert event.payload["weight"] == 1.0  # KC apportionment is a separate number
+
+
+async def test_recent_attempts_counts_sittings_not_rows(db_session: AsyncSession) -> None:
+    """One answer is one attempt however many KCs it tags, and old practice does not count."""
+    learner, _subject, _topic, (a, b) = await _seed(db_session, kc_slugs=("a", "b"))
+    item_id = uuid.uuid4()
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    obs = Observation(
+        learner_id=learner.id, kc_weights={a.id: 1.0, b.id: 1.0}, score=1.0, item_id=item_id
+    )
+    await mastery.record_observation(db_session, obs, now=now)
+
+    # Two rows written, one attempt seen.
+    assert await mastery.recent_attempts_at_item(db_session, learner.id, item_id) == 1
+    # A different item is not this item.
+    assert await mastery.recent_attempts_at_item(db_session, learner.id, uuid.uuid4()) == 0
+    # Meeting the question again in a later sitting is an independent demonstration.
+    assert (
+        await mastery.recent_attempts_at_item(db_session, learner.id, item_id, within_minutes=0)
+        == 0
+    )

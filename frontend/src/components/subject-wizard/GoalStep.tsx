@@ -3,7 +3,8 @@ import { Send, Sprout, AlertCircle } from "lucide-react";
 import { useGoalRefinement } from "../../api/onboarding";
 
 export interface GoalStepProps {
-  sessionId: string;
+  /** Undefined while the server-issued session id is still in flight. */
+  sessionId: string | undefined;
   onGoalCommitted: (goal: string) => void;
   onBack: () => void;
 }
@@ -82,7 +83,7 @@ export function GoalStep({ sessionId, onGoalCommitted, onBack }: GoalStepProps) 
               <p className="text-caption text-error">{error}</p>
               <button
                 onClick={() => handleSend()}
-                disabled={isStreaming}
+                disabled={isStreaming || !sessionId}
                 className="btn btn-error btn-xs w-fit"
               >
                 Try again
@@ -108,7 +109,7 @@ export function GoalStep({ sessionId, onGoalCommitted, onBack }: GoalStepProps) 
           placeholder="E.g., 'Learn Python for data analysis' or 'Improve my algebra skills'…"
           className="textarea textarea-bordered text-body resize-none"
           rows={3}
-          disabled={isStreaming || !!committedGoal}
+          disabled={isStreaming || !!committedGoal || !sessionId}
         />
 
         <div className="flex justify-between gap-3">
@@ -120,7 +121,7 @@ export function GoalStep({ sessionId, onGoalCommitted, onBack }: GoalStepProps) 
             {proposal && !committedGoal && (
               <button
                 onClick={handleLooksGood}
-                disabled={isStreaming || !proposal}
+                disabled={isStreaming || !proposal || !sessionId}
                 className="btn btn-primary"
               >
                 Looks good
@@ -130,7 +131,7 @@ export function GoalStep({ sessionId, onGoalCommitted, onBack }: GoalStepProps) 
             {!committedGoal && (
               <button
                 onClick={handleSend}
-                disabled={!input.trim() || isStreaming}
+                disabled={!input.trim() || isStreaming || !sessionId}
                 className="btn btn-outline btn-primary gap-1"
               >
                 <Send size={16} />
