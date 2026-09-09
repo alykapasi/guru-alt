@@ -908,6 +908,72 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retention Policy
+         * @description What happens to each store when an account is deleted, and why.
+         *
+         *     Published rather than documented: a learner deciding whether to delete an account should
+         *     be able to read the policy the code actually executes.
+         */
+        get: operations["retention_policy_api_v1_me_retention_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Me
+         * @description Everything held about this learner, as JSON. Uploads appear as metadata, not bytes.
+         */
+        get: operations["export_me_api_v1_me_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Me
+         * @description Erase this learner from every store.
+         *
+         *     Returns the report rather than 204: a deletion that could not remove every uploaded file
+         *     has to say so, because those keys can no longer be found by walking the database.
+         */
+        delete: operations["delete_me_api_v1_me_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -1108,6 +1174,22 @@ export interface components {
             topics: {
                 [key: string]: unknown;
             }[];
+        };
+        /** DeletionReportRead */
+        DeletionReportRead: {
+            /**
+             * Learner Id
+             * Format: uuid
+             */
+            learner_id: string;
+            /** Blobs Deleted */
+            blobs_deleted: number;
+            /** Blobs Failed */
+            blobs_failed: number;
+            /** Items Deleted */
+            items_deleted: number;
+            /** Complete */
+            complete: boolean;
         };
         /** DimensionRead */
         DimensionRead: {
@@ -1658,6 +1740,11 @@ export interface components {
             /** Dimensions */
             dimensions: components["schemas"]["DimensionRead"][];
         };
+        /** RetentionPolicyRead */
+        RetentionPolicyRead: {
+            /** Stores */
+            stores: components["schemas"]["StoreRetentionRead"][];
+        };
         /**
          * RetrievalHit
          * @description A retrieved chunk with its fused score and provenance.
@@ -1757,6 +1844,15 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /** StoreRetentionRead */
+        StoreRetentionRead: {
+            /** Table */
+            table: string;
+            /** Disposition */
+            disposition: string;
+            /** Reason */
+            reason: string;
         };
         /**
          * SubjectCommitRequest
@@ -3650,6 +3746,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retention_policy_api_v1_me_retention_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionPolicyRead"];
+                };
+            };
+        };
+    };
+    export_me_api_v1_me_export_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    delete_me_api_v1_me_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionReportRead"];
                 };
             };
         };

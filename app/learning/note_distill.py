@@ -170,7 +170,7 @@ def parse_atoms_payload(reply: str) -> dict | None:
     try:
         data = json.loads(_extract_json(reply))
     except (json.JSONDecodeError, ValueError) as exc:
-        log.warning("note_distill.parse_failed", error=str(exc))
+        log.warning("note_distill.parse_failed", error=type(exc).__name__)
         return None
     if not isinstance(data, dict):
         return None

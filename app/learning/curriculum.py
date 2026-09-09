@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 import structlog
 
+from app.core.redact import fingerprint
 from app.llm import ChatMessage, ChatRole, LLMClient
 from app.llm.types import ModelRole, Usage
 
@@ -100,13 +101,15 @@ async def generate_curriculum(
 
         # Validate required fields
         if not isinstance(data, dict):
-            log.warning("curriculum.parse_failed", reason="not_a_dict", reply=reply)
+            log.warning("curriculum.parse_failed", reason="not_a_dict", reply=fingerprint(reply))
             return None, usage
         if not data.get("subject_name") or not data.get("topics"):
-            log.warning("curriculum.parse_failed", reason="missing_fields", reply=reply)
+            log.warning(
+                "curriculum.parse_failed", reason="missing_fields", reply=fingerprint(reply)
+            )
             return None, usage
         if not isinstance(data["topics"], list) or len(data["topics"]) == 0:
-            log.warning("curriculum.parse_failed", reason="empty_topics", reply=reply)
+            log.warning("curriculum.parse_failed", reason="empty_topics", reply=fingerprint(reply))
             return None, usage
 
         # Parse topics and KCs
@@ -147,7 +150,14 @@ async def generate_curriculum(
         )
 
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-        log.warning("curriculum.parse_failed", reason="json_or_validation_error", error=str(exc))
+        log.warning(
+            "curriculum.parse_failed",
+            reason="json_or_validation_error",
+            # The exception type, not its message: a pydantic ValidationError repeats
+            # the input it rejected, which is the model's reply to a learner goal.
+            error=type(exc).__name__,
+            reply=fingerprint(reply),
+        )
         return None, usage
 
 

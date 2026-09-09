@@ -1367,7 +1367,55 @@ tests against representative *existing* data rather than only a fresh database.
 
 ### S61 — Define retention, export, deletion, and diagnostics policy across all stores
 
-**Status:** Proposed · **Priority:** Before external learner data
+**Status:** Partially implemented (branch `fix/tracker-s51-s31`) · **Priority:** Before
+external learner data
+
+**Implemented:** Retention was implicit — an `ondelete` clause per foreign key, spread across
+a dozen model files, with no statement anywhere of what was supposed to happen. "Deleting a
+conversation leaves memories" was a deliberate decision; nothing recorded that it *was* one,
+or what the other twelve stores did.
+
+`app/services/retention.py` states it store by store, with the reason, and the statement is
+executable rather than prose: `delete_learner` walks it, and a test asserts every table
+carrying a `learner_id` appears in it — so a new learner-owned store cannot be added without
+someone choosing what deleting the account does to it. That test earned its place immediately
+by catching a table I had named wrong in the map. `GET /me/retention` publishes the policy: a
+learner deciding whether to delete an account can read the one the code executes.
+
+Two stores no foreign key reaches, and both were silently surviving deletion. Object storage
+holds the raw uploaded bytes — the most sensitive thing here — and nothing cascaded to it;
+keys are now collected before the rows naming them are destroyed, then deleted, with any the
+store refuses named in the report (they can no longer be found by walking the database). And
+`Item.author_learner_id` is `SET NULL`, so a cascade kept a learner's questions *and answer
+keys* and merely forgot who wrote them; those are now deleted explicitly.
+
+The database is cleared before object storage, deliberately. The reverse order would let a
+failed database delete leave live rows pointing at bytes that no longer exist — a broken
+account. This way a failure leaves orphaned blobs, which are reported; nothing the learner can
+still reach survives. `llm_calls` is anonymised rather than deleted: token spend is the
+platform's own accounting and has to still add up after an account closes, and the row carries
+no learner content.
+
+Enqueued work needs no separate cancellation, and there are tests for why: every job is keyed
+by a row this removes, and both `ingest_source` and `memory.write_back` return when their row
+is gone.
+
+`GET /me/export` returns everything held, embeddings excluded — thousands of floats per row,
+meaningless outside the space that produced them (S50), would bury the content. Uploads appear
+as metadata rather than inlined bytes.
+
+Diagnostics: several failure paths logged the model's whole reply, or an exception whose
+message embeds the input that failed validation. Those replies are generated from a learner's
+goal, uploads and answers, so a parse bug put learner content into log storage — which has no
+retention policy of its own — to answer a question ("is this the same failure as before?")
+that `app/core/redact.fingerprint` answers just as well with a length and a hash prefix.
+
+**Not done:** no background reconciliation for orphaned blobs — a failed key is reported to
+the caller and logged, not retried. The export is JSON metadata, not a package containing the
+uploaded files. No retention *schedule*: nothing ages out on its own, so this is deletion on
+request rather than a policy with expiry dates. Deletion is not two-phase — no grace period
+and no undo. The diagnostics pass covered the sites that log model output or validation
+input, not a general audit of every log call in the codebase.
 
 **Evidence:** Deleting a conversation leaves memories by design. Raw blobs, extracted text, notes, events and experiment exports form separate stores; a whole-learner deletion/export workflow is not demonstrated. Some error paths log raw model replies or exception text.
 
