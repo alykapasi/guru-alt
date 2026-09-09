@@ -150,6 +150,40 @@ async def estimate_kc(
     return estimator.decay(_estimate_of(state), elapsed_days=_elapsed_days(state.last_seen_at, now))
 
 
+async def estimate_kcs(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    kc_ids: Sequence[uuid.UUID],
+    *,
+    now: datetime | None = None,
+    estimator: MasteryEstimator = DEFAULT_ESTIMATOR,
+) -> dict[uuid.UUID, Estimate]:
+    """Current mastery for many KCs at once — one query, whatever the graph's size (S62).
+
+    Every caller that wanted more than one estimate was fetching them one row at a time, and
+    the rollups then fetched the same rows again to aggregate them. A KC with no state row
+    still appears here, at the unknown prior: absent from the table is a fact about the
+    learner, not a reason to leave it out of the answer.
+    """
+    now = now or datetime.now(UTC)
+    if not kc_ids:
+        return {}
+    states = (
+        await session.scalars(
+            select(LearnerKCState).where(
+                LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id.in_(kc_ids)
+            )
+        )
+    ).all()
+    by_kc = {
+        state.kc_id: estimator.decay(
+            _estimate_of(state), elapsed_days=_elapsed_days(state.last_seen_at, now)
+        )
+        for state in states
+    }
+    return {kc_id: by_kc.get(kc_id, Estimate()) for kc_id in kc_ids}
+
+
 async def record_observation(
     session: AsyncSession,
     obs: Observation,
@@ -347,11 +381,8 @@ async def rollup_topic(
     """Aggregate every KC in a topic into one estimate (equal coverage weight per KC)."""
     now = now or datetime.now(UTC)
     kc_ids = (await session.scalars(select(KC.id).where(KC.topic_id == topic_id))).all()
-    estimates = [
-        await estimate_kc(session, learner_id, kc_id, now=now, estimator=estimator)
-        for kc_id in kc_ids
-    ]
-    return aggregate(estimates)
+    estimates = await estimate_kcs(session, learner_id, kc_ids, now=now, estimator=estimator)
+    return aggregate(list(estimates.values()))
 
 
 async def rollup_subject(
@@ -364,21 +395,27 @@ async def rollup_subject(
 ) -> Estimate:
     """Aggregate a subject's topics, weighting each topic by its KC count (coverage)."""
     now = now or datetime.now(UTC)
-    topic_ids = (
-        await session.scalars(select(Topic.id).where(Topic.subject_id == subject_id))
+    # Three queries, not three per topic: the whole subject's KCs, then every state row for
+    # them, then the aggregation in memory (S62). The rollup used to re-read each topic's KCs
+    # and each KC's state a second time, having already read both to build the topic estimate.
+    rows = (
+        await session.execute(
+            select(KC.id, KC.topic_id)
+            .join(Topic, Topic.id == KC.topic_id)
+            .where(Topic.subject_id == subject_id)
+        )
     ).all()
+    kcs_by_topic: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for kc_id, topic_id in rows:
+        kcs_by_topic.setdefault(topic_id, []).append(kc_id)
+    estimates_by_kc = await estimate_kcs(
+        session, learner_id, [kc_id for kc_id, _ in rows], now=now, estimator=estimator
+    )
     estimates: list[Estimate] = []
     weights: list[float] = []
-    for topic_id in topic_ids:
-        kc_count = await session.scalar(
-            select(func.count()).select_from(KC).where(KC.topic_id == topic_id)
-        )
-        if not kc_count:
-            continue
-        estimates.append(
-            await rollup_topic(session, learner_id, topic_id, now=now, estimator=estimator)
-        )
-        weights.append(float(kc_count))
+    for kc_ids in kcs_by_topic.values():
+        estimates.append(aggregate([estimates_by_kc[kc_id] for kc_id in kc_ids]))
+        weights.append(float(len(kc_ids)))
     return aggregate(estimates, weights)
 
 

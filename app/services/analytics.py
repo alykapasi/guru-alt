@@ -33,7 +33,18 @@ async def subject_mastery(
     """Subject → topic → KC mastery, drill-down shaped (TECHNICAL_DESIGN §7.4's target UX:
     "Calculus 62% (wide)" down into "Integrals 40%, integration-by-parts weakest")."""
     now = datetime.now(UTC)
-    topics = (await session.scalars(select(Topic).where(Topic.subject_id == subject_id))).all()
+    # Three queries for the whole drill-down, whatever its size (S62). It used to run one per
+    # topic for its KCs and one per KC for the estimate, and then the topic rollup re-read
+    # both — a subject of eight topics with eight components each cost 147 round trips to
+    # produce a page whose content is three joins.
+    rows = (
+        await session.execute(
+            select(Topic, KC)
+            .join(KC, KC.topic_id == Topic.id)
+            .where(Topic.subject_id == subject_id)
+            .order_by(Topic.name, KC.name)
+        )
+    ).all()
     # One query for "which components has this learner ever been observed on". An unseen
     # component estimates to the prior (ability 0), which renders as 50% — indistinguishable
     # from a measured average unless the coverage is reported alongside it.
@@ -47,30 +58,32 @@ async def subject_mastery(
             )
         ).all()
     )
+    estimates = await mastery.estimate_kcs(session, learner_id, [kc.id for _, kc in rows], now=now)
+
+    by_topic: dict[uuid.UUID, tuple[Topic, list[KC]]] = {}
+    for topic, kc in rows:
+        by_topic.setdefault(topic.id, (topic, []))[1].append(kc)
 
     topic_reads: list[TopicMasteryRead] = []
     subject_assessed = 0
     subject_total = 0
     subject_estimates: list[Estimate] = []
     subject_weights: list[float] = []
-    for topic in topics:
-        kcs = (await session.scalars(select(KC).where(KC.topic_id == topic.id))).all()
-        if not kcs:
-            continue
-        kc_reads: list[KCMasteryRead] = []
-        for kc in kcs:
-            estimate = await mastery.estimate_kc(session, learner_id, kc.id, now=now)
-            kc_reads.append(
-                KCMasteryRead(
-                    kc_id=kc.id,
-                    kc_name=kc.name,
-                    ability=estimate.ability,
-                    uncertainty=estimate.uncertainty,
-                    mastered=_is_mastered(estimate),
-                    assessed=kc.id in assessed,
-                )
+    for topic, kcs in by_topic.values():
+        kc_reads = [
+            KCMasteryRead(
+                kc_id=kc.id,
+                kc_name=kc.name,
+                ability=estimates[kc.id].ability,
+                uncertainty=estimates[kc.id].uncertainty,
+                mastered=_is_mastered(estimates[kc.id]),
+                assessed=kc.id in assessed,
             )
-        topic_estimate = await mastery.rollup_topic(session, learner_id, topic.id, now=now)
+            for kc in kcs
+        ]
+        # The same aggregation mastery.rollup_topic performs (equal coverage weight per KC),
+        # over estimates already in hand rather than re-read one row at a time.
+        topic_estimate = aggregate([estimates[kc.id] for kc in kcs])
         topic_assessed = sum(1 for kc in kc_reads if kc.assessed)
         subject_assessed += topic_assessed
         subject_total += len(kc_reads)

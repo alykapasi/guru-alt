@@ -1465,7 +1465,40 @@ input, not a general audit of every log call in the codebase.
 
 ### S62 — Reduce repeated database work as learner history grows
 
-**Status:** Proposed · **Priority:** Supporting
+**Status:** Partially implemented (branch `fix/tracker-s51-s31`) · **Priority:** Supporting
+
+**Implemented:** The costs here are invisible against three-row fixtures — the answer is right
+either way — so the first thing built was a way to see them. `tests/querycount.py` counts the
+statements one operation issues, which is the part of the cost that can be measured
+deterministically: no clock, no warm cache, no machine to compare against. Not latency, but an
+operation whose query count grows with the graph will not be fixed by a faster database.
+
+Measured before touching anything: `subject_mastery` on a two-topic, two-KC-each subject cost
+**15 queries**; the same page on an eight-by-eight subject cost **147**. It ran one query per
+topic for that topic's KCs, one per KC for the estimate, and then the topic rollup re-read
+both — having just been handed the estimates it was aggregating. `mastery.rollup_subject` did
+the same thing one level up. The notes index ran about six per topic: the note, two
+*learner-global* profile dimensions re-read on every pass of the loop, two existence probes,
+and a render lookup — and one of those probes asks a subject-wide question, so it was
+computing the same answer once per topic.
+
+All three are now flat. `mastery.estimate_kcs` reads every state row in one query and returns
+the prior for KCs that have none (absent from the table is a fact about the learner, not a
+reason to leave it out). The rollups aggregate estimates already in hand. The notes index asks
+each per-topic question once for the whole subject: an existence test against a watermark is
+exactly a comparison against the newest row, so one grouped `max` answers it for every topic.
+
+The budgets are asserted at two graph sizes, and the real assertion is the *shape* — doubling
+the graph must not change the count. Each fix was mutation-tested by restoring the per-row
+version and confirming its budget fails.
+
+**Not done:** no latency budget, only query counts — the two are related but not the same, and
+a latency target needs representative data and a machine to measure on (the S76 lesson: do not
+report a number the evidence cannot support). Message listing is still unpaginated; `GET
+/conversations/{id}/messages` returns the whole transcript, which the turn window (S47) bounds
+for *cost* but not for this. Profile refresh still recomputes each dimension over the full
+history — S43 made it skip when there is no new evidence, which is a different saving.
+Activity aggregation is still computed per request rather than incrementally.
 
 **Evidence:** Analytics loads per-KC estimates and then rollups reload them; notes index performs multiple queries per topic. Profile refresh and message listing load full histories. These costs grow with exactly the long-term use Guru seeks.
 
