@@ -38,7 +38,6 @@ class LessonPlanRead(BaseModel):
     goal: str | None
     pacing: str
     example_tags: list[str]
-    reading_level_hint: float | None
     steps: list[LessonStepRead]
     objective_kc_count: int = 0
     deferred_kc_count: int = 0

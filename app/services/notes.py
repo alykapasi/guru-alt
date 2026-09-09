@@ -84,10 +84,6 @@ async def effective_format(session: AsyncSession, learner_id: uuid.UUID, note: N
     return FALLBACK_FORMAT
 
 
-async def _reading_level(session: AsyncSession, learner_id: uuid.UUID) -> object:
-    return await _dimension_value(session, learner_id, "reading_level")
-
-
 def _cursors(note: Note | None) -> tuple[datetime, datetime]:
     """This note's (messages, events) cursors — EPOCH for a note that does not exist yet."""
     if note is None:
@@ -331,7 +327,6 @@ async def _render_and_cache(
             llm,
             atoms=note.substrate,
             note_format=fmt,
-            reading_level=await _reading_level(session, learner_id),
         )
         await log_llm_call(
             learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
@@ -408,7 +403,6 @@ async def refresh_note(
         transcript=gathered.transcript,
         outcomes=gathered.outcomes,
         refs=gathered.refs,
-        reading_level=await _reading_level(session, learner_id),
     )
     await log_llm_call(
         learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage

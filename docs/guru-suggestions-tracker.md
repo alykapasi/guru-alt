@@ -749,7 +749,47 @@ reconciliation shape as S36 would fit, and is not built.
 
 ### S44 — Treat learner profile measures as provisional proxies, not measured traits
 
-**Status:** Proposed · **Priority:** High
+**Status:** Partially implemented (branch `fix/tracker-s51-s31`) · **Priority:** High
+
+**Implemented:** Three dimensions asserted findings the code does not establish, and two of
+them drove behaviour on that basis. Both of those are now fixed; all thirteen are described
+honestly.
+
+`reading_level` was a readability grade of the learner's *own typed messages* — a measure of
+how they write to a tutor, not how well they read — and it was passed into note generation as
+"Write at roughly this reading level: 8.5". Short, casual questions therefore asked the tutor
+to simplify its explanations. The dimension is renamed `message_writing_complexity` and no
+longer reaches generation at all; `lesson_plans.reading_level_hint` is dropped (migration
+`0031`). Presentation level belongs to an explicit learner preference, which does not exist
+yet — and no inference is better than an unjustified one.
+
+`format_effectiveness` became `score_by_format`, and the planner stopped taking
+`max(mean_score)`. Formats are not matched on difficulty or topic, so the highest mean belongs
+to whichever format happened to ask the easiest questions — and routing a learner there is a
+recommendation to practise what they already find easy, made on evidence that says nothing of
+the kind. A format is now preferred only if it wins by a margin *and* was not asked easier
+questions than its rivals; otherwise no preference is expressed and the step's own default
+stands. Both thresholds are uncalibrated v1 numbers and labelled as such.
+
+`cognitive_load_tolerance` became `within_session_accuracy_drift`, which is what it computes:
+the average change in score from the first half of a session to the second, over questions
+whose difficulty is not held constant.
+
+`DimensionSpec` now carries a `label` and an `observation` for every dimension, exposed on
+`DimensionRead` and rendered by the dashboard in place of a title-cased key. Where a value is
+easy to over-read, the observation says what it is *not* evidence of — the writing-complexity
+row tells the learner it is not a measure of how well they read. Catalog metadata, not stored
+per row, so correcting a description is a code change and never a migration.
+
+The renames are `UPDATE`s, not drops: the underlying measurements are worth keeping and
+showing, under names that say what they are.
+
+**Not done:** no explicit learner preference for presentation, so the honest replacement for
+the reading-level inference is currently nothing at all rather than a control. Format
+selection is still judged on immediate score — narrowed, but not moved onto later retention
+and transfer, which is what would actually justify a recommendation and needs the delayed
+outcomes S59 covers. Nothing conditions these measures on task or topic, so difficulty,
+subject, and exposure still confound them.
 
 **Evidence:** Reading level is calculated from learner message text with a readability formula. Cognitive-load tolerance is a within-session score difference. Format effectiveness uses average scores by item type, and the planner picks the highest mean. Difficulty, subject, assistance, and exposure can confound these measures. This is a code-level interpretation concern, not a literature validation.
 

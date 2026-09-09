@@ -255,12 +255,6 @@ def _carry_learner_atoms(prior: list[dict], new: list[dict]) -> list[dict] | Non
     return carried
 
 
-def _profile_line(reading_level: object) -> str:
-    if reading_level is None:
-        return ""
-    return f"\n\nWrite at roughly this reading level: {reading_level}."
-
-
 async def distill(
     llm: LLMClient,
     *,
@@ -269,7 +263,6 @@ async def distill(
     transcript: str,
     outcomes: str,
     refs: dict[str, dict] | None = None,
-    reading_level: object,
     max_atoms: int = DISTILL_MAX_ATOMS,
 ) -> tuple[DistillResult | None, Usage]:
     """One merge: current atoms + new material + outcomes -> updated atom list.
@@ -298,7 +291,6 @@ async def distill(
         f"may concern this topic:\n{transcript or '(none)'}\n\n"
         f"The learner's graded outcomes on this topic (build 'callout' atoms from real "
         f"mistakes here):\n{outcomes or '(none)'}"
-        f"{_profile_line(reading_level)}"
     )
     completion = await llm.complete(
         NOTES_ROLE,
@@ -356,7 +348,6 @@ async def render(
     *,
     atoms: list[dict],
     note_format: str,
-    reading_level: object,
 ) -> tuple[str | None, Usage]:
     """Project the substrate into one format, or ``None`` if the projection cannot be trusted.
 
@@ -366,10 +357,7 @@ async def render(
     falls back to :func:`mechanical_render`, which is derived from the same substrate and
     always complete.
     """
-    prompt = (
-        f"{_FORMAT_INSTRUCTIONS[note_format]}{_profile_line(reading_level)}\n\n"
-        f"Atoms:\n{json.dumps(atoms, indent=2)}"
-    )
+    prompt = f"{_FORMAT_INSTRUCTIONS[note_format]}\n\nAtoms:\n{json.dumps(atoms, indent=2)}"
     completion = await llm.complete(
         NOTES_ROLE,
         [ChatMessage(role=ChatRole.USER, content=prompt)],

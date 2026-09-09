@@ -94,7 +94,6 @@ async def _scaffolding(session: AsyncSession, learner_id: uuid.UUID) -> engine.S
 def _apply_plan_level_hints(plan: LessonPlan, scaffolding: engine.ScaffoldingHints) -> None:
     plan.pacing = scaffolding.pacing
     plan.example_tags = scaffolding.example_tags
-    plan.reading_level_hint = scaffolding.reading_level_hint
 
 
 async def generate_lesson_plan(

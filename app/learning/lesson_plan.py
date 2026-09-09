@@ -213,7 +213,47 @@ class ScaffoldingHints:
     preferred_item_type: str | None = None
     pacing: str = "standard"  # "brisk" | "standard" | "unhurried"
     example_tags: list[str] = field(default_factory=list)
-    reading_level_hint: float | None = None
+
+
+# A format wins only if it wins on score *without* having been asked easier questions, and by
+# enough that the difference is not noise. Both are uncalibrated v1 heuristics, in the same
+# spirit as the placement mappings — the point is the shape of the rule, not these numbers.
+FORMAT_DIFFICULTY_BAND = 0.1
+FORMAT_SCORE_MARGIN = 0.1
+
+
+def _preferred_item_type(score_by_format: Any) -> str | None:
+    """The format to try first, or ``None`` when the scores do not justify choosing one (S44).
+
+    This used to be ``max(mean_score)``. Formats are not matched on difficulty or topic, so
+    the highest mean belongs to whichever format happened to ask the easiest questions — and
+    routing a learner to it is a recommendation to practise the thing they already find easy,
+    made on evidence that says nothing of the kind. A format now has to hold its own on
+    difficulty and win by a margin, and where neither holds this returns nothing and the
+    step's own default stands.
+
+    An immediate score is still the wrong measure here — later retention and transfer are the
+    ones that matter — so this narrows a bad rule rather than establishing a good one.
+    """
+    if not isinstance(score_by_format, dict):
+        return None
+    stats = {
+        t: v
+        for t, v in score_by_format.items()
+        if isinstance(v, dict)
+        and isinstance(v.get("mean_score"), int | float)
+        and isinstance(v.get("mean_difficulty"), int | float)
+    }
+    if len(stats) < 2:
+        return None  # nothing to compare against, so nothing to prefer
+    ranked = sorted(stats.items(), key=lambda kv: kv[1]["mean_score"], reverse=True)
+    (best_key, best), (_, runner_up) = ranked[0], ranked[1]
+    if best["mean_score"] - runner_up["mean_score"] < FORMAT_SCORE_MARGIN:
+        return None  # too close to call
+    hardest = max(v["mean_difficulty"] for v in stats.values())
+    if best["mean_difficulty"] < hardest - FORMAT_DIFFICULTY_BAND:
+        return None  # it only leads because its questions were easier
+    return str(best_key)
 
 
 def _hint_density(help_seeking: Any, persistence: Any) -> str | None:
@@ -242,15 +282,7 @@ def scaffolding_from_profile(values: Mapping[str, Any]) -> ScaffoldingHints:
 
     hint_density = _hint_density(values.get("help_seeking"), values.get("persistence"))
 
-    preferred_item_type = None
-    format_effectiveness = values.get("format_effectiveness")
-    if isinstance(format_effectiveness, dict) and format_effectiveness:
-        preferred_item_type = str(
-            max(
-                format_effectiveness,
-                key=lambda t: format_effectiveness[t].get("mean_score", 0.0),
-            )
-        )
+    preferred_item_type = _preferred_item_type(values.get("score_by_format"))
 
     pacing = "standard"
     pace = values.get("pace")
@@ -264,16 +296,16 @@ def scaffolding_from_profile(values: Mapping[str, Any]) -> ScaffoldingHints:
     interests = values.get("interests")
     example_tags = [str(t) for t in interests] if isinstance(interests, list) else []
 
-    reading_level = values.get("reading_level")
-    reading_level_hint = float(reading_level) if isinstance(reading_level, int | float) else None
-
+    # No reading-level hint. It was a readability score of the learner's own chat messages,
+    # used to instruct generation to write at that level — so short, casual questions asked a
+    # tutor to simplify its explanations (S44). Presentation level belongs to an explicit
+    # learner preference, which does not exist yet; an unjustified inference is worse than none.
     return ScaffoldingHints(
         target_difficulty=target_difficulty,
         hint_density=hint_density,
         preferred_item_type=preferred_item_type,
         pacing=pacing,
         example_tags=example_tags,
-        reading_level_hint=reading_level_hint,
     )
 
 

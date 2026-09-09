@@ -279,7 +279,17 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 > downstream — no generation path, no prompt — actually reads them yet; only the per-step
 > `target_difficulty`/`hint_density`/`preferred_item_type` hints are consumed (the last
 > structurally, via `session_runner`; the first two as advisory tutor-prompt text). There is no
-> "step size" concept anywhere in the codebase. A future slice that wants pacing to visibly affect
+> "step size" concept anywhere in the codebase.
+>
+> **Superseded (S44, batch 3):** three of the dimensions named above were renamed to what they
+> measure — `reading_level` -> `message_writing_complexity`, `cognitive_load_tolerance` ->
+> `within_session_accuracy_drift`, `format_effectiveness` -> `score_by_format` — and the
+> plan-level `reading_level_hint` was removed outright (it carried a readability score of the
+> learner's own messages into generation as an instruction to write at that level). Format
+> selection no longer takes the highest mean score: a format must also not be the easier one and
+> must win by a margin, else no preference is expressed.
+>
+> A future slice that wants pacing to visibly affect
 > the session (e.g. how many new KCs per sitting) has a real, tested signal to build on — it just
 > isn't wired to anything yet.
 >
@@ -421,8 +431,9 @@ grounded in retrieved knowledge with citations; generation reuses cached blocks 
 
 **DoD:** a new learner co-constructs a goal through the interactive gate, is placed, gets an adaptive
 plan whose pacing/challenge demonstrably shift with profile values (e.g. `optimal_challenge` raises
-or lowers a step's `target_difficulty`; `format_effectiveness` picks the item type that scores best
-for this learner — both concretely tested off real profile rows, see the Phase 5 review note below),
+or lowers a step's `target_difficulty`; `score_by_format` picks an item type when one wins on score
+without having been asked easier questions — both concretely tested off real profile rows, see the
+Phase 5 review note below),
 runs LangGraph-orchestrated sessions with study aids and surfaced reviews, and the experience reflects
 persistent memory across sessions.
 

@@ -104,7 +104,6 @@ class TestDistill:
             atoms=[],
             transcript="tutor: dot products…",
             outcomes="",
-            reading_level=None,
         )
         assert result is not None and not result.no_change
         assert result.atoms is not None and result.atoms[0]["md"] == CONCEPT["md"]
@@ -112,14 +111,14 @@ class TestDistill:
     async def test_distill_no_change(self) -> None:
         llm = fake_llm_client('{"no_change": true}')
         result, _ = await note_distill.distill(
-            llm, topic=TOPIC, atoms=[CONCEPT], transcript="t", outcomes="", reading_level=None
+            llm, topic=TOPIC, atoms=[CONCEPT], transcript="t", outcomes=""
         )
         assert result is not None and result.no_change and result.atoms is None
 
     async def test_distill_parse_failure_returns_none(self) -> None:
         llm = fake_llm_client("garbage")
         result, _ = await note_distill.distill(
-            llm, topic=TOPIC, atoms=[], transcript="t", outcomes="", reading_level=None
+            llm, topic=TOPIC, atoms=[], transcript="t", outcomes=""
         )
         assert result is None
 
@@ -132,7 +131,6 @@ class TestDistill:
             atoms=[CONCEPT, LEARNER_ATOM],
             transcript="t",
             outcomes="",
-            reading_level=None,
         )
         assert result is None
 
@@ -144,7 +142,6 @@ class TestDistill:
             atoms=[CONCEPT, LEARNER_ATOM],
             transcript="t",
             outcomes="",
-            reading_level=None,
         )
         assert result is not None and result.atoms is not None
         assert any(a["id"] == "a-L1" for a in result.atoms)
@@ -168,9 +165,7 @@ class TestAbsorb:
 class TestRender:
     async def test_render_returns_markdown(self) -> None:
         llm = fake_llm_client("# Dot products\n\nThey measure alignment.")
-        md, _usage = await note_distill.render(
-            llm, atoms=[CONCEPT], note_format="narrative", reading_level=None
-        )
+        md, _usage = await note_distill.render(llm, atoms=[CONCEPT], note_format="narrative")
         assert md is not None and md.startswith("# Dot products")
 
     async def test_an_empty_render_is_refused_rather_than_returned(self) -> None:
@@ -179,16 +174,13 @@ class TestRender:
             fake_llm_client("   \n  "),
             atoms=[CONCEPT],
             note_format="narrative",
-            reading_level=None,
         )
         assert md is None
 
     async def test_a_severed_render_is_refused(self) -> None:
         """A model that hit its output cap returns half a note and no error."""
         llm = _truncating_client("# Dot products\n\nThey measure")
-        md, _usage = await note_distill.render(
-            llm, atoms=[CONCEPT], note_format="narrative", reading_level=None
-        )
+        md, _usage = await note_distill.render(llm, atoms=[CONCEPT], note_format="narrative")
         assert md is None
 
 
@@ -223,7 +215,6 @@ class TestTopicScopingAndProvenance:
             atoms=[],
             transcript="t",
             outcomes="",
-            reading_level=None,
         )
         assert result is not None and result.atoms is not None
         assert result.atoms[0]["kc_ids"] == ["11111111-1111-1111-1111-111111111111"]
@@ -241,7 +232,6 @@ class TestTopicScopingAndProvenance:
             transcript="[m1] user: hi",
             outcomes="[o1] KC 'x': score=0.0",
             refs=refs,
-            reading_level=None,
         )
         assert result is not None and result.atoms is not None
         assert result.atoms[0]["provenance"] == {"evidence": [refs["m1"], refs["o1"]]}
@@ -255,7 +245,6 @@ class TestTopicScopingAndProvenance:
             transcript="[m1] user: hi",
             outcomes="",
             refs={"m1": {"kind": "message", "id": "msg-1"}},
-            reading_level=None,
         )
         assert result is not None and result.atoms is not None
         # The unknown label is gone, and so is the free-text field the model added itself.
@@ -271,7 +260,6 @@ class TestTopicScopingAndProvenance:
             transcript="[m1] user: hi",
             outcomes="",
             refs={"m1": {"kind": "message", "id": "new"}},
-            reading_level=None,
         )
         assert result is not None and result.atoms is not None
         assert result.atoms[0]["provenance"]["evidence"] == [
@@ -292,7 +280,6 @@ class TestLearnerContentIsTheLearners:
             atoms=[CONCEPT, LEARNER_ATOM],
             transcript="t",
             outcomes="",
-            reading_level=None,
         )
         assert result is not None and result.atoms is not None
         carried = next(a for a in result.atoms if a["id"] == "a-L1")
@@ -306,7 +293,6 @@ class TestLearnerContentIsTheLearners:
             atoms=[LEARNER_ATOM],
             transcript="t",
             outcomes="",
-            reading_level=None,
         )
         assert result is not None and result.atoms is not None
         assert result.atoms[0]["kind"] == "learner"
@@ -321,7 +307,6 @@ class TestLearnerContentIsTheLearners:
             atoms=[],
             transcript="t",
             outcomes="",
-            reading_level=None,
         )
         assert result is not None and result.atoms is not None
         # Kept as content, but no longer attributed to the learner.
@@ -336,7 +321,6 @@ class TestLearnerContentIsTheLearners:
             atoms=[CONCEPT, LEARNER_ATOM],
             transcript="t",
             outcomes="",
-            reading_level=None,
         )
         assert result is not None and result.atoms is not None
         assert [a["id"] for a in result.atoms] == ["a-L1", "a-c1"]
@@ -379,7 +363,6 @@ class TestSubstrateWindow:
             atoms=prior,
             transcript="",
             outcomes="",
-            reading_level=None,
             max_atoms=2,
         )
 
@@ -398,7 +381,6 @@ class TestSubstrateWindow:
             atoms=prior,
             transcript="",
             outcomes="",
-            reading_level=None,
             max_atoms=60,
         )
         assert result is not None and result.atoms is not None

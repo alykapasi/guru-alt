@@ -67,12 +67,26 @@ so the orchestrator can log LLM cost uniformly — same shape as ``kc_tagging.ta
 
 @dataclass(frozen=True)
 class DimensionSpec:
-    """One catalog entry: a dimension key plus the estimator that computes it."""
+    """One catalog entry: a dimension key, the estimator that computes it, and what it means.
+
+    ``label`` and ``observation`` exist because these are **proxies, not measured traits**
+    (S44). Every value here is derived from behaviour that has other explanations — an
+    unfamiliar topic, a hard question set, a learner typing quickly on a phone. Naming a
+    readability score of someone's chat messages "reading level" asserts a finding nothing
+    here establishes, so the catalog carries the honest description alongside the key and the
+    API hands both to whatever displays it. Neither is stored per row: this is catalog
+    metadata, so correcting a description is a code change, never a migration.
+    """
 
     key: str
     kind: Kind
     source: Source
     estimate: EstimatorFn
+    # What a learner should see instead of a title-cased key.
+    label: str
+    # One sentence naming what was actually observed — and, where it is easy to over-read,
+    # what it is not evidence of.
+    observation: str
 
 
 def _uncertainty(n: int, *, floor: float = 0.15) -> float:
@@ -185,7 +199,7 @@ async def _estimate_optimal_challenge(
     return DimensionEstimate(value=round(difficulty, 2), uncertainty=uncertainty), Usage()
 
 
-async def _estimate_cognitive_load_tolerance(
+async def _estimate_within_session_accuracy_drift(
     ctx: EstimatorContext,
 ) -> tuple[DimensionEstimate | None, Usage]:
     sessions = _cluster_sessions(
@@ -504,7 +518,7 @@ def _syllable_count(word: str) -> int:
     return max(count, 1)
 
 
-async def _estimate_reading_level(
+async def _estimate_message_writing_complexity(
     ctx: EstimatorContext,
 ) -> tuple[DimensionEstimate | None, Usage]:
     text = " ".join(m.content for m in ctx.messages if m.content.strip())
@@ -538,7 +552,7 @@ async def _estimate_session_logistics(
     return DimensionEstimate(value=value, uncertainty=_uncertainty(len(sessions))), Usage()
 
 
-async def _estimate_format_effectiveness(
+async def _estimate_score_by_format(
     ctx: EstimatorContext,
 ) -> tuple[DimensionEstimate | None, Usage]:
     graded = [e for e in _observations(ctx.events) if e.payload.get("item_id")]
@@ -603,56 +617,150 @@ async def _estimate_note_format(
 
 
 DIMENSION_SPECS: list[DimensionSpec] = [
-    DimensionSpec(key="pace", kind="trait", source="behavioral", estimate=_estimate_pace),
+    DimensionSpec(
+        key="pace",
+        kind="trait",
+        source="behavioral",
+        estimate=_estimate_pace,
+        label="Answer speed",
+        observation=(
+            "Median seconds per graded answer, and whether the second half of your answers "
+            "was faster or slower than the first."
+        ),
+    ),
     DimensionSpec(
         key="optimal_challenge",
         kind="trait",
         source="behavioral",
         estimate=_estimate_optimal_challenge,
+        label="Difficulty where you score in the middle",
+        observation=(
+            "Average difficulty of the questions you scored between 0.4 and 0.8 on. Where "
+            "too few such answers exist it averages every question instead."
+        ),
     ),
     DimensionSpec(
-        key="error_type", kind="trait", source="behavioral", estimate=_estimate_error_type
-    ),
-    DimensionSpec(
-        key="cognitive_load_tolerance",
+        key="error_type",
         kind="trait",
         source="behavioral",
-        estimate=_estimate_cognitive_load_tolerance,
+        estimate=_estimate_error_type,
+        label="How your wrong answers were classified",
+        observation=(
+            "A model's reading of up to ten incorrect answers as conceptual, procedural, or "
+            "careless. A classification of the answers, not a diagnosis of you."
+        ),
     ),
     DimensionSpec(
-        key="help_seeking", kind="trait", source="behavioral", estimate=_estimate_help_seeking
+        key="within_session_accuracy_drift",
+        kind="trait",
+        source="behavioral",
+        estimate=_estimate_within_session_accuracy_drift,
+        label="Accuracy drift within a session",
+        observation=(
+            "Average change in score from the first half of a session to the second. "
+            "Difficulty is not held constant across a session, so a drop is not evidence of "
+            "a limit on how much you can hold at once."
+        ),
     ),
     DimensionSpec(
-        key="persistence", kind="trait", source="behavioral", estimate=_estimate_persistence
+        key="help_seeking",
+        kind="trait",
+        source="behavioral",
+        estimate=_estimate_help_seeking,
+        label="Hints used per question",
+        observation="Average number of hints taken across your graded answers.",
     ),
     DimensionSpec(
-        key="engagement", kind="state", source="behavioral", estimate=_estimate_engagement
+        key="persistence",
+        kind="trait",
+        source="behavioral",
+        estimate=_estimate_persistence,
+        label="Retries after a wrong answer",
+        observation=(
+            "Share of questions you first scored below 0.5 on that you tried again rather "
+            "than leaving."
+        ),
+    ),
+    DimensionSpec(
+        key="engagement",
+        kind="state",
+        source="behavioral",
+        estimate=_estimate_engagement,
+        label="Longest run of wrong answers, most recent session",
+        observation=(
+            "Inverted so a higher number is a shorter run. Reads one session only, so it "
+            "describes that session rather than how engaged you are."
+        ),
     ),
     DimensionSpec(
         key="goal_orientation",
         kind="trait",
         source="self_report",
         estimate=_estimate_goal_orientation,
+        label="What your stated goals are aiming at",
+        observation="A model's reading of the goals you wrote for your recent conversations.",
     ),
-    DimensionSpec(key="interests", kind="trait", source="behavioral", estimate=_estimate_interests),
     DimensionSpec(
-        key="reading_level", kind="trait", source="behavioral", estimate=_estimate_reading_level
+        key="interests",
+        kind="trait",
+        source="behavioral",
+        estimate=_estimate_interests,
+        label="Topics in your messages",
+        observation="Subjects a model picked out of the messages you have typed.",
+    ),
+    DimensionSpec(
+        key="message_writing_complexity",
+        kind="trait",
+        source="behavioral",
+        estimate=_estimate_message_writing_complexity,
+        label="Writing complexity of your messages",
+        observation=(
+            "Readability grade of the text you have typed to the tutor. It measures how you "
+            "write here — short, casual questions score low — not how well you read."
+        ),
     ),
     DimensionSpec(
         key="session_logistics",
         kind="trait",
         source="behavioral",
         estimate=_estimate_session_logistics,
+        label="When and how long you practise",
+        observation="Median session length and the hour (UTC) your sessions most often start.",
     ),
     DimensionSpec(
-        key="format_effectiveness",
+        key="score_by_format",
         kind="trait",
         source="behavioral",
-        estimate=_estimate_format_effectiveness,
+        estimate=_estimate_score_by_format,
+        label="Scores by question format",
+        observation=(
+            "Mean score and mean difficulty per question format. Formats are not matched on "
+            "difficulty or topic, so a higher score is not evidence a format teaches better."
+        ),
     ),
     DimensionSpec(
-        key="note_format", kind="trait", source="behavioral", estimate=_estimate_note_format
+        key="note_format",
+        kind="trait",
+        source="behavioral",
+        estimate=_estimate_note_format,
+        label="Note format you choose",
+        observation="The format you picked for a clear majority of your notes.",
     ),
 ]
 """The dimension catalog. Populated incrementally (see the learner-profile plan's commit
 sequence) — each family's estimators are added here as they're implemented."""
+
+
+_SPECS_BY_KEY = {spec.key: spec for spec in DIMENSION_SPECS}
+
+
+def describe(key: str) -> tuple[str, str]:
+    """``(label, observation)`` for a dimension key, or a plain fallback for an unknown one.
+
+    Rows outlive the catalog: a dimension dropped from ``DIMENSION_SPECS`` leaves its stored
+    rows behind (no migration — see the module docstring), and those still have to render.
+    """
+    spec = _SPECS_BY_KEY.get(key)
+    if spec is None:
+        return key.replace("_", " ").capitalize(), "No description recorded for this dimension."
+    return spec.label, spec.observation

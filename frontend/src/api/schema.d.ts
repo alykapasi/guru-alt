@@ -1122,6 +1122,16 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /**
+             * Observation
+             * @default
+             */
+            observation: string;
         };
         /**
          * GenerateRequest
@@ -1393,8 +1403,6 @@ export interface components {
             pacing: string;
             /** Example Tags */
             example_tags: string[];
-            /** Reading Level Hint */
-            reading_level_hint: number | null;
             /** Steps */
             steps: components["schemas"]["LessonStepRead"][];
             /**
