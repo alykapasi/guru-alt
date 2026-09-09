@@ -72,7 +72,7 @@ async def run_placement(
     root_kcs: list[KC] = list(await knowledge_svc.list_root_kcs(session, subject.id))
     light_test_items: list[Item] = []
     for kc in root_kcs[:light_test_size]:
-        item = await assessment_svc.find_item_for_kc(session, kc.id)
+        item = await assessment_svc.find_item_for_kc(session, kc.id, learner_id=learner_id)
         if item is None:
             item, gen_usage = await item_generation.generate_mcq_item(session, llm, kc)
             if gen_usage.total_tokens:

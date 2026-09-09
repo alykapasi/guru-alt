@@ -28,9 +28,11 @@ router = APIRouter(tags=["assessment"])
 
 
 @router.post("/items", response_model=ItemRead, status_code=status.HTTP_201_CREATED)
-async def create_item(data: ItemCreate, session: SessionDep, _: CurrentLearner):
+async def create_item(data: ItemCreate, session: SessionDep, learner: CurrentLearner):
+    """Author an item. It is this learner's alone — being signed in is not authority to write
+    a question, and an answer key, that other learners are then examined against (S33)."""
     try:
-        item = await svc.create_item(session, data)
+        item = await svc.create_item(session, data, author_learner_id=learner.id)
     except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(
@@ -40,8 +42,8 @@ async def create_item(data: ItemCreate, session: SessionDep, _: CurrentLearner):
 
 
 @router.get("/items/{item_id}", response_model=ItemRead)
-async def get_item(item_id: uuid.UUID, session: SessionDep, _: CurrentLearner):
-    item = await svc.get_item(session, item_id)
+async def get_item(item_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+    item = await svc.get_item_for(session, item_id, learner_id=learner.id)
     if item is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "item not found")
     return svc.item_to_read(item)
@@ -55,7 +57,9 @@ async def answer_item(
     learner: CurrentLearner,
     llm: LLMClientDep,
 ):
-    item = await svc.get_item(session, item_id)
+    # Scoped like the read: answering another learner's private item would write a mastery
+    # observation from a question nobody vouched for (S33).
+    item = await svc.get_item_for(session, item_id, learner_id=learner.id)
     if item is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "item not found")
     if ItemType(item.item_type) not in GRADABLE:

@@ -252,7 +252,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create Item */
+        /**
+         * Create Item
+         * @description Author an item. It is this learner's alone — being signed in is not authority to write
+         *     a question, and an answer key, that other learners are then examined against (S33).
+         */
         post: operations["create_item_api_v1_items_post"];
         delete?: never;
         options?: never;
@@ -1264,6 +1268,11 @@ export interface components {
             presentation?: {
                 [key: string]: unknown;
             } | null;
+            /**
+             * Origin
+             * @default generated
+             */
+            origin: string;
         };
         /**
          * ItemType

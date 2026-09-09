@@ -230,7 +230,38 @@ when the checkpointers do (S17).
 
 ### S33 — Define authority over shared assessment items
 
-**Status:** Proposed · **Priority:** Before multi-user access
+**Status:** Partially implemented (branch `fix/tracker-s51-s31`) · **Priority:** Before
+multi-user access
+
+**Implemented:** `items` is a global table and `POST /items` was open to any authenticated
+learner, so writing a question — and its answer key — added it to the bank that bank-reuse
+draws *other* learners' practice from. Being signed in is not authority to author an
+assessment other people are graded against, and a mastery observation traced to a question
+nobody vouched for measures nothing.
+
+`Item` now records who wrote it (migration `0032`): `origin` is `generated` (the platform's
+own generators — the shared bank) or `learner`, with `author_learner_id` pointing at the
+author. One predicate, `_assessable_by`, defines what a learner may be assessed with — the
+shared bank plus their own items — and every read path goes through it, so a new one cannot
+forget it. Reuse (`find_item_for_kc`) is scoped, and so are `GET /items/{id}` and
+`POST /items/{id}/answer`: another learner's item is 404, not merely unselectable. Reading it
+would expose the stem and an MCQ's choices (S54), and answering it would write a traced
+observation.
+
+`origin` is a column rather than `author_learner_id is None`, because the FK is `ON DELETE
+SET NULL` — deleting a learner would otherwise promote every private item they wrote into the
+shared bank. There is a test for exactly that.
+
+Existing rows become `generated`. The bank as it stands is generator output; marking it
+`learner` with no author would make every item invisible to everyone and strand the plans
+referencing them, and nothing distinguishes the two retrospectively.
+
+**Not done:** there is no publication path — a learner's item cannot become shared at all,
+rather than being shareable subject to review. That is the honest state, because nothing in
+the system can yet establish who is entitled to approve one; it needs the ownership model in
+S25 and real identity in Phase 10. Grading criteria are still unversioned: `Rubric` has no
+version and no edit path today, so a future rubric edit would silently change what past
+grades meant.
 
 **Evidence:** Any current learner can create globally stored items and answer keys. Bank reuse can select those items for other learners. Authenticated identity alone does not establish trust to author shared assessment content.
 

@@ -52,7 +52,9 @@ async def item_for_kc(
     bank item for the KC → generate an MCQ (the safe default).
     """
     if preferred_type is not None:
-        item = await assessment_svc.find_item_for_kc(session, kc.id, item_type=preferred_type)
+        item = await assessment_svc.find_item_for_kc(
+            session, kc.id, learner_id=learner_id, item_type=preferred_type
+        )
         if item is not None:
             return item
         generator = item_generation.GENERATORS.get(preferred_type)
@@ -63,7 +65,7 @@ async def item_for_kc(
             if item is not None:
                 return item
 
-    item = await assessment_svc.find_item_for_kc(session, kc.id)
+    item = await assessment_svc.find_item_for_kc(session, kc.id, learner_id=learner_id)
     if item is not None:
         return item
     return await _generate_and_log(
@@ -82,7 +84,9 @@ async def short_answer_item_for_kc(
     "incorrect" — a silent correctness bug, not a crash). Returns ``None`` only if generation
     itself fails to parse.
     """
-    item = await assessment_svc.find_item_for_kc(session, kc.id, item_type=ItemType.SHORT)
+    item = await assessment_svc.find_item_for_kc(
+        session, kc.id, learner_id=learner_id, item_type=ItemType.SHORT
+    )
     if item is not None:
         return item
     return await _generate_and_log(
