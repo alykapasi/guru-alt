@@ -11,8 +11,17 @@ import { ItemPanel } from "../components/lessons/ItemPanel";
  * turns are always sent with mode "workflow". */
 export function Session() {
   const { conversationId } = useParams<{ conversationId: string }>();
-  const { messages, isLoadingMessages, pending, error, item, sessionDetail, send } =
-    useChatConversation(conversationId);
+  const {
+    messages,
+    isLoadingMessages,
+    pending,
+    error,
+    canRetry,
+    retry,
+    item,
+    sessionDetail,
+    send,
+  } = useChatConversation(conversationId);
   const hasStartedRef = useRef(false);
 
   useEffect(() => {
@@ -45,7 +54,14 @@ export function Session() {
           />
         )}
         {error && (
-          <p className="text-caption text-error mx-auto w-full max-w-3xl px-6 pb-2">{error}</p>
+          <div className="text-caption text-error mx-auto flex w-full max-w-3xl items-center gap-3 px-6 pb-2">
+            <p>{error}</p>
+            {canRetry && (
+              <button type="button" className="btn btn-ghost btn-xs" onClick={() => void retry()}>
+                Try again
+              </button>
+            )}
+          </div>
         )}
         <Composer
           disabled={!!pending || ended}

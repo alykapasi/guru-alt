@@ -207,8 +207,36 @@ export interface paths {
          *     One turn at a time per conversation: an overlapping request is refused rather than
          *     allowed to interleave messages or resume the same paused graph twice (see
          *     ``app.services.turn_lock``). The claim is held until the stream ends, however it ends.
+         *
+         *     The turn is recorded before generation and closed on every path out of it (S51). A client
+         *     that supplies ``client_turn_id`` gets retry for free: repeating a failed turn regenerates
+         *     from the same learner message, and repeating a completed one is refused rather than
+         *     answered twice.
          */
         post: operations["send_message_api_v1_conversations__conversation_id__messages_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/turns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Turns
+         * @description The conversation's most recent turns, newest first — how an interruption becomes visible.
+         *
+         *     Reading this also reaps turns abandoned by a disconnect or a restart, so a stranded
+         *     ``pending`` row is reported as ``cancelled`` rather than as work still in progress.
+         */
+        get: operations["list_turns_api_v1_conversations__conversation_id__turns_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -956,6 +984,8 @@ export interface components {
              * @enum {string}
              */
             mode: "chat" | "agentic" | "workflow";
+            /** Client Turn Id */
+            client_turn_id?: string | null;
         };
         /**
          * ChunkRead
@@ -1823,6 +1853,38 @@ export interface components {
             /** Description */
             description: string | null;
         };
+        /**
+         * TurnRead
+         * @description One recorded attempt at answering one learner message (S51).
+         *
+         *     ``status`` is what makes an interruption visible: a turn that ended without producing a
+         *     reply reads as ``failed`` or ``cancelled`` here, where the transcript alone would just
+         *     stop. Re-sending the message with the same ``client_turn_id`` retries *this* turn.
+         */
+        TurnRead: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Client Turn Id */
+            client_turn_id: string | null;
+            /** Flow */
+            flow: string;
+            /** Status */
+            status: string;
+            /** Content */
+            content: string;
+            /** Assistant Message Id */
+            assistant_message_id: string | null;
+            /** Error */
+            error: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -2374,6 +2436,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_turns_api_v1_conversations__conversation_id__turns_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnRead"][];
                 };
             };
             /** @description Validation Error */

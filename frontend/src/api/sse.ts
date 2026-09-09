@@ -51,6 +51,19 @@ export interface SendMessageBody {
   content: string;
   satisfied?: boolean;
   mode?: "chat" | "agentic" | "workflow";
+  /** This turn's identity, chosen by us (S51). Re-sending the same key retries *that* turn:
+   * the backend regenerates from the learner message it already stored instead of appending
+   * the question again, and refuses outright if the turn already produced a reply. */
+  client_turn_id?: string;
+}
+
+/** The SSE frames that mean the turn reached an end the backend recorded. A stream that stops
+ * without one of these did not finish — it was cut off — which is precisely what the old
+ * "the generator ended, so we're done" reading could not tell apart. */
+export const TERMINAL_EVENTS = ["done", "awaiting_reply", "committed", "error"] as const;
+
+export function isTerminal(event: TurnEvent): boolean {
+  return (TERMINAL_EVENTS as readonly string[]).includes(event.type);
 }
 
 /**

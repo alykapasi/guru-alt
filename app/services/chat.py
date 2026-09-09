@@ -170,6 +170,7 @@ async def run_tutor_turn(
     goal: str | None = None,
     subject_id: uuid.UUID | None = None,
     source_ids: Sequence[uuid.UUID] = (),
+    persist_user: bool = True,
 ) -> AsyncIterator[TurnEvent]:
     """Persist the user turn, stream the tutor's reply through the graph, then persist it.
 
@@ -191,11 +192,16 @@ async def run_tutor_turn(
     is what "wires memory into sessions" — write-back is a separate, on-demand step (see
     ``app.services.memory.write_back``). System-prompt order is pinned: base prompt -> goal ->
     plan-grounding -> retrieval-grounding -> memory-note.
+
+    ``persist_user`` is False when the caller has already written the learner's message
+    and linked it to a durable turn record (S51); the content is still carried into this
+    turn's model context, it is simply not appended to the transcript a second time.
     """
     messages = to_chat_messages(history)
     messages.append(ChatMessage(role=ChatRole.USER, content=user_content))
-    await add_message(session, conversation_id, ChatRole.USER.value, user_content)
-    await session.commit()
+    if persist_user:
+        await add_message(session, conversation_id, ChatRole.USER.value, user_content)
+        await session.commit()
 
     system = TUTOR_SYSTEM_PROMPT
     if goal:

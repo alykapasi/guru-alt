@@ -41,6 +41,7 @@ async def run_agentic_turn(
     max_tokens: int,
     subject_id: uuid.UUID | None = None,
     source_ids: Sequence[uuid.UUID] = (),
+    persist_user: bool = True,
 ) -> AsyncIterator[TurnEvent]:
     """Persist the user turn, run the bounded tool-calling graph, then persist the reply.
 
@@ -51,11 +52,16 @@ async def run_agentic_turn(
     Citations (Phase 7) come only from ``search_materials`` calls actually made this turn —
     unlike ``run_tutor_turn``, there's no upfront retrieval; the model decides if/when to
     search, and the ``CitationAccumulator`` collects whatever it found across every call.
+
+    ``persist_user`` is False when the caller has already written the learner's message
+    and linked it to a durable turn record (S51); the content is still carried into this
+    turn's model context, it is simply not appended to the transcript a second time.
     """
     messages = to_chat_messages(history)
     messages.append(ChatMessage(role=ChatRole.USER, content=user_content))
-    await add_message(session, conversation_id, ChatRole.USER.value, user_content)
-    await session.commit()
+    if persist_user:
+        await add_message(session, conversation_id, ChatRole.USER.value, user_content)
+        await session.commit()
 
     citation_acc = CitationAccumulator()
     tools = build_tools(

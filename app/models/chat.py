@@ -26,6 +26,66 @@ class ConversationPhase(StrEnum):
     AWAITING_ANSWER = "awaiting_answer"  # a practice item is in play and expects an answer
 
 
+class TurnStatus(StrEnum):
+    """Where one conversation turn stands (S51).
+
+    A turn used to exist only as a request in flight. The learner's message committed before
+    generation started and the assistant's only after streaming finished, so an interruption
+    between the two left a learner message with no reply and nothing saying why — on reload
+    indistinguishable from a tutor that read the question and ignored it.
+    """
+
+    PENDING = "pending"  # generation is in flight
+    COMPLETED = "completed"  # a terminal event was produced and its reply committed
+    FAILED = "failed"  # the flow reported an error, or generation raised
+    CANCELLED = "cancelled"  # the stream ended with no terminal event (client gone, restart)
+
+
+class Turn(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One attempt at answering one learner message, with a durable identity and status.
+
+    Opened and committed *before* generation begins, so the record of an attempt cannot be
+    lost by the thing it exists to survive. ``content`` is stored here rather than only as a
+    ``Message`` because a turn that failed before its flow persisted anything still has to be
+    retryable, and the retry must not append the learner's message a second time.
+
+    **Partial-output policy:** a reply interrupted mid-generation is discarded, never written
+    to ``messages``. A truncated explanation can stop mid-derivation and still read as
+    finished, and carrying one forward as history presents it to the model as a complete
+    assistant turn. The interruption is recorded instead, and the retry regenerates from the
+    same learner message. What this costs is honest and recorded in the tracker: tokens
+    already billed for the discarded text.
+    """
+
+    __tablename__ = "turns"
+    # NULLs compare distinct in Postgres, so turns sent without a key (an older client, or a
+    # server-initiated turn) are unconstrained while a client-supplied key is exactly once.
+    __table_args__ = (UniqueConstraint("conversation_id", "client_turn_id"),)
+
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    # The client's idempotency key for this turn. A retry carries the same one, which is what
+    # makes "retry" mean *this* turn again rather than a second turn saying the same thing.
+    client_turn_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
+    flow: Mapped[str] = mapped_column()  # TurnFlow: refinement | tutor | agentic | workflow
+    status: Mapped[str] = mapped_column(index=True, default=TurnStatus.PENDING)
+    # What the learner said. Duplicated from the Message deliberately — see the class docstring.
+    content: Mapped[str] = mapped_column(Text)
+    # The learner message this turn answers, written in the same transaction that opens the
+    # turn. Recorded rather than inferred: a retry has to know whether the transcript already
+    # holds its message, and "the flow usually writes it first" is not a guarantee.
+    user_message_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL"), default=None
+    )
+    # The reply this turn committed, when it got that far. SET NULL: the audit of the attempt
+    # outlives the message, as with LLMCall.
+    assistant_message_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL"), default=None
+    )
+    error: Mapped[str | None] = mapped_column(Text, default=None)
+
+
 class Conversation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """A chat thread between a learner and a guru."""
 

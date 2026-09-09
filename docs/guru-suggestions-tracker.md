@@ -975,7 +975,53 @@ if the EMBED model has not changed, and which cannot be recovered from the vecto
 
 ### S51 — Persist turn lifecycle and handle interrupted streams explicitly
 
-**Status:** Proposed · **Priority:** Before reliable external use
+**Status:** Partially implemented (branch `fix/tracker-s51-s31`) · **Priority:** Before reliable
+external use
+
+**Implemented:** A turn is now a row, not just a request in flight. `turns` (migration `0030`)
+is opened and committed *before* generation and closed on every path out of it, so the record
+of an attempt cannot be lost by the thing it exists to survive.
+
+The gap it closes: the learner's message committed before generation and the assistant's only
+after streaming finished. Anything landing between the two — a disconnect, a restart, a
+provider failure — left a question with nothing after it, which on reload is indistinguishable
+from a tutor that read it and ignored it. `GET /conversations/{id}/turns` now answers what
+actually happened.
+
+**Partial-output policy:** an interrupted reply is discarded, never written to `messages`. A
+truncated explanation can stop mid-derivation and still read as finished, and carrying one
+forward as history presents it to the model as a completed assistant turn. The interruption is
+recorded instead and the retry regenerates from the same learner message.
+
+Liveness comes from the existing `turn_lock` claim rather than a lease: the claim is held for
+the whole stream, so a `pending` row without one is dead, not slow. Reaping happens on the read
+and send paths, so a stranded turn is reported as `cancelled` the moment anyone looks. This is
+exactly as process-local as the claim it reads — the same constraint `turn_lock` already
+documents, because the graphs' checkpointers are in-memory and a paused turn cannot outlive its
+process anyway. When those become durable, this moves with them.
+
+Retry is idempotent on a client-supplied `client_turn_id`: repeating a failed turn reuses the
+same row and the same learner message, and repeating a completed one is refused (409) rather
+than answered twice. Dispatch had to be split for this — the flow is chosen before the turn is
+opened, because opening it is what writes the learner's message.
+
+The frontend no longer reads EOF as success. A stream that ends without `done`/`awaiting_reply`/
+`committed`/`error` now surfaces "the reply was cut off" with a Try again button, and the
+in-flight fetch is aborted on unmount instead of streaming on into an unmounted tree.
+
+Two things the tests caught rather than the design. A retry of the *first* turn stopped
+reaching the refinement gate: the gate is chosen for a conversation with no history, and by
+retry time the transcript holds the retried message — so the history handed to flow selection
+has to have that message removed, not just the history handed to the model. And the suite runs
+inside one transaction, which makes `now()` identical on every row, so any `created_at`
+tie-break falls through to a random UUID; the new tests assert which messages exist and what
+the turn points at rather than their order.
+
+**Not done:** tokens billed for a discarded partial reply are not recorded — `log_llm_call`
+runs after generation completes, so a disconnect mid-stream loses the cost as well as the text
+(the accounting half of this belongs with S48). There is no resume of a partially generated
+reply, only regeneration. No background sweep: a `pending` row in a conversation nobody opens
+again stays `pending` until someone does.
 
 **Evidence:** The user message commits before generation, while the assistant response commits only after streaming completes. Client stream EOF without a terminal event is treated as normal completion. The hook has no wired abort/cleanup and retries have no durable turn identity.
 
