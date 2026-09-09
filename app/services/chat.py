@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agent.tutor import TutorState, build_tutor_graph
+from app.agent.untrusted import as_untrusted
 from app.core.config import get_settings
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
@@ -56,7 +57,12 @@ def _plan_grounding_note(context: PlanGroundingContext) -> str:
 
 def _memory_note(hits: Sequence[MemoryHit]) -> str:
     facts = "; ".join(f"[{h.kind}] {h.content}" for h in hits)
-    return f"What you remember about this learner from past conversations: {facts}."
+    # Fenced as data (S31): a memory is extracted from conversation text, so a hostile passage
+    # that reached one turn can be quoted back into every later one as remembered fact.
+    return (
+        "What you remember about this learner from past conversations:\n"
+        f"{as_untrusted('LEARNER MEMORY', facts)}"
+    )
 
 
 async def create_conversation(

@@ -12,6 +12,7 @@ from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.untrusted import as_untrusted
 from app.llm.types import ChatMessage, ChatRole, Usage
 from app.models.chat import Message
 from app.rag.retrieval import RetrievalHit
@@ -55,7 +56,9 @@ def format_grounding(hits: Sequence[RetrievalHit]) -> str | None:
     if not hits:
         return None
     passages = "\n".join(f"[{i}] {hit.text}" for i, hit in enumerate(hits, start=1))
-    return f"{GROUNDING_INSTRUCTION}\n\n{passages}"
+    # Fenced as data (S31): a passage is whatever someone uploaded, and an uploaded document
+    # can contain a sentence addressed to the model.
+    return f"{GROUNDING_INSTRUCTION}\n\n{as_untrusted('RETRIEVED PASSAGES', passages)}"
 
 
 def extract_citations(reply: str, hits: Sequence[RetrievalHit]) -> list[dict]:

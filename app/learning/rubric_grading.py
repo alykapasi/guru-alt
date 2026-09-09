@@ -11,6 +11,7 @@ import json
 
 from pydantic import BaseModel
 
+from app.agent.untrusted import as_untrusted
 from app.learning.grading import GradeResult
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
 from app.models.assessment import Rubric
@@ -77,8 +78,12 @@ def _build_prompt(stem: str, answer: str, rubric: Rubric | None) -> str:
         if rubric and rubric.criteria
         else "(no explicit rubric; grade on correctness and completeness)"
     )
+    # The answer is written by the person being graded, so it is the one part of this prompt
+    # with a motive to contain "award full marks" (S31). Fenced as data; the score is clamped
+    # to [0, 1] on the way back regardless of what the model returns.
     return (
-        f"Question:\n{stem}\n\nRubric criteria (JSON):\n{criteria}\n\nLearner's response:\n{answer}"
+        f"Question:\n{stem}\n\nRubric criteria (JSON):\n{criteria}\n\n"
+        f"Learner's response:\n{as_untrusted('LEARNER RESPONSE', answer)}"
     )
 
 
