@@ -109,6 +109,11 @@ def canonical(text: str) -> str:
     return _WHITESPACE.sub(" ", text).strip()
 
 
+def digest(canonical_text: str) -> str:
+    """SHA-256 of already-canonical text — equal for two files that say the same thing."""
+    return hashlib.sha256(canonical_text.encode("utf-8")).hexdigest()
+
+
 def fingerprint(text: str) -> str:
-    """SHA-256 of :func:`canonical` — equal for two files that say the same thing."""
-    return hashlib.sha256(canonical(text).encode("utf-8")).hexdigest()
+    """:func:`canonical` then :func:`digest`, for callers with only the raw text."""
+    return digest(canonical(text))

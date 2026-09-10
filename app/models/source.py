@@ -66,6 +66,13 @@ class Source(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # of getting there; what it saves is embedding the same book twice and then having two
     # chunks of it compete for every grounding window.
     text_sha256: Mapped[str | None] = mapped_column(default=None, index=True)
+    # 64-bit SimHash of the same canonical text, as 16 hex characters. Unlike the two digests
+    # above this is compared by *distance*, which is what reaches a scan: OCR errors are
+    # per-character, so a photographed textbook never equals its EPUB however it is
+    # normalised. Deliberately not indexed — near-neighbour search over it is a scan of the
+    # learner's own sources, which is tens of rows; a cross-learner search would need LSH
+    # banding, and cross-learner similarity is not something a learner may observe anyway.
+    simhash: Mapped[str | None] = mapped_column(default=None)
     content_type: Mapped[str | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(index=True, default=SourceStatus.PENDING)
     error: Mapped[str | None] = mapped_column(Text, default=None)

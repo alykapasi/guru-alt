@@ -28,6 +28,7 @@ from app.core.config import Settings, get_settings
 from app.llm import LLMClient
 from app.models.source import Source, SourceKind, SourceStatus
 from app.rag import pipeline
+from app.rag import simhash as simhash_mod
 from app.rag.demux import MediaDemuxer
 from app.rag.fetch import Fetcher, FetchError, FetchTransportError, default_fetch
 from app.rag.transcription import Transcriber
@@ -203,6 +204,56 @@ async def create_or_reuse_source(
         meta=meta,
     )
     return source, True
+
+
+@dataclass(frozen=True)
+class SimilarSource:
+    """A source that looks like another, and how much of it agrees."""
+
+    source: Source
+    distance: int
+
+    @property
+    def agreement(self) -> float:
+        """Share of the 64 hash bits that match — the evidence, shown rather than judged."""
+        return (simhash_mod.BITS - self.distance) / simhash_mod.BITS
+
+
+async def similar_sources(
+    session: AsyncSession, source: Source, *, limit: int = 5
+) -> list[SimilarSource]:
+    """This learner's other sources, nearest first, with the distance that says why.
+
+    A *suggestion*, never an action. ``poe simhash-separation`` measured why: a badly scanned
+    copy of the same book and a document that is half this book and half another both sit
+    around 16 bits apart, so no cut-off separates them. That is the limit of what shingle
+    overlap can tell you rather than a threshold to tune, so the distance is reported and a
+    person decides. A wrong reading then costs a wasted suggestion, not a rejected upload.
+
+    Scanned in Python over the learner's own rows — tens of them. A cross-learner search would
+    need LSH banding, for something a learner is not permitted to observe anyway.
+    """
+    if source.simhash is None:
+        return []
+    mine = simhash_mod.from_hex(source.simhash)
+    others = (
+        await session.scalars(
+            select(Source).where(
+                Source.learner_id == source.learner_id,
+                Source.id != source.id,
+                Source.simhash.is_not(None),
+            )
+        )
+    ).all()
+    scored = [
+        SimilarSource(
+            source=other, distance=simhash_mod.distance(mine, simhash_mod.from_hex(other.simhash))
+        )
+        for other in others
+        if other.simhash is not None
+    ]
+    scored.sort(key=lambda s: (s.distance, s.source.created_at))
+    return scored[:limit]
 
 
 async def create_url_source(

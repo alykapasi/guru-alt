@@ -19,7 +19,13 @@ from app.api.deps import (
 from app.models.source import Chunk, Source, SourceKind
 from app.rag import retrieval
 from app.rag.retrieval import RetrievalHit
-from app.schemas.source import ChunkRead, LinkCreate, RetrieveRequest, SourceRead
+from app.schemas.source import (
+    ChunkRead,
+    LinkCreate,
+    RetrieveRequest,
+    SimilarSourceRead,
+    SourceRead,
+)
 from app.services import ingestion as svc
 from app.services import knowledge
 
@@ -187,6 +193,32 @@ async def retrieve_chunks(
         source_id=data.source_id,
         limit=data.limit,
     )
+
+
+@router.get("/sources/{source_id}/similar", response_model=list[SimilarSourceRead])
+async def similar_sources(
+    source_id: uuid.UUID, session: SessionDep, learner: CurrentLearner, limit: int = 5
+):
+    """Other sources of this learner that look like this one, nearest first.
+
+    A suggestion with its evidence attached, not a verdict. Equality catches a re-upload and a
+    different container of the same clean text; only a distance reaches a scan, whose OCR
+    errors make it unequal to its own EPUB in thousands of places. What a given distance
+    *means* has not been measured against real scanned-versus-digital pairs, and
+    ``poe simhash-separation`` shows there may be no cut-off that could settle it — so nothing
+    here suppresses a source, and the reader gets the number.
+    """
+    source = await session.get(Source, source_id)
+    if source is None or source.learner_id != learner.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    return [
+        SimilarSourceRead(
+            source=SourceRead.model_validate(hit.source),
+            distance=hit.distance,
+            agreement=hit.agreement,
+        )
+        for hit in await svc.similar_sources(session, source, limit=max(1, min(limit, 20)))
+    ]
 
 
 @router.get("/sources/{source_id}/chunks", response_model=list[ChunkRead])

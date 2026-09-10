@@ -49,3 +49,18 @@ class ChunkRead(BaseModel):
     ordinal: int
     text: str
     provenance: dict
+
+
+class SimilarSourceRead(BaseModel):
+    """A source that looks like another, with the evidence for saying so.
+
+    ``distance`` is differing bits out of 64 and ``agreement`` the share that match. Both are
+    reported rather than reduced to a verdict: ``poe simhash-separation`` measured that a badly
+    scanned copy of the same book and a document half of which is a different book sit at the
+    same distance, so no cut-off distinguishes them and the reader is better placed than the
+    number. Nothing here suppresses, blocks, or deletes a source.
+    """
+
+    source: SourceRead
+    distance: int
+    agreement: float

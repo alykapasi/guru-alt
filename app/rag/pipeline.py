@@ -21,7 +21,7 @@ from app.learning.kc_tagging import TAGGING_ROLE, load_candidate_kcs, tag_chunk
 from app.llm import EmbedResult, LLMClient, ModelRole, Usage
 from app.llm.embedding_space import current_space
 from app.models.source import Chunk, ChunkKC, Source, SourceStatus
-from app.rag import textnorm
+from app.rag import simhash, textnorm
 from app.rag.adapters import ExtractContext, select_adapter
 from app.rag.chunking import chunk_units
 from app.rag.concurrency import gather_bounded
@@ -156,7 +156,9 @@ async def run(
 
     # What the source *says*, independent of the container that carried it and the dialect it
     # was written in. Recorded for every source, so later uploads have something to match.
-    source.text_sha256 = textnorm.fingerprint("\n".join(unit.text for unit in units))
+    canonical_text = textnorm.canonical("\n".join(unit.text for unit in units))
+    source.text_sha256 = textnorm.digest(canonical_text)
+    source.simhash = simhash.to_hex(simhash.simhash(canonical_text))
     twin = await _same_text_source(session, source)
     if twin is not None:
         # Already embedded, under this learner's own scope. Chunking it again would pay for a
