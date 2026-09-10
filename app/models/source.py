@@ -60,6 +60,12 @@ class Source(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # SHA-256 of the raw bytes. Already computed to build the key; it lives here as a column
     # because a digest buried in a path string cannot answer "do I already have this file?".
     content_sha256: Mapped[str | None] = mapped_column(default=None, index=True)
+    # SHA-256 of the *canonical* extracted text (app/rag/textnorm.py) — equal for two files
+    # that say the same thing in different containers or dialects, where content_sha256 shares
+    # not one byte. Written after extraction, so unlike the byte hash it cannot save the cost
+    # of getting there; what it saves is embedding the same book twice and then having two
+    # chunks of it compete for every grounding window.
+    text_sha256: Mapped[str | None] = mapped_column(default=None, index=True)
     content_type: Mapped[str | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(index=True, default=SourceStatus.PENDING)
     error: Mapped[str | None] = mapped_column(Text, default=None)
