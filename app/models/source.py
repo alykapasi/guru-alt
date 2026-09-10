@@ -52,7 +52,14 @@ class Source(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     kind: Mapped[str] = mapped_column(index=True)  # SourceKind
     origin: Mapped[str]  # filename or URL
-    blob_key: Mapped[str | None] = mapped_column(default=None)  # object-store key for raw bytes
+    # Object-store key for the raw bytes. Content-addressed (``blobs/<content_sha256>``), so
+    # two learners uploading the same file reference one stored object. Nothing *derived* is
+    # shared — each learner gets their own extraction, chunks and embeddings — and no learner
+    # can observe that another references the same key.
+    blob_key: Mapped[str | None] = mapped_column(default=None, index=True)
+    # SHA-256 of the raw bytes. Already computed to build the key; it lives here as a column
+    # because a digest buried in a path string cannot answer "do I already have this file?".
+    content_sha256: Mapped[str | None] = mapped_column(default=None, index=True)
     content_type: Mapped[str | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(index=True, default=SourceStatus.PENDING)
     error: Mapped[str | None] = mapped_column(Text, default=None)

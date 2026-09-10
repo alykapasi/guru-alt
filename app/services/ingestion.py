@@ -83,19 +83,27 @@ async def create_source(
     await session.flush()  # assign source.id
 
     ctype = content_type or DEFAULT_CONTENT_TYPE
+    digest = _digest_path(data) if isinstance(data, Path) else hashlib.sha256(data).hexdigest()
+    key = blob_key_for(digest)
     if isinstance(data, Path):
-        key = f"{learner_id}/{source.id}/{_digest_path(data)}"
         await blobstore.upload(key, data, content_type=ctype)
     else:
-        key = f"{learner_id}/{source.id}/{hashlib.sha256(data).hexdigest()}"
         await blobstore.put(key, data, content_type=ctype)
+    # Written unconditionally, never skipped when the key already exists: an identical write is
+    # a no-op for identical bytes, and skipping would lose a race against a concurrent delete
+    # of the last other reference.
     source.blob_key = key
+    source.content_sha256 = digest
     try:
         await session.commit()
     except Exception:
-        # The bytes are already in the store but no row will reference them. Nothing will ever
-        # look for that key again, so it would sit there permanently, billed and unattributable.
-        await _discard_blob(blobstore, key)
+        # The bytes are in the store but this row will not reference them. Another learner's
+        # source may, though — the key is content-addressed — so this must not delete blindly.
+        # Suppressed: cleaning up must never mask the error that made cleanup necessary.
+        try:
+            await unreference_blob(session, blobstore, key, excluding=source.id)
+        except Exception:
+            logger.warning("could not delete unreferenced blob %s", key, exc_info=True)
         raise
     return source
 
@@ -381,19 +389,68 @@ async def _fetch_into_blob(
     """Fetch a URL source's page into the blob store, recording its content type."""
     data, content_type = await fetch(source.origin)
     digest = hashlib.sha256(data).hexdigest()
-    key = f"{source.learner_id}/{source.id}/{digest}"
+    key = blob_key_for(digest)
     await blobstore.put(key, data, content_type=content_type)
     source.blob_key = key
+    source.content_sha256 = digest
     source.content_type = content_type
     await session.flush()
 
 
-async def _discard_blob(blobstore: BlobStore, key: str) -> None:
-    """Best-effort delete of a blob nothing will ever reference. Never masks the real error."""
-    try:
-        await blobstore.delete(key)
-    except Exception:
-        logger.warning("could not delete orphaned blob %s", key, exc_info=True)
+def blob_key_for(content_sha256: str) -> str:
+    """The object key for these bytes — content alone, no learner or source in the path.
+
+    Two learners uploading the same file therefore write the same key and one object is
+    stored. Nothing derived is shared: each gets their own extraction, chunks and embeddings,
+    and neither can observe that the other references it.
+    """
+    return f"blobs/{content_sha256}"
+
+
+async def is_blob_referenced(
+    session: AsyncSession, key: str, *, excluding: uuid.UUID | None = None
+) -> bool:
+    """Whether any source other than ``excluding`` still points at these bytes.
+
+    Derived from ``sources`` rather than kept as a reference count. A counter drifts — every
+    missed decrement leaks an object forever and every missed increment deletes one somebody
+    is using — and reconciling it needs exactly this query anyway.
+
+    ``excluding`` is what a source cleaning up after its own failed write passes: its row is
+    flushed into the session, so an unqualified check sees it and concludes the bytes are in
+    use by the very row that is about to be rolled back.
+    """
+    stmt = select(Source.id).where(Source.blob_key == key)
+    if excluding is not None:
+        stmt = stmt.where(Source.id != excluding)
+    return (await session.scalar(stmt.limit(1))) is not None
+
+
+async def unreference_blob(
+    session: AsyncSession,
+    blobstore: BlobStore,
+    key: str,
+    *,
+    excluding: uuid.UUID | None = None,
+) -> bool:
+    """Drop a blob if nothing references it any more. ``True`` if the bytes were deleted.
+
+    A store failure is *raised*, not swallowed: a caller deleting an account has to be able to
+    report bytes it could not remove, and "still referenced" and "refused by the store" are
+    opposite outcomes that must not collapse into one return value. The one caller that needs
+    silence — a failed upload cleaning up after itself — suppresses it explicitly.
+
+    The check and the delete are not atomic — the store is not in the transaction — so an
+    upload that commits in the window between them leaves a row pointing at bytes just
+    removed. That is a narrow race with a visible, recoverable outcome: ingestion fails on the
+    missing key and ``reset_for_reingest`` puts the source back in reach after a re-upload.
+    Closing it properly needs a grace period and a sweeper, which the retention policy
+    deliberately does not have yet (S61).
+    """
+    if await is_blob_referenced(session, key, excluding=excluding):
+        return False
+    await blobstore.delete(key)
+    return True
 
 
 def _is_terminal(exc: Exception) -> bool:

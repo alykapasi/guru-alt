@@ -1184,6 +1184,8 @@ export interface components {
             learner_id: string;
             /** Blobs Deleted */
             blobs_deleted: number;
+            /** Blobs Retained */
+            blobs_retained: number;
             /** Blobs Failed */
             blobs_failed: number;
             /** Items Deleted */
