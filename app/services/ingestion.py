@@ -39,6 +39,11 @@ logger = logging.getLogger(__name__)
 _HASH_CHUNK = 1024 * 1024  # 1 MiB — stream large files past the hasher without buffering them
 
 
+def digest_of(data: bytes | Path) -> str:
+    """SHA-256 of an upload, whether it is in memory or on disk."""
+    return _digest_path(data) if isinstance(data, Path) else hashlib.sha256(data).hexdigest()
+
+
 def _digest_path(path: Path) -> str:
     """SHA-256 of a file, read in chunks (bounded memory)."""
     digest = hashlib.sha256()
@@ -57,6 +62,7 @@ async def create_source(
     origin: str,
     content_type: str | None,
     data: bytes | Path,
+    content_sha256: str | None = None,
     subject_id: uuid.UUID | None = None,
     topic_id: uuid.UUID | None = None,
     meta: dict | None = None,
@@ -65,6 +71,9 @@ async def create_source(
 
     ``data`` is either bytes (small, in-memory) or a local file ``Path`` (large uploads,
     streamed to the store without buffering). Either way the blob key is content-addressed.
+
+    ``content_sha256`` lets a caller that has already digested the bytes — to check for a
+    duplicate before getting here — avoid reading a large upload off disk a second time.
     """
     subject_id, topic_id = await knowledge.resolve_source_scope(
         session, subject_id=subject_id, topic_id=topic_id
@@ -83,7 +92,7 @@ async def create_source(
     await session.flush()  # assign source.id
 
     ctype = content_type or DEFAULT_CONTENT_TYPE
-    digest = _digest_path(data) if isinstance(data, Path) else hashlib.sha256(data).hexdigest()
+    digest = content_sha256 or digest_of(data)
     key = blob_key_for(digest)
     if isinstance(data, Path):
         await blobstore.upload(key, data, content_type=ctype)
@@ -106,6 +115,94 @@ async def create_source(
             logger.warning("could not delete unreferenced blob %s", key, exc_info=True)
         raise
     return source
+
+
+async def find_duplicate(
+    session: AsyncSession,
+    *,
+    learner_id: uuid.UUID,
+    content_sha256: str,
+    subject_id: uuid.UUID | None,
+    topic_id: uuid.UUID | None,
+) -> Source | None:
+    """This learner's existing source for exactly these bytes in exactly this scope.
+
+    Scope is part of the identity on purpose. The same textbook uploaded under two subjects is
+    a real intent — it covers both — and retrieval is subject-scoped, so the second copy never
+    competes with the first for a place in a grounding window. Only a re-upload into the
+    *same* scope is a duplicate, and that one is pure waste: a second extraction, a second set
+    of embeddings, and two chunks saying the same thing crowding each other out of every
+    answer.
+    """
+    return await session.scalar(
+        select(Source)
+        .where(
+            Source.learner_id == learner_id,
+            Source.content_sha256 == content_sha256,
+            Source.subject_id.is_(subject_id)
+            if subject_id is None
+            else Source.subject_id == subject_id,
+            Source.topic_id.is_(topic_id) if topic_id is None else Source.topic_id == topic_id,
+        )
+        .order_by(Source.created_at)
+        .limit(1)
+    )
+
+
+async def create_or_reuse_source(
+    session: AsyncSession,
+    blobstore: BlobStore,
+    *,
+    learner_id: uuid.UUID,
+    kind: SourceKind,
+    origin: str,
+    content_type: str | None,
+    data: bytes | Path,
+    content_sha256: str,
+    subject_id: uuid.UUID | None = None,
+    topic_id: uuid.UUID | None = None,
+    meta: dict | None = None,
+) -> tuple[Source, bool]:
+    """The learner's source for these bytes, and whether it needs ingesting.
+
+    Returns ``(source, queue_it)``. A file the learner already has in this scope is handed
+    back untouched rather than ingested a second time — the saving is the whole pipeline, not
+    just the storage, because this is known before a single page is OCR'd.
+
+    One exception: a duplicate of a source that previously *failed* is put back within reach
+    of a claim. Re-uploading the file is the obvious way to retry it, and refusing to would
+    leave a learner re-sending a document that silently does nothing.
+    """
+    subject_id, topic_id = await knowledge.resolve_source_scope(
+        session, subject_id=subject_id, topic_id=topic_id
+    )
+    existing = await find_duplicate(
+        session,
+        learner_id=learner_id,
+        content_sha256=content_sha256,
+        subject_id=subject_id,
+        topic_id=topic_id,
+    )
+    if existing is not None:
+        if existing.status != SourceStatus.FAILED:
+            return existing, False
+        retried = await reset_for_reingest(session, existing.id)
+        return (retried or existing), retried is not None
+
+    source = await create_source(
+        session,
+        blobstore,
+        learner_id=learner_id,
+        kind=kind,
+        origin=origin,
+        content_type=content_type,
+        data=data,
+        content_sha256=content_sha256,
+        subject_id=subject_id,
+        topic_id=topic_id,
+        meta=meta,
+    )
+    return source, True
 
 
 async def create_url_source(

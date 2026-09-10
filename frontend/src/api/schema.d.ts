@@ -335,6 +335,11 @@ export interface paths {
          *
          *     The file is streamed to disk in chunks so an arbitrarily large upload never sits in
          *     memory; it is rejected with 413 the moment it exceeds ``max_upload_bytes``.
+         *
+         *     Re-uploading a file this learner already has in the same scope returns that source with
+         *     200 instead of 202, and queues nothing: the saving is the entire pipeline, since identical
+         *     bytes are recognised before a page is OCR'd. A duplicate of a *failed* source is the
+         *     exception — re-sending the file is the obvious way to retry it, so that one is requeued.
          */
         post: operations["upload_source_api_v1_sources_upload_post"];
         delete?: never;

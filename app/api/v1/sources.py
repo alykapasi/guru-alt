@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import select
 
 from app.api.deps import (
@@ -46,6 +46,7 @@ def _scoped(create):
 
 @router.post("/sources/upload", response_model=SourceRead, status_code=status.HTTP_202_ACCEPTED)
 async def upload_source(
+    response: Response,
     session: SessionDep,
     learner: CurrentLearner,
     blobstore: BlobStoreDep,
@@ -59,6 +60,11 @@ async def upload_source(
 
     The file is streamed to disk in chunks so an arbitrarily large upload never sits in
     memory; it is rejected with 413 the moment it exceeds ``max_upload_bytes``.
+
+    Re-uploading a file this learner already has in the same scope returns that source with
+    200 instead of 202, and queues nothing: the saving is the entire pipeline, since identical
+    bytes are recognised before a page is OCR'd. A duplicate of a *failed* source is the
+    exception — re-sending the file is the obvious way to retry it, so that one is requeued.
     """
     tmp = tempfile.NamedTemporaryFile(dir=settings.ingest_tmp_dir, delete=False)
     tmp_path = Path(tmp.name)
@@ -72,7 +78,7 @@ async def upload_source(
                 tmp.write(chunk)
         if size == 0:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "empty upload")
-        source = await _scoped(svc.create_source)(
+        source, queue_it = await _scoped(svc.create_or_reuse_source)(
             session,
             blobstore,
             learner_id=learner.id,
@@ -80,11 +86,17 @@ async def upload_source(
             origin=file.filename or "upload",
             content_type=file.content_type,
             data=tmp_path,
+            content_sha256=svc.digest_of(tmp_path),
             subject_id=subject_id,
             topic_id=topic_id,
         )
     finally:
         tmp_path.unlink(missing_ok=True)
+    if not queue_it:
+        # A file this learner already has in this scope. 200, not 202: nothing was accepted
+        # for processing, and the body is the source they already had rather than a new one.
+        response.status_code = status.HTTP_200_OK
+        return source
     await svc.dispatch(enqueue, source.id)
     return source
 
