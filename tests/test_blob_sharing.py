@@ -10,10 +10,13 @@ destroyed, and a shared key means "destroy" now has to mean "if nobody else is u
 """
 
 import uuid
+from collections.abc import Iterator
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_blob_store, get_ingestion_enqueuer
+from app.main import app
 from app.models.learner import Learner
 from app.models.source import Source, SourceKind, SourceStatus
 from app.services import ingestion as svc
@@ -22,6 +25,26 @@ from app.storage.base import BlobNotFound
 from app.storage.memory import InMemoryBlobStore
 
 TEXTBOOK = b"Photosynthesis converts light energy into chemical energy."
+
+
+@pytest.fixture
+def fake_ingest() -> Iterator[InMemoryBlobStore]:
+    """Point the API's object store at memory and swallow enqueued jobs.
+
+    Required for every test that uploads through the endpoint: ``BlobStoreDep`` otherwise
+    builds the real S3 client and reaches a MinIO that CI does not run. A test that passes
+    only where docker compose happens to be up is not a passing test.
+    """
+    store = InMemoryBlobStore()
+
+    async def _enqueue(source_id: uuid.UUID) -> None:
+        return None
+
+    app.dependency_overrides[get_blob_store] = lambda: store
+    app.dependency_overrides[get_ingestion_enqueuer] = lambda: _enqueue
+    yield store
+    app.dependency_overrides.pop(get_blob_store, None)
+    app.dependency_overrides.pop(get_ingestion_enqueuer, None)
 
 
 async def _learner(session: AsyncSession) -> Learner:
@@ -131,7 +154,7 @@ async def _upload_via_api(api_client, *, name: str = "biology.pdf", subject_id=N
     return await api_client.post("/api/v1/sources/upload", files=form, data=data)
 
 
-async def test_re_uploading_a_file_returns_the_source_already_held(api_client) -> None:
+async def test_re_uploading_a_file_returns_the_source_already_held(api_client, fake_ingest) -> None:
     """The saving is the whole pipeline, not the storage: identical bytes are recognised
     before a page is OCR'd."""
     first = await _upload_via_api(api_client)
@@ -144,7 +167,7 @@ async def test_re_uploading_a_file_returns_the_source_already_held(api_client) -
 
 
 async def test_a_second_upload_creates_no_second_source(
-    api_client, db_session: AsyncSession
+    api_client, db_session: AsyncSession, fake_ingest
 ) -> None:
     await _upload_via_api(api_client)
     await _upload_via_api(api_client)
@@ -156,7 +179,7 @@ async def test_a_second_upload_creates_no_second_source(
 
 
 async def test_re_uploading_a_failed_source_retries_it(
-    api_client, db_session: AsyncSession
+    api_client, db_session: AsyncSession, fake_ingest
 ) -> None:
     """Re-sending the file is the obvious way to retry, and refusing would leave a learner
     re-uploading a document that silently does nothing."""
@@ -176,7 +199,7 @@ async def test_re_uploading_a_failed_source_retries_it(
 
 
 async def test_the_same_file_under_a_different_subject_is_not_a_duplicate(
-    api_client, db_session: AsyncSession
+    api_client, db_session: AsyncSession, fake_ingest
 ) -> None:
     """A textbook that covers two subjects is a real intent, and retrieval is subject-scoped,
     so the second copy never competes with the first for a place in a grounding window."""
