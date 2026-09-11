@@ -76,7 +76,7 @@ These are new proposals from the second review; the user's acceptance of prior s
 
 | ID | Suggestion | Evidence / consequence | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
-| S22 | Generate, validate, and persist prerequisite relationships during curriculum creation. | CurriculumProposal and create_subject_with_graph contain topics and KCs but no prerequisite edges. Newly generated curricula therefore lack the dependencies the planner needs. [R13–R14] | First | Proposed |
+| S22 | Generate, validate, and persist prerequisite relationships during curriculum creation. | CurriculumProposal and create_subject_with_graph contain topics and KCs but no prerequisite edges. Newly generated curricula therefore lack the dependencies the planner needs. [R13–R14] | First | Implemented (see below) |
 | S23 | Validate the prerequisite graph, including multi-node cycles and references, before relying on its order. | Edge creation checks self-loops and existence but not longer cycles; topo_sort appends unresolved nodes when a cycle occurs. [R5, R15] | High | Proposed |
 | S24 | Define concept identity and cross-subject prerequisite handling explicitly. | Each KC belongs to one topic. Duplicate concepts get separate IDs and mastery states; the planner's candidate pool and edge loading do not establish a complete cross-subject traversal. Cross-subject edges are possible in the schema, so this is an incomplete policy rather than a database prohibition. [R14, R16, R11] | High | Proposed |
 | S25 | Separate shared, curated knowledge from learner-specific generated curricula, with ownership and publishing rules. | Subjects are global, listing is unscoped, commit rejects a duplicate subject name globally, and learner-authenticated routes can add global topics/KCs/edges. Personal goal-derived structure has no explicit private draft boundary. [R14–R16] | Before multi-user release | Proposed |
@@ -84,6 +84,57 @@ These are new proposals from the second review; the user's acceptance of prior s
 | S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Proposed |
 | S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Proposed |
 | S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Proposed |
+
+### S22 — Generate, validate, and persist prerequisite relationships during curriculum creation
+
+**Status:** Partially implemented (branch `feat/s22-s14`) · **Priority:** First
+
+**Implemented — a generated curriculum now has edges.** `KCProposal` carries a `key` and a
+`requires` list, the generation prompt asks for prerequisites by name, and
+`create_subject_with_graph` writes the `KCEdge` rows. Before this the proposal contained topics
+and KCs and nothing else, so every generated subject handed the planner a flat list — while
+ordering by prerequisites is the planner's entire job.
+
+**Implemented — names are resolved to keys at parse time, not at commit.** The model writes
+prerequisites by name because that is what it is good at; the parser turns them into stable
+per-proposal keys immediately. The learner then renames a KC in the review step without
+breaking the edge, which a name-based reference would have done silently. Matching is
+case-insensitive and whitespace-collapsed: the model writes the prerequisite list separately
+from the name it is referring to, so exact matching drops real edges over a capital letter.
+
+**Implemented — three model failure modes degrade instead of failing.** A prerequisite naming
+something outside the curriculum, a KC naming itself, and a cycle are all *ordinary* output,
+not exceptions. Each is dropped and logged. Rejecting the curriculum instead would make
+generated subjects less reliable than they were before this existed, when they had no edges to
+be wrong about. `acyclic` keeps every edge that does not close a cycle, considering them in
+proposal order so the result is a function of the input rather than of dictionary iteration.
+
+**Implemented — the cycle check runs again at commit.** Parsing validates the model's output;
+the commit endpoint receives a *request body*, which a client is free to have edited in
+between. The two failure modes that matters for are a foreign-key error that fails the whole
+commit, and a stored cycle — which `topo_sort` tolerates by appending the leftovers, so it does
+not surface as an error at all. It surfaces as an order, and the learner is taught in it.
+
+**Implemented — the edges survive the review round trip.** `/onboarding/curriculum` explicitly
+rebuilt each KC as `{name, description}`, so anything else was dropped between generation and
+commit. It now carries `key` and `requires`, and the frontend types declare them — they
+survived only because every review handler happens to spread the object, and a refactor that
+rebuilt one would have silently removed every edge again.
+
+**Measured.** 21 tests, and seven mutations each fail at least one: disabling cycle detection,
+making name matching exact, allowing self-references, removing edge creation, skipping the
+commit-time re-validation, and dropping either `key` or `requires` from the API response. The
+last two survived the first mutation round — nothing covered the round trip, which is precisely
+where the edges were being lost — so that test was added.
+
+**Not done.** Edge `weight` is always 1.0; nothing proposes or uses a strength. Prerequisites
+are only resolved *within one proposal*, so a curriculum cannot depend on a KC in a subject the
+learner already has — that needs the concept identity S24 covers. Nothing validates the graph
+on the direct `POST /kcs/{id}/prerequisites` path, which is still S23's, and nothing re-checks
+an existing subject's graph. A dropped edge is logged and not surfaced to the learner, so a
+curriculum whose ordering was quietly weakened looks identical to one the model got right. And
+nothing measures whether the generated orderings are *pedagogically* correct — only that they
+are acyclic and resolvable.
 
 ## Open decisions
 

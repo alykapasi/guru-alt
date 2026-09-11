@@ -10,12 +10,16 @@ import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+import structlog
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.learning import prerequisites
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.source import Chunk, ChunkKC, Source
 from app.schemas.knowledge import KCCreate, SubjectCreate, TopicCreate
+
+log = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,45 @@ async def create_subject(session: AsyncSession, data: SubjectCreate) -> Subject:
     await session.commit()
     await session.refresh(subject)
     return subject
+
+
+def _add_prerequisite_edges(
+    session: AsyncSession,
+    kc_by_key: dict[str, KC],
+    named_keys: list[tuple[str, str]],
+    wanted_edges: list[tuple[str, list[str]]],
+) -> int:
+    """Create the ``KCEdge`` rows a committed curriculum asks for, dropping what it cannot.
+
+    Re-validated here even though curriculum parsing already resolved and de-cycled these.
+    That pass runs on the model's output; this runs on a request body, which a client is free
+    to have edited between the two — and the alternatives to validating are a foreign-key
+    error that fails the whole commit, or a stored cycle that quietly corrupts every plan
+    built from this subject afterwards.
+    """
+    index, _duplicated = prerequisites.index_by_name(named_keys)
+    known = set(kc_by_key)
+    edges: list[prerequisites.KeyEdge] = []
+    for key, requires in wanted_edges:
+        for raw in requires:
+            # Committed payloads carry resolved keys; a name is accepted too, so a
+            # hand-written or hand-edited curriculum can express prerequisites the same way
+            # the model is asked to.
+            target = raw if raw in known else index.get(prerequisites.normalise(raw))
+            if target is None or target == key:
+                continue
+            edges.append((target, key))
+
+    kept, dropped = prerequisites.acyclic(edges)
+    if dropped:
+        log.warning("knowledge.cyclic_prerequisites_dropped", count=len(dropped))
+    seen: set[prerequisites.KeyEdge] = set()
+    for prereq, dependent in kept:
+        if (prereq, dependent) in seen:
+            continue
+        seen.add((prereq, dependent))
+        session.add(KCEdge(prereq_kc_id=kc_by_key[prereq].id, kc_id=kc_by_key[dependent].id))
+    return len(seen)
 
 
 async def create_subject_with_graph(
@@ -114,6 +157,11 @@ async def create_subject_with_graph(
 
     # Deduplicate and create topics
     topic_seen_slugs: set[str] = set()
+    # Prerequisites arrive as keys naming KCs anywhere in this payload, including topics not
+    # created yet, so edges are built after the whole hierarchy exists.
+    kc_by_key: dict[str, KC] = {}
+    named_keys: list[tuple[str, str]] = []
+    wanted_edges: list[tuple[str, list[str]]] = []
     for topic_data in topics_data:
         topic_name = topic_data.get("name", "")
         topic_desc = topic_data.get("description")
@@ -159,7 +207,19 @@ async def create_subject_with_graph(
                 description=kc_desc,
             )
             session.add(kc)
+            # `key` is assigned by curriculum parsing and carried through the review step.
+            # A payload without one (a hand-built subject, or anything predating S22) simply
+            # contributes no edges rather than failing.
+            key = kc_data.get("key")
+            if isinstance(key, str) and key and key not in kc_by_key:
+                kc_by_key[key] = kc
+                named_keys.append((key, kc_name))
+                requires = kc_data.get("requires") or []
+                if isinstance(requires, list):
+                    wanted_edges.append((key, [r for r in requires if isinstance(r, str)]))
         await session.flush()
+
+    _add_prerequisite_edges(session, kc_by_key, named_keys, wanted_edges)
 
     # Reassign owned sources to this subject.
     reassigned: list[uuid.UUID] = []

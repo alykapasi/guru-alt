@@ -131,7 +131,19 @@ async def generate_curriculum_endpoint(
         topic_dict = {
             "name": topic.name,
             "description": topic.description,
-            "kcs": [{"name": kc.name, "description": kc.description} for kc in topic.kcs],
+            # `key` and `requires` travel with the proposal through the learner's review and
+            # back on commit: they are what turns the breakdown into an ordered graph rather
+            # than a flat list, and dropping them here is what used to leave every generated
+            # subject with no prerequisite edges at all (S22).
+            "kcs": [
+                {
+                    "name": kc.name,
+                    "description": kc.description,
+                    "key": kc.key,
+                    "requires": list(kc.requires),
+                }
+                for kc in topic.kcs
+            ],
         }
         topics.append(topic_dict)
 
