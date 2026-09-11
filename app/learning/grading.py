@@ -10,6 +10,7 @@ import uuid
 
 from pydantic import BaseModel, Field
 
+from app.learning.diagnosis import Diagnosis
 from app.models.assessment import AUTO_GRADABLE, ItemType
 
 
@@ -48,6 +49,9 @@ class GradeResult(BaseModel):
     correct: bool
     detail: dict
     component_scores: dict[uuid.UUID, float] = Field(default_factory=dict)
+    diagnoses: dict[uuid.UUID, "Diagnosis"] = Field(default_factory=dict)
+    """Why each component fell short, where the grader could say (S09). Empty for every
+    deterministic path: an MCQ knows the answer was wrong and nothing about why."""
 
 
 def auto_grade(item_type: ItemType, answer_key: dict, response: dict) -> GradeResult:

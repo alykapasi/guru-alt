@@ -5,6 +5,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.learning.diagnosis import Diagnosis
 from app.models.assessment import AUTO_GRADABLE, ItemType
 
 
@@ -91,6 +92,9 @@ class GradeRead(BaseModel):
     detail: dict
     estimates: list[KCEstimateRead]
     component_scores: dict[uuid.UUID, float] = Field(default_factory=dict)
+    # Why each component fell short (S09). Empty for deterministic grading, which knows the
+    # answer was wrong and nothing about why.
+    diagnoses: dict[uuid.UUID, Diagnosis] = Field(default_factory=dict)
 
 
 class ReviewItemRead(BaseModel):

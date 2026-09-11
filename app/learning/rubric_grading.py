@@ -23,6 +23,8 @@ from collections.abc import Sequence
 from pydantic import BaseModel
 
 from app.agent.untrusted import as_untrusted
+from app.learning import diagnosis
+from app.learning.diagnosis import Diagnosis
 from app.learning.grading import GradeResult
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
 from app.models.assessment import Rubric
@@ -48,11 +50,31 @@ PASS_THRESHOLD = 0.6
 """Score at/above which ``correct`` is reported — a coarse display flag only. The tracer
 always consumes the continuous score, never this boolean."""
 
+_DIAGNOSIS_SPEC = (
+    '"diagnosis": {"kind": "none"|"notation"|"procedural"|"conceptual"|"prerequisite"|'
+    '"incomplete", "confidence": <0.0-1.0>, "evidence": "<a short quote from the learner\'s '
+    'own words, copied exactly>", "prerequisite": "<what earlier idea is missing, or "">"}'
+)
+"""What the grader must say about *why*, not just how far (S09). ``none`` for a component
+that was fine. ``evidence`` is required to be the learner's own words because a quote can be
+checked against the response and a paraphrase cannot."""
+
+_DIAGNOSIS_GUIDANCE = (
+    " Distinguish carefully: 'notation' is the right idea with a wrong or missing symbol or "
+    "name; 'procedural' is the right method carried out incorrectly; 'conceptual' is a wrong "
+    "or missing idea; 'prerequisite' is a failure in something earlier that the question "
+    "assumed; 'incomplete' is blank, off-topic or abandoned, where nothing was demonstrated "
+    "either way. Use 'none' when the component was answered well."
+)
+
 _SYSTEM_PROMPT = (
     "You are a strict, fair grader. Grade the learner's response against the question and "
-    "rubric, awarding partial credit for partially-correct answers. Respond with ONLY a "
-    'JSON object of the form {"score": <number between 0.0 and 1.0>, "rationale": '
-    '"<one short sentence>"} and nothing else.'
+    "rubric, awarding partial credit for partially-correct answers, and say why it fell "
+    "short. Respond with ONLY a JSON object of the form "
+    '{"score": <number between 0.0 and 1.0>, "rationale": "<one short sentence>", '
+    + _DIAGNOSIS_SPEC
+    + "} and nothing else."
+    + _DIAGNOSIS_GUIDANCE
 )
 
 _COMPONENT_SYSTEM_PROMPT = (
@@ -60,10 +82,12 @@ _COMPONENT_SYSTEM_PROMPT = (
     "components. Grade each component separately on how well the response demonstrates "
     "*that* component, awarding partial credit — a response can handle one component well "
     "and another badly, and you must say so rather than averaging them away. Then give one "
-    "overall score for the response. Respond with ONLY a JSON object of the form "
-    '{"components": [{"n": <component number>, "score": <0.0-1.0>}], '
-    '"score": <0.0-1.0>, "rationale": "<one short sentence>"} and nothing else. '
-    "Include every component exactly once."
+    "overall score for the response, and say why each component fell short. Respond with "
+    "ONLY a JSON object of the form "
+    '{"components": [{"n": <component number>, "score": <0.0-1.0>, '
+    + _DIAGNOSIS_SPEC
+    + '}], "score": <0.0-1.0>, "rationale": "<one short sentence>"} and nothing else. '
+    "Include every component exactly once." + _DIAGNOSIS_GUIDANCE
 )
 
 
@@ -75,6 +99,9 @@ class _RubricGrade(BaseModel):
     score: float
     rationale: str = ""
     components: dict[int, float] = {}
+    diagnoses: dict[int, Diagnosis] = {}
+    """By component number. A single-component grade reports its diagnosis at the top level
+    and is normalised to number 1 here, so both prompt shapes come out the same."""
 
 
 async def grade_open(
@@ -113,7 +140,7 @@ async def grade_open(
         system=_COMPONENT_SYSTEM_PROMPT if per_component else _SYSTEM_PROMPT,
         max_tokens=max_tokens,
     )
-    grade = _parse_grade(completion.content)
+    grade = _parse_grade(completion.content, response_text=answer)
     component_scores = (
         {
             components[n - 1].kc_id: score
@@ -123,11 +150,17 @@ async def grade_open(
         if per_component
         else {}
     )
+    diagnoses = {
+        components[n - 1].kc_id: diagnosis
+        for n, diagnosis in grade.diagnoses.items()
+        if 1 <= n <= len(components)
+    }
     result = GradeResult(
         score=grade.score,
         correct=grade.score >= PASS_THRESHOLD,
         detail={"rationale": grade.rationale, "method": "rubric"},
         component_scores=component_scores,
+        diagnoses=diagnoses,
     )
     return result, completion.usage
 
@@ -159,7 +192,7 @@ def _build_prompt(
     return "\n\n".join(parts)
 
 
-def _parse_grade(content: str) -> _RubricGrade:
+def _parse_grade(content: str, *, response_text: str = "") -> _RubricGrade:
     """Extract and validate the JSON grade, tolerating prose around the object."""
     try:
         data = json.loads(_extract_json(content))
@@ -169,35 +202,58 @@ def _parse_grade(content: str) -> _RubricGrade:
         score = _clamp(float(data["score"]))
     except (KeyError, TypeError, ValueError) as err:
         raise RubricGradingError(f"grade has no valid score: {content!r}") from err
+    components, diagnoses = _parse_components(data.get("components"), response_text)
+    if not diagnoses and "diagnosis" in data:
+        # The single-component shape, reported at the top level. Numbered 1 so the two prompt
+        # shapes converge before anything downstream has to know which was used.
+        diagnoses = {1: diagnosis_of(data["diagnosis"], response_text)}
     return _RubricGrade(
         score=score,
         rationale=str(data.get("rationale", "")),
-        components=_parse_components(data.get("components")),
+        components=components,
+        diagnoses=diagnoses,
     )
 
 
-def _parse_components(raw: object) -> dict[int, float]:
-    """Per-component scores by component number, keeping only the well-formed entries.
+def diagnosis_of(raw: object, response_text: str) -> Diagnosis:
+    return diagnosis.parse(raw, response_text=response_text)
+
+
+def _parse_components(
+    raw: object, response_text: str
+) -> tuple[dict[int, float], dict[int, Diagnosis]]:
+    """Per-component scores and diagnoses by component number, keeping the well-formed entries.
 
     Best-effort on purpose, and asymmetric with the aggregate: a missing overall score means
     the grade is unusable and raises, while a mangled component list only costs the *extra*
     resolution — the answer still grades, every KC just falls back to the aggregate, which is
-    exactly the behaviour that existed before any of this.
+    exactly the behaviour that existed before any of this. A component's score and its
+    diagnosis are kept independently, so a malformed diagnosis does not cost the mark.
     """
     if not isinstance(raw, list):
-        return {}
-    parsed: dict[int, float] = {}
+        return {}, {}
+    scores: dict[int, float] = {}
+    diagnoses: dict[int, Diagnosis] = {}
     for entry in raw:
         if not isinstance(entry, dict):
             continue
-        number, score = entry.get("n"), entry.get("score")
-        if not isinstance(number, int | float | str) or not isinstance(score, int | float | str):
+        number = entry.get("n")
+        if not isinstance(number, int | float | str):
             continue
         try:
-            parsed[int(number)] = _clamp(float(score))
+            n = int(number)
         except (TypeError, ValueError):
             continue
-    return parsed
+        score = entry.get("score")
+        if isinstance(score, int | float | str):
+            try:
+                scores[n] = _clamp(float(score))
+            except (TypeError, ValueError):
+                pass
+        raw_diagnosis = entry.get("diagnosis")
+        if raw_diagnosis is not None:
+            diagnoses[n] = diagnosis_of(raw_diagnosis, response_text)
+    return scores, diagnoses
 
 
 def _extract_json(content: str) -> str:

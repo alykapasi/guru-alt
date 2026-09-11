@@ -56,7 +56,7 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | ID | Suggestion | Current evidence / gap | Desired result | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
 | S08 | Build one trustworthy end-to-end learning sequence before adding more breadth. | The assessment and planning machinery exists, but diagnosis and teaching decisions are weakly connected. | Detect a specific gap → ask a discriminating question → teach → test a fresh unassisted application → revisit later. | First | Accepted |
-| S09 | Add structured diagnosis of specific misconceptions and prerequisite gaps, with uncertainty and supporting evidence. | Placement infers rough levels; grading returns a single score and short rationale. These do not establish why an answer failed. [R1–R3] | Distinguish forgotten notation, a procedural error, and a conceptual misunderstanding before choosing help. | High | Accepted |
+| S09 | Add structured diagnosis of specific misconceptions and prerequisite gaps, with uncertainty and supporting evidence. | Placement infers rough levels; grading returns a single score and short rationale. These do not establish why an answer failed. [R1–R3] | Distinguish forgotten notation, a procedural error, and a conceptual misunderstanding before choosing help. | High | Implemented (see below) |
 | S10 | Preserve component-specific assessment evidence and define explicit grading criteria for generated open questions. | The same aggregate score updates every tagged component with different weights; generated short questions have no explicit rubric. [R2–R4] | Avoid treating a failure in projections as equal evidence of failure in every skill involved in least squares. | High | Implemented (see below) |
 | S11 | Make targeted prerequisite detours an explicit planning capability. | Routine revision changes status, review order, and scaffolding hints while preserving remaining new-topic order. [R5] | Investigate and address the prerequisite blocking the learner, then return to the original objective. | High | Accepted |
 | S12 | Apply difficulty targeting to question selection/generation. | The session runner explicitly documents target difficulty as unapplied. [R6] | The learner's estimated capability affects the actual task they receive. | High | Implemented (see below) |
@@ -84,6 +84,64 @@ These are new proposals from the second review; the user's acceptance of prior s
 | S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Proposed |
 | S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Proposed |
 | S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Proposed |
+
+### S09 — Say why an answer failed, not just how far
+
+**Status:** Partially implemented (branch `feat/s09-s10-s11`) · **Priority:** High
+
+**Implemented — the grader answers a closed question about *why*.** Grading returned a score
+and a sentence of prose. Both are real information and neither is actionable: "0.4, the learner
+confused the two forms" and "0.4, the learner never learned what a basis is" are the same
+number and the same shape, so nothing downstream could choose different help for them — and one
+of those two needs the plan changed rather than the explanation reworded. `grade_open` now also
+returns a `kind` from a fixed vocabulary: `notation` (right idea, wrong symbol), `procedural`
+(right method, botched), `conceptual` (wrong or missing idea), `prerequisite` (the failure is
+upstream of what was asked), `incomplete` (nothing demonstrated either way), and `none`. A
+closed vocabulary rather than free text, because the point is for code to branch on it; prose
+can only be shown to a person.
+
+**Implemented — per component, and for single-component questions too.** Each component of a
+multi-KC answer gets its own diagnosis (S10 supplies the components). A one-component question
+gets one as well — that is exactly where a bare number says least, because there is no second
+component to compare it against.
+
+**Implemented — the quote is checked against what the learner actually wrote.** A model asked
+to justify a judgement will produce a supporting quote whether or not one exists, so
+`evidence_verbatim` records whether the span was really found in the response
+(whitespace-insensitive and case-folded, reusing the curriculum's own name normalisation — a
+reflowed quote is not the thing worth catching, an invented one is). A failed check does not
+discard the diagnosis; it is a reason not to show the learner those words as their own.
+
+**Implemented — it is stored where it can be queried.** The diagnosis goes into each KC's
+observation event alongside the score, and survives an idempotent retry. A rationale that only
+ever reached the response body is a sentence nobody can query.
+
+**Implemented — `incomplete` is kept out of `actionable`.** It looks like a failure and says
+the least of any label: blank, off-topic or abandoned means nothing was demonstrated either
+way, and reading it as evidence the learner cannot do the thing is precisely the error a
+one-dimensional score was already making.
+
+**Measured.** 25 tests; 9 mutations, all killed — never checking the quote, letting a correct
+component keep stray fields, leaving confidence unclamped, treating `incomplete` as actionable,
+never storing the diagnosis, dropping it from the payload, ignoring the single-component shape,
+ignoring the per-component shape, and losing it on replay.
+
+**Not done — the three limits worth stating plainly.** `confidence` is the model's own, and a
+language model's self-reported confidence is not calibrated; it is a ranking hint, and nothing
+gates on it. Nothing establishes that a diagnosis is *right* — it is one model's reading of one
+answer, and measuring whether these labels predict anything is S59's work. And the vocabulary
+itself is asserted, not derived: five kinds chosen because they imply different responses, not
+because any study of these learners produced them.
+
+**Not done — the rest.** Objective items carry no diagnosis and cannot: an MCQ knows the answer
+was wrong and nothing about why, and manufacturing a reason from that would commit the exact
+error this item exists to fix. Since MCQ is the default generated type, most attempts still
+produce no diagnosis at all. Nothing yet *uses* the diagnosis to choose help — the tutor is not
+told it, scaffolding does not change with it, and only `prerequisite` is acted on, by S11.
+Placement still infers rough levels with no diagnosis attached. Nothing aggregates diagnoses
+across attempts, so a misconception recurring five times reads as five unrelated events rather
+than one persistent belief. And the field reaches the API without the frontend rendering it or
+its generated types knowing it exists (S58).
 
 ### S10 — Preserve component-specific evidence, and grade open questions to a stated standard
 

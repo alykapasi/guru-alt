@@ -81,6 +81,11 @@ class Observation(BaseModel):
     attempt_id: uuid.UUID | None = None
     correct: bool | None = None
     detail: dict | None = None
+    kc_diagnoses: dict[uuid.UUID, dict] | None = None
+    """Per-KC structured diagnosis, already serialised (S09). Stored on the event so the
+    reason an answer failed survives alongside the number, where the planner and any later
+    analysis can reach it — a rationale that only ever reached the response body is a
+    sentence nobody can query."""
 
     @field_validator("kc_weights")
     @classmethod
@@ -294,6 +299,7 @@ async def record_observation(
                     "credit": credit,
                     "correct": obs.correct,
                     "detail": obs.detail,
+                    "diagnosis": (obs.kc_diagnoses or {}).get(kc_id),
                     "estimator": estimator.name,
                     # Everything a replay needs to reproduce this step exactly (S56).
                     # `observed_at` rather than the row's `created_at`: `created_at` is the

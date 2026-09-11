@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.learning import mastery, rubric_grading
+from app.learning.diagnosis import Diagnosis
 from app.learning.grading import GradeResult, NotAutoGradable, auto_grade, grade_flashcard
 from app.learning.item_presentation import public_presentation
 from app.learning.mastery import Observation
@@ -225,6 +226,9 @@ async def answer_item(
         kc_weights=kc_weights,
         score=result.score,
         kc_scores=result.component_scores or None,
+        kc_diagnoses=(
+            {kc_id: d.model_dump(mode="json") for kc_id, d in result.diagnoses.items()} or None
+        ),
         difficulty=item.difficulty,
         item_id=item.id,
         response=submission.response,
@@ -360,6 +364,11 @@ async def _recorded_grade(
             if payload.get("component_scored")
             else {}
         ),
+        diagnoses={
+            e.kc_id: Diagnosis.model_validate(e.payload["diagnosis"])
+            for e in events
+            if e.kc_id is not None and e.payload.get("diagnosis")
+        },
     )
 
 
@@ -369,13 +378,18 @@ async def _components_of(session: AsyncSession, item: Item) -> list[rubric_gradi
     In the item's own KC order, so component numbers are stable for a given item rather than
     dependent on however the rows came back.
 
+    Returned for a single-KC item too, even though its score needs no breakdown: the grader
+    still has to say *why* that one component fell short (S09), and the diagnosis needs a KC
+    to belong to. ``grade_open`` decides from the count whether to ask for per-component
+    marks.
+
     A rubric is attached only to the component it was actually written for: ``Rubric.kc_id``
     names one KC, so handing its criteria to every component of a multi-KC item would tell the
     grader to mark two other components against a third one's standard.
     """
     kc_ids = [link.kc_id for link in item.kc_links]
-    if len(kc_ids) < 2:
-        return []  # one component needs no breakdown — the aggregate already is its score
+    if not kc_ids:
+        return []
     rows = (await session.scalars(select(KC).where(KC.id.in_(kc_ids)))).all()
     by_id = {kc.id: kc for kc in rows}
     rubric = item.rubric
