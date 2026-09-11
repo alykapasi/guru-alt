@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.learning import item_generation, mastery
+from app.learning import difficulty, item_generation, mastery
 from app.learning.placement_inference import INFERENCE_ROLE, KCCandidate, infer_levels
 from app.learning.tracer import Estimate
 from app.llm import LLMClient
@@ -69,12 +69,35 @@ async def run_placement(
             usage=infer_usage,
         )
 
+    # What the learner's own description implies, per KC — used twice below: to pitch the
+    # light test, and then to seed. A KC the inference gave no evidence for falls back to the
+    # unknown prior, which is ability 0 and therefore a light test at population average.
+    inferred: dict[uuid.UUID, Estimate] = {
+        level.kc_id: _ESTIMATE_BY_LEVEL[level.level] for level in levels
+    }
+
     root_kcs: list[KC] = list(await knowledge_svc.list_root_kcs(session, subject.id))
     light_test_items: list[Item] = []
     for kc in root_kcs[:light_test_size]:
-        item = await assessment_svc.find_item_for_kc(session, kc.id, learner_id=learner_id)
+        # A diagnostic wants the question it cannot predict, not the one the learner will
+        # enjoy: an answer at a 50% expectation carries the most information about where they
+        # actually are (S12). Practice targets the opposite end of the same scale.
+        #
+        # Placement seeds a new subject, so the inference is normally all there is. Re-running
+        # it for a subject the learner has already answered in targets from the self-report
+        # rather than from that evidence — a stale aim for one light test, not a wrong prior:
+        # ``seed_prior`` still refuses to overwrite what was actually demonstrated.
+        target = difficulty.target_for(
+            inferred.get(kc.id, Estimate()),
+            success_rate=difficulty.INFORMATIVE_SUCCESS_RATE,
+        )
+        item = await assessment_svc.find_item_for_kc(
+            session, kc.id, learner_id=learner_id, target_difficulty=target
+        )
         if item is None:
-            item, gen_usage = await item_generation.generate_mcq_item(session, llm, kc)
+            item, gen_usage = await item_generation.generate_mcq_item(
+                session, llm, kc, target_difficulty=target
+            )
             if gen_usage.total_tokens:
                 await log_llm_call(
                     learner_id=learner_id,
@@ -86,9 +109,8 @@ async def run_placement(
             light_test_items.append(item)
 
     seeded: list[LearnerKCState] = []
-    for inferred in levels:
-        estimate = _ESTIMATE_BY_LEVEL[inferred.level]
-        state = await mastery.seed_prior(session, learner_id, inferred.kc_id, estimate)
+    for kc_id, estimate in inferred.items():
+        state = await mastery.seed_prior(session, learner_id, kc_id, estimate)
         if state is not None:
             seeded.append(state)
 

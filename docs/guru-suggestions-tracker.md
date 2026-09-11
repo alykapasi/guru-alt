@@ -59,7 +59,7 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | S09 | Add structured diagnosis of specific misconceptions and prerequisite gaps, with uncertainty and supporting evidence. | Placement infers rough levels; grading returns a single score and short rationale. These do not establish why an answer failed. [R1–R3] | Distinguish forgotten notation, a procedural error, and a conceptual misunderstanding before choosing help. | High | Accepted |
 | S10 | Preserve component-specific assessment evidence and define explicit grading criteria for generated open questions. | The same aggregate score updates every tagged component with different weights; generated short questions have no explicit rubric. [R2–R4] | Avoid treating a failure in projections as equal evidence of failure in every skill involved in least squares. | High | Accepted |
 | S11 | Make targeted prerequisite detours an explicit planning capability. | Routine revision changes status, review order, and scaffolding hints while preserving remaining new-topic order. [R5] | Investigate and address the prerequisite blocking the learner, then return to the original objective. | High | Accepted |
-| S12 | Apply difficulty targeting to question selection/generation. | The session runner explicitly documents target difficulty as unapplied. [R6] | The learner's estimated capability affects the actual task they receive. | High | Accepted |
+| S12 | Apply difficulty targeting to question selection/generation. | The session runner explicitly documents target difficulty as unapplied. [R6] | The learner's estimated capability affects the actual task they receive. | High | Implemented (see below) |
 | S13 | Distinguish assisted retries from independent demonstrations in mastery evidence. | Guided practice hints and retries the same question; every attempt updates mastery. Hint context is omitted by that workflow and is not used by the estimator even when recorded elsewhere. [R7–R8] | Prevent assistance and repeated exposure from producing unjustified mastery confidence. | First | Implemented (see below) |
 | S14 | Select fresh assessment items with awareness of prior exposure, and check delayed retention and transfer. | Bank selection returns the oldest matching item without considering the learner's exposure. [R2] | Establish that the learner can solve a different problem without help and retain that capability. | First | Implemented (see below) |
 | S15 | Connect exploratory conversation to structured learning evidence through a deliberate assessment mechanism. | Plain chat can ask questions, but its conversational answers do not directly update mastery. [R9] | Make the initial learner-led experience contribute trustworthy evidence without treating all conversation as proof of mastery. | High | Accepted |
@@ -84,6 +84,91 @@ These are new proposals from the second review; the user's acceptance of prior s
 | S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Proposed |
 | S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Proposed |
 | S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Proposed |
+
+### S12 — Apply difficulty targeting to question selection and generation
+
+**Status:** Partially implemented (branch `feat/s12-s23`) · **Priority:** High
+
+**Implemented — items have a difficulty at all.** The recorded gap was that the session runner
+documented `target_difficulty` as unapplied. The larger one was not recorded: no generator had
+ever set `Item.difficulty`, so every generated item took the column default of 0.0 — and
+generation is how items come to exist in practice. Targeting a bank of zeros would have been a
+no-op dressed as a feature. That default was not a missing value either; it is a specific claim,
+and the tracer believed it, scoring every question as if pitched at the population average. The
+`optimal_challenge` profile dimension, defined as the mean difficulty of items the learner
+scored between 0.4 and 0.8 on, was the mean of a column of zeros.
+
+**Implemented — the target comes from the learner's ability for that component.** Difficulty
+already shares the logit scale with ability, because the estimator's expectation is
+`sigmoid(theta - d)`. So a target difficulty is that equation solved for `d`: pick the success
+rate you want and the difficulty follows. `app/learning/difficulty.py` does exactly that and
+nothing else. The plan step's own `target_difficulty`, from `optimal_challenge`, is deliberately
+*not* what selection uses: it is one number for the whole learner, averaged across every
+component they have answered, while the tracer holds a separate ability per KC. Per-KC mastery
+is the premise the engine rests on, and collapsing it to a single number to choose a question
+for one specific component discards exactly the distinction that made it worth keeping.
+
+**Implemented — practice and assessment target opposite ends of the same scale.** They want
+different things and the code now says so instead of splitting the difference. Practice aims at
+`settings.practice_target_success_rate` (0.75): work a learner fails three times in four does
+not teach. The placement light test aims at 0.5, because the information one answer carries is
+`E * (1 - E)` — the term the estimator already computes — and it peaks there. The most useful
+diagnostic question is the one we genuinely cannot predict. Placement pitches from the level its
+own inference assigned, so a learner who describes a strong background is diagnosed harder.
+
+**Implemented — selection targets fit, under S14's exposure rule.** `find_item_for_kc` orders by
+last-answered first, then by distance from the target, then `created_at`. Fit deliberately does
+not outrank freshness: a question pitched exactly right that the learner answered an hour ago
+still measures memory of that question. Ordering it the other way would have undone S14 the week
+after it landed.
+
+**Implemented — generation is told a band, never the number.** All four generators take the
+target, put a named level and a gloss in the system prompt, and record the requested difficulty.
+`-0.35` is not something a model can aim at; asking one to calibrate its own output to a logit
+invites a confident guess. Every path resolves a target: the plan's next item, guided practice
+(which resolves its own, since the workflow has no opinion to pass), due reviews (free — the
+review row already carries the ability), and the placement light test.
+
+**Implemented — the tutor prompt stops carrying a number that meant nothing.** It interpolated
+the raw logit, so the system prompt read `Target difficulty: 0.00.` — and 0.00 was the only
+value it could ever hold. An instruction a model cannot act on is not inert; it still steers the
+turn. It now names a band.
+
+**Implemented — the clamp was widened once it was clear who it bit.** Bounds exist so a runaway
+estimate cannot have us record an absurd difficulty on a real item, but the practice target is
+the ability *plus a downward shift*. A range that merely covered plausible abilities clamped
+hardest on the struggling learner, who is precisely the one most needing the easier question.
+
+**Measured.** 60 tests. The central one is a round trip: ask for the difficulty at which this
+learner succeeds 75% of the time, and the estimator agrees they do — across a grid of abilities
+and rates. 14 mutations, all killed: flipping the target's sign, dropping the clamp, moving a
+band edge, removing the rate guard, ignoring the target in selection, ranking fit above
+freshness, discarding the requested difficulty, dropping the prompt band, targeting information
+during practice, targeting comfort during placement, untargeting each of the four call sites,
+and restoring the raw float in the tutor prompt. One test was rewritten before that round: the
+placement case asserted a target of 0.0, which is also the old default, so it would have passed
+with the feature removed entirely. It now asserts the exact informative target and that it
+differs from the practice one.
+
+**Not done — the stored difficulty is a request, not a measurement.** Nothing checks the model
+delivered the level asked for, and nothing revises the number from answer data. That revision is
+real item calibration, and it is blocked rather than merely unbuilt: with one learner, ability
+and difficulty are unidentifiable — only their difference is observable, so every "the item was
+harder than we thought" is equally "the learner is weaker than we thought". Separating them
+needs many learners per item, which needs S21. Until then a generated item's difficulty tracks
+the request, and the calibration work S56's replay enables will measure the request too.
+
+**Not done — the rest.** `practice_target_success_rate` is 0.75 on the strength of the
+desirable-difficulty literature, not our learners (S18). The target ignores uncertainty, so a
+component we know nothing about is pitched as confidently as one we have measured — an
+uncertainty-aware blend is a guessed interpolation until S18 supplies a real one. Items already
+in the bank keep their 0.0 and are not backfilled; they read as population-average until
+answered. `optimal_challenge` stops being a mean of zeros but becomes a lagged echo of the
+request, so it still is not independent evidence about the learner — and the plan step continues
+to store it as the step's `target_difficulty`, now used only to pick the tutor prompt's band.
+Two targets coexist; removing the stored one touches persisted plan JSON and plan revision, so
+it was left. Content generation (explanations, worked examples) is still not pitched at all —
+only items are.
 
 ### S14 — Select fresh items with awareness of exposure, and check retention and transfer
 

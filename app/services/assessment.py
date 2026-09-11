@@ -111,6 +111,7 @@ async def find_item_for_kc(
     *,
     learner_id: uuid.UUID,
     item_type: ItemType | None = None,
+    target_difficulty: float | None = None,
 ) -> Item | None:
     """The freshest bank item assessing ``kc_id``, if any — reuse before generating a new one.
 
@@ -124,6 +125,15 @@ async def find_item_for_kc(
 
     ``item_type``, if given, restricts the search to that type (e.g. the session runner
     preferring a flashcard for a review step) — ``None`` matches any type, the prior behavior.
+
+    ``target_difficulty`` (S12) picks *which* fresh item, and deliberately only breaks ties
+    that exposure has already left open. Fit does not outrank freshness: a question pitched
+    exactly right that the learner answered an hour ago still measures memory of that question.
+    Ordering it the other way round would have undone S14 the week after it landed.
+
+    Until generation started recording a difficulty this changed nothing — every item in the
+    bank sat at the 0.0 default, so every candidate was equidistant from any target and the
+    ``created_at`` tiebreak carried the order exactly as before.
 
     Scoped to what ``learner_id`` may be assessed with (S33): reuse used to pick up anything
     tagged to the KC, so a question and answer key another learner had written became this
@@ -148,11 +158,15 @@ async def find_item_for_kc(
     )
     if item_type is not None:
         stmt = stmt.where(Item.item_type == item_type)
+    order = [last_answered.asc().nullsfirst()]
+    if target_difficulty is not None:
+        order.append(func.abs(Item.difficulty - target_difficulty))
+    # created_at last so the order is total: two equally fresh, equally well-fitted items
+    # still come back in a fixed order rather than whatever the scan happened to produce.
+    order.append(Item.created_at)
     return await session.scalar(
         stmt.options(selectinload(Item.kc_links), selectinload(Item.rubric))
-        # created_at second so the order is total: two never-answered items still come back
-        # in a fixed order rather than whatever the scan happened to produce.
-        .order_by(last_answered.asc().nullsfirst(), Item.created_at)
+        .order_by(*order)
         .limit(1)
     )
 

@@ -15,13 +15,27 @@ it is pure waste) rather than a fix for that gap.
 
 Cloze has no generator here (only fill-in-the-blank does) — reuse-from-bank still works for
 cloze via ``assessment.find_item_for_kc``'s type filter, generation is a documented future gap.
+
+Every generator takes a ``target_difficulty`` and records it on the item it writes (S12).
+Read that number for exactly what it is: **the level we asked for, not a property we measured**.
+Nothing here checks that the model delivered it, and an item's difficulty is only really known
+once learners of known ability have answered it.
+
+Recording the request anyway is the lesser of two dishonesties. The alternative was the status
+quo, where every generated item took the ``difficulty`` column default of 0.0 — and since
+generation is how items come to exist in practice, that default was the entire scale. It made
+the tracer score every question as if pitched at the population average, and it made the
+``optimal_challenge`` profile dimension the mean of a column of zeros. A stored 0.0 is not a
+missing value; it is a specific and unearned claim. The request at least lands on the right
+scale and moves with the learner.
 """
 
 import json
-from collections.abc import Awaitable, Callable
+from typing import Protocol, runtime_checkable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.learning import difficulty as difficulty_mod
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
 from app.models.assessment import Item, ItemType
 from app.models.knowledge import KC
@@ -30,6 +44,25 @@ from app.services import assessment as assessment_svc
 
 GENERATION_ROLE = ModelRole.FAST
 """Item generation is a short, low-stakes, one-shot task — the light-test/FAST tier."""
+
+
+def _pitch(target_difficulty: float | None) -> str:
+    """The sentence that tells the model how hard to make it, or nothing.
+
+    A band, never the number. ``-0.35`` is not something a model can aim at, and asking one to
+    calibrate its own output to a logit invites a confident guess — see
+    ``app.learning.difficulty``.
+    """
+    if target_difficulty is None:
+        return ""
+    return f" Pitch the question at this level: {difficulty_mod.describe(target_difficulty)}."
+
+
+def _recorded_difficulty(target_difficulty: float | None) -> float:
+    """What lands in the item's ``difficulty`` column. See the module docstring for what that
+    number does and does not claim; ``None`` keeps the old uncalibrated 0.0."""
+    return 0.0 if target_difficulty is None else target_difficulty
+
 
 _SYSTEM_PROMPT = (
     "You write one short multiple-choice question that tests understanding of a single "
@@ -41,13 +74,18 @@ _SYSTEM_PROMPT = (
 
 
 async def generate_mcq_item(
-    session: AsyncSession, llm: LLMClient, kc: KC, *, max_tokens: int = 256
+    session: AsyncSession,
+    llm: LLMClient,
+    kc: KC,
+    *,
+    target_difficulty: float | None = None,
+    max_tokens: int = 256,
 ) -> tuple[Item | None, Usage]:
     """Generate and persist one MCQ item for ``kc``, or ``(None, usage)`` on a bad reply."""
     completion = await llm.complete(
         GENERATION_ROLE,
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
-        system=_SYSTEM_PROMPT,
+        system=_SYSTEM_PROMPT + _pitch(target_difficulty),
         max_tokens=max_tokens,
     )
     parsed = _parse_mcq(completion.content)
@@ -61,6 +99,7 @@ async def generate_mcq_item(
             stem=stem,
             kcs=[ItemKCRef(kc_id=kc.id)],
             answer_key={"choices": choices, "correct": correct},
+            difficulty=_recorded_difficulty(target_difficulty),
         ),
     )
     return item, completion.usage
@@ -75,13 +114,18 @@ _FILL_BLANK_SYSTEM_PROMPT = (
 
 
 async def generate_fill_blank_item(
-    session: AsyncSession, llm: LLMClient, kc: KC, *, max_tokens: int = 256
+    session: AsyncSession,
+    llm: LLMClient,
+    kc: KC,
+    *,
+    target_difficulty: float | None = None,
+    max_tokens: int = 256,
 ) -> tuple[Item | None, Usage]:
     """Generate and persist one fill-in-the-blank item for ``kc``, or ``(None, usage)``."""
     completion = await llm.complete(
         GENERATION_ROLE,
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
-        system=_FILL_BLANK_SYSTEM_PROMPT,
+        system=_FILL_BLANK_SYSTEM_PROMPT + _pitch(target_difficulty),
         max_tokens=max_tokens,
     )
     parsed = _parse_fill_blank(completion.content)
@@ -95,6 +139,7 @@ async def generate_fill_blank_item(
             stem=stem,
             kcs=[ItemKCRef(kc_id=kc.id)],
             answer_key={"blanks": [answer]},
+            difficulty=_recorded_difficulty(target_difficulty),
         ),
     )
     return item, completion.usage
@@ -108,7 +153,12 @@ _SHORT_SYSTEM_PROMPT = (
 
 
 async def generate_short_item(
-    session: AsyncSession, llm: LLMClient, kc: KC, *, max_tokens: int = 256
+    session: AsyncSession,
+    llm: LLMClient,
+    kc: KC,
+    *,
+    target_difficulty: float | None = None,
+    max_tokens: int = 256,
 ) -> tuple[Item | None, Usage]:
     """Generate and persist one open, rubric-graded short-answer item for ``kc``.
 
@@ -119,7 +169,7 @@ async def generate_short_item(
     completion = await llm.complete(
         GENERATION_ROLE,
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
-        system=_SHORT_SYSTEM_PROMPT,
+        system=_SHORT_SYSTEM_PROMPT + _pitch(target_difficulty),
         max_tokens=max_tokens,
     )
     stem = _parse_short(completion.content)
@@ -127,7 +177,12 @@ async def generate_short_item(
         return None, completion.usage
     item = await assessment_svc.create_item(
         session,
-        ItemCreate(item_type=ItemType.SHORT, stem=stem, kcs=[ItemKCRef(kc_id=kc.id)]),
+        ItemCreate(
+            item_type=ItemType.SHORT,
+            stem=stem,
+            kcs=[ItemKCRef(kc_id=kc.id)],
+            difficulty=_recorded_difficulty(target_difficulty),
+        ),
     )
     return item, completion.usage
 
@@ -140,7 +195,12 @@ _FLASHCARD_SYSTEM_PROMPT = (
 
 
 async def generate_flashcard_item(
-    session: AsyncSession, llm: LLMClient, kc: KC, *, max_tokens: int = 256
+    session: AsyncSession,
+    llm: LLMClient,
+    kc: KC,
+    *,
+    target_difficulty: float | None = None,
+    max_tokens: int = 256,
 ) -> tuple[Item | None, Usage]:
     """Generate and persist one flashcard item for ``kc``, or ``(None, usage)``.
 
@@ -150,7 +210,7 @@ async def generate_flashcard_item(
     completion = await llm.complete(
         GENERATION_ROLE,
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
-        system=_FLASHCARD_SYSTEM_PROMPT,
+        system=_FLASHCARD_SYSTEM_PROMPT + _pitch(target_difficulty),
         max_tokens=max_tokens,
     )
     parsed = _parse_flashcard(completion.content)
@@ -164,12 +224,31 @@ async def generate_flashcard_item(
             stem=stem,
             kcs=[ItemKCRef(kc_id=kc.id)],
             answer_key={"back": answer} if answer else None,
+            difficulty=_recorded_difficulty(target_difficulty),
         ),
     )
     return item, completion.usage
 
 
-GeneratorFn = Callable[[AsyncSession, LLMClient, KC], Awaitable[tuple[Item | None, Usage]]]
+@runtime_checkable
+class GeneratorFn(Protocol):
+    """What every generator above looks like to a caller dispatching on item type.
+
+    A Protocol rather than a ``Callable`` alias because ``target_difficulty`` is keyword-only
+    and ``Callable[...]`` has no way to say so — it would have silently typed the dispatch as
+    taking three positional arguments and nothing else. ``runtime_checkable`` because beartype
+    enforces the ``GENERATORS`` annotation at import time and cannot check a plain Protocol.
+    """
+
+    async def __call__(
+        self,
+        session: AsyncSession,
+        llm: LLMClient,
+        kc: KC,
+        *,
+        target_difficulty: float | None = None,
+    ) -> tuple[Item | None, Usage]: ...
+
 
 GENERATORS: dict[ItemType, GeneratorFn] = {
     ItemType.MCQ: generate_mcq_item,
