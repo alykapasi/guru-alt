@@ -205,5 +205,16 @@ async def add_prerequisite(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "kc not found")
     if await svc.get_kc(session, data.prereq_kc_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "prerequisite kc not found")
+    # 409 rather than the 400 a self-prerequisite gets, and the difference is real: a
+    # self-loop is wrong in isolation, while this edge is only wrong against the graph that
+    # happens to be stored. Until this check existed a client could build any longer cycle
+    # one valid-looking edge at a time, and nothing downstream would report it — plan
+    # ordering just silently stopped being justified by the graph (S23).
+    if await svc.would_create_cycle(session, kc_id=kc_id, prereq_kc_id=data.prereq_kc_id):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "that prerequisite would create a cycle: the proposed prerequisite already "
+            "depends on this knowledge component",
+        )
     async with _conflict_409(session):
         return await svc.add_prerequisite(session, kc_id, data.prereq_kc_id, data.weight)

@@ -3,8 +3,11 @@
 import json
 import uuid
 
+import pytest
+
 from app.learning import lesson_plan as engine
 from app.learning.lesson_plan import (
+    CyclicPrerequisites,
     Edge,
     ScaffoldingHints,
     StepDict,
@@ -71,12 +74,25 @@ def test_topo_sort_ignores_edges_outside_the_node_set() -> None:
     assert order == [a, b]
 
 
-def test_topo_sort_cycle_falls_back_to_tiebreak_order_instead_of_raising() -> None:
+def test_topo_sort_refuses_to_invent_an_order_for_a_cycle() -> None:
+    """This used to append the leftovers in tiebreak order, which does not fail — it returns
+    an order, and the learner is taught in it. Nothing downstream could tell that apart from
+    a real ordering, so the caller has to resolve the cycle first (S23)."""
     x, y = _uuids(2)
     edges = [Edge(prereq_kc_id=x, kc_id=y), Edge(prereq_kc_id=y, kc_id=x)]
-    order = topo_sort([x, y], edges, {x: "x", y: "y"})
-    assert set(order) == {x, y}
-    assert order == [x, y]
+    with pytest.raises(CyclicPrerequisites) as caught:
+        topo_sort([x, y], edges, {x: "x", y: "y"})
+    assert set(caught.value.unordered) == {x, y}
+
+
+def test_a_cycle_does_not_stop_the_rest_of_the_graph_being_orderable() -> None:
+    # The point of naming the unordered components: the ones outside the cycle are fine, and
+    # the caller drops the closing edge rather than losing the whole subject.
+    x, y, z = _uuids(3)
+    edges = [Edge(prereq_kc_id=x, kc_id=y), Edge(prereq_kc_id=y, kc_id=x)]
+    with pytest.raises(CyclicPrerequisites) as caught:
+        topo_sort([x, y, z], edges, {x: "x", y: "y", z: "z"})
+    assert set(caught.value.unordered) == {x, y}
 
 
 # --- build_initial_steps ------------------------------------------------------

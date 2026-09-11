@@ -185,6 +185,13 @@ class Settings(BaseSettings):
     # study S59 covers.
     retention_min_days: float = 1.0
 
+    # How often practice should aim for the learner to succeed. Practice and assessment want
+    # opposite things from a question (see app.learning.difficulty): this is the teaching side,
+    # and it is a taste parameter, not a derivation — 0.75 is the middle of the range the
+    # desirable-difficulty literature keeps landing in, chosen here because failing most of
+    # what you are given does not teach. Uncalibrated against our own learners (S18).
+    practice_target_success_rate: float = 0.75
+
     # Cap on how many KCs a generated lesson plan targets at once — cost/UX bound on a
     # runaway subject graph. Review steps (due retention) are added on top, uncapped.
     lesson_plan_max_steps: int = 20

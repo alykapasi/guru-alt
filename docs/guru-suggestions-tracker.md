@@ -59,7 +59,7 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | S09 | Add structured diagnosis of specific misconceptions and prerequisite gaps, with uncertainty and supporting evidence. | Placement infers rough levels; grading returns a single score and short rationale. These do not establish why an answer failed. [R1–R3] | Distinguish forgotten notation, a procedural error, and a conceptual misunderstanding before choosing help. | High | Accepted |
 | S10 | Preserve component-specific assessment evidence and define explicit grading criteria for generated open questions. | The same aggregate score updates every tagged component with different weights; generated short questions have no explicit rubric. [R2–R4] | Avoid treating a failure in projections as equal evidence of failure in every skill involved in least squares. | High | Accepted |
 | S11 | Make targeted prerequisite detours an explicit planning capability. | Routine revision changes status, review order, and scaffolding hints while preserving remaining new-topic order. [R5] | Investigate and address the prerequisite blocking the learner, then return to the original objective. | High | Accepted |
-| S12 | Apply difficulty targeting to question selection/generation. | The session runner explicitly documents target difficulty as unapplied. [R6] | The learner's estimated capability affects the actual task they receive. | High | Accepted |
+| S12 | Apply difficulty targeting to question selection/generation. | The session runner explicitly documents target difficulty as unapplied. [R6] | The learner's estimated capability affects the actual task they receive. | High | Implemented (see below) |
 | S13 | Distinguish assisted retries from independent demonstrations in mastery evidence. | Guided practice hints and retries the same question; every attempt updates mastery. Hint context is omitted by that workflow and is not used by the estimator even when recorded elsewhere. [R7–R8] | Prevent assistance and repeated exposure from producing unjustified mastery confidence. | First | Implemented (see below) |
 | S14 | Select fresh assessment items with awareness of prior exposure, and check delayed retention and transfer. | Bank selection returns the oldest matching item without considering the learner's exposure. [R2] | Establish that the learner can solve a different problem without help and retain that capability. | First | Implemented (see below) |
 | S15 | Connect exploratory conversation to structured learning evidence through a deliberate assessment mechanism. | Plain chat can ask questions, but its conversational answers do not directly update mastery. [R9] | Make the initial learner-led experience contribute trustworthy evidence without treating all conversation as proof of mastery. | High | Accepted |
@@ -77,13 +77,167 @@ These are new proposals from the second review; the user's acceptance of prior s
 | ID | Suggestion | Evidence / consequence | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
 | S22 | Generate, validate, and persist prerequisite relationships during curriculum creation. | CurriculumProposal and create_subject_with_graph contain topics and KCs but no prerequisite edges. Newly generated curricula therefore lack the dependencies the planner needs. [R13–R14] | First | Implemented (see below) |
-| S23 | Validate the prerequisite graph, including multi-node cycles and references, before relying on its order. | Edge creation checks self-loops and existence but not longer cycles; topo_sort appends unresolved nodes when a cycle occurs. [R5, R15] | High | Proposed |
+| S23 | Validate the prerequisite graph, including multi-node cycles and references, before relying on its order. | Edge creation checks self-loops and existence but not longer cycles; topo_sort appends unresolved nodes when a cycle occurs. [R5, R15] | High | Implemented (see below) |
 | S24 | Define concept identity and cross-subject prerequisite handling explicitly. | Each KC belongs to one topic. Duplicate concepts get separate IDs and mastery states; the planner's candidate pool and edge loading do not establish a complete cross-subject traversal. Cross-subject edges are possible in the schema, so this is an incomplete policy rather than a database prohibition. [R14, R16, R11] | High | Proposed |
 | S25 | Separate shared, curated knowledge from learner-specific generated curricula, with ownership and publishing rules. | Subjects are global, listing is unscoped, commit rejects a duplicate subject name globally, and learner-authenticated routes can add global topics/KCs/edges. Personal goal-derived structure has no explicit private draft boundary. [R14–R16] | Before multi-user release | Proposed |
 | S26 | Apply explicit, consistent source scope to every generation path; make intentional cross-subject expansion a separate decision. | Chat uses subject/source filters; generate_block retrieves across the learner's sources without subject/topic filters. This remains learner-scoped and is not evidence of cross-user retrieval leakage. [R9, R17–R18] | High | Proposed |
 | S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Proposed |
 | S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Proposed |
 | S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Proposed |
+
+### S23 — Validate the prerequisite graph before relying on its order
+
+**Status:** Implemented (branch `feat/s12-s23`) · **Priority:** High
+
+**Implemented — an order the graph does not justify now fails instead of shipping.** `topo_sort`
+handled a cycle by appending whatever it could not place, in tiebreak order. That does not read
+as a failure anywhere downstream; it reads as an order, and the learner is taught in it — at
+least one component scheduled before something it was declared to depend on, with nothing
+reporting it. It raises `CyclicPrerequisites` now, naming the components it could not place, so
+the only way to get an order is to hand it a graph that admits one.
+
+**Implemented — the endpoint cannot be walked into a cycle one valid edge at a time.**
+`POST /kcs/{id}/prerequisites` refused a KC naming *itself* and nothing longer, so A→B then
+B→A, or any longer ring, went straight through — each request unremarkable on its own. It now
+checks whether the dependent already reaches the proposed prerequisite and returns 409. The
+split from the self-loop's 400 is deliberate rather than untidy: a self-loop is wrong in
+isolation, while this edge is only wrong against the graph that happens to be stored.
+
+**Implemented — the reachability check is complete and terminates.** A recursive CTE, for two
+reasons that both matter. The schema permits a cross-subject prerequisite, so checking "this
+subject's edges" would have missed exactly the case nobody is watching for. And it uses `UNION`
+rather than `UNION ALL`, which is what makes the walk terminate on a graph that is *already*
+cyclic — the state the check exists to stop growing, and a hung request is not an improvement
+on a bad order.
+
+**Implemented — plan generation validates before it orders.** Since `topo_sort` now refuses a
+cyclic graph, a single legacy bad edge would otherwise stop a subject producing a plan at all.
+Generation runs the stored edges through `prerequisites.acyclic` first, drops the closing ones,
+logs them with the subject id, and orders by what remains — so the order is justified by the
+constraints actually honoured rather than invented for the ones that could not be.
+
+**Implemented — one cycle rule, not two.** `prerequisites.acyclic` is generic over node type
+instead of being reimplemented for KC ids: the curriculum parser applies it to proposal keys
+before anything is stored (S22), and plan generation applies it to ids from a graph that may
+predate every check. Two copies of this rule would drift.
+
+**Implemented — which prerequisite gives way is now decided, not observed.** `acyclic` drops
+whichever edge closes a cycle *given the order it sees*, and the plan path was feeding it an
+unordered scan — so the query planner chose which constraint to sacrifice, and two
+regenerations of the same plan could honour different ones. Dropping an edge is a teaching
+decision; it must not be re-made differently each time. The edge query is ordered by
+`created_at` then primary key. Be precise about what that buys: edges added one at a time
+through the API separate properly on the timestamp, which is the path cycles actually arrive
+by. Edges written in one transaction tie — `created_at` is the transaction clock, the same
+finding S56 and S14 hit — and fall through to a random UUID, which settles the order without
+making it meaningful.
+
+**Measured.** 11 tests; 8 mutations, all killed: removing the endpoint check, making the
+reachability walk non-recursive, walking it in the wrong direction, restoring `topo_sort`'s
+silent append, skipping plan-time validation, keeping every edge in `acyclic`, removing the
+edge ordering, and reporting the cycle as a 400. Two defects surfaced during testing rather
+than review: the unordered edge scan above, found because a three-node cycle test passed and
+failed by luck, and the generic rewrite silently losing runtime type enforcement — beartype
+declines to decorate PEP 695 generic functions and only warns, so the module kept working while
+two functions quietly stopped being checked. It uses a classic `TypeVar` now, with ruff's
+contrary style rule suppressed locally.
+
+**Not done.** Nothing repairs a subject that already contains a cycle: plan generation works
+around one on every regeneration and logs it, but the bad edge stays in the database and no
+endpoint reports or removes it. A learner is not told their curriculum's ordering was weakened
+— the dropped edge appears only in logs, so a subject whose dependencies were quietly
+sacrificed looks exactly like one that was right. Validation is limited to cycles and
+existence: nothing checks that an edge is *pedagogically* true, that a prerequisite chain is
+not absurdly deep, or that a subject's graph is connected. Cross-subject edges are refused
+entry to a cycle but still ignored by plan ordering, which loads one subject's edges — that
+remains S24's. And the check is per-request, so two concurrent additions could still race a
+cycle into existence between one's check and the other's insert; the unique constraint does
+not catch that.
+
+### S12 — Apply difficulty targeting to question selection and generation
+
+**Status:** Partially implemented (branch `feat/s12-s23`) · **Priority:** High
+
+**Implemented — items have a difficulty at all.** The recorded gap was that the session runner
+documented `target_difficulty` as unapplied. The larger one was not recorded: no generator had
+ever set `Item.difficulty`, so every generated item took the column default of 0.0 — and
+generation is how items come to exist in practice. Targeting a bank of zeros would have been a
+no-op dressed as a feature. That default was not a missing value either; it is a specific claim,
+and the tracer believed it, scoring every question as if pitched at the population average. The
+`optimal_challenge` profile dimension, defined as the mean difficulty of items the learner
+scored between 0.4 and 0.8 on, was the mean of a column of zeros.
+
+**Implemented — the target comes from the learner's ability for that component.** Difficulty
+already shares the logit scale with ability, because the estimator's expectation is
+`sigmoid(theta - d)`. So a target difficulty is that equation solved for `d`: pick the success
+rate you want and the difficulty follows. `app/learning/difficulty.py` does exactly that and
+nothing else. The plan step's own `target_difficulty`, from `optimal_challenge`, is deliberately
+*not* what selection uses: it is one number for the whole learner, averaged across every
+component they have answered, while the tracer holds a separate ability per KC. Per-KC mastery
+is the premise the engine rests on, and collapsing it to a single number to choose a question
+for one specific component discards exactly the distinction that made it worth keeping.
+
+**Implemented — practice and assessment target opposite ends of the same scale.** They want
+different things and the code now says so instead of splitting the difference. Practice aims at
+`settings.practice_target_success_rate` (0.75): work a learner fails three times in four does
+not teach. The placement light test aims at 0.5, because the information one answer carries is
+`E * (1 - E)` — the term the estimator already computes — and it peaks there. The most useful
+diagnostic question is the one we genuinely cannot predict. Placement pitches from the level its
+own inference assigned, so a learner who describes a strong background is diagnosed harder.
+
+**Implemented — selection targets fit, under S14's exposure rule.** `find_item_for_kc` orders by
+last-answered first, then by distance from the target, then `created_at`. Fit deliberately does
+not outrank freshness: a question pitched exactly right that the learner answered an hour ago
+still measures memory of that question. Ordering it the other way would have undone S14 the week
+after it landed.
+
+**Implemented — generation is told a band, never the number.** All four generators take the
+target, put a named level and a gloss in the system prompt, and record the requested difficulty.
+`-0.35` is not something a model can aim at; asking one to calibrate its own output to a logit
+invites a confident guess. Every path resolves a target: the plan's next item, guided practice
+(which resolves its own, since the workflow has no opinion to pass), due reviews (free — the
+review row already carries the ability), and the placement light test.
+
+**Implemented — the tutor prompt stops carrying a number that meant nothing.** It interpolated
+the raw logit, so the system prompt read `Target difficulty: 0.00.` — and 0.00 was the only
+value it could ever hold. An instruction a model cannot act on is not inert; it still steers the
+turn. It now names a band.
+
+**Implemented — the clamp was widened once it was clear who it bit.** Bounds exist so a runaway
+estimate cannot have us record an absurd difficulty on a real item, but the practice target is
+the ability *plus a downward shift*. A range that merely covered plausible abilities clamped
+hardest on the struggling learner, who is precisely the one most needing the easier question.
+
+**Measured.** 60 tests. The central one is a round trip: ask for the difficulty at which this
+learner succeeds 75% of the time, and the estimator agrees they do — across a grid of abilities
+and rates. 14 mutations, all killed: flipping the target's sign, dropping the clamp, moving a
+band edge, removing the rate guard, ignoring the target in selection, ranking fit above
+freshness, discarding the requested difficulty, dropping the prompt band, targeting information
+during practice, targeting comfort during placement, untargeting each of the four call sites,
+and restoring the raw float in the tutor prompt. One test was rewritten before that round: the
+placement case asserted a target of 0.0, which is also the old default, so it would have passed
+with the feature removed entirely. It now asserts the exact informative target and that it
+differs from the practice one.
+
+**Not done — the stored difficulty is a request, not a measurement.** Nothing checks the model
+delivered the level asked for, and nothing revises the number from answer data. That revision is
+real item calibration, and it is blocked rather than merely unbuilt: with one learner, ability
+and difficulty are unidentifiable — only their difference is observable, so every "the item was
+harder than we thought" is equally "the learner is weaker than we thought". Separating them
+needs many learners per item, which needs S21. Until then a generated item's difficulty tracks
+the request, and the calibration work S56's replay enables will measure the request too.
+
+**Not done — the rest.** `practice_target_success_rate` is 0.75 on the strength of the
+desirable-difficulty literature, not our learners (S18). The target ignores uncertainty, so a
+component we know nothing about is pitched as confidently as one we have measured — an
+uncertainty-aware blend is a guessed interpolation until S18 supplies a real one. Items already
+in the bank keep their 0.0 and are not backfilled; they read as population-average until
+answered. `optimal_challenge` stops being a mean of zeros but becomes a lagged echo of the
+request, so it still is not independent evidence about the learner — and the plan step continues
+to store it as the step's `target_difficulty`, now used only to pick the tutor prompt's band.
+Two targets coexist; removing the stored one touches persisted plan JSON and plan revision, so
+it was left. Content generation (explanations, worked examples) is still not pitched at all —
+only items are.
 
 ### S14 — Select fresh items with awareness of exposure, and check retention and transfer
 
@@ -181,9 +335,9 @@ where the edges were being lost — so that test was added.
 
 **Not done.** Edge `weight` is always 1.0; nothing proposes or uses a strength. Prerequisites
 are only resolved *within one proposal*, so a curriculum cannot depend on a KC in a subject the
-learner already has — that needs the concept identity S24 covers. Nothing validates the graph
-on the direct `POST /kcs/{id}/prerequisites` path, which is still S23's, and nothing re-checks
-an existing subject's graph. A dropped edge is logged and not surfaced to the learner, so a
+learner already has — that needs the concept identity S24 covers. The direct `POST /kcs/{id}/prerequisites` path
+was unvalidated beyond self-loops; S23 closed that, and made plan generation re-check an
+existing subject's graph rather than trusting it. A dropped edge is logged and not surfaced to the learner, so a
 curriculum whose ordering was quietly weakened looks identical to one the model got right. And
 nothing measures whether the generated orderings are *pedagogically* correct — only that they
 are acyclic and resolvable.
@@ -254,7 +408,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-09 | Third implementation pass, branch `fix/tracker-s51-s31` (stacked on the second): S51 (`4809fae`), S44 (`4a55279`), S33 (`f80f0f6`), S61 (`4836971`), S31 (`cabd2a0`) and S62 (`67c1226`). `uv run poe check` green (856 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0030`–`0032`. All six are marked *partially* implemented and each says what it left; the largest gaps are an explicit presentation preference to replace the reading-level inference (S44), any path for a learner's item to become shared at all (S33), orphaned-blob reconciliation and a retention *schedule* (S61), adversarial evaluation against a real model (S31), and latency as opposed to query-count budgets (S62). Two things worth recording. S62 began by *measuring*: the subject-mastery page cost 15 queries on a 2x2 subject and 147 on an 8x8, and the fixes are verified by a counter rather than asserted. And two of my own S31 tests initially passed for the wrong reason — a base64 exfiltration test that an unreachable host would also have satisfied, and a nonce-uniqueness test comparing body text rather than delimiters — both caught by mutating the code they were meant to cover. S61's completeness test ("every table with a `learner_id` has a stated disposition") caught a table misnamed in the retention map on its first run. |
 | 2026-09-10 | S77 added and implemented, branch `feat/source-dedup` (stacked on the third pass): content-addressed shared blobs (`b44ad51`), within-learner exact dedup (`1d49309`), canonical-text dedup (`9b437fe`), and near-duplicate suggestions (`ef04f40`). Not a review finding — a user request to hash uploads against duplicates, "ideally strong enough to catch similar files". `uv run poe check` green (885 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0033`–`0035`. The request needed correcting before it could be built: a cryptographic hash is designed *not* to do this, so it became three mechanisms — byte equality, canonical-text equality, and a locality-sensitive distance. The third was measured before being trusted (`poe simhash-separation`), and the measurement changed the design: a badly scanned copy of a book and a document half of which is a different book sit at the same distance, so no cut-off separates them and the near-duplicate check reports rather than decides. Also re-opened S61: sharing a blob key across learners means "delete this account's bytes" now has to mean "unless somebody else references them". |
 | 2026-09-11 | Fourth implementation pass, branch `fix/tracker-s53-s60` (off merged `main`, after PRs #17–#19): S53 (`e49000b`), S56 (`978a549`) and S60 (`f07bc8f`) — the last three items that were still *Proposed* and technical. `uv run poe check` green (914 passed, 4 skipped); `npm run lint`, `npm run test` and `npm run build` green. No migrations. All three are marked *partially* implemented and each says what it left. Three things worth recording. **S53's defects were found by looking at the rendered page, not the code**: the type scale lived in `@layer components`, which Tailwind cannot compose into a variant, so every `[&_h2]:text-h3` in the notes renderer had been generating no CSS and headings rendered at body size; `$$x$$` on one line came out inline; and `\(x\)` rendered as literal backslashes. None was visible in review. The frontend also had **no test framework at all**, so "renders correctly" was not a claim anything could check — vitest is now in CI. **S56 found the same class of bug twice**: ordering a learner's history by `created_at` is ordering it by the transaction clock, which ties for anything committed together, so both the step order and a seed-ordering guard were unreliable; steps are now ordered by the timestamp the update itself used. **S60 surfaced a packaging defect** — `alembic` was a dev-group dependency, so a production image could not run the first step of its own deployment. Everything S60 claims was executed against a running containerised stack, including stopping MinIO to confirm readiness 503s while liveness stays 200. Also worth recording: a `docker build ... | tail` reported success while the build had failed, because the pipe's exit status is `tail`'s — the first "the image builds" claim was wrong and was caught by rechecking the exit code explicitly. |
-| 2026-09-11 | Fifth pass, branch `feat/s22-s14` — the first items taken from the *register* rather than the autopsy, both marked **First**: S22 (`bfcc78c`) and S14 (`6eb56cc`). `uv run poe check` green (952 passed, 4 skipped); `npm run lint` and `npm run build` green. Migration `0036`. Both are marked *partially* implemented and each says what it left. Two defects here were of the kind that look correct in review and only show up in behaviour. **Selection was `ORDER BY created_at`** — stable, so practising a component twice served the same question twice, while every attempt still updated mastery: the estimate rose on the learner re-answering what they had just been told. **Generated curricula had no prerequisite edges at all**, so the planner — whose entire job is ordering by prerequisites — was ordering a flat list. Three things worth recording. S22's edges were being dropped at a place no test looked: `/onboarding/curriculum` rebuilt each KC as `{name, description}`, so the round trip through the learner's review discarded them; two mutations survived the first round because of it. S14's span measurement reported a nine-day gap as **zero** on its first run, which is the `created_at`-is-the-transaction-clock finding from S56 arriving in a second place — it now uses the `observed_at` that item recorded. And prerequisites are resolved from names to stable keys at *parse* time specifically so the learner renaming a KC in the review step cannot silently break an edge. |
+| 2026-09-11 | Fifth pass, branch `feat/s22-s14` — the first items taken from the *register* rather than the autopsy, both marked **First**: S22 (`bfcc78c`) and S14 (`6eb56cc`). `uv run poe check` green (952 passed, 4 skipped); `npm run lint` and `npm run build` green. Migration `0036`. Both are marked *partially* implemented and each says what it left. Two defects here were of the kind that look correct in review and only show up in behaviour. **Selection was `ORDER BY created_at`** — stable, so practising a component twice served the same question twice, while every attempt still updated mastery: the estimate rose on the learner re-answering what they had just been told. **Generated curricula had no prerequisite edges at all**, so the planner — whose entire job is ordering by prerequisites — was ordering a flat list. Three things worth recording. S22's edges were being dropped at a place no test looked: `/onboarding/curriculum` rebuilt each KC as `{name, description}`, so the round trip through the learner's review discarded them; two mutations survived the first round because of it. S14's span measurement reported a nine-day gap as **zero** on its first run, which is the `created_at`-is-the-transaction-clock finding from S56 arriving in a second place — it now uses the `observed_at` that item recorded. And prerequisites are resolved from names to stable keys at *parse* time specifically so the learner renaming a KC in the review step cannot silently break an edge. || 2026-09-11 | Sixth pass, branch `feat/s12-s23` (off merged `main`, after PR #21): S12 (`943642d`) and S23 (`37d3a25`). `uv run poe check` green (1024 passed, 4 skipped). No migrations. S12 is marked *partially* implemented; S23 is complete. **S12's recorded gap was the smaller half of it.** The session runner documented target difficulty as unapplied, which was true — but no generator had ever written `Item.difficulty`, and generation is how items come to exist, so the entire scale was the column default of 0.0. Applying a target to a bank of zeros would have been a no-op dressed as a feature, and a stored 0.0 was not a missing value: the tracer scored every question as if pitched at the population average, and the `optimal_challenge` profile dimension was the mean of a column of zeros. The target now comes from the tracer's per-KC ability rather than that dimension, because difficulty already shares the logit scale with ability — and practice and assessment deliberately target opposite ends of it, since `E * (1 - E)` peaks at a 50% expectation. **S23's own change created a defect that testing caught.** Dropping a cycle-closing edge depends on the order edges are read in, and the plan path fed `acyclic` an unordered scan, so the query planner decided which prerequisite to sacrifice and two regenerations could honour different ones; a three-node cycle test passed and failed by luck until the query was ordered. The generic rewrite also silently lost runtime type enforcement — beartype declines to decorate PEP 695 generic functions and only *warns*, so two functions stopped being checked while everything still passed. Also worth recording: one S12 test asserted a placement target of 0.0, which is also the old default, so it would have passed with the feature removed entirely — rewritten before the mutation round, not after. |
 
 ## Remaining architecture autopsy — source pass
 

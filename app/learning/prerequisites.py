@@ -15,9 +15,17 @@ Pure: no database, no model calls. :mod:`app.services.knowledge` persists the re
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Hashable, Iterable, Mapping, Sequence
+from typing import TypeVar
 
 _WHITESPACE = re.compile(r"\s+")
+
+N = TypeVar("N", bound=Hashable)
+"""A graph node. ``str`` proposal keys at parse time, ``uuid.UUID`` KC ids at plan time.
+
+Spelled as a ``TypeVar`` rather than PEP 695 ``def acyclic[N]`` because beartype cannot
+decorate the latter — it warns and skips, which would have quietly dropped runtime type
+enforcement from the two functions below while everything still appeared to work."""
 
 KeyEdge = tuple[str, str]
 """``(prereq_key, kc_key)`` — "the first should be mastered before the second"."""
@@ -81,10 +89,12 @@ def resolve(
     return resolved, unresolved
 
 
-def _reaches(start: str, goal: str, successors: Mapping[str, list[str]]) -> bool:
+# Both suppress UP047: ruff would rather these used PEP 695 type parameters, which beartype
+# then refuses to decorate — see N above. Runtime enforcement is the deliberate choice.
+def _reaches(start: N, goal: N, successors: Mapping[N, list[N]]) -> bool:  # noqa: UP047
     """Whether ``goal`` is reachable from ``start`` following prereq → dependent edges."""
     stack = [start]
-    seen: set[str] = set()
+    seen: set[N] = set()
     while stack:
         node = stack.pop()
         if node == goal:
@@ -96,22 +106,28 @@ def _reaches(start: str, goal: str, successors: Mapping[str, list[str]]) -> bool
     return False
 
 
-def acyclic(edges: Sequence[KeyEdge]) -> tuple[list[KeyEdge], list[KeyEdge]]:
+def acyclic(  # noqa: UP047 — see N: beartype cannot decorate PEP 695 generics
+    edges: Sequence[tuple[N, N]],
+) -> tuple[list[tuple[N, N]], list[tuple[N, N]]]:
     """Keep the largest prefix-stable subset of ``edges`` that stays acyclic.
 
     Edges are considered in the order given and an edge is kept unless it closes a cycle
     against what has already been kept, which makes the outcome a deterministic function of
-    the proposal rather than of dictionary ordering.
+    the input rather than of dictionary ordering.
 
     The alternative — rejecting a curriculum containing a cycle — makes generated curricula
     less reliable than they are today, when they have no edges to be wrong about. This keeps
-    what is usable. ``topo_sort`` already tolerates a cycle by appending the leftovers, but
-    tolerating one there means the learner is silently given an order the graph did not
-    justify; dropping the edge here means the order is honestly unconstrained instead.
+    what is usable; dropping the closing edge means the order is honestly unconstrained
+    there, rather than an order the graph never justified.
+
+    Generic over the node type because the same rule has to hold in two places and must not
+    drift between them (S23): the curriculum parser applies it to proposal keys before
+    anything is stored, and lesson-plan generation applies it to KC ids after loading a graph
+    that may predate either check.
     """
-    successors: dict[str, list[str]] = {}
-    kept: list[KeyEdge] = []
-    dropped: list[KeyEdge] = []
+    successors: dict[N, list[N]] = {}
+    kept: list[tuple[N, N]] = []
+    dropped: list[tuple[N, N]] = []
     for prereq, dependent in edges:
         # Adding prereq -> dependent closes a cycle exactly when dependent already reaches
         # prereq through the edges kept so far.

@@ -15,6 +15,7 @@ from sqlalchemy.orm import selectinload
 from app.agent.tutor import TutorState, build_tutor_graph
 from app.agent.untrusted import as_untrusted
 from app.core.config import get_settings
+from app.learning import difficulty
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.memory import retrieval as memory_retrieval
@@ -47,7 +48,11 @@ def _plan_grounding_note(context: PlanGroundingContext) -> str:
         f"The learner's current lesson-plan focus in {context.subject_name}: {context.kc_name}."
     ]
     if context.target_difficulty is not None:
-        parts.append(f"Target difficulty: {context.target_difficulty:.2f}.")
+        # A band, not the number. This used to interpolate the raw logit, which meant the
+        # tutor's system prompt carried the sentence "Target difficulty: 0.00." — and since
+        # nothing had ever written a difficulty to an item, 0.00 was the only value it could
+        # take. An instruction a model cannot act on is not a neutral one; it still steers.
+        parts.append(f"Aim at a {difficulty.band(context.target_difficulty)} level.")
     if context.hint_density is not None:
         parts.append(f"Hint density: {context.hint_density}.")
     if context.preferred_item_type is not None:

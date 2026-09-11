@@ -10,8 +10,17 @@ the only thing that moves mastery.
 Item selection is type-aware: the active step's ``preferred_item_type`` (profile-driven, from
 ``format_effectiveness``) is tried first, falling back to a flashcard default for ``"review"``
 steps (spaced-repetition surfacing) when there's no explicit preference, and finally to
-any-type reuse then MCQ generation — see ``item_for_kc``. ``target_difficulty`` remains an
-unapplied v1 gap: no item-level difficulty targeting exists for generated items yet.
+any-type reuse then MCQ generation — see ``item_for_kc``.
+
+It is also difficulty-aware (S12): every path through here resolves a *practice* target from
+the learner's own ability for that KC — the difficulty at which they would succeed
+``settings.practice_target_success_rate`` of the time — and hands it to both selection and
+generation. The plan step carries a ``target_difficulty`` of its own, from the
+``optimal_challenge`` profile dimension, and this deliberately does not use it: that dimension
+is one number for the whole learner, averaged over every component they have answered, while
+the tracer holds a separate ability per KC. Per-KC mastery is the premise the whole engine
+rests on; collapsing it to a single number to choose an item for one specific component throws
+away exactly the distinction that made it worth keeping.
 
 ``due_review_items`` is the plan-independent counterpart: a learner clearing their FSRS review
 queue doesn't need to be mid-lesson, so it resolves flashcards directly off
@@ -26,8 +35,10 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.learning import item_generation, mastery
+from app.core.config import get_settings
+from app.learning import difficulty, item_generation, mastery
 from app.learning.mastery import ReviewItem
+from app.learning.tracer import Estimate
 from app.llm import LLMClient
 from app.models.assessment import Item, ItemType
 from app.models.knowledge import KC
@@ -37,6 +48,19 @@ from app.services.lesson_plan import PlanGroundingContext
 from app.services.llm_log import log_llm_call
 
 
+def practice_target(estimate: Estimate) -> float:
+    """The difficulty to ask for when the point is to teach, given what we believe about the
+    learner. Assessment wants the opposite end of the same scale — see ``app.learning.difficulty``."""
+    return difficulty.target_for(estimate, success_rate=get_settings().practice_target_success_rate)
+
+
+async def practice_target_for_kc(
+    session: AsyncSession, *, learner_id: uuid.UUID, kc_id: uuid.UUID
+) -> float:
+    """``practice_target`` for one KC, reading the learner's current estimate."""
+    return practice_target(await mastery.estimate_kc(session, learner_id, kc_id))
+
+
 async def item_for_kc(
     session: AsyncSession,
     llm: LLMClient,
@@ -44,6 +68,7 @@ async def item_for_kc(
     learner_id: uuid.UUID,
     kc: KC,
     preferred_type: ItemType | None,
+    target_difficulty: float | None = None,
 ) -> Item | None:
     """Resolve something answerable for ``kc``, preferring ``preferred_type`` if given.
 
@@ -53,23 +78,39 @@ async def item_for_kc(
     """
     if preferred_type is not None:
         item = await assessment_svc.find_item_for_kc(
-            session, kc.id, learner_id=learner_id, item_type=preferred_type
+            session,
+            kc.id,
+            learner_id=learner_id,
+            item_type=preferred_type,
+            target_difficulty=target_difficulty,
         )
         if item is not None:
             return item
         generator = item_generation.GENERATORS.get(preferred_type)
         if generator is not None:
             item = await _generate_and_log(
-                session, llm, kc, learner_id=learner_id, generator=generator
+                session,
+                llm,
+                kc,
+                learner_id=learner_id,
+                generator=generator,
+                target_difficulty=target_difficulty,
             )
             if item is not None:
                 return item
 
-    item = await assessment_svc.find_item_for_kc(session, kc.id, learner_id=learner_id)
+    item = await assessment_svc.find_item_for_kc(
+        session, kc.id, learner_id=learner_id, target_difficulty=target_difficulty
+    )
     if item is not None:
         return item
     return await _generate_and_log(
-        session, llm, kc, learner_id=learner_id, generator=item_generation.generate_mcq_item
+        session,
+        llm,
+        kc,
+        learner_id=learner_id,
+        generator=item_generation.generate_mcq_item,
+        target_difficulty=target_difficulty,
     )
 
 
@@ -83,14 +124,28 @@ async def short_answer_item_for_kc(
     reads ``response["choice"]``, which would always be ``None`` and always score
     "incorrect" — a silent correctness bug, not a crash). Returns ``None`` only if generation
     itself fails to parse.
+
+    Resolves its own practice target rather than taking one: the guided-practice workflow is
+    the only caller, it has no reason to hold an opinion about difficulty, and leaving the
+    parameter for it to pass would have meant guided practice quietly opting out of S12.
     """
+    target_difficulty = await practice_target_for_kc(session, learner_id=learner_id, kc_id=kc.id)
     item = await assessment_svc.find_item_for_kc(
-        session, kc.id, learner_id=learner_id, item_type=ItemType.SHORT
+        session,
+        kc.id,
+        learner_id=learner_id,
+        item_type=ItemType.SHORT,
+        target_difficulty=target_difficulty,
     )
     if item is not None:
         return item
     return await _generate_and_log(
-        session, llm, kc, learner_id=learner_id, generator=item_generation.generate_short_item
+        session,
+        llm,
+        kc,
+        learner_id=learner_id,
+        generator=item_generation.generate_short_item,
+        target_difficulty=target_difficulty,
     )
 
 
@@ -101,8 +156,9 @@ async def _generate_and_log(
     *,
     learner_id: uuid.UUID,
     generator: item_generation.GeneratorFn,
+    target_difficulty: float | None = None,
 ) -> Item | None:
-    item, usage = await generator(session, llm, kc)
+    item, usage = await generator(session, llm, kc, target_difficulty=target_difficulty)
     if usage.total_tokens:
         await log_llm_call(
             learner_id=learner_id,
@@ -140,7 +196,12 @@ async def next_item(
     if kc is None:
         return None
     return await item_for_kc(
-        session, llm, learner_id=learner_id, kc=kc, preferred_type=_effective_item_type(context)
+        session,
+        llm,
+        learner_id=learner_id,
+        kc=kc,
+        preferred_type=_effective_item_type(context),
+        target_difficulty=await practice_target_for_kc(session, learner_id=learner_id, kc_id=kc.id),
     )
 
 
@@ -160,8 +221,18 @@ async def due_review_items(
         if i < item_limit:
             kc = await session.get(KC, review.kc_id)
             if kc is not None:
+                # The estimate is already in hand: ReviewItem carries the learner's ability
+                # for this KC, and decay only widens uncertainty, so the undecayed row is the
+                # same ability estimate_kc would return — no second query to target.
                 item = await item_for_kc(
-                    session, llm, learner_id=learner_id, kc=kc, preferred_type=ItemType.FLASHCARD
+                    session,
+                    llm,
+                    learner_id=learner_id,
+                    kc=kc,
+                    preferred_type=ItemType.FLASHCARD,
+                    target_difficulty=practice_target(
+                        Estimate(ability=review.ability, uncertainty=review.uncertainty)
+                    ),
                 )
         results.append((review, item))
     return results
