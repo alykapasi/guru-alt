@@ -79,9 +79,8 @@ def test_the_result_is_a_function_of_the_input_order_alone() -> None:
 
 
 def test_a_kept_graph_always_sorts_without_leftovers() -> None:
-    """What the whole exercise is for: topo_sort tolerates a cycle by appending the leftovers
-    in tiebreak order, so a stored cycle does not look like a failure — it looks like an
-    order, and the learner is taught in it."""
+    """What the whole exercise is for: topo_sort now refuses a cyclic graph outright (S23),
+    so the edges this keeps have to be enough to order every node it was given."""
     kept, _ = prerequisites.acyclic([("a", "b"), ("b", "c"), ("c", "a")])
     ids = {name: uuid.uuid4() for name in ("a", "b", "c")}
     edges = [Edge(prereq_kc_id=ids[p], kc_id=ids[k]) for p, k in kept]

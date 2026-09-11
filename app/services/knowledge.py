@@ -377,6 +377,34 @@ async def list_root_kcs(session: AsyncSession, subject_id: uuid.UUID) -> Sequenc
 # --- Prerequisite edges -----------------------------------------------------
 
 
+async def would_create_cycle(
+    session: AsyncSession, *, kc_id: uuid.UUID, prereq_kc_id: uuid.UUID
+) -> bool:
+    """Whether declaring ``prereq_kc_id`` a prerequisite of ``kc_id`` closes a cycle (S23).
+
+    True exactly when ``kc_id`` already reaches ``prereq_kc_id`` by following prereq →
+    dependent edges, because the new edge would then complete the loop.
+
+    A recursive CTE rather than an in-memory walk, for two reasons. Edges are not confined to
+    one subject — the schema permits a cross-subject prerequisite, so loading "the subject's
+    edges" and checking those would miss exactly the case nobody expects. And ``UNION``
+    (not ``UNION ALL``) makes the recursion terminate on a graph that is *already* cyclic,
+    which is the state this check exists to stop growing.
+    """
+    reachable = (
+        select(KCEdge.kc_id.label("node"))
+        .where(KCEdge.prereq_kc_id == kc_id)
+        .cte("reachable", recursive=True)
+    )
+    reachable = reachable.union(
+        select(KCEdge.kc_id).join(reachable, KCEdge.prereq_kc_id == reachable.c.node)
+    )
+    hit = await session.scalar(
+        select(reachable.c.node).where(reachable.c.node == prereq_kc_id).limit(1)
+    )
+    return hit is not None
+
+
 async def add_prerequisite(
     session: AsyncSession, kc_id: uuid.UUID, prereq_kc_id: uuid.UUID, weight: float
 ) -> KCEdge:
@@ -394,12 +422,26 @@ async def list_prerequisites(session: AsyncSession, kc_id: uuid.UUID) -> Sequenc
 
 async def list_edges_for_subject(session: AsyncSession, subject_id: uuid.UUID) -> Sequence[KCEdge]:
     """Every prerequisite edge within a subject — the lesson plan's in-memory closure/topo-sort
-    needs the whole edge set at once rather than one KC at a time."""
+    needs the whole edge set at once rather than one KC at a time.
+
+    Ordered, and load-bearing (S23). ``prerequisites.acyclic`` resolves a cycle by dropping
+    whichever edge closes it *given the order it sees*, so an unordered scan would let the
+    query planner decide which prerequisite gets sacrificed — and two regenerations of the
+    same plan could then honour different constraints.
+
+    ``created_at`` first, then the primary key. Be clear about what each half buys: edges
+    added one at a time through the API separate properly on the timestamp, and that is the
+    path cycles actually arrive by, since a generated curriculum is de-cycled at parse time
+    before anything is stored. Edges written in one transaction all tie — ``created_at`` is
+    the transaction clock — and fall through to a random UUID. That settles the order, which
+    is what the validation needs; it does not make it meaningful.
+    """
     result = await session.scalars(
         select(KCEdge)
         .join(KC, KCEdge.kc_id == KC.id)
         .join(Topic, KC.topic_id == Topic.id)
         .where(Topic.subject_id == subject_id)
+        .order_by(KCEdge.created_at, KCEdge.id)
     )
     return result.all()
 

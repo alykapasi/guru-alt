@@ -61,6 +61,28 @@ def prerequisite_closure(target_ids: Iterable[uuid.UUID], edges: Sequence[Edge])
     return closure
 
 
+class CyclicPrerequisites(Exception):
+    """A prerequisite graph containing a cycle was handed to :func:`topo_sort` (S23).
+
+    Raised rather than worked around. The leftovers used to be appended in tiebreak order,
+    which does not fail — it produces *an order*, and the learner is then taught in it. A
+    prerequisite cycle means at least one component is scheduled before something it was
+    declared to depend on, and nothing downstream can tell that apart from a real ordering.
+
+    Callers decide what to do about a cycle *before* asking for an order:
+    ``prerequisites.acyclic`` drops the closing edges and reports them, which leaves the
+    remaining order genuinely justified by the remaining edges. That is the difference between
+    "we could not honour this constraint" and silently pretending there was none.
+    """
+
+    def __init__(self, unordered: Sequence[uuid.UUID]) -> None:
+        self.unordered = list(unordered)
+        super().__init__(
+            f"{len(self.unordered)} knowledge components are in a prerequisite cycle: "
+            + ", ".join(str(kc_id) for kc_id in self.unordered)
+        )
+
+
 def topo_sort(
     kc_ids: Iterable[uuid.UUID],
     edges: Sequence[Edge],
@@ -70,8 +92,8 @@ def topo_sort(
     kc.slug)``). Edges touching a KC outside ``kc_ids`` are ignored — the caller is expected
     to pass a closed set (see :func:`prerequisite_closure`).
 
-    A cycle shouldn't crash plan generation: any KC left over once no more nodes are ready
-    is appended in ``tiebreak`` order rather than raising.
+    Raises :class:`CyclicPrerequisites` if the edges do not admit an order. Run the graph
+    through ``prerequisites.acyclic`` first if it might not.
     """
     nodes = set(kc_ids)
     indegree: dict[uuid.UUID, int] = dict.fromkeys(nodes, 0)
@@ -99,7 +121,7 @@ def topo_sort(
         ready.sort(key=_key)
 
     if len(ordered) < len(nodes):
-        ordered.extend(sorted(nodes.difference(ordered), key=_key))
+        raise CyclicPrerequisites(sorted(nodes.difference(ordered), key=_key))
     return ordered
 
 

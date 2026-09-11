@@ -77,13 +77,82 @@ These are new proposals from the second review; the user's acceptance of prior s
 | ID | Suggestion | Evidence / consequence | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
 | S22 | Generate, validate, and persist prerequisite relationships during curriculum creation. | CurriculumProposal and create_subject_with_graph contain topics and KCs but no prerequisite edges. Newly generated curricula therefore lack the dependencies the planner needs. [R13–R14] | First | Implemented (see below) |
-| S23 | Validate the prerequisite graph, including multi-node cycles and references, before relying on its order. | Edge creation checks self-loops and existence but not longer cycles; topo_sort appends unresolved nodes when a cycle occurs. [R5, R15] | High | Proposed |
+| S23 | Validate the prerequisite graph, including multi-node cycles and references, before relying on its order. | Edge creation checks self-loops and existence but not longer cycles; topo_sort appends unresolved nodes when a cycle occurs. [R5, R15] | High | Implemented (see below) |
 | S24 | Define concept identity and cross-subject prerequisite handling explicitly. | Each KC belongs to one topic. Duplicate concepts get separate IDs and mastery states; the planner's candidate pool and edge loading do not establish a complete cross-subject traversal. Cross-subject edges are possible in the schema, so this is an incomplete policy rather than a database prohibition. [R14, R16, R11] | High | Proposed |
 | S25 | Separate shared, curated knowledge from learner-specific generated curricula, with ownership and publishing rules. | Subjects are global, listing is unscoped, commit rejects a duplicate subject name globally, and learner-authenticated routes can add global topics/KCs/edges. Personal goal-derived structure has no explicit private draft boundary. [R14–R16] | Before multi-user release | Proposed |
 | S26 | Apply explicit, consistent source scope to every generation path; make intentional cross-subject expansion a separate decision. | Chat uses subject/source filters; generate_block retrieves across the learner's sources without subject/topic filters. This remains learner-scoped and is not evidence of cross-user retrieval leakage. [R9, R17–R18] | High | Proposed |
 | S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Proposed |
 | S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Proposed |
 | S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Proposed |
+
+### S23 — Validate the prerequisite graph before relying on its order
+
+**Status:** Implemented (branch `feat/s12-s23`) · **Priority:** High
+
+**Implemented — an order the graph does not justify now fails instead of shipping.** `topo_sort`
+handled a cycle by appending whatever it could not place, in tiebreak order. That does not read
+as a failure anywhere downstream; it reads as an order, and the learner is taught in it — at
+least one component scheduled before something it was declared to depend on, with nothing
+reporting it. It raises `CyclicPrerequisites` now, naming the components it could not place, so
+the only way to get an order is to hand it a graph that admits one.
+
+**Implemented — the endpoint cannot be walked into a cycle one valid edge at a time.**
+`POST /kcs/{id}/prerequisites` refused a KC naming *itself* and nothing longer, so A→B then
+B→A, or any longer ring, went straight through — each request unremarkable on its own. It now
+checks whether the dependent already reaches the proposed prerequisite and returns 409. The
+split from the self-loop's 400 is deliberate rather than untidy: a self-loop is wrong in
+isolation, while this edge is only wrong against the graph that happens to be stored.
+
+**Implemented — the reachability check is complete and terminates.** A recursive CTE, for two
+reasons that both matter. The schema permits a cross-subject prerequisite, so checking "this
+subject's edges" would have missed exactly the case nobody is watching for. And it uses `UNION`
+rather than `UNION ALL`, which is what makes the walk terminate on a graph that is *already*
+cyclic — the state the check exists to stop growing, and a hung request is not an improvement
+on a bad order.
+
+**Implemented — plan generation validates before it orders.** Since `topo_sort` now refuses a
+cyclic graph, a single legacy bad edge would otherwise stop a subject producing a plan at all.
+Generation runs the stored edges through `prerequisites.acyclic` first, drops the closing ones,
+logs them with the subject id, and orders by what remains — so the order is justified by the
+constraints actually honoured rather than invented for the ones that could not be.
+
+**Implemented — one cycle rule, not two.** `prerequisites.acyclic` is generic over node type
+instead of being reimplemented for KC ids: the curriculum parser applies it to proposal keys
+before anything is stored (S22), and plan generation applies it to ids from a graph that may
+predate every check. Two copies of this rule would drift.
+
+**Implemented — which prerequisite gives way is now decided, not observed.** `acyclic` drops
+whichever edge closes a cycle *given the order it sees*, and the plan path was feeding it an
+unordered scan — so the query planner chose which constraint to sacrifice, and two
+regenerations of the same plan could honour different ones. Dropping an edge is a teaching
+decision; it must not be re-made differently each time. The edge query is ordered by
+`created_at` then primary key. Be precise about what that buys: edges added one at a time
+through the API separate properly on the timestamp, which is the path cycles actually arrive
+by. Edges written in one transaction tie — `created_at` is the transaction clock, the same
+finding S56 and S14 hit — and fall through to a random UUID, which settles the order without
+making it meaningful.
+
+**Measured.** 11 tests; 8 mutations, all killed: removing the endpoint check, making the
+reachability walk non-recursive, walking it in the wrong direction, restoring `topo_sort`'s
+silent append, skipping plan-time validation, keeping every edge in `acyclic`, removing the
+edge ordering, and reporting the cycle as a 400. Two defects surfaced during testing rather
+than review: the unordered edge scan above, found because a three-node cycle test passed and
+failed by luck, and the generic rewrite silently losing runtime type enforcement — beartype
+declines to decorate PEP 695 generic functions and only warns, so the module kept working while
+two functions quietly stopped being checked. It uses a classic `TypeVar` now, with ruff's
+contrary style rule suppressed locally.
+
+**Not done.** Nothing repairs a subject that already contains a cycle: plan generation works
+around one on every regeneration and logs it, but the bad edge stays in the database and no
+endpoint reports or removes it. A learner is not told their curriculum's ordering was weakened
+— the dropped edge appears only in logs, so a subject whose dependencies were quietly
+sacrificed looks exactly like one that was right. Validation is limited to cycles and
+existence: nothing checks that an edge is *pedagogically* true, that a prerequisite chain is
+not absurdly deep, or that a subject's graph is connected. Cross-subject edges are refused
+entry to a cycle but still ignored by plan ordering, which loads one subject's edges — that
+remains S24's. And the check is per-request, so two concurrent additions could still race a
+cycle into existence between one's check and the other's insert; the unique constraint does
+not catch that.
 
 ### S12 — Apply difficulty targeting to question selection and generation
 
@@ -266,9 +335,9 @@ where the edges were being lost — so that test was added.
 
 **Not done.** Edge `weight` is always 1.0; nothing proposes or uses a strength. Prerequisites
 are only resolved *within one proposal*, so a curriculum cannot depend on a KC in a subject the
-learner already has — that needs the concept identity S24 covers. Nothing validates the graph
-on the direct `POST /kcs/{id}/prerequisites` path, which is still S23's, and nothing re-checks
-an existing subject's graph. A dropped edge is logged and not surfaced to the learner, so a
+learner already has — that needs the concept identity S24 covers. The direct `POST /kcs/{id}/prerequisites` path
+was unvalidated beyond self-loops; S23 closed that, and made plan generation re-check an
+existing subject's graph rather than trusting it. A dropped edge is logged and not surfaced to the learner, so a
 curriculum whose ordering was quietly weakened looks identical to one the model got right. And
 nothing measures whether the generated orderings are *pedagogically* correct — only that they
 are acyclic and resolvable.

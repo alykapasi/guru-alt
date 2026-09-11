@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.learning import lesson_plan as engine
-from app.learning import mastery
+from app.learning import mastery, prerequisites
 from app.learning.placement_inference import KCCandidate
 from app.llm import LLMClient
 from app.models.knowledge import KC, Subject
@@ -126,10 +126,20 @@ async def generate_lesson_plan(
         if selected:
             target_ids = set(selected)
 
-    edges = [
-        engine.Edge(prereq_kc_id=e.prereq_kc_id, kc_id=e.kc_id)
-        for e in await knowledge_svc.list_edges_for_subject(session, subject_id)
-    ]
+    # Validate before relying on the order (S23). A stored cycle is not hypothetical: the
+    # direct prerequisite endpoint refused only self-loops until now, and any subject built
+    # before that check could carry one. Dropping the closing edges here means the order that
+    # follows is justified by the constraints that remain, rather than being an order
+    # topo_sort invented for components it could not place.
+    stored_edges = await knowledge_svc.list_edges_for_subject(session, subject_id)
+    kept, dropped = prerequisites.acyclic([(e.prereq_kc_id, e.kc_id) for e in stored_edges])
+    if dropped:
+        log.warning(
+            "lesson_plan.cyclic_prerequisites_dropped",
+            subject_id=str(subject_id),
+            dropped=[(str(prereq), str(dependent)) for prereq, dependent in dropped],
+        )
+    edges = [engine.Edge(prereq_kc_id=prereq, kc_id=dependent) for prereq, dependent in kept]
     closure = engine.prerequisite_closure(target_ids, edges)
     # The whole objective is recorded; only its first window becomes steps. revise_plan pulls
     # the rest in as work completes, so the target — which topo-sorts last — is still reached.
