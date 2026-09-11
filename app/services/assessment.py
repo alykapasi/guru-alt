@@ -39,6 +39,7 @@ from app.models.assessment import (
     ItemOrigin,
     ItemType,
 )
+from app.models.knowledge import KC
 from app.models.learning import LearnerKCState, LearningEvent
 from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRead, ItemRead
 from app.services import knowledge as knowledge_svc
@@ -223,6 +224,7 @@ async def answer_item(
         learner_id=learner_id,
         kc_weights=kc_weights,
         score=result.score,
+        kc_scores=result.component_scores or None,
         difficulty=item.difficulty,
         item_id=item.id,
         response=submission.response,
@@ -328,22 +330,65 @@ async def _recorded_grade(
     writes the verdict into every row of the attempt's per-KC fan-out, so any one of them
     reconstructs the response the first request got.
     """
-    event = await session.scalar(
-        select(LearningEvent)
-        .where(
-            LearningEvent.learner_id == learner_id,
-            LearningEvent.attempt_id == attempt_id,
+    events = (
+        await session.scalars(
+            select(LearningEvent).where(
+                LearningEvent.learner_id == learner_id,
+                LearningEvent.attempt_id == attempt_id,
+            )
         )
-        .limit(1)
-    )
-    if event is None:
+    ).all()
+    if not events:
         return None
-    payload = event.payload
+    payload = events[0].payload
+    # `score` is this *row's* KC score since S10, so the item's own score comes from
+    # `item_score` — falling back for events written before that key existed, where the two
+    # were by definition the same number. Reading `score` here would have replayed one
+    # component's mark as the whole answer's.
+    item_score = payload.get("item_score", payload["score"])
     return GradeResult(
-        score=payload["score"],
-        correct=bool(payload.get("correct", payload["score"] >= 1.0)),
+        score=item_score,
+        correct=bool(payload.get("correct", item_score >= 1.0)),
         detail=payload.get("detail") or {},
+        # Rebuilt from the whole fan-out rather than one row: the per-component marks are
+        # exactly what is spread across it, so a replayed grade is identical to the original
+        # instead of quietly losing its breakdown — or, for a grade that never had one,
+        # gaining a breakdown the first response did not contain. kc_id is nullable on the
+        # event table, so that filter is not decoration either.
+        component_scores=(
+            {e.kc_id: e.payload["score"] for e in events if e.kc_id is not None}
+            if payload.get("component_scored")
+            else {}
+        ),
     )
+
+
+async def _components_of(session: AsyncSession, item: Item) -> list[rubric_grading.GradedComponent]:
+    """The KCs this item assesses, named, for the grader to mark separately (S10).
+
+    In the item's own KC order, so component numbers are stable for a given item rather than
+    dependent on however the rows came back.
+
+    A rubric is attached only to the component it was actually written for: ``Rubric.kc_id``
+    names one KC, so handing its criteria to every component of a multi-KC item would tell the
+    grader to mark two other components against a third one's standard.
+    """
+    kc_ids = [link.kc_id for link in item.kc_links]
+    if len(kc_ids) < 2:
+        return []  # one component needs no breakdown — the aggregate already is its score
+    rows = (await session.scalars(select(KC).where(KC.id.in_(kc_ids)))).all()
+    by_id = {kc.id: kc for kc in rows}
+    rubric = item.rubric
+    return [
+        rubric_grading.GradedComponent(
+            kc_id=kc_id,
+            name=by_id[kc_id].name,
+            description=by_id[kc_id].description or "",
+            criteria=(rubric.criteria if rubric is not None and rubric.kc_id == kc_id else None),
+        )
+        for kc_id in kc_ids
+        if kc_id in by_id
+    ]
 
 
 async def _grade(
@@ -362,7 +407,11 @@ async def _grade(
         return grade_flashcard(submission.response)
     if item_type in RUBRIC_GRADABLE:
         result, usage = await rubric_grading.grade_open(
-            llm, stem=item.stem, response=submission.response, rubric=item.rubric
+            llm,
+            stem=item.stem,
+            response=submission.response,
+            rubric=item.rubric,
+            components=await _components_of(session, item),
         )
         if usage.total_tokens:  # an empty response short-circuits with no model call
             await log_llm_call(

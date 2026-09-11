@@ -37,7 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import difficulty as difficulty_mod
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
-from app.models.assessment import Item, ItemType
+from app.models.assessment import Item, ItemType, Rubric
 from app.models.knowledge import KC
 from app.schemas.assessment import ItemCreate, ItemKCRef
 from app.services import assessment as assessment_svc
@@ -147,8 +147,10 @@ async def generate_fill_blank_item(
 
 _SHORT_SYSTEM_PROMPT = (
     "You write one short-answer question that requires a brief written explanation to test "
-    "understanding of a single knowledge component. Respond with ONLY a JSON object "
-    '{"stem": "<the question>"} and nothing else.'
+    "understanding of a single knowledge component, together with the criteria a grader "
+    "should mark it against. Respond with ONLY a JSON object "
+    '{"stem": "<the question>", "criteria": ["<what a full-credit answer must show>", ...]} '
+    "and nothing else. Give two to four criteria, each one specific and checkable."
 )
 
 
@@ -160,11 +162,20 @@ async def generate_short_item(
     target_difficulty: float | None = None,
     max_tokens: int = 256,
 ) -> tuple[Item | None, Usage]:
-    """Generate and persist one open, rubric-graded short-answer item for ``kc``.
+    """Generate and persist one open, rubric-graded short-answer item for ``kc``, with the
+    criteria it should be graded against (S10).
 
-    No ``answer_key``/``rubric_id`` — ``rubric_grading.grade_open`` grades on correctness and
-    completeness when there's no explicit rubric, and ``ItemCreate`` only requires an
-    ``answer_key`` for auto-gradable types.
+    The question and its marking criteria are written in the same call, by the model that
+    knows what it was asking for. Before this nothing in the system produced a ``Rubric`` row
+    at all — the table existed, `Item.rubric_id` was always null, and every open answer was
+    graded against `grade_open`'s "(no explicit rubric; grade on correctness and
+    completeness)" fallback. An open question with no stated standard is graded to whatever
+    standard the grader improvises on the day, which is not a standard.
+
+    Criteria are best-effort: a reply without usable ones still yields the item, graded the
+    old way. A question is worth more than no question.
+
+    No ``answer_key`` — ``ItemCreate`` only requires one for auto-gradable types.
     """
     completion = await llm.complete(
         GENERATION_ROLE,
@@ -172,9 +183,20 @@ async def generate_short_item(
         system=_SHORT_SYSTEM_PROMPT + _pitch(target_difficulty),
         max_tokens=max_tokens,
     )
-    stem = _parse_short(completion.content)
-    if stem is None:
+    parsed = _parse_short(completion.content)
+    if parsed is None:
         return None, completion.usage
+    stem, criteria = parsed
+    rubric_id = None
+    if criteria:
+        rubric = Rubric(
+            kc_id=kc.id,
+            name=f"Generated criteria for {kc.name}"[:255],
+            criteria={"criteria": criteria},
+        )
+        session.add(rubric)
+        await session.flush()
+        rubric_id = rubric.id
     item = await assessment_svc.create_item(
         session,
         ItemCreate(
@@ -182,6 +204,7 @@ async def generate_short_item(
             stem=stem,
             kcs=[ItemKCRef(kc_id=kc.id)],
             difficulty=_recorded_difficulty(target_difficulty),
+            rubric_id=rubric_id,
         ),
     )
     return item, completion.usage
@@ -289,13 +312,22 @@ def _parse_fill_blank(content: str) -> tuple[str, str] | None:
     return stem, answer
 
 
-def _parse_short(content: str) -> str | None:
+def _parse_short(content: str) -> tuple[str, list[str]] | None:
+    """``(stem, criteria)``. Criteria may be empty; a missing stem is what makes it unusable."""
     try:
         raw = json.loads(_extract_json(content))
         stem = str(raw["stem"]).strip()
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
-    return stem or None
+    if not stem:
+        return None
+    listed = raw.get("criteria")
+    criteria = (
+        [text for text in (str(c).strip() for c in listed) if text]
+        if isinstance(listed, list)
+        else []
+    )
+    return stem, criteria
 
 
 def _parse_flashcard(content: str) -> tuple[str, str] | None:

@@ -6,7 +6,9 @@ raise :class:`NotAutoGradable`; slice 4 grades those against a rubric with the S
 Every grading path ultimately feeds the tracer one ``Observation``.
 """
 
-from pydantic import BaseModel
+import uuid
+
+from pydantic import BaseModel, Field
 
 from app.models.assessment import AUTO_GRADABLE, ItemType
 
@@ -33,11 +35,19 @@ _RATING_SCORE: dict[int, float] = {1: 0.2, 2: 0.5, 3: 0.8, 4: 1.0}
 
 
 class GradeResult(BaseModel):
-    """Outcome of grading one response: a partial-credit ``score`` plus replayable detail."""
+    """Outcome of grading one response: a partial-credit ``score`` plus replayable detail.
+
+    ``component_scores`` is how the components did *differently*, where the grader could tell
+    (S10). Empty is the honest answer for most paths and the default: an MCQ has one outcome,
+    and inventing per-component detail from it would manufacture resolution the evidence does
+    not have. Where it is populated, each tagged KC updates from its own score instead of
+    from the item's aggregate.
+    """
 
     score: float
     correct: bool
     detail: dict
+    component_scores: dict[uuid.UUID, float] = Field(default_factory=dict)
 
 
 def auto_grade(item_type: ItemType, answer_key: dict, response: dict) -> GradeResult:

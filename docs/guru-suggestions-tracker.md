@@ -57,7 +57,7 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | --- | --- | --- | --- | --- | --- |
 | S08 | Build one trustworthy end-to-end learning sequence before adding more breadth. | The assessment and planning machinery exists, but diagnosis and teaching decisions are weakly connected. | Detect a specific gap → ask a discriminating question → teach → test a fresh unassisted application → revisit later. | First | Accepted |
 | S09 | Add structured diagnosis of specific misconceptions and prerequisite gaps, with uncertainty and supporting evidence. | Placement infers rough levels; grading returns a single score and short rationale. These do not establish why an answer failed. [R1–R3] | Distinguish forgotten notation, a procedural error, and a conceptual misunderstanding before choosing help. | High | Accepted |
-| S10 | Preserve component-specific assessment evidence and define explicit grading criteria for generated open questions. | The same aggregate score updates every tagged component with different weights; generated short questions have no explicit rubric. [R2–R4] | Avoid treating a failure in projections as equal evidence of failure in every skill involved in least squares. | High | Accepted |
+| S10 | Preserve component-specific assessment evidence and define explicit grading criteria for generated open questions. | The same aggregate score updates every tagged component with different weights; generated short questions have no explicit rubric. [R2–R4] | Avoid treating a failure in projections as equal evidence of failure in every skill involved in least squares. | High | Implemented (see below) |
 | S11 | Make targeted prerequisite detours an explicit planning capability. | Routine revision changes status, review order, and scaffolding hints while preserving remaining new-topic order. [R5] | Investigate and address the prerequisite blocking the learner, then return to the original objective. | High | Accepted |
 | S12 | Apply difficulty targeting to question selection/generation. | The session runner explicitly documents target difficulty as unapplied. [R6] | The learner's estimated capability affects the actual task they receive. | High | Implemented (see below) |
 | S13 | Distinguish assisted retries from independent demonstrations in mastery evidence. | Guided practice hints and retries the same question; every attempt updates mastery. Hint context is omitted by that workflow and is not used by the estimator even when recorded elsewhere. [R7–R8] | Prevent assistance and repeated exposure from producing unjustified mastery confidence. | First | Implemented (see below) |
@@ -84,6 +84,69 @@ These are new proposals from the second review; the user's acceptance of prior s
 | S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Proposed |
 | S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Proposed |
 | S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Proposed |
+
+### S10 — Preserve component-specific evidence, and grade open questions to a stated standard
+
+**Status:** Partially implemented (branch `feat/s09-s10-s11`) · **Priority:** High
+
+**Implemented — a failed component no longer condemns the ones that passed.**
+`record_observation` applied the item's single score to every tagged KC, varying only the
+*weight* — and weight scales how far an estimate moves, never which way. So the tracker's own
+example was exact: botching the projection in a least-squares problem drove down every skill
+the question touched, including the ones the learner had just demonstrated in the same answer.
+An `Observation` now carries optional `kc_scores`, and each KC updates from its own.
+
+**Implemented — retention follows the component, not the item.** FSRS scheduling is per-KC
+state, so it takes the per-KC score too. A component the learner demonstrated no longer comes
+back as soon as the one they failed, which is the whole point of scheduling per component.
+
+**Implemented — the grader marks each component.** `grade_open` takes the item's KCs by name
+and description and is asked to score each one separately, with an explicit instruction not to
+average them away. A single-component item keeps the original, cheaper single-score prompt,
+because there the aggregate already *is* that component's score. A rubric reaches only the
+component it was written for: `Rubric.kc_id` names one KC, and handing its criteria to every
+component of a multi-KC item tells the grader to mark two other components against a third
+one's standard.
+
+**Implemented — generated open questions carry the criteria they will be graded against.**
+This turned out to be larger than "generated short questions have no explicit rubric": nothing
+in the entire system had ever written a `Rubric` row. The table existed, `Item.rubric_id` was
+always null, and every open answer in the product's history was graded against `grade_open`'s
+fallback string, "(no explicit rubric; grade on correctness and completeness)". An open
+question with no stated standard is graded to whatever standard the grader improvises that day,
+which is not a standard. The question and its criteria are now written in the same call, by the
+model that knows what it was asking for.
+
+**Implemented — degradation is asymmetric, deliberately.** A missing overall score still makes
+a grade unusable and raises. A mangled component list costs only the *extra* resolution: the
+answer grades, every KC falls back to the aggregate, and the behaviour is exactly what existed
+before. Same for criteria — a reply without usable ones still yields the question.
+
+**Measured.** 18 tests; 9 mutations, all killed — ignoring the component score in the estimate,
+scheduling on the aggregate, always claiming a breakdown, dropping the grader's breakdown on
+the way in, replaying a component mark as the item score, never using the per-component prompt,
+dropping the component-number bounds, applying one rubric to every component, and discarding
+generated criteria. A tenth, deliberately inert, survived as a control on the harness.
+
+Two defects surfaced while building it, both from the same root — `payload["score"]` now means
+this KC's score rather than the item's. The idempotent-retry path read that key to rebuild the
+grade, so a replayed attempt would have reported one component's mark as the whole answer's.
+And rebuilding the breakdown from the fan-out gave a *single*-component grade a
+`component_scores` map its first response never had — resolution invented after the fact, which
+is worse than none. The payload records `component_scored` so a replay can tell the difference.
+
+**Not done.** Objective items are unchanged and cannot be otherwise: an MCQ has one outcome, so
+a multi-KC MCQ still applies one verdict to every tagged component. Since MCQ is the default
+generated type, most items in practice still carry no per-component resolution — this buys
+precision on open questions specifically. Nothing checks that the model's per-component marks
+are *right*; they are one model's judgement, ungated and uncalibrated (S18, S59), and the
+components it is asked about are whatever `kc_tagging` attached. Evidence apportioning still
+divides one unit across components by weight, which arguably understates a genuine
+per-component judgement — but changing what `weight` means is a calibration decision, not a
+plumbing one. Generated criteria are never reviewed, revised, or reused across items for the
+same KC, so two questions on one component can be marked to two different standards. Existing
+items keep their null rubric; there is no backfill. And `component_scores` reaches the API but
+the frontend does not render it, nor do its generated types know the field exists yet (S58).
 
 ### S23 — Validate the prerequisite graph before relying on its order
 

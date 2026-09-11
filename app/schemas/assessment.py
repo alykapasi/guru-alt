@@ -79,12 +79,18 @@ class KCEstimateRead(BaseModel):
 
 
 class GradeRead(BaseModel):
-    """The grade plus the per-KC mastery the answer produced."""
+    """The grade plus the per-KC mastery the answer produced.
+
+    ``component_scores`` is how each knowledge component did, where the grader could tell them
+    apart (S10) — empty for an MCQ and for anything else with one outcome, because inventing a
+    breakdown from a single verdict would be presenting a guess as a measurement.
+    """
 
     score: float
     correct: bool
     detail: dict
     estimates: list[KCEstimateRead]
+    component_scores: dict[uuid.UUID, float] = Field(default_factory=dict)
 
 
 class ReviewItemRead(BaseModel):
