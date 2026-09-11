@@ -177,6 +177,14 @@ class Settings(BaseSettings):
     # notion of "the same sitting", not two that can drift apart.
     profile_session_gap_minutes: int = 30
 
+    # How long after first meeting a component an unaided demonstration has to be before it
+    # counts as *retained* rather than just answered (S14). One day is a deliberate floor,
+    # not a calibrated value: it separates "later that week" from "immediately after being
+    # shown", which is the distinction the estimate cannot currently make at all. What the
+    # right interval is — and whether it should vary by component — needs the delayed-outcome
+    # study S59 covers.
+    retention_min_days: float = 1.0
+
     # Cap on how many KCs a generated lesson plan targets at once — cost/UX bound on a
     # runaway subject graph. Review steps (due retention) are added on top, uncapped.
     lesson_plan_max_steps: int = 20

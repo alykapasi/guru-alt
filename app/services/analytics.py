@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.learning import mastery
 from app.learning.activity import momentum_trend, streak_days
 from app.learning.tracer import Estimate, aggregate
@@ -27,13 +28,24 @@ def _is_mastered(estimate: Estimate) -> bool:
     )
 
 
+_NO_EVIDENCE = mastery.KCEvidence(
+    kc_id=uuid.UUID(int=0), attempts=0, distinct_items=0, unassisted_items=0, span_days=None
+)
+
+
+def _ev(evidence: dict[uuid.UUID, mastery.KCEvidence], kc_id: uuid.UUID) -> mastery.KCEvidence:
+    """A KC nobody has attempted has no row, which is not the same as a zeroed one — but it
+    reads the same here, and the caller already distinguishes the two through ``assessed``."""
+    return evidence.get(kc_id, _NO_EVIDENCE)
+
+
 async def subject_mastery(
     session: AsyncSession, learner_id: uuid.UUID, subject_id: uuid.UUID
 ) -> SubjectMasteryRead:
     """Subject → topic → KC mastery, drill-down shaped (TECHNICAL_DESIGN §7.4's target UX:
     "Calculus 62% (wide)" down into "Integrals 40%, integration-by-parts weakest")."""
     now = datetime.now(UTC)
-    # Three queries for the whole drill-down, whatever its size (S62). It used to run one per
+    # Four queries for the whole drill-down, whatever its size (S62). It used to run one per
     # topic for its KCs and one per KC for the estimate, and then the topic rollup re-read
     # both — a subject of eight topics with eight components each cost 147 round trips to
     # produce a page whose content is three joins.
@@ -58,7 +70,13 @@ async def subject_mastery(
             )
         ).all()
     )
-    estimates = await mastery.estimate_kcs(session, learner_id, [kc.id for _, kc in rows], now=now)
+    kc_ids = [kc.id for _, kc in rows]
+    estimates = await mastery.estimate_kcs(session, learner_id, kc_ids, now=now)
+    # The fourth query, and grouped for the whole subject rather than per KC for the same
+    # reason the other three are: what the estimate rests on is read on exactly the page that
+    # shows the estimate.
+    evidence = await mastery.kc_evidence(session, learner_id, kc_ids)
+    retention_min_days = get_settings().retention_min_days
 
     by_topic: dict[uuid.UUID, tuple[Topic, list[KC]]] = {}
     for topic, kc in rows:
@@ -78,6 +96,10 @@ async def subject_mastery(
                 uncertainty=estimates[kc.id].uncertainty,
                 mastered=_is_mastered(estimates[kc.id]),
                 assessed=kc.id in assessed,
+                distinct_items=_ev(evidence, kc.id).distinct_items,
+                unassisted_items=_ev(evidence, kc.id).unassisted_items,
+                transfer_shown=_ev(evidence, kc.id).transfer_shown,
+                retention_shown=_ev(evidence, kc.id).retention_shown(min_days=retention_min_days),
             )
             for kc in kcs
         ]

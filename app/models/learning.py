@@ -58,6 +58,17 @@ class LearningEvent(UUIDPrimaryKeyMixin, Base):
             unique=True,
             postgresql_where=text("attempt_id IS NOT NULL"),
         ),
+        # "has this learner answered this item, and when" — asked once per candidate item
+        # every time practice picks a question (S14). The item id lives in the payload rather
+        # than a column, so without an expression index the lookup is a scan of every
+        # observation the learner has ever produced. Partial, because only observations
+        # carry an item.
+        Index(
+            "ix_learning_events_learner_item",
+            "learner_id",
+            text("(payload ->> 'item_id')"),
+            postgresql_where=text("event_type = 'observation'"),
+        ),
     )
 
     learner_id: Mapped[uuid.UUID] = mapped_column(

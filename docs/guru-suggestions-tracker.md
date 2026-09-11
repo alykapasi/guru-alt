@@ -61,7 +61,7 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | S11 | Make targeted prerequisite detours an explicit planning capability. | Routine revision changes status, review order, and scaffolding hints while preserving remaining new-topic order. [R5] | Investigate and address the prerequisite blocking the learner, then return to the original objective. | High | Accepted |
 | S12 | Apply difficulty targeting to question selection/generation. | The session runner explicitly documents target difficulty as unapplied. [R6] | The learner's estimated capability affects the actual task they receive. | High | Accepted |
 | S13 | Distinguish assisted retries from independent demonstrations in mastery evidence. | Guided practice hints and retries the same question; every attempt updates mastery. Hint context is omitted by that workflow and is not used by the estimator even when recorded elsewhere. [R7–R8] | Prevent assistance and repeated exposure from producing unjustified mastery confidence. | First | Implemented (see below) |
-| S14 | Select fresh assessment items with awareness of prior exposure, and check delayed retention and transfer. | Bank selection returns the oldest matching item without considering the learner's exposure. [R2] | Establish that the learner can solve a different problem without help and retain that capability. | First | Accepted |
+| S14 | Select fresh assessment items with awareness of prior exposure, and check delayed retention and transfer. | Bank selection returns the oldest matching item without considering the learner's exposure. [R2] | Establish that the learner can solve a different problem without help and retain that capability. | First | Implemented (see below) |
 | S15 | Connect exploratory conversation to structured learning evidence through a deliberate assessment mechanism. | Plain chat can ask questions, but its conversational answers do not directly update mastery. [R9] | Make the initial learner-led experience contribute trustworthy evidence without treating all conversation as proof of mastery. | High | Accepted |
 | S16 | Share appropriate learner context and learning-state access across chat, agentic, and guided modes. | Plain chat injects memory and plan hints; agentic service does not inject those same contexts. [R9–R10] | Switching modes retains relevant understanding of the learner and their goal. | High | Accepted |
 | S17 | Persist resumable guided-practice state durably. | Workflow uses an in-memory checkpointer. [R7] | A restart does not lose the paused practice state needed to continue correctly. | Before reliable external use | Accepted |
@@ -84,6 +84,58 @@ These are new proposals from the second review; the user's acceptance of prior s
 | S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Proposed |
 | S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Proposed |
 | S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Proposed |
+
+### S14 — Select fresh items with awareness of exposure, and check retention and transfer
+
+**Status:** Partially implemented (branch `feat/s22-s14`) · **Priority:** First
+
+**Implemented — a second visit is a different question.** Bank selection was `ORDER BY
+created_at`, which is *stable*: a learner practising a component twice got the same question
+twice, and ten times got it ten times. After the first attempt that measures recall of one
+question rather than the component — and because every attempt still updated mastery,
+re-answering what the learner had just been told drove the estimate up. Selection now orders by
+when this learner last answered each item, never-answered first, with `created_at` second so
+the order stays total.
+
+**Implemented — the lookup does not scale with the bank.** Exposure is a correlated subquery,
+so the cost is the same whether a KC has two items or twelve; the test asserts the count does
+not grow rather than pinning a number, because the constant part is the caller's eager load.
+Migration `0036` adds a partial expression index on `(learner_id, payload->>'item_id')` for
+observations — the item id lives in the payload rather than a column, so without it each
+lookup is a scan of every observation the learner has ever produced.
+
+**Implemented — the estimate now says what it rests on.** `mastery.kc_evidence` reports, per
+KC, how many attempts, how many *distinct* items, how many distinct items answered with no hint
+and no earlier look in the sitting, and the span to the last unaided demonstration. A single
+number cannot distinguish four different problems solved unaided over three weeks from one
+question answered four times in ten minutes, and only one of those is what "mastered" is meant
+to claim. `transfer_shown` and `retention_shown` sit alongside `assessed` on the mastery read,
+which is the same honesty S46 applied to the denominator.
+
+**Implemented — measured on the clock the update used, not the transaction's.** The span uses
+the `observed_at` S56 added, falling back to `created_at` for older rows. `created_at` is
+`now()` at transaction start, so a batch written together ties and a span across it reads as
+zero — which is exactly what the first run of these tests showed.
+
+**Implemented — reading it costs one query for a whole subject.** `subject_mastery` went from
+three queries to four, grouped for the entire drill-down. Asserted by a query-count budget, so
+a later per-KC call cannot quietly put the page back where S62 found it.
+
+**Measured.** 16 tests; seven mutations each fail at least one — reverting selection to
+`created_at`, dropping the learner filter from exposure, ignoring hints, ignoring re-looks,
+measuring the span on the transaction clock, letting one item count as transfer, and removing
+the evidence read from the page. The re-look mutation survived the first round, because
+excluding a repeat changes the *span* and nothing pinned that; a test was added for it.
+
+**Not done.** Nothing *schedules* a delayed unassisted probe — FSRS decides when a component
+comes back, and this only makes that revisit a different question when the bank has one. A KC
+with a single item still repeats it, because generation is not triggered by exhaustion of fresh
+ones. `retention_min_days` is a floor (1.0) chosen to separate "later that week" from
+"immediately after being shown", not a calibrated interval, and it does not vary by component —
+calibrating it needs the delayed-outcome study S59 covers. Transfer is counted as "a different
+item", which is not the same as a *different kind of problem*: two near-identical generated
+MCQs count as two. Nothing gates mastery on either signal; they are reported, not enforced.
+And the frontend does not render them yet — the fields reach the API and stop there.
 
 ### S22 — Generate, validate, and persist prerequisite relationships during curriculum creation
 
