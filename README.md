@@ -8,7 +8,8 @@ knowledge graph, a continuous mastery model, and an evidence-based learner profi
 > [docs/MASTERPLAN.md](docs/MASTERPLAN.md) (vision + architecture) ·
 > [docs/ROADMAP.md](docs/ROADMAP.md) (phased plan + what's landed) ·
 > [docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md) (engineering detail) ·
-> [docs/RUNBOOK.md](docs/RUNBOOK.md) (how to operate it).
+> [docs/RUNBOOK.md](docs/RUNBOOK.md) (how to develop against it) ·
+> [docs/OPERATIONS.md](docs/OPERATIONS.md) (how to deploy, monitor, and recover it).
 
 Note: "alt" is a version suffix for the current build, not part of the product name.
 
@@ -176,6 +177,8 @@ All backend tasks run through `poethepoet`. List them with `uv run poe --help`.
 | `uv run poe test-watch` | Run tests fail-fast in watch mode |
 | `uv run poe test-db-init` | Create + migrate the test database (implied by `poe test`) |
 | `uv run poe db-check` | Fail if a model has drifted from the migrations |
+| `uv run poe backup-drill` | Dump, restore into a scratch database, compare every table's row count |
+| `uv run poe replay-check` | Verify a replayed learner history reproduces the stored state |
 | `uv run poe lint` | Lint with ruff |
 | `uv run poe format` | Auto-format with ruff |
 | `uv run poe format-check` | Check formatting without modifying |

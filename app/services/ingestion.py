@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
+from pydantic import BaseModel
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -652,3 +653,65 @@ async def _record_failure(
     except Exception:
         logger.exception("could not record ingestion failure for source %s", source_id)
         raise exc from None
+
+
+class IngestionBacklog(BaseModel):
+    """What the ingestion queue looks like right now (S60).
+
+    The signal an operator needs is not "is the worker process running" — a worker can be up,
+    connected, and consuming nothing. It is *whether work is moving*: a growing pile of pending
+    sources and a rising oldest-pending age say it is not, whatever the process table says.
+    """
+
+    pending: int
+    processing: int
+    failed: int
+    # Age of the oldest source still waiting, in seconds. This is the number to alert on: it
+    # rises the moment the queue stops draining and keeps rising, where a count can look
+    # steady while nothing at all is being processed.
+    oldest_pending_age_seconds: float | None
+    # Claimed, lease expired, and not yet swept back. A non-zero value that persists past
+    # ``ingest_reconcile_interval_seconds`` means the reconciler is not running either.
+    expired_leases: int
+    # The worker's own cap, so a reader can tell "saturated" from "stalled" without going to
+    # look up the configuration.
+    max_concurrent_jobs: int
+
+    @property
+    def stalled(self) -> bool:
+        """Work is waiting and nothing is in flight — the shape of a dead consumer."""
+        return self.pending > 0 and self.processing == 0
+
+
+async def backlog(session: AsyncSession, *, settings: Settings | None = None) -> IngestionBacklog:
+    """Queue depth, age and lease health in one round trip."""
+    settings = settings or get_settings()
+    counts = (
+        await session.execute(select(Source.status, func.count()).group_by(Source.status))
+    ).all()
+    by_status = {str(status): int(n) for status, n in counts}
+
+    oldest = await session.scalar(
+        select(func.min(Source.created_at)).where(Source.status == SourceStatus.PENDING)
+    )
+    age = None
+    if oldest is not None:
+        age = float(await session.scalar(select(func.extract("epoch", func.now() - oldest))) or 0.0)
+
+    expired = await session.scalar(
+        select(func.count())
+        .select_from(Source)
+        .where(
+            Source.status == SourceStatus.PROCESSING,
+            Source.lease_expires_at.isnot(None),
+            Source.lease_expires_at < func.now(),
+        )
+    )
+    return IngestionBacklog(
+        pending=by_status.get(SourceStatus.PENDING, 0),
+        processing=by_status.get(SourceStatus.PROCESSING, 0),
+        failed=by_status.get(SourceStatus.FAILED, 0),
+        oldest_pending_age_seconds=age,
+        expired_leases=int(expired or 0),
+        max_concurrent_jobs=settings.ingest_max_concurrent_jobs,
+    )

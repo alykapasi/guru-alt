@@ -1505,7 +1505,66 @@ tests against representative *existing* data rather than only a fresh database.
 
 ### S60 — Provide an operational release and recovery path
 
-**Status:** Proposed · **Priority:** Before production
+**Status:** Partially implemented (branch `fix/tracker-s53-s60`) · **Priority:** Before production
+
+**Implemented — there is now something to deploy.** A `Dockerfile` builds the API and the worker
+as one image with two commands (building them separately is how a worker ends up running a job
+against a schema it does not have), and `docker-compose.app.yml` runs them against the existing
+dependencies, with migrations as a gate — `service_completed_successfully`, so nothing serves
+against a schema it does not match. Compose previously provided only Postgres, Redis and MinIO
+for a host-run `poe dev`; "deployment" was a set of commands nobody had executed together.
+
+**Implemented — a misconfigured production instance refuses to start.** `app/core/release.py`
+checks the settings whose *default is fine in dev and wrong in production*: the compose database
+credentials, a localhost database, Redis or object store, the MinIO keys, a wildcard or
+localhost CORS origin, debug output, and no model provider key. `GURU_ENV=prod` with any of them
+raises before the first request, and reports **all** of them at once — an operator restarting
+once per discovered problem learns the list one outage at a time.
+
+**Implemented — readiness is separate from liveness.** `/health` stays trivial: a supervisor
+restarts on it, so a dependency blip must not kill every healthy process at once.
+`/api/v1/ready` probes each dependency concurrently under a 2s budget and returns 503 when one
+fails. A timeout is reported as its own result with the limit named, rather than left to the
+orchestrator's timeout where nobody can read it, and a probe reports the exception *type* — a
+driver's message carries the DSN, and this endpoint is open.
+
+**Implemented — a stalled worker is visible before a learner notices.**
+`/api/v1/ops/ingestion` reports queue depth, `oldest_pending_age_seconds`, expired leases and
+the worker's own concurrency cap. The age is the thing to alert on: it rises the moment the
+queue stops draining and keeps rising, where a count can hold steady while nothing is processed
+at all. `stalled` (work waiting, nothing in flight) distinguishes a dead consumer from a
+saturated one, which is the distinction that decides whether you restart or scale.
+
+**Implemented — backup and rollback are checks, not prose.** `poe backup-drill` dumps the
+database, restores it into a scratch copy, compares every table's row count and drops the copy,
+exiting non-zero on any difference. CI round-trips every migration (`downgrade -1`, `upgrade`,
+`downgrade base`, `upgrade`), because a rollback plan is only real if `downgrade` runs.
+`docs/OPERATIONS.md` is the runbook: what runs, which secrets must be set, what to alert on and
+what to do about each signal, how to roll out and back, and how to restore. The existing
+`RUNBOOK.md` is the *developer* one; the two now cross-link, since the README linked only the
+developer one for operating the system.
+
+**Implemented — a real packaging defect this surfaced.** `alembic` was a dev-group dependency,
+so an image built with `--no-dev` could not run `alembic upgrade head`: the deployment's first
+step was missing from the deployment's image. Moved to runtime dependencies.
+
+**Measured.** Built the image, brought up Postgres + Redis + MinIO + migrate + api + worker,
+and confirmed `/health` 200, `/api/v1/ready` 200 with both dependencies passing, and
+`/api/v1/ops/ingestion` answering. Stopped MinIO: readiness went **503** with
+`"did not answer within 2.0s"` while `/health` stayed **200** — the separation doing exactly
+what it exists for. All 35 migrations round-trip to base and back. `backup-drill` dumped 81KB
+and matched 27 tables; corrupting the restored copy makes it fail and name the table.
+
+**Not done.** Nothing has been rehearsed against real infrastructure — managed Postgres, real
+S3, TLS, secret delivery and network policy are all untested. There is no alerting: the signals
+exist and are worth polling, but nothing polls them, and there is no paging or dashboard. Cost
+is recorded per call and capped per learner, but nothing watches the total. No blue/green or
+canary — the documented rollout is a rolling restart. Restore is not automated past proving a
+dump restores; promoting a restored database is a manual DSN change. Migrations are still only
+tested against a fresh database, not representative existing data (S58). And the object store is
+not covered by the database backup — blobs are shared by content hash (S77), so a restored
+database with an empty bucket has sources that cannot be re-ingested; the runbook says so and
+points at `mc mirror`, but nothing runs it.
 
 **Evidence:** Compose explicitly provides local dependencies, not a deployable API/frontend/worker release. /health is liveness only. The reviewed repo has no demonstrated backup/restore, deployment rollback, readiness, worker-lag alerts, or production configuration validation.
 

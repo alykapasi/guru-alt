@@ -1212,6 +1212,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aioboto3" },
+    { name = "alembic" },
     { name = "anthropic" },
     { name = "asyncpg" },
     { name = "beartype" },
@@ -1247,7 +1248,6 @@ asr = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "alembic" },
     { name = "httpx" },
     { name = "mlflow" },
     { name = "poethepoet" },
@@ -1262,6 +1262,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aioboto3", specifier = ">=15.5.0" },
+    { name = "alembic", specifier = ">=1.18.5" },
     { name = "anthropic", specifier = ">=0.113.0" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "beartype", specifier = ">=0.22.9" },
@@ -1294,7 +1295,6 @@ provides-extras = ["asr"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "alembic", specifier = ">=1.18.5" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "mlflow", specifier = ">=3.14.0" },
     { name = "poethepoet", specifier = ">=0.47.0" },
