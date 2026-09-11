@@ -1354,7 +1354,59 @@ worker → rebuilt tags as one flow.
 
 ### S56 — Make event replay reproduce production learner state
 
-**Status:** Proposed · **Priority:** High
+**Status:** Partially implemented (branch `fix/tracker-s53-s60`) · **Priority:** High
+
+**Implemented — the event now says what it was computed from.** An `observation` payload carried
+score, difficulty, weight and credit; it did not say which estimator produced it, how that
+estimator was configured, what time the update ran at, what decay gap was applied, or what the
+model predicted before seeing the answer. All of it is recorded now, alongside the prior and
+posterior either side of the update, under an explicit `schema_version`. Recording the posterior
+is what makes a replay checkable *step by step* rather than only at the end, where a
+compensating pair of errors survives.
+
+**Implemented — the replay follows the production path.** `tests/eval/datasets/replay.py`
+re-walks a mined sequence exactly as `record_observation` did: start from the placement prior,
+then per step decay by the recorded gap and update with `weight × credit`. The old replay did
+none of those three — every learner started at the population average, uncertainty never grew
+between sessions, and each KC of a multi-KC item received the item's full evidence. `poe
+replay-check` reports per-sequence fidelity and exits non-zero when a sequence that claimed to
+be replayable failed to reproduce its stored state.
+
+**Implemented — the estimator is rebuilt as it was, or the replay refuses.** `estimator_from`
+reconstructs the estimator from the configuration the events carry, and raises on a name we no
+longer ship rather than substituting today's default. A replay that quietly changes estimator is
+worse than one that stops, because its output still looks like a measurement of the learner.
+
+**Implemented — ordering no longer comes from the transaction clock.** Steps are ordered by the
+`observed_at` the update itself used. `created_at` is `now()` at transaction start: observations
+committed together share it exactly, and one recorded with an explicit time — a backfill, a
+replay, a test — does not match it at all. Under the single-transaction test harness every row
+ties, so "row order" was really whatever order Postgres returned. Removing the fix fails four
+tests, including fidelity ones.
+
+**Implemented — the seed invariant moved to where it is enforced.** The first version of the
+miner dropped a sequence whose seed appeared after evidence, comparing `created_at` values that
+tie. `seed_prior` already refuses to write over existing state, so a seed is the starting state
+by construction; that is now asserted directly instead of guessed from timestamps.
+
+**Implemented — calibration stopped answering two questions with one number.** The scorer
+replays down the production path and scores against the prediction production actually made;
+passing a candidate estimator recomputes predictions with it instead, because the recorded ones
+are not its. The report carries `n_recorded_predictions` so a run cannot be read as the wrong
+one of those two claims.
+
+**Measured.** A history built through `record_observation` with a placement seed, gaps of 3, 14
+and 42 days, split multi-KC weights and an assisted attempt replays to the stored
+`learner_kc_state` row with a maximum ability error below 1e-9 — float round-trip, not
+tolerance. Every behaviour above was mutation-checked: dropping the seed, the decay, the
+weighting, the estimator check, the replayability check or the ordering each fails tests.
+
+**Not done.** Item and rubric versions are still not recorded, so a replay reproduces the
+*update* faithfully but cannot tell that the question changed underneath it. Events written
+before this (`schema_version` 1) are reported as unreplayable rather than backfilled — the
+information to backfill them does not exist. A history recorded out of chronological order
+replays in chronological order and is correctly reported as unfaithful, but nothing repairs it.
+Model comparison itself is still not built; this is the precondition for it, not the thing.
 
 **Evidence:** Mining keeps only score/difficulty per step. Replay starts from the default prior and omits production time decay, placement seeds, and multi-KC weights. The scoring code therefore does not replay the full production update path.
 

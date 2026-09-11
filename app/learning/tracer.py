@@ -53,6 +53,16 @@ class MasteryEstimator(Protocol):
 
     name: str
 
+    @property
+    def config(self) -> dict[str, float]:
+        """The parameters this instance was built with, as plain JSON-able values.
+
+        Recorded alongside every observation so a replay can rebuild the estimator *as it was
+        configured then*. Without it a replay silently uses today's constants against
+        yesterday's events and reports the difference as a modelling result (S56).
+        """
+        ...
+
     def expected(self, prior: Estimate, *, difficulty: float) -> float:
         """P(correct) for an item of ``difficulty`` given ``prior`` — in [0, 1]."""
         ...
@@ -92,6 +102,10 @@ class GlickoEstimator:
         self._c = volatility
         self._rd_max = max_uncertainty
 
+    @property
+    def config(self) -> dict[str, float]:
+        return {"volatility": self._c, "max_uncertainty": self._rd_max}
+
     def expected(self, prior: Estimate, *, difficulty: float) -> float:
         return _sigmoid(prior.ability - difficulty)
 
@@ -109,6 +123,21 @@ class GlickoEstimator:
     def decay(self, prior: Estimate, *, elapsed_days: float) -> Estimate:
         grown = math.sqrt(prior.uncertainty**2 + self._c**2 * max(elapsed_days, 0.0))
         return Estimate(ability=prior.ability, uncertainty=min(grown, self._rd_max))
+
+
+def estimator_from(name: str, config: dict[str, float]) -> MasteryEstimator:
+    """Rebuild the estimator an event was recorded under.
+
+    Raises on a name we no longer ship rather than substituting today's default: a replay that
+    quietly changes estimator is worse than one that refuses, because its output still looks
+    like a measurement of the learner.
+    """
+    if name != GlickoEstimator.name:
+        raise ValueError(f"no estimator named {name!r} — cannot replay these events")
+    return GlickoEstimator(
+        volatility=float(config["volatility"]),
+        max_uncertainty=float(config["max_uncertainty"]),
+    )
 
 
 def _sigmoid(x: float) -> float:
