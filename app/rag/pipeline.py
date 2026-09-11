@@ -12,6 +12,7 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
+import structlog
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,7 +20,8 @@ from app.core.config import Settings, get_settings
 from app.learning.kc_tagging import TAGGING_ROLE, load_candidate_kcs, tag_chunk
 from app.llm import EmbedResult, LLMClient, ModelRole, Usage
 from app.llm.embedding_space import current_space
-from app.models.source import Chunk, ChunkKC, Source
+from app.models.source import Chunk, ChunkKC, Source, SourceStatus
+from app.rag import simhash, textnorm
 from app.rag.adapters import ExtractContext, select_adapter
 from app.rag.chunking import chunk_units
 from app.rag.concurrency import gather_bounded
@@ -27,6 +29,8 @@ from app.rag.demux import MediaDemuxer
 from app.rag.transcription import Transcriber
 from app.services.llm_log import log_llm_call
 from app.storage import BlobStore
+
+log = structlog.get_logger(__name__)
 
 
 async def embed_in_batches(
@@ -72,6 +76,35 @@ class ExtractionTooLarge(IngestionError):
 
 class TooManyChunks(IngestionError):
     """The source chunked into more pieces than one job is allowed to embed."""
+
+
+async def _same_text_source(session: AsyncSession, source: Source) -> Source | None:
+    """Another finished source of this learner, in this scope, that says the same thing.
+
+    Scoped the same way the byte-level check is (see ``ingestion.find_duplicate``): the same
+    book under two subjects is a real intent, and retrieval is subject-scoped so the copies
+    never compete. Only ``DONE`` counts — a match with no chunks behind it would leave this
+    source suppressed in favour of one that cannot answer anything.
+    """
+    if source.text_sha256 is None:
+        return None
+    return await session.scalar(
+        select(Source)
+        .where(
+            Source.learner_id == source.learner_id,
+            Source.text_sha256 == source.text_sha256,
+            Source.status == SourceStatus.DONE,
+            Source.id != source.id,
+            Source.subject_id.is_(None)
+            if source.subject_id is None
+            else Source.subject_id == source.subject_id,
+            Source.topic_id.is_(None)
+            if source.topic_id is None
+            else Source.topic_id == source.topic_id,
+        )
+        .order_by(Source.created_at)
+        .limit(1)
+    )
 
 
 async def run(
@@ -120,6 +153,20 @@ async def run(
             f"source extracted to {extracted} characters, over the "
             f"{settings.ingest_max_extracted_chars} per-job budget"
         )
+
+    # What the source *says*, independent of the container that carried it and the dialect it
+    # was written in. Recorded for every source, so later uploads have something to match.
+    canonical_text = textnorm.canonical("\n".join(unit.text for unit in units))
+    source.text_sha256 = textnorm.digest(canonical_text)
+    source.simhash = simhash.to_hex(simhash.simhash(canonical_text))
+    twin = await _same_text_source(session, source)
+    if twin is not None:
+        # Already embedded, under this learner's own scope. Chunking it again would pay for a
+        # second copy and then let the two crowd each other out of every grounding window.
+        source.meta = {**source.meta, "duplicate_of": str(twin.id)}
+        log.info("pipeline.duplicate_text", source_id=str(source.id), duplicate_of=str(twin.id))
+        await session.flush()
+        return 0
 
     chunks = chunk_units(units)
     if not chunks:

@@ -149,6 +149,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-08 | S76 measured rather than fixed. The hypothesis recorded on 2026-09-07 — filtered-ANN recall — is **disproven**: the scoped vector query never uses the HNSW index at any size tried, because the join to `sources` keeps the planner on an exact `ix_chunks_source_id` path. The flaky tests remain unexplained. What the measurement did surface: exact search costs ~4 µs per chunk owned (185 ms at 45k), the index-reachable query shape is 11–116× faster at 44–86% recall depending on `ef_search`, `candidates` (50) exceeds the default `ef_search` (40), and the HNSW index is about the size of the table while no query reads it. `poe retrieval-recall` makes all of it repeatable. No production code changed — pricing the recall trade needs a real corpus, not hash-derived vectors. |
 | 2026-09-09 | Second implementation pass, branch `fix/tracker-s36-s42`: S37 (`2564907`), S36 (`2206fbd`), S52 (`bf0a92c`), S55 (`9b58575`), S43 (`ec8ce48`) and S42 (`875b55e`). `uv run poe check` green (808 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0026`–`0029`. Four of the six are marked *partially* implemented and each entry says what it left: exact global concurrency (S37), a dead-letter surface (S36), turn-level phase (S52), retrieval-side use of KC tags (S55), an incremental recompute and an automatic trigger (S43), and contradiction-based rather than distance-based supersession (S42). Three defects were found by tests rather than by design during this pass — a robots block being retried three times, every goal proposal being marked as an awaited answer, and a reset dimension never being recomputed — which is recorded here because in each case the design read as correct. Also verified the suite no longer depends on a running MinIO: one new test reached the real endpoint and passed locally while failing in CI. |
 | 2026-09-09 | Third implementation pass, branch `fix/tracker-s51-s31` (stacked on the second): S51 (`4809fae`), S44 (`4a55279`), S33 (`f80f0f6`), S61 (`4836971`), S31 (`cabd2a0`) and S62 (`67c1226`). `uv run poe check` green (856 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0030`–`0032`. All six are marked *partially* implemented and each says what it left; the largest gaps are an explicit presentation preference to replace the reading-level inference (S44), any path for a learner's item to become shared at all (S33), orphaned-blob reconciliation and a retention *schedule* (S61), adversarial evaluation against a real model (S31), and latency as opposed to query-count budgets (S62). Two things worth recording. S62 began by *measuring*: the subject-mastery page cost 15 queries on a 2x2 subject and 147 on an 8x8, and the fixes are verified by a counter rather than asserted. And two of my own S31 tests initially passed for the wrong reason — a base64 exfiltration test that an unreachable host would also have satisfied, and a nonce-uniqueness test comparing body text rather than delimiters — both caught by mutating the code they were meant to cover. S61's completeness test ("every table with a `learner_id` has a stated disposition") caught a table misnamed in the retention map on its first run. |
+| 2026-09-10 | S77 added and implemented, branch `feat/source-dedup` (stacked on the third pass): content-addressed shared blobs (`b44ad51`), within-learner exact dedup (`1d49309`), canonical-text dedup (`9b437fe`), and near-duplicate suggestions (`ef04f40`). Not a review finding — a user request to hash uploads against duplicates, "ideally strong enough to catch similar files". `uv run poe check` green (885 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0033`–`0035`. The request needed correcting before it could be built: a cryptographic hash is designed *not* to do this, so it became three mechanisms — byte equality, canonical-text equality, and a locality-sensitive distance. The third was measured before being trusted (`poe simhash-separation`), and the measurement changed the design: a badly scanned copy of a book and a document half of which is a different book sit at the same distance, so no cut-off separates them and the near-duplicate check reports rather than decides. Also re-opened S61: sharing a blob key across learners means "delete this account's bytes" now has to mean "unless somebody else references them". |
 
 ## Remaining architecture autopsy — source pass
 
@@ -1609,6 +1610,85 @@ numbers rather than on this entry's original guess.
 
 **Code:** [app/rag/retrieval.py](../app/rag/retrieval.py), [app/models/source.py](../app/models/source.py),
 [tests/eval/retrieval/recall.py](../tests/eval/retrieval/recall.py).
+
+### S77 — Recognise a source the learner already has, in whatever shape it arrives
+
+**Status:** Partially implemented (branch `feat/source-dedup`) · **Priority:** Supporting
+
+**Origin:** User request, 2026-09-10, not a review finding: hash uploaded files to avoid
+duplicates, "ideally strong enough to catch similar files" — an EPUB textbook versus a scan of
+the physical copy, or a British printing versus an American one.
+
+**The correction that shaped it:** a cryptographic hash cannot do this and is designed not to.
+SHA-256 avalanches, so it answers "identical?" and nothing else. Near-duplicate detection needs
+a *locality-sensitive* hash, where similar inputs land close and you measure distance rather
+than equality. So this is three mechanisms, not one, and only two of them may act alone.
+
+**Implemented:**
+
+*Exact bytes.* The SHA-256 was already being computed to build the object key, then thrown away
+inside a path prefixed with the learner and source ids — a digest buried in a string cannot
+answer "do I already have this?", so nothing did. `content_sha256` (migration `0033`) lifts it
+into a column. Re-uploading a file the learner already has in the same scope returns that
+source with 200 instead of 202 and queues nothing; the saving is the entire pipeline, because
+this is known before a page is OCR'd. A duplicate of a *failed* source is requeued instead —
+re-sending the file is the obvious way to retry, and refusing would leave a learner
+re-uploading a document that silently does nothing.
+
+Scope is part of the identity. The same textbook under two subjects is a real intent, and
+retrieval is subject-scoped so the copies never compete for a grounding window.
+
+*Storage sharing across learners.* Keys are now content alone (`blobs/<sha>`), so two learners
+who independently upload the same file reference one stored object. Nothing derived is shared —
+each keeps their own source, extraction, chunks and embeddings — and neither can observe the
+sharing, because no response exposes the key or the hash. This changes S61: "destroy this
+account's bytes" now has to mean "unless somebody else is using them". The reference is derived
+from `sources` rather than kept as a count, because a counter drifts — a missed decrement leaks
+an object forever, a missed increment deletes one somebody is reading — and reconciling it
+needs that exact query anyway. A source cleaning up after its own failed write has to exclude
+itself: its row is flushed into the session, so an unqualified check sees the very row about to
+be rolled back.
+
+*Same text, different container or dialect.* `text_sha256` (migration `0034`) digests a
+canonical form: NFKC (ligatures, smart quotes), line-break hyphenation rejoined, case and
+whitespace flattened, and British spelling folded onto American across the `-our`, `-ise`,
+`-yse`, `-re`, `-ogue` and doubled-l families plus a word map for pairs no suffix rule reaches
+(`sulphur`, `aluminium`, `defence`). A match skips chunking and embedding and records
+`duplicate_of`. Correctness is not the goal, agreement is: both documents pass through the same
+rules, so an over-eager rewrite turning "surprise" into "surprize" costs nothing. That is why
+the families are broad and the exception lists short — a rule that fires too often is safe, one
+that fires inconsistently is not — and there is a test recording the trade rather than
+pretending it does not happen.
+
+*Near-duplicates.* `simhash` (migration `0035`) is compared by distance, which is the only
+thing that reaches a scan. **Measured before claiming anything** (`poe simhash-separation`):
+identical 0 bits; scans at 2–10% word error 6–10; a different printing 7; that printing scanned
+at 5% error 16; a document half this book and half another 16; an unrelated book 29.
+
+The finding worth recording is the collision: there is **no gap** between "the same book, badly
+scanned" and "half of a different book" — both sit at 16. A cut-off low enough to be safe
+misses a poor scan; one high enough to catch a poor scan also flags a document merely sharing
+half its content. That is the limit of what shingle overlap can tell you, not a threshold to
+tune better. So `GET /sources/{id}/similar` reports candidates with their distances and a
+person judges; nothing is suppressed, and a wrong reading costs a wasted suggestion instead of
+a rejected upload. Same reasoning as S76 — do not price a trade the evidence cannot price —
+reached this time by measuring first.
+
+**Not done:** the scan case is *surfaced*, never acted on, so the learner still does the
+deduplicating there. Simulated OCR is not real OCR and one passage is not a corpus — nothing
+here has been run against real scanned-versus-digital pairs, which is what `poe
+simhash-separation` exists to make repeatable when they arrive. Near-neighbour search is a scan
+of the learner's own rows; cross-learner search would need LSH banding, for something a learner
+may not observe anyway. Existing sources are not backfilled: the text and similarity hashes
+only exist after extraction, and recomputing them would mean re-running the pipeline over
+everything already ingested to save the cost of ingesting it. Old blob keys are not re-keyed,
+so sources predating this do not share storage. And a text-hash duplicate whose original is
+later deleted keeps no chunks of its own — the existing `reset_for_reingest` recovers it, but
+nothing does so automatically.
+
+**Code:** [app/rag/textnorm.py](../app/rag/textnorm.py), [app/rag/simhash.py](../app/rag/simhash.py),
+[app/services/ingestion.py](../app/services/ingestion.py), [app/services/retention.py](../app/services/retention.py),
+[tests/eval/dedup/separation.py](../tests/eval/dedup/separation.py).
 
 ## Implementation order for consideration
 

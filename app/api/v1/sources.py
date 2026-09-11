@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import select
 
 from app.api.deps import (
@@ -19,7 +19,13 @@ from app.api.deps import (
 from app.models.source import Chunk, Source, SourceKind
 from app.rag import retrieval
 from app.rag.retrieval import RetrievalHit
-from app.schemas.source import ChunkRead, LinkCreate, RetrieveRequest, SourceRead
+from app.schemas.source import (
+    ChunkRead,
+    LinkCreate,
+    RetrieveRequest,
+    SimilarSourceRead,
+    SourceRead,
+)
 from app.services import ingestion as svc
 from app.services import knowledge
 
@@ -46,6 +52,7 @@ def _scoped(create):
 
 @router.post("/sources/upload", response_model=SourceRead, status_code=status.HTTP_202_ACCEPTED)
 async def upload_source(
+    response: Response,
     session: SessionDep,
     learner: CurrentLearner,
     blobstore: BlobStoreDep,
@@ -59,6 +66,11 @@ async def upload_source(
 
     The file is streamed to disk in chunks so an arbitrarily large upload never sits in
     memory; it is rejected with 413 the moment it exceeds ``max_upload_bytes``.
+
+    Re-uploading a file this learner already has in the same scope returns that source with
+    200 instead of 202, and queues nothing: the saving is the entire pipeline, since identical
+    bytes are recognised before a page is OCR'd. A duplicate of a *failed* source is the
+    exception — re-sending the file is the obvious way to retry it, so that one is requeued.
     """
     tmp = tempfile.NamedTemporaryFile(dir=settings.ingest_tmp_dir, delete=False)
     tmp_path = Path(tmp.name)
@@ -72,7 +84,7 @@ async def upload_source(
                 tmp.write(chunk)
         if size == 0:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "empty upload")
-        source = await _scoped(svc.create_source)(
+        source, queue_it = await _scoped(svc.create_or_reuse_source)(
             session,
             blobstore,
             learner_id=learner.id,
@@ -80,11 +92,17 @@ async def upload_source(
             origin=file.filename or "upload",
             content_type=file.content_type,
             data=tmp_path,
+            content_sha256=svc.digest_of(tmp_path),
             subject_id=subject_id,
             topic_id=topic_id,
         )
     finally:
         tmp_path.unlink(missing_ok=True)
+    if not queue_it:
+        # A file this learner already has in this scope. 200, not 202: nothing was accepted
+        # for processing, and the body is the source they already had rather than a new one.
+        response.status_code = status.HTTP_200_OK
+        return source
     await svc.dispatch(enqueue, source.id)
     return source
 
@@ -175,6 +193,32 @@ async def retrieve_chunks(
         source_id=data.source_id,
         limit=data.limit,
     )
+
+
+@router.get("/sources/{source_id}/similar", response_model=list[SimilarSourceRead])
+async def similar_sources(
+    source_id: uuid.UUID, session: SessionDep, learner: CurrentLearner, limit: int = 5
+):
+    """Other sources of this learner that look like this one, nearest first.
+
+    A suggestion with its evidence attached, not a verdict. Equality catches a re-upload and a
+    different container of the same clean text; only a distance reaches a scan, whose OCR
+    errors make it unequal to its own EPUB in thousands of places. What a given distance
+    *means* has not been measured against real scanned-versus-digital pairs, and
+    ``poe simhash-separation`` shows there may be no cut-off that could settle it — so nothing
+    here suppresses a source, and the reader gets the number.
+    """
+    source = await session.get(Source, source_id)
+    if source is None or source.learner_id != learner.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    return [
+        SimilarSourceRead(
+            source=SourceRead.model_validate(hit.source),
+            distance=hit.distance,
+            agreement=hit.agreement,
+        )
+        for hit in await svc.similar_sources(session, source, limit=max(1, min(limit, 20)))
+    ]
 
 
 @router.get("/sources/{source_id}/chunks", response_model=list[ChunkRead])

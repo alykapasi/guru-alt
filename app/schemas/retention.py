@@ -18,6 +18,8 @@ class RetentionPolicyRead(BaseModel):
 class DeletionReportRead(BaseModel):
     learner_id: uuid.UUID
     blobs_deleted: int
+    # Left in place because another learner independently uploaded the same bytes.
+    blobs_retained: int
     # A count, not the keys: a key names an object the caller has no further use for, and
     # echoing storage paths back over the API is a detail worth not publishing.
     blobs_failed: int

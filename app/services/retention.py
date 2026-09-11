@@ -36,6 +36,7 @@ from app.models.memory import Memory
 from app.models.note import Note, NoteRender, NoteRevision
 from app.models.profile import LearnerProfile, ProfileDimension
 from app.models.source import Chunk, Source
+from app.services import ingestion
 from app.storage.base import BlobStore
 
 log = structlog.get_logger(__name__)
@@ -79,7 +80,10 @@ RETENTION: tuple[StoreRetention, ...] = (
         "blobs",
         "deleted",
         "Object storage, which no foreign key reaches — deleted explicitly, by key, after the "
-        "database. The raw uploaded bytes are the most sensitive thing held.",
+        "database. The raw uploaded bytes are the most sensitive thing held. Keys are "
+        "content-addressed, so bytes another learner uploaded independently and still "
+        "references are left in place; nothing of this learner's survives either way, because "
+        "a source row is what makes bytes reachable.",
     ),
     StoreRetention(
         "items",
@@ -108,6 +112,10 @@ class DeletionReport:
 
     learner_id: uuid.UUID
     blobs_deleted: int = 0
+    # Bytes left in place because another learner's source references the same content-
+    # addressed key. Not a failure: nothing of this learner's survives, since a Source row is
+    # what makes bytes reachable and theirs are gone.
+    blobs_retained: int = 0
     # Keys the object store refused. The rows are already gone, so these cannot be found
     # again by walking the database — they are reported so a caller can retry or escalate.
     blobs_failed: list[str] = field(default_factory=list)
@@ -202,9 +210,16 @@ async def delete_learner(
     await session.commit()
 
     for key in blob_keys:
+        # Checked one at a time, immediately before each delete, to keep the window between
+        # the check and the delete as small as it can be without a transaction the object
+        # store is not part of. Blobs are content-addressed, so another learner who uploaded
+        # the same file references this exact key (see ingestion.blob_key_for) — their bytes
+        # must survive this account closing.
         try:
-            await blobstore.delete(key)
-            report.blobs_deleted += 1
+            if await ingestion.unreference_blob(session, blobstore, key):
+                report.blobs_deleted += 1
+            else:
+                report.blobs_retained += 1
         except Exception:
             report.blobs_failed.append(key)
     if report.blobs_failed:

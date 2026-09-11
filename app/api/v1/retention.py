@@ -49,6 +49,7 @@ async def delete_me(session: SessionDep, learner: CurrentLearner, blobstore: Blo
     return DeletionReportRead(
         learner_id=report.learner_id,
         blobs_deleted=report.blobs_deleted,
+        blobs_retained=report.blobs_retained,
         blobs_failed=len(report.blobs_failed),
         items_deleted=report.items_deleted,
         complete=report.complete,

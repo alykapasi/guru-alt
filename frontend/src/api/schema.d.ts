@@ -335,6 +335,11 @@ export interface paths {
          *
          *     The file is streamed to disk in chunks so an arbitrarily large upload never sits in
          *     memory; it is rejected with 413 the moment it exceeds ``max_upload_bytes``.
+         *
+         *     Re-uploading a file this learner already has in the same scope returns that source with
+         *     200 instead of 202, and queues nothing: the saving is the entire pipeline, since identical
+         *     bytes are recognised before a page is OCR'd. A duplicate of a *failed* source is the
+         *     exception — re-sending the file is the obvious way to retry it, so that one is requeued.
          */
         post: operations["upload_source_api_v1_sources_upload_post"];
         delete?: never;
@@ -438,6 +443,33 @@ export interface paths {
          * @description Hybrid-retrieve the most relevant chunks for a query, scoped to the learner.
          */
         post: operations["retrieve_chunks_api_v1_retrieve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/similar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Similar Sources
+         * @description Other sources of this learner that look like this one, nearest first.
+         *
+         *     A suggestion with its evidence attached, not a verdict. Equality catches a re-upload and a
+         *     different container of the same clean text; only a distance reaches a scan, whose OCR
+         *     errors make it unequal to its own EPUB in thousands of places. What a given distance
+         *     *means* has not been measured against real scanned-versus-digital pairs, and
+         *     ``poe simhash-separation`` shows there may be no cut-off that could settle it — so nothing
+         *     here suppresses a source, and the reader gets the number.
+         */
+        get: operations["similar_sources_api_v1_sources__source_id__similar_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1184,6 +1216,8 @@ export interface components {
             learner_id: string;
             /** Blobs Deleted */
             blobs_deleted: number;
+            /** Blobs Retained */
+            blobs_retained: number;
             /** Blobs Failed */
             blobs_failed: number;
             /** Items Deleted */
@@ -1814,6 +1848,23 @@ export interface components {
             /** Uncertainty */
             uncertainty: number;
             item?: components["schemas"]["ItemRead"] | null;
+        };
+        /**
+         * SimilarSourceRead
+         * @description A source that looks like another, with the evidence for saying so.
+         *
+         *     ``distance`` is differing bits out of 64 and ``agreement`` the share that match. Both are
+         *     reported rather than reduced to a verdict: ``poe simhash-separation`` measured that a badly
+         *     scanned copy of the same book and a document half of which is a different book sit at the
+         *     same distance, so no cut-off distinguishes them and the reader is better placed than the
+         *     number. Nothing here suppresses, blocks, or deletes a source.
+         */
+        SimilarSourceRead: {
+            source: components["schemas"]["SourceRead"];
+            /** Distance */
+            distance: number;
+            /** Agreement */
+            agreement: number;
         };
         /**
          * SourceRead
@@ -2893,6 +2944,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RetrievalHit"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    similar_sources_api_v1_sources__source_id__similar_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SimilarSourceRead"][];
                 };
             };
             /** @description Validation Error */
