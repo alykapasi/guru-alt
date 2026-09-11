@@ -63,13 +63,24 @@ jobs:
       - name: Check for un-migrated model drift
         run: uv run poe db-check
 
+      # A rollback plan is only real if `downgrade` runs. Each migration is taken back down
+      # and re-applied, so a revision with a broken or missing downgrade fails here rather
+      # than during the incident that needs it (S60). This proves the step executes; it does
+      # not prove it is lossless — a contracting migration drops data by design.
+      - name: Migrations round-trip
+        run: |
+          uv run alembic downgrade -1
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+
       # `poe test` creates and migrates its own `_test` database (tests/testdb.py), so this
       # also exercises the migrations a second time against a genuinely empty database.
       - name: Test
         run: uv run poe test
 
   frontend:
-    name: frontend lint · build
+    name: frontend lint · test · build
     runs-on: ubuntu-latest
 
     defaults:
@@ -90,6 +101,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Test
+        run: npm run test
 
       # `tsc -b && vite build` — the type-check gate for the frontend as well as the build.
       - name: Build

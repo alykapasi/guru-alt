@@ -2,12 +2,14 @@
 
 Operational procedures for running, exercising, and debugging Guru.
 
-> **Scope.** Guru has **no production deployment yet** — auth is stubbed until Phase 10 and
-> hardening is Phase 11 (see [ROADMAP.md](ROADMAP.md)). This runbook therefore covers **local
-> development and the evaluation/experiment suite**, which is where all operational work happens
-> today. It is not a production incident runbook; there is no production to page for.
+> **Scope.** This runbook covers **local development and the evaluation/experiment suite**.
+> Guru still has no production deployment — auth is stubbed until Phase 10 and hardening is
+> Phase 11 (see [ROADMAP.md](ROADMAP.md)) — but the release, readiness, backup and recovery
+> path now exists and lives in **[OPERATIONS.md](OPERATIONS.md)**. Read that one for deploying,
+> what to alert on, rolling back, and restoring a backup.
 
-**Related:** [README.md](../README.md) (setup + commands) ·
+**Related:** [OPERATIONS.md](OPERATIONS.md) (deploy, monitor, recover) ·
+[README.md](../README.md) (setup + commands) ·
 [MASTERPLAN.md](MASTERPLAN.md) (why) · [TECHNICAL_DESIGN.md](TECHNICAL_DESIGN.md) (how) ·
 [ROADMAP.md](ROADMAP.md) (what's landed).
 

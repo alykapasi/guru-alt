@@ -1,0 +1,16 @@
+# Keep the build context to what the image actually runs. Without this the context carries
+# frontend/node_modules and the local .venv, which is both slow and a way to ship a virtualenv
+# built for the wrong platform.
+.git
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+frontend
+tests
+docs
+.github
+.pytest_cache
+.ruff_cache
+mlruns
+.env

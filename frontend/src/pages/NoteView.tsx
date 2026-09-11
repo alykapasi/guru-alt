@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import ReactMarkdown from "react-markdown";
 import { ArrowLeft, History, Loader2, Pencil } from "lucide-react";
 import { useEditNote, useNote, useRefreshNote, useSetFormat, type NoteFormat } from "../api/notes";
 import { HistoryDrawer } from "../components/notes/HistoryDrawer";
+import { RichText } from "../components/content/RichText";
 
 const FORMAT_LABELS: Record<NoteFormat, string> = {
   outline: "Outline",
@@ -14,12 +14,6 @@ const FORMAT_LABELS: Record<NoteFormat, string> = {
 
 // No @tailwindcss/typography plugin in this app — style the rendered markdown with our own
 // type-scale classes rather than an unstyled (or unavailable) `prose` class.
-const MARKDOWN_CLASSES =
-  "flex flex-col gap-3 [&_h1]:text-h2 [&_h2]:text-h3 [&_h3]:text-body [&_h3]:font-semibold " +
-  "[&_p]:text-body [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:list-decimal [&_ol]:pl-6 " +
-  "[&_li]:text-body [&_strong]:font-semibold [&_code]:bg-base-200 [&_code]:rounded-field [&_code]:px-1 " +
-  "[&_blockquote]:border-primary/30 [&_blockquote]:text-base-content/70 [&_blockquote]:border-l-2 [&_blockquote]:pl-4";
-
 export function NoteView() {
   const { topicId } = useParams();
   const id = topicId!;
@@ -138,8 +132,8 @@ export function NoteView() {
           </div>
         </div>
       ) : note.content_md !== null ? (
-        <article className={MARKDOWN_CLASSES}>
-          <ReactMarkdown>{note.content_md}</ReactMarkdown>
+        <article>
+          <RichText content={note.content_md} />
         </article>
       ) : (
         !refresh.isPending && (

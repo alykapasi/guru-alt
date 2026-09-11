@@ -12,6 +12,7 @@ from app.api.v1 import (
     memory,
     notes,
     onboarding,
+    ops,
     placement,
     profile,
     retention,
@@ -19,6 +20,7 @@ from app.api.v1 import (
 )
 
 api_router = APIRouter()
+api_router.include_router(ops.router)
 api_router.include_router(knowledge.router)
 api_router.include_router(chat.router)
 api_router.include_router(assessment.router)

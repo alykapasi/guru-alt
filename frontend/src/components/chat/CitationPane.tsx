@@ -19,7 +19,7 @@ export function CitationPane({ citation, onClose }: { citation: Citation; onClos
   const locator = chunk ? locatorLabel(chunk.provenance) : null;
 
   return (
-    <div className="border-base-300 bg-base-100 flex h-full w-80 shrink-0 flex-col border-l">
+    <div className="bg-base-100 flex min-h-0 flex-1 flex-col">
       <div className="border-base-300 flex items-center justify-between border-b p-4">
         <h3 className="text-h3 flex items-center gap-2">
           <FileText size={16} className="text-primary" />

@@ -150,6 +150,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-09 | Second implementation pass, branch `fix/tracker-s36-s42`: S37 (`2564907`), S36 (`2206fbd`), S52 (`bf0a92c`), S55 (`9b58575`), S43 (`ec8ce48`) and S42 (`875b55e`). `uv run poe check` green (808 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0026`–`0029`. Four of the six are marked *partially* implemented and each entry says what it left: exact global concurrency (S37), a dead-letter surface (S36), turn-level phase (S52), retrieval-side use of KC tags (S55), an incremental recompute and an automatic trigger (S43), and contradiction-based rather than distance-based supersession (S42). Three defects were found by tests rather than by design during this pass — a robots block being retried three times, every goal proposal being marked as an awaited answer, and a reset dimension never being recomputed — which is recorded here because in each case the design read as correct. Also verified the suite no longer depends on a running MinIO: one new test reached the real endpoint and passed locally while failing in CI. |
 | 2026-09-09 | Third implementation pass, branch `fix/tracker-s51-s31` (stacked on the second): S51 (`4809fae`), S44 (`4a55279`), S33 (`f80f0f6`), S61 (`4836971`), S31 (`cabd2a0`) and S62 (`67c1226`). `uv run poe check` green (856 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0030`–`0032`. All six are marked *partially* implemented and each says what it left; the largest gaps are an explicit presentation preference to replace the reading-level inference (S44), any path for a learner's item to become shared at all (S33), orphaned-blob reconciliation and a retention *schedule* (S61), adversarial evaluation against a real model (S31), and latency as opposed to query-count budgets (S62). Two things worth recording. S62 began by *measuring*: the subject-mastery page cost 15 queries on a 2x2 subject and 147 on an 8x8, and the fixes are verified by a counter rather than asserted. And two of my own S31 tests initially passed for the wrong reason — a base64 exfiltration test that an unreachable host would also have satisfied, and a nonce-uniqueness test comparing body text rather than delimiters — both caught by mutating the code they were meant to cover. S61's completeness test ("every table with a `learner_id` has a stated disposition") caught a table misnamed in the retention map on its first run. |
 | 2026-09-10 | S77 added and implemented, branch `feat/source-dedup` (stacked on the third pass): content-addressed shared blobs (`b44ad51`), within-learner exact dedup (`1d49309`), canonical-text dedup (`9b437fe`), and near-duplicate suggestions (`ef04f40`). Not a review finding — a user request to hash uploads against duplicates, "ideally strong enough to catch similar files". `uv run poe check` green (885 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0033`–`0035`. The request needed correcting before it could be built: a cryptographic hash is designed *not* to do this, so it became three mechanisms — byte equality, canonical-text equality, and a locality-sensitive distance. The third was measured before being trusted (`poe simhash-separation`), and the measurement changed the design: a badly scanned copy of a book and a document half of which is a different book sit at the same distance, so no cut-off separates them and the near-duplicate check reports rather than decides. Also re-opened S61: sharing a blob key across learners means "delete this account's bytes" now has to mean "unless somebody else references them". |
+| 2026-09-11 | Fourth implementation pass, branch `fix/tracker-s53-s60` (off merged `main`, after PRs #17–#19): S53 (`e49000b`), S56 (`978a549`) and S60 (`f07bc8f`) — the last three items that were still *Proposed* and technical. `uv run poe check` green (914 passed, 4 skipped); `npm run lint`, `npm run test` and `npm run build` green. No migrations. All three are marked *partially* implemented and each says what it left. Three things worth recording. **S53's defects were found by looking at the rendered page, not the code**: the type scale lived in `@layer components`, which Tailwind cannot compose into a variant, so every `[&_h2]:text-h3` in the notes renderer had been generating no CSS and headings rendered at body size; `$$x$$` on one line came out inline; and `\(x\)` rendered as literal backslashes. None was visible in review. The frontend also had **no test framework at all**, so "renders correctly" was not a claim anything could check — vitest is now in CI. **S56 found the same class of bug twice**: ordering a learner's history by `created_at` is ordering it by the transaction clock, which ties for anything committed together, so both the step order and a seed-ordering guard were unreliable; steps are now ordered by the timestamp the update itself used. **S60 surfaced a packaging defect** — `alembic` was a dev-group dependency, so a production image could not run the first step of its own deployment. Everything S60 claims was executed against a running containerised stack, including stopping MinIO to confirm readiness 503s while liveness stays 200. Also worth recording: a `docker build ... | tail` reported success while the build had failed, because the pipe's exit status is `tail`'s — the first "the image builds" claim was wrong and was caught by rechecking the exit code explicitly. |
 
 ## Remaining architecture autopsy — source pass
 
@@ -1196,7 +1197,65 @@ open, and this is one of the things they would cover.
 
 ### S53 — Support technical content rendering and working citations in practice
 
-**Status:** Proposed · **Priority:** High for initial audience
+**Status:** Partially implemented (branch `fix/tracker-s53-s60`) · **Priority:** High for initial
+audience
+
+**Implemented — one renderer, used everywhere content is shown.** `RichText` (Markdown + GFM +
+LaTeX + code + citations) now backs the chat transcript, notes, and the practice item's stem,
+which previously rendered plain text, bare Markdown, and plain text respectively. Raw HTML stays
+disabled: everything passing through here is model output or another learner's uploaded
+material, so react-markdown's escaping is the security property, not a default to relax later.
+
+**Implemented — citations survive being inside real prose.** Markers are rewritten on the parsed
+tree, not the raw string. The old split-the-string approach broke whatever block a marker sat
+inside, and could not tell a citation from Markdown's own bracket syntax; `[1](https://…)` is
+already a link by the time the rewrite runs, so it is no longer a candidate. Code and TeX are
+skipped, so `row[1]` and `x_{[1]}` stay as written, and a marker we hold no citation for goes
+back exactly as the model wrote it rather than becoming a control that does nothing.
+
+**Implemented — guided practice can open its evidence.** `Session` passed `() => {}`, so every
+citation there rendered as a live-looking button that did nothing. It now opens the same
+`CitationPane` chat uses, stacked above the item rather than replacing it: a learner opening a
+citation is checking a source *in order to answer*, so hiding the question would defeat the
+click. Both side panels stopped owning their own column to make that possible.
+
+**Implemented — three rendering defects found by looking at the output, not the code.**
+*Headings did not exist.* The type scale was declared in `@layer components`, and a plain
+component class cannot be composed into a Tailwind variant, so `[&_h2]:text-h3` — how notes
+styled content they do not author — generated no CSS at all. With preflight having already
+flattened the browser default, every heading in every note rendered at body size. The scale is
+now declared with `@utility`.
+*Standalone equations were inline.* remark-math treats `$$` as display only when the delimiters
+sit on their own lines, so `$$\det(A - \lambda I) = 0$$` — how models and GitHub both write a
+standalone equation — came out cramped mid-paragraph. A paragraph containing nothing but one
+equation is promoted; `$$x$$` mid-sentence still renders inline.
+*LaTeX's own delimiters did not render.* `\(x\)` and `\[x\]` arrived as literal backslashes.
+They are normalised on the source rather than the tree, because `\(` is a CommonMark escape for
+a literal paren: by the time any plugin runs the backslashes are gone and `(x)` cannot be told
+from ordinary parentheses.
+
+**Implemented — the frontend has tests, and CI runs them.** There was no frontend test framework
+at all, so "renders correctly" was not a claim anything could check. Vitest + Testing Library
+under `npm run test`, wired into the existing CI job (now *lint · test · build*). 19 tests cover
+what the plain renderer could not show, both citation states, the three defects above, and the
+four ways a `[N]` must *not* become a citation. Every one was mutation-checked; the first pass
+had two guards each making the same decision twice, so neither could fail — they are now one
+decision each.
+
+**Implemented — the initial download got smaller.** The renderer is ~300kB of KaTeX and unified,
+and adding it took the bundle from 141kB to 235kB gzipped, paid on the landing page. It is now a
+lazy chunk whose fallback is the text itself (a spinner would make a streaming reply visibly
+disappear on first paint). Initial download **141kB → 106kB gzipped**, because react-markdown
+moved out of it too.
+
+**Not done.** Code is not syntax-highlighted — it is monospaced, scrollable, and verbatim, but
+not coloured; every option costs more than the whole renderer currently does. The learner's own
+messages are still rendered literally rather than as Markdown, deliberately: showing someone
+their message back with their asterisks turned into emphasis means they can no longer see what
+they sent. Indented four-space code blocks are not detected by the LaTeX-delimiter normaliser
+(fenced and inline code are). Keyboard and screen-reader behaviour is asserted only through
+roles and labels in jsdom — no real assistive-technology pass, and no browser-level test of the
+stacked panel layout beyond the screenshot it was checked against.
 
 **Evidence:** Chat renders plain text with citation buttons, not Markdown/math/code. Notes use basic ReactMarkdown without math plugins. Session passes a no-op citation click handler, so its citation controls cannot open evidence.
 
@@ -1296,7 +1355,59 @@ worker → rebuilt tags as one flow.
 
 ### S56 — Make event replay reproduce production learner state
 
-**Status:** Proposed · **Priority:** High
+**Status:** Partially implemented (branch `fix/tracker-s53-s60`) · **Priority:** High
+
+**Implemented — the event now says what it was computed from.** An `observation` payload carried
+score, difficulty, weight and credit; it did not say which estimator produced it, how that
+estimator was configured, what time the update ran at, what decay gap was applied, or what the
+model predicted before seeing the answer. All of it is recorded now, alongside the prior and
+posterior either side of the update, under an explicit `schema_version`. Recording the posterior
+is what makes a replay checkable *step by step* rather than only at the end, where a
+compensating pair of errors survives.
+
+**Implemented — the replay follows the production path.** `tests/eval/datasets/replay.py`
+re-walks a mined sequence exactly as `record_observation` did: start from the placement prior,
+then per step decay by the recorded gap and update with `weight × credit`. The old replay did
+none of those three — every learner started at the population average, uncertainty never grew
+between sessions, and each KC of a multi-KC item received the item's full evidence. `poe
+replay-check` reports per-sequence fidelity and exits non-zero when a sequence that claimed to
+be replayable failed to reproduce its stored state.
+
+**Implemented — the estimator is rebuilt as it was, or the replay refuses.** `estimator_from`
+reconstructs the estimator from the configuration the events carry, and raises on a name we no
+longer ship rather than substituting today's default. A replay that quietly changes estimator is
+worse than one that stops, because its output still looks like a measurement of the learner.
+
+**Implemented — ordering no longer comes from the transaction clock.** Steps are ordered by the
+`observed_at` the update itself used. `created_at` is `now()` at transaction start: observations
+committed together share it exactly, and one recorded with an explicit time — a backfill, a
+replay, a test — does not match it at all. Under the single-transaction test harness every row
+ties, so "row order" was really whatever order Postgres returned. Removing the fix fails four
+tests, including fidelity ones.
+
+**Implemented — the seed invariant moved to where it is enforced.** The first version of the
+miner dropped a sequence whose seed appeared after evidence, comparing `created_at` values that
+tie. `seed_prior` already refuses to write over existing state, so a seed is the starting state
+by construction; that is now asserted directly instead of guessed from timestamps.
+
+**Implemented — calibration stopped answering two questions with one number.** The scorer
+replays down the production path and scores against the prediction production actually made;
+passing a candidate estimator recomputes predictions with it instead, because the recorded ones
+are not its. The report carries `n_recorded_predictions` so a run cannot be read as the wrong
+one of those two claims.
+
+**Measured.** A history built through `record_observation` with a placement seed, gaps of 3, 14
+and 42 days, split multi-KC weights and an assisted attempt replays to the stored
+`learner_kc_state` row with a maximum ability error below 1e-9 — float round-trip, not
+tolerance. Every behaviour above was mutation-checked: dropping the seed, the decay, the
+weighting, the estimator check, the replayability check or the ordering each fails tests.
+
+**Not done.** Item and rubric versions are still not recorded, so a replay reproduces the
+*update* faithfully but cannot tell that the question changed underneath it. Events written
+before this (`schema_version` 1) are reported as unreplayable rather than backfilled — the
+information to backfill them does not exist. A history recorded out of chronological order
+replays in chronological order and is correctly reported as unfaithful, but nothing repairs it.
+Model comparison itself is still not built; this is the precondition for it, not the thing.
 
 **Evidence:** Mining keeps only score/difficulty per step. Replay starts from the default prior and omits production time decay, placement seeds, and multi-KC weights. The scoring code therefore does not replay the full production update path.
 
@@ -1395,7 +1506,66 @@ tests against representative *existing* data rather than only a fresh database.
 
 ### S60 — Provide an operational release and recovery path
 
-**Status:** Proposed · **Priority:** Before production
+**Status:** Partially implemented (branch `fix/tracker-s53-s60`) · **Priority:** Before production
+
+**Implemented — there is now something to deploy.** A `Dockerfile` builds the API and the worker
+as one image with two commands (building them separately is how a worker ends up running a job
+against a schema it does not have), and `docker-compose.app.yml` runs them against the existing
+dependencies, with migrations as a gate — `service_completed_successfully`, so nothing serves
+against a schema it does not match. Compose previously provided only Postgres, Redis and MinIO
+for a host-run `poe dev`; "deployment" was a set of commands nobody had executed together.
+
+**Implemented — a misconfigured production instance refuses to start.** `app/core/release.py`
+checks the settings whose *default is fine in dev and wrong in production*: the compose database
+credentials, a localhost database, Redis or object store, the MinIO keys, a wildcard or
+localhost CORS origin, debug output, and no model provider key. `GURU_ENV=prod` with any of them
+raises before the first request, and reports **all** of them at once — an operator restarting
+once per discovered problem learns the list one outage at a time.
+
+**Implemented — readiness is separate from liveness.** `/health` stays trivial: a supervisor
+restarts on it, so a dependency blip must not kill every healthy process at once.
+`/api/v1/ready` probes each dependency concurrently under a 2s budget and returns 503 when one
+fails. A timeout is reported as its own result with the limit named, rather than left to the
+orchestrator's timeout where nobody can read it, and a probe reports the exception *type* — a
+driver's message carries the DSN, and this endpoint is open.
+
+**Implemented — a stalled worker is visible before a learner notices.**
+`/api/v1/ops/ingestion` reports queue depth, `oldest_pending_age_seconds`, expired leases and
+the worker's own concurrency cap. The age is the thing to alert on: it rises the moment the
+queue stops draining and keeps rising, where a count can hold steady while nothing is processed
+at all. `stalled` (work waiting, nothing in flight) distinguishes a dead consumer from a
+saturated one, which is the distinction that decides whether you restart or scale.
+
+**Implemented — backup and rollback are checks, not prose.** `poe backup-drill` dumps the
+database, restores it into a scratch copy, compares every table's row count and drops the copy,
+exiting non-zero on any difference. CI round-trips every migration (`downgrade -1`, `upgrade`,
+`downgrade base`, `upgrade`), because a rollback plan is only real if `downgrade` runs.
+`docs/OPERATIONS.md` is the runbook: what runs, which secrets must be set, what to alert on and
+what to do about each signal, how to roll out and back, and how to restore. The existing
+`RUNBOOK.md` is the *developer* one; the two now cross-link, since the README linked only the
+developer one for operating the system.
+
+**Implemented — a real packaging defect this surfaced.** `alembic` was a dev-group dependency,
+so an image built with `--no-dev` could not run `alembic upgrade head`: the deployment's first
+step was missing from the deployment's image. Moved to runtime dependencies.
+
+**Measured.** Built the image, brought up Postgres + Redis + MinIO + migrate + api + worker,
+and confirmed `/health` 200, `/api/v1/ready` 200 with both dependencies passing, and
+`/api/v1/ops/ingestion` answering. Stopped MinIO: readiness went **503** with
+`"did not answer within 2.0s"` while `/health` stayed **200** — the separation doing exactly
+what it exists for. All 35 migrations round-trip to base and back. `backup-drill` dumped 81KB
+and matched 27 tables; corrupting the restored copy makes it fail and name the table.
+
+**Not done.** Nothing has been rehearsed against real infrastructure — managed Postgres, real
+S3, TLS, secret delivery and network policy are all untested. There is no alerting: the signals
+exist and are worth polling, but nothing polls them, and there is no paging or dashboard. Cost
+is recorded per call and capped per learner, but nothing watches the total. No blue/green or
+canary — the documented rollout is a rolling restart. Restore is not automated past proving a
+dump restores; promoting a restored database is a manual DSN change. Migrations are still only
+tested against a fresh database, not representative existing data (S58). And the object store is
+not covered by the database backup — blobs are shared by content hash (S77), so a restored
+database with an empty bucket has sources that cannot be re-ingested; the runbook says so and
+points at `mc mirror`, but nothing runs it.
 
 **Evidence:** Compose explicitly provides local dependencies, not a deployable API/frontend/worker release. /health is liveness only. The reviewed repo has no demonstrated backup/restore, deployment rollback, readiness, worker-lag alerts, or production configuration validation.
 

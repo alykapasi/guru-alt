@@ -30,6 +30,16 @@ from app.models.learning import LearnerKCState, LearningEvent
 
 _SECONDS_PER_DAY = 86_400.0
 
+EVENT_SCHEMA_VERSION = 2
+"""Payload shape of an ``observation`` event.
+
+1 — score/difficulty/weight/credit and the grader's verdict.
+2 — adds what an exact replay needs: the estimator's configuration, the timestamp the update
+    actually used, the decay gap applied, the prediction made before the answer was seen, and
+    the prior and posterior either side of the update. A version-1 row can still be scored, but
+    it cannot be replayed exactly — it does not say what it was computed from.
+"""
+
 DEFAULT_ESTIMATOR: MasteryEstimator = GlickoEstimator()
 """The estimator the engine runs today. Swapping it (→ DKT) touches only this binding."""
 
@@ -212,9 +222,12 @@ async def record_observation(
     for kc_id, raw_w in obs.kc_weights.items():
         weight = raw_w / total_w
         state = await _get_or_create_state(session, obs.learner_id, kc_id)
-        decayed = estimator.decay(
-            _estimate_of(state), elapsed_days=_elapsed_days(state.last_seen_at, now)
-        )
+        elapsed_days = _elapsed_days(state.last_seen_at, now)
+        decayed = estimator.decay(_estimate_of(state), elapsed_days=elapsed_days)
+        # The model's belief *before* seeing this answer. Recorded rather than recomputed
+        # later, so calibration measures what the learner was actually predicted to do
+        # instead of what today's estimator would have predicted (S56).
+        predicted = estimator.expected(decayed, difficulty=obs.difficulty)
         post = estimator.update(
             decayed, score=obs.score, difficulty=obs.difficulty, weight=weight * credit
         )
@@ -242,6 +255,19 @@ async def record_observation(
                     "correct": obs.correct,
                     "detail": obs.detail,
                     "estimator": estimator.name,
+                    # Everything a replay needs to reproduce this step exactly (S56).
+                    # `observed_at` rather than the row's `created_at`: `created_at` is the
+                    # transaction's clock, so a batch written together ties, and the decay gap
+                    # inferred from it would be zero for every step.
+                    "schema_version": EVENT_SCHEMA_VERSION,
+                    "estimator_config": estimator.config,
+                    "observed_at": now.isoformat(),
+                    "elapsed_days": elapsed_days,
+                    "predicted": predicted,
+                    "prior_ability": decayed.ability,
+                    "prior_uncertainty": decayed.uncertainty,
+                    "posterior_ability": post.ability,
+                    "posterior_uncertainty": post.uncertainty,
                 },
             )
         )
@@ -332,6 +358,9 @@ async def seed_prior(
                 "ability": estimate.ability,
                 "uncertainty": estimate.uncertainty,
                 "source": source,
+                # A replay starts from this, not from the population prior — which is what
+                # made replayed sequences for placed learners diverge from the first step.
+                "schema_version": EVENT_SCHEMA_VERSION,
             },
         )
     )

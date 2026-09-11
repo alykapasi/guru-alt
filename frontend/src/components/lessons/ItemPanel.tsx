@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { CircleCheck, RotateCcw, Sprout } from "lucide-react";
 import { useKC } from "../../api/hooks";
+import { RichText } from "../content/RichText";
 import type { ItemEvent } from "../../api/sse";
 
 // The workflow's "mastered" detail means this one item was graded correct, ending the round
@@ -21,7 +22,7 @@ export function ItemPanel({ item, detail }: { item: ItemEvent | null; detail: st
   const outcome = detail ? DETAIL_COPY[detail] : undefined;
 
   return (
-    <div className="border-base-300 bg-base-100 flex h-full w-80 shrink-0 flex-col gap-4 border-l p-4">
+    <div className="bg-base-100 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
       <h3 className="text-h3 flex items-center gap-2">
         <CircleCheck size={16} className="text-primary" />
         Practice item
@@ -31,7 +32,7 @@ export function ItemPanel({ item, detail }: { item: ItemEvent | null; detail: st
       ) : (
         <div className="flex flex-col gap-3">
           <p className="text-caption text-base-content/60">{kc?.name ?? "…"}</p>
-          <p className="text-body text-base-content/90 whitespace-pre-wrap">{item.stem}</p>
+          <RichText content={item.stem} className="text-base-content/90" />
         </div>
       )}
       {outcome && (

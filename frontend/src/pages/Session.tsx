@@ -1,9 +1,11 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useChatConversation } from "../hooks/useChatConversation";
 import { MessageList } from "../components/chat/MessageList";
 import { Composer } from "../components/chat/Composer";
 import { ItemPanel } from "../components/lessons/ItemPanel";
+import { CitationPane } from "../components/chat/CitationPane";
+import type { Citation } from "../api/sse";
 
 /** A guided-practice session: the workflow-mode chat transcript plus a persistent side panel
  * for the item being practiced (see docs/ROADMAP.md Phase 7's design brief). Reuses the same
@@ -23,6 +25,7 @@ export function Session() {
     send,
   } = useChatConversation(conversationId);
   const hasStartedRef = useRef(false);
+  const [citation, setCitation] = useState<Citation | null>(null);
 
   useEffect(() => {
     if (isLoadingMessages || pending || hasStartedRef.current) return;
@@ -50,7 +53,7 @@ export function Session() {
             goal={null}
             awaitingGoalAccept={false}
             onAcceptGoal={() => {}}
-            onCitationClick={() => {}}
+            onCitationClick={setCitation}
           />
         )}
         {error && (
@@ -70,7 +73,13 @@ export function Session() {
           placeholder="Your answer…"
         />
       </div>
-      <ItemPanel item={item} detail={sessionDetail} />
+      {/* Evidence stacks above the question rather than replacing it: a learner opening a
+          citation is checking a source *in order to answer*, so hiding the item they are
+          answering to show it would defeat the click. */}
+      <aside className="border-base-300 divide-base-300 flex w-80 shrink-0 flex-col divide-y border-l">
+        {citation && <CitationPane citation={citation} onClose={() => setCitation(null)} />}
+        <ItemPanel item={item} detail={sessionDetail} />
+      </aside>
     </div>
   );
 }
