@@ -18,7 +18,7 @@ from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
 from app.llm.types import ChatChunk, ModelRole
 from app.main import app
 from app.models.assessment import ItemType
-from app.models.chat import Conversation, LLMCall, Message
+from app.models.chat import Conversation, ConversationPhase, LLMCall, Message
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
@@ -343,3 +343,39 @@ async def test_dispatch_mode_workflow_then_resume_without_re_specifying_mode(
     events = _parse_sse(r.text)
     done = next(e for e in events if e["type"] == "done")
     assert done["detail"] == "mastered"
+
+
+async def test_a_paused_session_records_the_item_it_is_waiting_on(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+) -> None:
+    """Without this the item exists only inside one SSE event, so a refresh loses the
+    question the learner was on (S52)."""
+    _learner, subject = await _learner_and_subject_with_active_step(
+        db_session, handle=DEV_LEARNER_HANDLE
+    )
+    r = await api_client.post(f"{API}/conversations", json={"subject_id": str(subject.id)})
+    conversation_id = r.json()["id"]
+
+    r = await api_client.post(
+        f"{API}/conversations/{conversation_id}/messages",
+        json={"content": "let's practice", "mode": "workflow"},
+    )
+    awaiting = next(e for e in _parse_sse(r.text) if e["type"] == "awaiting_reply")
+
+    # What a reload sees, with no live stream to read from.
+    listed = (await api_client.get(f"{API}/conversations")).json()
+    row = next(c for c in listed if c["id"] == conversation_id)
+    assert row["phase"] == ConversationPhase.AWAITING_ANSWER
+    assert row["active_item_id"] == awaiting["item"]["id"]
+
+    r = await api_client.post(
+        f"{API}/conversations/{conversation_id}/messages",
+        json={"content": "sunlight -> sugars"},
+    )
+    assert next(e for e in _parse_sse(r.text) if e["type"] == "done")["detail"] == "mastered"
+
+    # A finished run is no longer waiting on anything, and says so.
+    listed = (await api_client.get(f"{API}/conversations")).json()
+    row = next(c for c in listed if c["id"] == conversation_id)
+    assert row["phase"] == ConversationPhase.CHATTING
+    assert row["active_item_id"] is None

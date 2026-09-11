@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useConversations, useMessages } from "../api/hooks";
+import { useConversations, useItem, useMessages } from "../api/hooks";
 import { streamTurn, type ItemEvent, type SendMessageBody } from "../api/sse";
 
 export interface PendingTurn {
@@ -26,21 +26,26 @@ export function useChatConversation(conversationId: string | undefined) {
   // Every mode's `awaiting_reply`/`done` SSE event carries the practice item currently in play
   // (grounding-only in plain chat, the thing being graded in workflow mode) — tracked generically
   // here so a guided-practice session page can read it without a mode-specific hook.
-  const [item, setItem] = useState<ItemEvent | null>(null);
+  const [liveItem, setLiveItem] = useState<ItemEvent | null>(null);
   const [sessionDetail, setSessionDetail] = useState<string | null>(null);
-  const [awaitingReply, setAwaitingReply] = useState(false);
+  const [liveAwaitingReply, setLiveAwaitingReply] = useState(false);
 
   const conversation = conversationsQuery.data?.find((c) => c.id === conversationId);
   const messages = messagesQuery.data ?? [];
-  const lastMessage = messages[messages.length - 1];
-  // Every assistant reply while a conversation has no committed goal yet is a refinement-gate
-  // proposal awaiting accept/refine (app/services/refinement.py) — reconstructed from persisted
-  // state so this is correct after a reload, not just live.
-  const awaitingGoalAccept =
-    !pending &&
-    conversation != null &&
-    conversation.goal == null &&
-    lastMessage?.role === "assistant";
+  // The backend records what the conversation is waiting for at the end of every turn
+  // (app/api/v1/chat.py::_phase_after), so both of these survive a reload and neither has to
+  // be guessed from the transcript's shape. The previous guess — "no goal committed and the
+  // last message is from the assistant" — was equally true of an agentic reply given before
+  // any goal existed, so a tool-using answer was offered with accept/refine buttons.
+  // While a turn is streaming the SSE events are ahead of the server read, so they win; once
+  // it ends the persisted phase is authoritative.
+  const awaitingGoalAccept = !pending && conversation?.phase === "goal_proposed";
+  const awaitingReply = pending ? liveAwaitingReply : conversation?.phase === "awaiting_answer";
+
+  // On reload there is no live item, only the id the phase points at — fetch it so a paused
+  // session comes back showing the question it was actually on rather than an empty panel.
+  const restoredItem = useItem(pending || liveItem ? null : conversation?.active_item_id);
+  const item = liveItem ?? (restoredItem.data as ItemEvent | undefined) ?? null;
 
   const send = useCallback(
     async (
@@ -56,7 +61,6 @@ export function useChatConversation(conversationId: string | undefined) {
         mode: opts.mode,
         satisfied: opts.satisfied ?? false,
       };
-      let goalCommitted = false;
       try {
         for await (const ev of streamTurn(conversationId, body)) {
           if (ev.type === "token") {
@@ -65,16 +69,14 @@ export function useChatConversation(conversationId: string | undefined) {
             setPending((p) => (p ? { ...p, toolCalls: [...p.toolCalls, ev.detail] } : p));
           } else if (ev.type === "error") {
             setError(ev.detail);
-          } else if (ev.type === "committed") {
-            goalCommitted = true;
           } else if (ev.type === "awaiting_reply") {
-            setItem(ev.item);
+            setLiveItem(ev.item);
             setSessionDetail(ev.detail);
-            setAwaitingReply(true);
+            setLiveAwaitingReply(true);
           } else if (ev.type === "done") {
-            setItem(ev.item);
+            setLiveItem(ev.item);
             setSessionDetail(ev.detail);
-            setAwaitingReply(false);
+            setLiveAwaitingReply(false);
           }
         }
       } catch (e) {
@@ -82,9 +84,9 @@ export function useChatConversation(conversationId: string | undefined) {
       }
 
       await queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
-      if (goalCommitted) {
-        await queryClient.invalidateQueries({ queryKey: ["conversations"] });
-      }
+      // Always, not only on commit: the turn just recorded the conversation's phase, and a
+      // stale cached phase is exactly the bug this replaced.
+      await queryClient.invalidateQueries({ queryKey: ["conversations"] });
       setPending(null);
     },
     [conversationId, pending, queryClient],

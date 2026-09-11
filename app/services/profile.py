@@ -12,8 +12,9 @@ shape as the placement diagnostic, not the tracer's "update on every observation
 """
 
 import uuid
+from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning.profile_estimators import (
@@ -96,33 +97,83 @@ async def _upsert_dimension(
     dim.source = spec.source
 
 
+async def latest_evidence_at(session: AsyncSession, learner_id: uuid.UUID) -> datetime | None:
+    """When this learner last produced anything a dimension is estimated from.
+
+    Two cheap MAX() reads standing in for loading the whole history to discover it has not
+    changed — which is what a refresh over unchanged evidence was doing, several model calls
+    at a time.
+    """
+    newest_event = await session.scalar(
+        select(func.max(LearningEvent.created_at)).where(LearningEvent.learner_id == learner_id)
+    )
+    newest_message = await session.scalar(
+        select(func.max(Message.created_at))
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(Conversation.learner_id == learner_id, Message.role == "user")
+    )
+    stamps = [s for s in (newest_event, newest_message) if s is not None]
+    return max(stamps) if stamps else None
+
+
 async def refresh_profile(
-    session: AsyncSession, learner_id: uuid.UUID, llm: LLMClient
+    session: AsyncSession, learner_id: uuid.UUID, llm: LLMClient, *, force: bool = False
 ) -> list[ProfileDimension]:
     """Recompute every dimension in the catalog from the learner's current history.
 
     Estimators that return ``None`` (not enough evidence yet) leave that dimension untouched —
     a thin history means fewer dimensions computed, never a fabricated confident value.
+
+    Skipped entirely when no new evidence has arrived since the last run (S43): every
+    dimension is recomputed from scratch each time, so repeating that over an unchanged
+    history costs several model calls to produce the values already stored. ``force`` runs it
+    anyway, which is what you want after the estimators themselves change — the cursor tracks
+    the *evidence*, and cannot know the code that reads it moved.
+
+    The recompute still reads the learner's whole history. Making the estimators themselves
+    incremental is a different and much larger change (S62 owns the growth question); what is
+    fixed here is paying for it when nothing has changed.
     """
-    await _ensure_profile(session, learner_id)
-    context = EstimatorContext(
-        session=session,
-        learner_id=learner_id,
-        events=await _load_events(session, learner_id),
-        messages=await _load_own_messages(session, learner_id),
-        llm=llm,
-    )
-    for spec in DIMENSION_SPECS:
-        result, usage = await spec.estimate(context)
-        if usage.total_tokens:
-            await log_llm_call(
-                learner_id=learner_id,
-                role=PROFILE_LLM_ROLE.value,
-                spec=llm.spec(PROFILE_LLM_ROLE),
-                usage=usage,
-            )
-        if result is not None:
-            await _upsert_dimension(session, learner_id, spec, result)
+    profile = await _ensure_profile(session, learner_id)
+    newest = await latest_evidence_at(session, learner_id)
+    if not force and newest is not None and profile.evidence_watermark == newest:
+        return await get_snapshot(session, learner_id)
+
+    try:
+        context = EstimatorContext(
+            session=session,
+            learner_id=learner_id,
+            events=await _load_events(session, learner_id),
+            messages=await _load_own_messages(session, learner_id),
+            llm=llm,
+        )
+        for spec in DIMENSION_SPECS:
+            result, usage = await spec.estimate(context)
+            if usage.total_tokens:
+                await log_llm_call(
+                    learner_id=learner_id,
+                    role=PROFILE_LLM_ROLE.value,
+                    spec=llm.spec(PROFILE_LLM_ROLE),
+                    usage=usage,
+                )
+            if result is not None:
+                await _upsert_dimension(session, learner_id, spec, result)
+    except Exception as exc:
+        # Record why, then re-raise. A profile that quietly stopped updating is
+        # indistinguishable from one nothing has changed for, and the watermark deliberately
+        # does not advance — a failed run must not mark this evidence as processed.
+        # Note the rollback expires every ORM object the caller's session holds. That is
+        # correct here (a half-applied set of dimension upserts must not survive) and safe in
+        # the request path, where this is the only thing using the session.
+        await session.rollback()
+        profile = await _ensure_profile(session, learner_id)
+        profile.last_error = str(exc)[:1000]
+        await session.commit()
+        raise
+
+    profile.evidence_watermark = newest
+    profile.refreshed_at = datetime.now(UTC).replace(tzinfo=None)
+    profile.last_error = None
     await session.commit()
     await _revise_lesson_plans(session, learner_id)
     return await get_snapshot(session, learner_id)
@@ -176,5 +227,10 @@ async def reset_dimension(session: AsyncSession, learner_id: uuid.UUID, key: str
     if dim is None:
         return False
     await session.delete(dim)
+    # The evidence cursor says "these dimensions already reflect this history". A reset makes
+    # that false without touching the evidence, so the cursor has to be cleared or the next
+    # refresh would skip the very recomputation the reset asked for.
+    profile = await _ensure_profile(session, learner_id)
+    profile.evidence_watermark = None
     await session.commit()
     return True

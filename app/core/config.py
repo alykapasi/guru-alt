@@ -52,6 +52,38 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 1_073_741_824
     ingest_tmp_dir: str | None = None
 
+    # Ingestion job control (S37). ``max_upload_bytes`` bounds the bytes that arrive; it bounds
+    # nothing about what they *expand into* — a 40 MB PDF can be tens of millions of characters
+    # and thousands of embed calls. These cap the work itself, per job.
+    #
+    # A claim's lease is derived as ``ingest_job_timeout_seconds + ingest_lease_grace_seconds``
+    # rather than configured separately, so the lease *strictly dominates* the job's own
+    # deadline: a job still running cannot have an expired lease, and an expired lease
+    # therefore means the worker died. That removes any need to renew a lease mid-job —
+    # renewal would have to commit, and the only transaction available to commit is the one
+    # holding the job's half-written chunks. The grace covers the gap between the timeout
+    # firing and the FAILED status landing.
+    #
+    # ``ingest_max_attempts`` stops a source that kills its worker every time from cycling
+    # forever. ``ingest_max_concurrent_jobs`` is a *soft* cap — see claim_source.
+    ingest_job_timeout_seconds: int = 3600
+    ingest_lease_grace_seconds: int = 120
+    ingest_max_attempts: int = 3
+    ingest_max_concurrent_jobs: int = 4
+    ingest_max_extracted_chars: int = 20_000_000
+    ingest_max_chunks: int = 5_000
+
+    # Reconciliation (S36). A source row is committed before its job is enqueued, so a queue
+    # outage between the two leaves a source nobody will ever process. The sweep re-enqueues
+    # anything stranded that long — PENDING with nothing happening to it, or PROCESSING with a
+    # lapsed lease — and parks what has exhausted its attempts as FAILED, so an abandoned
+    # source is visible rather than sitting in PENDING where nothing would look at it again.
+    # The grace must exceed normal queue latency, or the sweep re-enqueues jobs merely waiting
+    # their turn. Interval 0 disables the worker's background sweep.
+    ingest_reconcile_grace_seconds: int = 300
+    ingest_reconcile_interval_seconds: int = 120
+    ingest_reconcile_batch: int = 100
+
     # Ingestion concurrency/batching (Phase A large-doc speed). Scanned-PDF pages are OCR'd
     # with at most ``ocr_concurrency`` vision calls in flight; chunk embeddings are sent in
     # batches of ``embed_batch_size`` with at most ``embed_concurrency`` batches in flight.
@@ -165,6 +197,16 @@ class Settings(BaseSettings):
     # memory is at or below this threshold. How many memories a tutor turn retrieves for context.
     memory_extraction_window: int = 20
     memory_dedup_max_distance: float = 0.05
+    # Relevance floor for memory retrieval (S42). Without one, `limit` guarantees the nearest
+    # memories come back whether or not any of them are about the question — a learner with
+    # five memories had all five injected into every turn regardless of topic.
+    #
+    # 1.0 in cosine distance is orthogonality, so this excludes only memories that are
+    # *unrelated or contrary* to the query, not merely weak matches. That is deliberately
+    # conservative: a tighter floor is a relevance judgement, and the only instrument available
+    # here is hash-derived test vectors, which cannot make one (the same reason S76 declined to
+    # reshape retrieval). Tighten it against a real corpus, not against this default.
+    memory_retrieval_max_distance: float = 1.0
     memory_retrieval_limit: int = 5
 
     # Max tool-execution rounds per agentic turn (Phase 6) — bounds worst-case LLM calls

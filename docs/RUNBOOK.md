@@ -289,6 +289,34 @@ learner owns. Recall figures for the index-reachable shape are a *lower bound* �
 synthetic and near-uniform, which is close to worst case for a graph index. See S76 in the
 suggestions tracker for the numbers and what they do and do not license.
 
+### 6.6 Stranded ingestion jobs (S36/S37)
+
+A source row is committed before its ingestion job is enqueued — they cannot be one
+transaction, because Redis is not in the database. So a queue outage between the two leaves a
+source nobody will ever process, and a worker that dies mid-job leaves one marked PROCESSING
+that nobody is working on.
+
+The worker sweeps for both every `ingest_reconcile_interval_seconds` (default 120). To force a
+sweep — after the worker has been down long enough to build a backlog, or to see what one
+would collect:
+
+```bash
+uv run poe reconcile-ingestion     # prints requeued=N abandoned=N
+```
+
+Re-enqueueing is always safe: the *claim* decides who actually runs the job, so a duplicate
+delivery finds nothing to take. What the sweep cannot fix is a source that has burned through
+`ingest_max_attempts` — those are parked as FAILED with their last real error, and a learner
+retries one deliberately:
+
+```bash
+curl -X POST localhost:8000/api/v1/sources/<id>/retry     # 409 while a job holds the claim
+```
+
+If sources are being abandoned in numbers, the useful question is *which* error they carry:
+a terminal one (unsupported type, robots-blocked, over the per-job budget) is working as
+intended, while a transient one repeated three times means the provider or store is unwell.
+
 ---
 
 ## 7. Before you merge

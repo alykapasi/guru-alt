@@ -178,7 +178,7 @@ async def test_create_subject_with_graph_builds_full_hierarchy(db_session: Async
         },
     ]
 
-    subject = await svc.create_subject_with_graph(
+    _result = await svc.create_subject_with_graph(
         db_session,
         subject_name="Calculus",
         subject_description="Calculus fundamentals",
@@ -186,6 +186,7 @@ async def test_create_subject_with_graph_builds_full_hierarchy(db_session: Async
         source_ids=None,
         learner_id=learner.id,
     )
+    subject = _result.subject
 
     assert subject.id is not None
     assert subject.name == "Calculus"
@@ -222,7 +223,7 @@ async def test_create_subject_with_graph_dedup_topic_slugs(db_session: AsyncSess
         {"name": "Functions", "description": None, "kcs": []},  # Dup name
     ]
 
-    subject = await svc.create_subject_with_graph(
+    _result = await svc.create_subject_with_graph(
         db_session,
         subject_name="Math",
         subject_description=None,
@@ -230,6 +231,7 @@ async def test_create_subject_with_graph_dedup_topic_slugs(db_session: AsyncSess
         source_ids=None,
         learner_id=learner.id,
     )
+    subject = _result.subject
 
     topics = await svc.list_topics(db_session, subject.id)
     assert len(topics) == 2
@@ -253,7 +255,7 @@ async def test_create_subject_with_graph_dedup_subject_slug(db_session: AsyncSes
 
     # Try to create another with a name that slugifies to "algebra"
     topics_data = [{"name": "Basics", "description": None, "kcs": []}]
-    second_subject = await svc.create_subject_with_graph(
+    _result = await svc.create_subject_with_graph(
         db_session,
         subject_name="Algebra",  # Will slugify to "algebra" which collides
         subject_description=None,
@@ -261,6 +263,7 @@ async def test_create_subject_with_graph_dedup_subject_slug(db_session: AsyncSes
         source_ids=None,
         learner_id=learner.id,
     )
+    second_subject = _result.subject
 
     assert second_subject.slug == "algebra_2"
     assert second_subject.name == "Algebra"
@@ -283,7 +286,7 @@ async def test_create_subject_with_graph_reassigns_sources(db_session: AsyncSess
     await db_session.flush()
 
     topics_data = [{"name": "Basics", "description": None, "kcs": []}]
-    subject = await svc.create_subject_with_graph(
+    _result = await svc.create_subject_with_graph(
         db_session,
         subject_name="Physics",
         subject_description=None,
@@ -291,6 +294,7 @@ async def test_create_subject_with_graph_reassigns_sources(db_session: AsyncSess
         source_ids=[source.id],
         learner_id=learner.id,
     )
+    subject = _result.subject
 
     # Refresh the source to see the updated subject_id
     await db_session.refresh(source)
@@ -375,7 +379,7 @@ async def test_create_subject_with_graph_reassigns_only_owned_sources(
     db_session.add_all([owned, foreign])
     await db_session.flush()
 
-    subject = await svc.create_subject_with_graph(
+    _result = await svc.create_subject_with_graph(
         db_session,
         subject_name="Physics",
         subject_description=None,
@@ -383,6 +387,7 @@ async def test_create_subject_with_graph_reassigns_only_owned_sources(
         source_ids=[owned.id, foreign.id],
         learner_id=owner.id,
     )
+    subject = _result.subject
 
     await db_session.refresh(owned)
     await db_session.refresh(foreign)

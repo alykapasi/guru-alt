@@ -1,6 +1,8 @@
 """The learner profile: view the current snapshot, refresh it, reset a dimension."""
 
-from fastapi import APIRouter, HTTPException, status
+from typing import Annotated
+
+from fastapi import APIRouter, HTTPException, Query, status
 
 from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
 from app.schemas.profile import DimensionRead, ProfileSnapshotRead
@@ -16,8 +18,18 @@ async def get_profile(session: SessionDep, learner: CurrentLearner):
 
 
 @router.post("/profile/refresh", response_model=ProfileSnapshotRead)
-async def refresh_profile(session: SessionDep, learner: CurrentLearner, llm: LLMClientDep):
-    dims = await svc.refresh_profile(session, learner.id, llm)
+async def refresh_profile(
+    session: SessionDep,
+    learner: CurrentLearner,
+    llm: LLMClientDep,
+    force: Annotated[bool, Query()] = False,
+):
+    """Recompute the profile, skipping the work when no new evidence has arrived.
+
+    ``force=true`` recomputes anyway — the cursor tracks the learner's evidence and cannot
+    know the estimators reading it have changed.
+    """
+    dims = await svc.refresh_profile(session, learner.id, llm, force=force)
     return ProfileSnapshotRead(dimensions=[DimensionRead.model_validate(d) for d in dims])
 
 

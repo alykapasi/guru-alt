@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import ForeignKey, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
@@ -9,6 +10,20 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
 from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
+
+
+class ConversationPhase(StrEnum):
+    """What the conversation is waiting for — recorded, not inferred (S52).
+
+    The frontend used to reconstruct this from "no goal committed and the last message is from
+    the assistant", which is true of a goal proposal and equally true of an agentic answer
+    given before any goal was committed — so a tool-using reply was offered to the learner
+    with accept/refine buttons. The backend always knew which flow ran; it just never said.
+    """
+
+    CHATTING = "chatting"  # nothing pending: an ordinary reply, whatever produced it
+    GOAL_PROPOSED = "goal_proposed"  # the refinement gate proposed a goal; accept or refine
+    AWAITING_ANSWER = "awaiting_answer"  # a practice item is in play and expects an answer
 
 
 class Conversation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -34,6 +49,19 @@ class Conversation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     subject_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("subjects.id", ondelete="SET NULL"), index=True, default=None
     )
+    # What this conversation is waiting for, written by the turn that produced the last
+    # assistant message — so a reload reads the same answer the live stream gave.
+    phase: Mapped[str] = mapped_column(default=ConversationPhase.CHATTING)
+    # The practice item in play while ``phase`` is AWAITING_ANSWER. Without it, a refresh
+    # loses which question the learner was on: the item only ever existed in an SSE event.
+    active_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("items.id", ondelete="SET NULL"), default=None
+    )
+    # The newest message memory extraction has already read. Extraction used to take the last
+    # N messages regardless, so a conversation that grew by more than N between write-backs
+    # had the middle silently skipped — and one that grew by nothing paid a model call to
+    # re-read what it had already extracted (S43). Same cursor idea as Note's watermarks (S38).
+    memory_watermark: Mapped[datetime | None] = mapped_column(default=None)
 
     messages: Mapped[list["Message"]] = relationship(
         back_populates="conversation",

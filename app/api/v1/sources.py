@@ -21,10 +21,27 @@ from app.rag import retrieval
 from app.rag.retrieval import RetrievalHit
 from app.schemas.source import ChunkRead, LinkCreate, RetrieveRequest, SourceRead
 from app.services import ingestion as svc
+from app.services import knowledge
 
 router = APIRouter(tags=["sources"])
 
 _UPLOAD_CHUNK = 1024 * 1024  # 1 MiB — stream the upload to disk without buffering it in RAM
+
+
+def _scoped(create):
+    """Turn an inconsistent source scope into a 422 rather than a stored contradiction.
+
+    A source scoped to a topic outside its subject is filtered out by *both* halves of
+    retrieval, so it would be embedded, indexed, paid for, and unreachable (S55).
+    """
+
+    async def call(*args, **kwargs):
+        try:
+            return await create(*args, **kwargs)
+        except knowledge.ScopeConflict as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+    return call
 
 
 @router.post("/sources/upload", response_model=SourceRead, status_code=status.HTTP_202_ACCEPTED)
@@ -55,7 +72,7 @@ async def upload_source(
                 tmp.write(chunk)
         if size == 0:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "empty upload")
-        source = await svc.create_source(
+        source = await _scoped(svc.create_source)(
             session,
             blobstore,
             learner_id=learner.id,
@@ -68,7 +85,7 @@ async def upload_source(
         )
     finally:
         tmp_path.unlink(missing_ok=True)
-    await enqueue(source.id)
+    await svc.dispatch(enqueue, source.id)
     return source
 
 
@@ -80,15 +97,41 @@ async def link_source(
     enqueue: IngestionEnqueuerDep,
 ):
     """Register a web page for ingestion. The page is fetched in the background job."""
-    source = await svc.create_url_source(
+    source = await _scoped(svc.create_url_source)(
         session,
         learner_id=learner.id,
         url=str(data.url),
         subject_id=data.subject_id,
         topic_id=data.topic_id,
     )
-    await enqueue(source.id)
+    await svc.dispatch(enqueue, source.id)
     return source
+
+
+@router.post(
+    "/sources/{source_id}/retry",
+    response_model=SourceRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def retry_source(
+    source_id: uuid.UUID,
+    session: SessionDep,
+    learner: CurrentLearner,
+    enqueue: IngestionEnqueuerDep,
+):
+    """Re-run ingestion for a finished or failed source.
+
+    A completed source is deliberately not claimable by a job (S37), so re-ingesting one has
+    to be asked for. 409 while a claim is live rather than yanking work in flight.
+    """
+    source = await session.get(Source, source_id)
+    if source is None or source.learner_id != learner.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    reset = await svc.reset_for_reingest(session, source_id)
+    if reset is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "this source is being ingested right now")
+    await svc.dispatch(enqueue, reset.id)
+    return reset
 
 
 @router.get("/sources", response_model=list[SourceRead])

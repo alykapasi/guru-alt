@@ -12,7 +12,7 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -66,6 +66,14 @@ class EmptyExtraction(IngestionError):
     """Extraction yielded no usable text."""
 
 
+class ExtractionTooLarge(IngestionError):
+    """The source expanded past the per-job character budget."""
+
+
+class TooManyChunks(IngestionError):
+    """The source chunked into more pieces than one job is allowed to embed."""
+
+
 async def run(
     session: AsyncSession,
     blobstore: BlobStore,
@@ -74,15 +82,22 @@ async def run(
     *,
     transcriber: Transcriber | None = None,
     demuxer: MediaDemuxer | None = None,
+    settings: Settings | None = None,
 ) -> int:
-    """Ingest one source into chunks. Returns the chunk count. Flushes; caller commits."""
+    """Ingest one source into chunks. Returns the chunk count. Flushes; caller commits.
+
+    Two budgets bound the work (S37), both checked *before* the expensive step they guard:
+    extracted characters before chunking, and chunk count before embedding. The upload byte
+    cap does not bound either — a modest scanned PDF becomes millions of OCR'd characters and
+    thousands of embed calls, and it is those that cost money and hold the worker.
+    """
     if not source.blob_key:
         raise IngestionError("source has no stored blob")
     adapter = select_adapter(source.content_type or "")
     if adapter is None:
         raise UnsupportedContentType(f"no adapter for content type {source.content_type!r}")
 
-    settings = get_settings()
+    settings = settings or get_settings()
     ctx = ExtractContext(
         content_type=source.content_type or "",
         origin=source.origin,
@@ -99,9 +114,21 @@ async def run(
         units = await adapter.extract(tmp_path, meta=source.meta, ctx=ctx)
     finally:
         tmp_path.unlink(missing_ok=True)
+    extracted = sum(len(unit.text) for unit in units)
+    if extracted > settings.ingest_max_extracted_chars:
+        raise ExtractionTooLarge(
+            f"source extracted to {extracted} characters, over the "
+            f"{settings.ingest_max_extracted_chars} per-job budget"
+        )
+
     chunks = chunk_units(units)
     if not chunks:
         raise EmptyExtraction("no text extracted from source")
+    if len(chunks) > settings.ingest_max_chunks:
+        raise TooManyChunks(
+            f"source produced {len(chunks)} chunks, over the "
+            f"{settings.ingest_max_chunks} per-job budget"
+        )
 
     # Log any model calls extraction made (vision-OCR).
     for role, usage in ctx.usage_log:
@@ -182,3 +209,32 @@ async def _tag_chunks(
                 usage=usage,
             )
     await session.flush()
+
+
+async def retag_source(
+    session: AsyncSession,
+    llm: LLMClient,
+    source: Source,
+    *,
+    settings: Settings | None = None,
+) -> int:
+    """Rebuild one source's chunk KC tags against its *current* subject graph. Commits.
+
+    Cheaper than a re-ingest by everything except the tagging itself: the text is already
+    extracted and the embeddings are already correct, since moving a source between subjects
+    changes which concepts describe it and not what it says. Returns the chunk count tagged.
+    """
+    settings = settings or get_settings()
+    rows = list(
+        (
+            await session.scalars(
+                select(Chunk).where(Chunk.source_id == source.id).order_by(Chunk.ordinal)
+            )
+        ).all()
+    )
+    if not rows:
+        return 0
+    await session.execute(delete(ChunkKC).where(ChunkKC.chunk_id.in_([r.id for r in rows])))
+    await _tag_chunks(session, llm, source, rows, settings)
+    await session.commit()
+    return len(rows)

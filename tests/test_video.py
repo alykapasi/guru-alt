@@ -181,6 +181,7 @@ async def test_ingest_video_records_asr_and_keyframe_provenance(db_session: Asyn
         transcriber=transcriber,
         demuxer=demuxer,
     )
+    assert result is not None  # the source was claimable
     assert result.status == SourceStatus.DONE
 
     chunks = (

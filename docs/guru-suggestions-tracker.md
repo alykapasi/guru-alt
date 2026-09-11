@@ -1,6 +1,6 @@
 # Guru — Running Suggestions and Decisions
 
-Last updated: 2026-09-08
+Last updated: 2026-09-09
 Repository: https://github.com/alykapasi/guru-alt
 Reviewed snapshot: `0d9b7f8abb1c623d0c46f3a53dda210a4790289f`
 
@@ -147,6 +147,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-07 | S48 (`0a94191`, `ed0ad5e`) and S57 (`8949fff`) implemented on the same branch. `uv run poe check` green (702 passed, 4 skipped). Migration `0024` makes `llm_calls.cost_usd` nullable. Added S76: two vector-retrieval tests failed intermittently during this session; traced far enough to rule out my changes as the cause and to identify a plausible mechanism, but not reproduced on demand and not fixed. The gate is therefore green but not yet proven deterministic. |
 | 2026-09-08 | S30 (`7f4b06d`), S32 (`fb0f214`), S47 (`72ca7f5`), S41 (`64ed883`), S46 (`75e12f7`) and S50 (`ad34b79`) implemented on the same branch. `uv run poe check` green (733 passed, 4 skipped); `npm run build` and `npm run lint` green. Migration `0025` adds embedding-space identity to chunks and memories. Note for future verification: `npx tsc --noEmit` checks nothing here (solution-style root tsconfig with `"files": []`) — `npm run build` is the frontend type gate. |
 | 2026-09-08 | S76 measured rather than fixed. The hypothesis recorded on 2026-09-07 — filtered-ANN recall — is **disproven**: the scoped vector query never uses the HNSW index at any size tried, because the join to `sources` keeps the planner on an exact `ix_chunks_source_id` path. The flaky tests remain unexplained. What the measurement did surface: exact search costs ~4 µs per chunk owned (185 ms at 45k), the index-reachable query shape is 11–116× faster at 44–86% recall depending on `ef_search`, `candidates` (50) exceeds the default `ef_search` (40), and the HNSW index is about the size of the table while no query reads it. `poe retrieval-recall` makes all of it repeatable. No production code changed — pricing the recall trade needs a real corpus, not hash-derived vectors. |
+| 2026-09-09 | Second implementation pass, branch `fix/tracker-s36-s42`: S37 (`2564907`), S36 (`2206fbd`), S52 (`bf0a92c`), S55 (`9b58575`), S43 (`ec8ce48`) and S42 (`875b55e`). `uv run poe check` green (808 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0026`–`0029`. Four of the six are marked *partially* implemented and each entry says what it left: exact global concurrency (S37), a dead-letter surface (S36), turn-level phase (S52), retrieval-side use of KC tags (S55), an incremental recompute and an automatic trigger (S43), and contradiction-based rather than distance-based supersession (S42). Three defects were found by tests rather than by design during this pass — a robots block being retried three times, every goal proposal being marked as an awaited answer, and a reset dimension never being recomputed — which is recorded here because in each case the design read as correct. Also verified the suite no longer depends on a running MinIO: one new test reached the real endpoint and passed locally while failing in CI. |
 
 ## Remaining architecture autopsy — source pass
 
@@ -363,7 +364,62 @@ not review.
 
 ### S36 — Make database-to-queue delivery recoverable
 
-**Status:** Proposed · **Priority:** Before reliable external use
+**Status:** Implemented (branch `fix/tracker-s36-s42`) · **Priority:** Before reliable external use
+
+**Implemented — the durable dispatch intent is the source row.** A source commits before its
+job is enqueued, and they cannot be one transaction because Redis is not in the database.
+Every scheme that pretends otherwise is really this one with an extra table: something durable
+records the intent, something later notices it was never carried out. `sources` already *is*
+that record — a PENDING row nothing is working on is a dispatch that did not happen — so a
+separate outbox table would have added a table without adding a guarantee. Deliberate choice,
+recorded here so it reads as a decision rather than an omission.
+
+**Implemented — a queue outage no longer loses an upload or fails it.** `dispatch()` reports
+whether the enqueue landed instead of raising. The row is already durable, so the upload
+genuinely succeeded; a 500 would have been a lie that also invites the learner to upload the
+same file again.
+
+**Implemented — reconciliation.** `reconcile_stranded` finds the two ways a source strands,
+which look identical from the outside because in both nothing is happening to it: the enqueue
+never landed, or the worker holding it died (lapsed lease, S37). Both are re-enqueued, which
+is safe precisely because the *claim* decides who runs — a duplicate delivery finds nothing to
+take. The worker runs the sweep on a timer, wrapped so that the one failure it must survive is
+the outage it exists to recover from; `poe reconcile-ingestion` runs it on demand.
+
+Sources that have burned through `ingest_max_attempts` are parked as FAILED rather than swept.
+Left PENDING they would be re-enqueued every tick forever; left as they were they would read
+as pending to the learner indefinitely. The last real error is preserved rather than replaced
+by a generic give-up message.
+
+**Implemented — retry classification, and the distinction it rests on.** A failure is terminal
+when it is a statement about the *source* (no adapter, extracted to nothing, over budget,
+robots forbids the URL, the URL resolves somewhere private) and transient when it is a
+statement about the *moment*. Terminal lands as FAILED; transient goes back to PENDING, which
+is what makes it eligible for redelivery, bounded by `attempts` — and the final attempt is
+recorded as FAILED, because a PENDING source with no attempts left is one nothing will ever
+look at again.
+
+This required splitting `FetchTransportError` out of `FetchError`. Everything else that class
+reported was a permanent fact about a URL; only the wrapped `httpx` failure describes the
+network. Without the split a robots block was retried three times — caught by an existing test
+rather than by review, which is the second time on this branch that the tests found what the
+design did not.
+
+**Implemented — blobs are not orphaned by a failed commit.** `create_source` uploads, then
+commits. If the commit failed the bytes stayed in the store with no row referencing them:
+nothing would ever look for that key again, so it sat there billed and unattributable. The
+upload is now undone on that path, best-effort and never masking the real error.
+
+**Not done — no dead-letter queue, and no operator surface beyond the log.** An abandoned
+source is FAILED with its last error and a learner can retry it (`POST
+/sources/{id}/retry`, 409 while a claim is live). There is no queue-level inspection, no
+bulk requeue, and nothing that surfaces "twelve sources abandoned this hour" other than log
+lines. S60's operational work is where that belongs.
+
+**Not verified — the sweep against a real Redis outage.** The tests simulate the queue by
+raising from the enqueue callable, which proves the *policy* (row survives, sweep re-enqueues,
+still-down queue leaves it for next time). Whether taskiq's Redis client raises where the
+fake does, on every failure mode, is not demonstrated here.
 
 **Evidence:** Source creation commits before enqueue. A queue failure can leave a pending source without a job. Ingestion catches errors, marks FAILED, and returns normally; the task wrapper does not turn that state into a retry decision.
 
@@ -371,11 +427,67 @@ not review.
 
 **Second-pass check:** Simulate Redis failure immediately after upload commit; the same source is eventually processed without duplicate uploads. Transient failures retry and terminal failures remain diagnosable.
 
-**Code:** [app/api/v1/sources.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/api/v1/sources.py), [app/services/ingestion.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/services/ingestion.py), [app/workers/tasks.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/workers/tasks.py).
+**Code:** [app/services/ingestion.py](../app/services/ingestion.py), [app/workers/tasks.py](../app/workers/tasks.py), [app/workers/reconcile.py](../app/workers/reconcile.py), [app/api/v1/sources.py](../app/api/v1/sources.py), [app/rag/fetch.py](../app/rag/fetch.py), [tests/test_ingestion_recovery.py](../tests/test_ingestion_recovery.py).
 
 ### S37 — Give long ingestion jobs visible state, ownership, and resource budgets
 
-**Status:** Proposed · **Priority:** Before reliable external use
+**Status:** Partially implemented (branch `fix/tracker-s36-s42`) · **Priority:** Before reliable external use
+
+**Implemented — the job is claimed, not assumed.** `PROCESSING` was flushed and never
+committed, so it was invisible to every other session until the job that set it finished — a
+status nobody could read, describing work nobody else could see. `claim_source` now takes the
+source in one atomic `UPDATE ... RETURNING` that commits *before* any work starts. A second
+delivery of the same job comes away with `None` and does nothing, which is the point: a
+duplicate no longer re-runs the extraction and re-pays for the embeddings.
+
+A consequence worth stating plainly: a DONE source is no longer claimable, so re-ingesting one
+is now an explicit act (`reset_for_reingest`) rather than something a repeated message can
+cause. Two tests were changed to say so.
+
+**Implemented — an expired lease is what tells you the worker died.** `PROCESSING` alone
+cannot distinguish a slow job from a dead one. The claim carries `lease_expires_at`, and the
+lease is *derived* as `ingest_job_timeout_seconds + ingest_lease_grace_seconds` rather than
+configured separately, so it strictly dominates the job's own deadline. That equivalence is
+load-bearing: a job that is still running cannot have a lapsed lease, so a lapsed lease means
+recovery is safe rather than a race with live work. It also removes any need to renew a lease
+mid-job — renewal has to commit, and the only transaction available to commit is the one
+holding the job's half-written chunks.
+
+`attempts` bounds re-claiming, so a source that kills its worker every time is parked rather
+than cycling forever. Both statuses release the lease on the way out.
+
+**Implemented — the failure path is allowed to fail.** A cancelled query can leave the
+connection unusable, which is exactly what a job timeout produces, so `_mark_failed` may not
+be able to record anything. It now re-raises the original exception rather than replacing it
+with the bookkeeping error; the source stays `PROCESSING` with a lease about to lapse, and
+recovery collects it. The lease is the backstop that makes this acceptable.
+
+**Implemented — budgets on the work, not just the bytes.** `max_upload_bytes` (1 GiB) bounds
+what arrives and nothing about what it expands into: a modest scanned PDF becomes millions of
+OCR'd characters and thousands of embed calls, and it is those that cost money and hold the
+worker. `ingest_max_extracted_chars` is checked after extraction and before chunking;
+`ingest_max_chunks` after chunking and before embedding — each guards the expensive step that
+follows it. The whole job additionally runs under `asyncio.timeout`.
+
+**Not done — global concurrency is a soft cap, and says so.** `ingest_max_concurrent_jobs` is
+enforced by a subquery inside the claim's own `UPDATE`, which is much tighter than
+read-then-write but still not a semaphore: under READ COMMITTED two claims racing can both see
+room and both take it. It bounds runaway concurrency; it does not guarantee a ceiling. Exact
+enforcement needs advisory locks over a fixed slot set, held on a dedicated connection for the
+job's lifetime — worth building when the cap has to be a guarantee rather than a guard.
+
+**Not done — cost budgets, stage checkpoints, and long work outside the transaction.** There
+is still no per-job *spend* limit (the character and chunk caps are proxies for it, not the
+thing itself), no resumable stage checkpointing, and extraction and model calls still run
+inside the job's transaction — the claim is committed separately, but the pipeline's own work
+is not chunked into short transactions. What changed is that a job holding a transaction open
+is now bounded and recoverable, not that it stopped holding one.
+
+**Not verified — real cross-connection concurrency.** The suite's savepoint-joined session
+cannot run two workers (S58 lists this as still open). The tests prove the claim's *logic* —
+second claim empty, expired lease reclaimable, attempts bounded, cap refused — on one
+connection. That the atomic `UPDATE` also serialises across connections is a property of
+Postgres, not of anything demonstrated here.
 
 **Evidence:** PROCESSING is flushed but not committed until completion, so other sessions cannot reliably observe it. Long extraction/model work runs inside the transaction. There is no explicit job claim/lease preventing duplicate processing. A 1 GiB byte cap does not bound pages, decoded media, chunks, model calls, or total spend.
 
@@ -383,7 +495,7 @@ not review.
 
 **Second-pass check:** Polling sees progress; killed jobs are recovered; duplicate deliveries do not run the same work concurrently; adversarially large documents hit explicit resource limits.
 
-**Code:** [app/services/ingestion.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/services/ingestion.py), [app/rag/pipeline.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/rag/pipeline.py), [app/workers/broker.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/workers/broker.py), [app/core/config.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/core/config.py).
+**Code:** [app/services/ingestion.py](../app/services/ingestion.py), [app/rag/pipeline.py](../app/rag/pipeline.py), [app/models/source.py](../app/models/source.py), [app/core/config.py](../app/core/config.py), [tests/test_ingestion_jobs.py](../tests/test_ingestion_jobs.py).
 
 ### S38 — Fix note catch-up cursors so activity cannot be skipped
 
@@ -514,7 +626,56 @@ plainer, complete, always available. A provider outage no longer costs the revis
 
 ### S42 — Make memory correction and forgetting durable
 
-**Status:** Proposed · **Priority:** Before trusted longitudinal use
+**Status:** Partially implemented (branch `fix/tracker-s36-s42`) · **Priority:** Before trusted longitudinal use
+
+**Implemented — a correction now wins, instead of losing to what it corrects.** Extraction
+treated a near-duplicate as a duplicate and skipped it. So a learner who said "actually, I
+study evenings now" had that discarded and the *stale* entry kept — precisely backwards, and
+silent. The three cases are now distinguished: identical content is skipped, different content
+supersedes, and the superseded row is kept with `superseded_by_id` pointing at its replacement,
+so a correction is on the record as a correction rather than a bare overwrite.
+
+**Implemented — a deleted memory stays deleted.** Deletion was a hard delete, which removed the
+only thing capable of recognising the same fact arriving again: the embedding. A later
+write-back over overlapping history re-extracted it and it came back. Rows are soft-deleted
+now, and a new extraction matching a tombstone is suppressed. The model file documented this
+gap as "not fixed this slice"; this is that slice.
+
+The trade is explicit: forgetting a memory means it stops being visible and stops being
+retrievable, not that the row is gone. A learner asking for *erasure* is asking a different
+question — one that has to cover chat history and events too, and belongs with S61.
+
+**Implemented — retrieval has a relevance floor and a status filter.** `limit` alone guarantees
+the *nearest* memories come back whether or not any of them are about the question, so a
+learner with five memories had all five injected into every turn regardless of topic. Only
+`current` rows are retrievable, and a distance floor excludes the rest.
+
+**Deliberately conservative — the floor is set at orthogonality, not at a tuned threshold.**
+`memory_retrieval_max_distance` defaults to 1.0, which excludes memories *unrelated or contrary*
+to the query rather than merely weak matches. A tighter floor is a relevance judgement, and the
+only instrument available here is hash-derived test vectors, which cannot make one — the same
+reason S76 declined to reshape retrieval. It is a knob positioned to be tightened against a
+real corpus, not a calibrated value.
+
+**Not done — supersession is decided by distance, not by contradiction.** Two genuinely
+different preferences of the same kind that happen to embed close together will supersede one
+another rather than coexist, and two contradictory ones phrased dissimilarly will not. Deciding
+"does this contradict that?" properly is a model call this does not make. The current rule is
+at least the *right way round*, which the old one was not.
+
+**Not done — conversation deletion still leaves memories.** Defined rather than changed: a
+memory is a durable fact about the learner, not a property of the conversation that revealed
+it, which is why `conversation_id` is `SET NULL` and not `CASCADE`. That is defensible, and it
+is also a surprise waiting for a learner who deletes a conversation for privacy reasons and
+expects what was learned from it to go too. The mechanism to offer both now exists — memories
+carry their `conversation_id`, and forgetting is soft — but no "delete this and what it taught
+you" option is wired up.
+
+**Not verified — the distance threshold against real embeddings.** The lifecycle tests widen
+`memory_dedup_max_distance` deliberately, because the fake provider hashes text into vectors
+and puts a preference and its correction nowhere near each other. That isolates what changed
+(skip vs supersede vs suppress) from a distance the harness cannot make meaningful — it does
+not show the threshold is right.
 
 **Evidence:** Memory dedup skips semantically similar entries rather than reconciling corrections. Retrieval always returns nearest entries without a relevance floor. Deletions have no tombstone and can be re-extracted from the same history; conversation deletion deliberately leaves memories behind.
 
@@ -522,11 +683,61 @@ plainer, complete, always available. A provider outage no longer costs the revis
 
 **Second-pass check:** A corrected preference replaces outdated guidance; irrelevant memories are omitted; deleting a memory prevents its recreation from the same evidence.
 
-**Code:** [app/services/memory.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/services/memory.py), [app/models/memory.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/models/memory.py), [app/memory/retrieval.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/memory/retrieval.py).
+**Code:** [app/services/memory.py](../app/services/memory.py), [app/models/memory.py](../app/models/memory.py), [app/memory/retrieval.py](../app/memory/retrieval.py), [tests/test_memory_lifecycle.py](../tests/test_memory_lifecycle.py).
 
 ### S43 — Make memory/profile refresh scheduling explicit and incremental
 
-**Status:** Proposed · **Priority:** High
+**Status:** Partially implemented (branch `fix/tracker-s36-s42`) · **Priority:** High
+
+**Implemented — memory extraction has a cursor, and reads forward from it.** It took the most
+recent `memory_extraction_window` messages regardless of what it had already seen. A
+conversation that grew by more than that between runs had the middle **silently dropped** —
+never read, never extracted, and nothing recorded that it had been passed over. Each
+conversation now carries a `memory_watermark` (migration `0028`, the same idea as S38's note
+cursors), and a run reads the *oldest* unprocessed messages forward. Oldest-first is the whole
+fix: newest-first leaves a hole, oldest-first leaves a backlog the next run continues.
+
+The watermark advances to the last message the run **actually read**, not to "now" — a message
+written while extraction is in flight must be picked up next time rather than stepped over.
+Ties are broken on id, because messages written in one transaction share an instant
+(`server_default=func.now()` is transaction-start time) and a cursor that cannot order within
+an instant either re-reads or skips.
+
+**Implemented — a repeat run over unchanged history is free.** It used to pay a FAST call to
+rediscover it had nothing to do. It now returns before the model call.
+
+**Implemented — a profile refresh over unchanged evidence does nothing.** Every dimension is
+recomputed from scratch on each refresh, several model calls at a time, so repeating it over
+an unchanged history bought exactly the values already stored. `latest_evidence_at` answers
+"has anything happened?" with two `MAX()` reads instead of loading the history to find out,
+and the refresh returns the existing snapshot when that matches `evidence_watermark`.
+`force=true` runs anyway — the cursor tracks the *evidence*, and cannot know the estimators
+reading it have changed.
+
+**Implemented — resetting a dimension invalidates the cursor.** Found by a test, not by
+design: a reset makes the stored values wrong without touching the evidence, so the next
+refresh would have skipped the very recomputation the reset asked for.
+
+**Implemented — a failed refresh says so.** `last_error` and `refreshed_at` are recorded, and
+the watermark deliberately does not advance, so a failed run does not mark its evidence
+processed. Without this a profile that quietly stopped updating is indistinguishable from one
+nothing has changed for.
+
+**Not done — the recompute itself is still whole-history.** A refresh that *does* run still
+loads every event and every user message. Making the estimators incremental means changing
+each one's math, and their growth is S62's subject; what is fixed here is paying for the
+recompute when nothing changed, not the cost of the recompute itself.
+
+**Not done — the trigger is still a request.** Both remain on-demand endpoints. The item asked
+to "choose an explicit session/turn/job trigger", and choosing turn-end would now be safe
+(both are cheap when there is nothing to do, which is what previously made per-turn firing
+wasteful) — but wiring it is a behavioural change about *when* a learner's profile moves, and
+that belongs with S44's question of whether these dimensions should drive teaching at all.
+What has changed is that the cost objection to doing it no longer holds.
+
+**Not done — no sweep for conversations nobody revisits.** A conversation whose backlog is
+never written back keeps it forever; nothing looks for stale watermarks. The same
+reconciliation shape as S36 would fit, and is not built.
 
 **Evidence:** Memory write-back and profile refresh are on-demand service operations. Memory extraction revisits only a recent-message window; profile refresh loads all learner events and user messages. Neither service establishes a durable incremental processing cursor.
 
@@ -534,7 +745,7 @@ plainer, complete, always available. A provider outage no longer costs the revis
 
 **Second-pass check:** A completed session produces intended updates without visiting a special screen; repeated refreshes do not repeatedly pay for unchanged evidence; old unprocessed material is not silently dropped.
 
-**Code:** [app/services/memory.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/services/memory.py), [app/services/profile.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/services/profile.py).
+**Code:** [app/services/memory.py](../app/services/memory.py), [app/services/profile.py](../app/services/profile.py), [app/models/chat.py](../app/models/chat.py), [app/models/profile.py](../app/models/profile.py), [tests/test_refresh_cursors.py](../tests/test_refresh_cursors.py).
 
 ### S44 — Treat learner profile measures as provisional proxies, not measured traits
 
@@ -776,7 +987,47 @@ if the EMBED model has not changed, and which cannot be recovered from the vecto
 
 ### S52 — Persist conversation phase instead of inferring it from missing goals
 
-**Status:** Proposed · **Priority:** High
+**Status:** Partially implemented (branch `fix/tracker-s36-s42`) · **Priority:** High
+
+**Implemented — the phase is recorded, not inferred.** `Conversation.phase` (migration `0027`)
+is written by the turn that produced the last assistant message, from what actually happened
+rather than from the transcript's shape. The frontend's guess — "no goal committed and the last
+message is from the assistant" — was true of a goal proposal and equally true of an agentic
+reply given before any goal existed, so a tool-using answer was presented to the learner with
+accept/refine buttons under it. The backend always knew which flow ran; it just never said.
+
+**Implemented — two signals, because one is ambiguous.** `awaiting_reply` says the turn ended
+by asking the learner for something instead of answering them, but *both* the refinement gate
+and the practice workflow emit it, for entirely different things. The flow says which. Writing
+this found that the first version of the rule — treat any `awaiting_reply` as a practice item —
+marked every goal proposal as an awaited answer. A test caught it, not review.
+
+**Implemented — an agentic interjection does not un-pause a practice item.** `mode="agentic"`
+is checked *before* a paused workflow, so an agentic turn steps around the item rather than
+answering it, and the next message resumes it. Reporting `chatting` there would have been a
+phase that disagreed with what the very next turn does, so the dispatcher carries whether a
+workflow was paused into the decision.
+
+**Implemented — a refresh restores the item.** `Conversation.active_item_id` holds the item in
+play while the phase is `awaiting_answer`; before this the item existed only inside one SSE
+event, so reloading a paused session showed an empty panel next to a question the learner was
+still expected to answer. The frontend fetches it by id when there is no live stream, and the
+conversations query is now invalidated after *every* turn rather than only on commit — a stale
+cached phase is precisely the bug this replaced.
+
+**Not done — mode switching while a workflow is paused is described, not redesigned.** The
+existing rule (agentic bypasses a paused workflow; every other mode resumes it) is now at
+least *visible*, because the phase keeps saying `awaiting_answer` through the interjection.
+Whether bypassing should be allowed at all is a product question this does not answer.
+
+**Not done — turn-level phase.** S51 asks for pending/failed/cancelled turn states; this is
+conversation-level only. An interrupted stream leaves the previous phase standing, which is
+the safe direction but is not the same as recording that a turn was interrupted.
+
+**Not verified — the frontend behaviour itself.** `npm run build` and `npm run lint` pass and
+the hook now reads `conversation.phase`, but there is no browser test asserting that an
+agentic reply renders without accept/refine buttons. S58 lists browser/e2e journeys as still
+open, and this is one of the things they would cover.
 
 **Evidence:** awaitingGoalAccept treats any last assistant message with no committed goal as a proposal, including an agentic response. Backend modes can bypass refinement. Practice state and outcome remain local to live SSE in the frontend.
 
@@ -784,7 +1035,7 @@ if the EMBED model has not changed, and which cannot be recovered from the vecto
 
 **Second-pass check:** An agentic answer is not displayed as a goal proposal; refresh restores active item and completed status; mode switches do not resume the wrong state.
 
-**Code:** [frontend/src/hooks/useChatConversation.ts](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/frontend/src/hooks/useChatConversation.ts), [app/api/v1/chat.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/api/v1/chat.py), [frontend/src/pages/Session.tsx](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/frontend/src/pages/Session.tsx).
+**Code:** [app/api/v1/chat.py](../app/api/v1/chat.py), [app/models/chat.py](../app/models/chat.py), [app/services/chat.py](../app/services/chat.py), [frontend/src/hooks/useChatConversation.ts](../frontend/src/hooks/useChatConversation.ts), [tests/test_conversation_phase.py](../tests/test_conversation_phase.py).
 
 ### S53 — Support technical content rendering and working citations in practice
 
@@ -829,7 +1080,54 @@ allowed relative to self-rating, not part of this defect. The whitelist makes it
 
 ### S55 — Validate source scope changes and refresh derived tags
 
-**Status:** Proposed · **Priority:** High
+**Status:** Implemented (branch `fix/tracker-s36-s42`) · **Priority:** High
+
+**Implemented — a source cannot be scoped into a topic from another subject.** Retrieval
+filters on subject *and* topic, so a source whose two disagreed was reachable through neither:
+extracted, chunked, embedded, tagged, indexed, paid for, and invisible. `resolve_source_scope`
+now checks parentage at creation and the upload/link routes turn a conflict into a 422. A
+topic given without a subject is filled in rather than refused — a topic belongs to exactly
+one subject, so there is nothing ambiguous to reject.
+
+**Implemented — reassignment no longer leaves derived data describing the wrong graph.**
+Curriculum commit reassigned a source's `subject_id` and stopped there. Its `topic_id` still
+named a topic in the subject it had just left, and its chunks' KC tags still named KCs from
+that graph — which is worse than having no tags, because it asserts this material teaches
+concepts it was never read against. Both are cleared in the same transaction as the move.
+Sources that did not actually move are skipped, because nothing derived from them went stale.
+
+**Implemented — retagging is a job, not a re-ingest.** Rebuilding tags is a FAST call per
+chunk, so it runs in the background rather than holding the commit request open, and until it
+lands the source simply has no tags — the honest state rather than a wrong one.
+`pipeline.retag_source` redoes only the tagging: the text is already extracted and the
+embeddings are still correct, since moving a source changes which concepts describe it, not
+what it says.
+
+**Implemented — the KC tags finally have a reader.** Ingestion has been paying a model call
+per chunk to write `ChunkKC` rows that *nothing read* — a recurring bill with no consumer.
+`GET /subjects/{id}/coverage` reports, per KC, how many of the learner's own chunks are tagged
+to it, zeros included. It answers "can this KC be taught from what the learner uploaded, or
+only from the model's own knowledge?", which the planner and the learner both want, and a gap
+is the more actionable half of the answer.
+
+Writing the query surfaced a bug the tests caught: joining the ownership filter dropped a KC
+covered only by *another* learner's chunks out of the report entirely, instead of showing it
+as uncovered. It is a correlated subquery now, which keeps every KC unconditionally.
+
+**Deliberately not done — KC tags are not wired into retrieval ranking.** The item offered
+"retrieval/coverage" and coverage is the half that can be justified today. Whether tag
+filtering *improves* what retrieval returns is a relevance question, and S76 is the standing
+lesson here: hash-derived vectors and a synthetic corpus cannot price relevance, so adding an
+unvalidated signal to ranking would be a change nobody could evaluate. Coverage makes the tags
+load-bearing without gambling on that.
+
+**Not done — no backfill, and no scope check on the topics of *existing* sources.** A source
+that already sits in a mismatched topic from before this change stays mismatched until it is
+reassigned; nothing sweeps for them. The validation is at the boundary only.
+
+**Not verified — the retag job end to end.** `retag_source` is tested directly, and dispatch
+is the same best-effort path S36 covers, but no test drives curriculum-commit → queue →
+worker → rebuilt tags as one flow.
 
 **Evidence:** Source subject/topic IDs are not checked for consistent parentage. Onboarding reassigns subject but does not clear a conflicting topic or retag existing chunks. Unscoped ingestion has no candidate KCs; retrieval currently does not use ChunkKC joins despite paying for tags where present.
 
@@ -837,7 +1135,7 @@ allowed relative to self-rating, not part of this defect. The whitelist makes it
 
 **Second-pass check:** A source cannot belong to a topic in a different subject; reassignment leaves consistent tags; tag-based retrieval shows measured value over its baseline.
 
-**Code:** [app/api/v1/sources.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/api/v1/sources.py), [app/services/knowledge.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/services/knowledge.py), [app/learning/kc_tagging.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/learning/kc_tagging.py), [app/rag/retrieval.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/rag/retrieval.py).
+**Code:** [app/services/knowledge.py](../app/services/knowledge.py), [app/services/ingestion.py](../app/services/ingestion.py), [app/rag/pipeline.py](../app/rag/pipeline.py), [app/api/v1/knowledge.py](../app/api/v1/knowledge.py), [tests/test_source_scope.py](../tests/test_source_scope.py).
 
 ### S56 — Make event replay reproduce production learner state
 

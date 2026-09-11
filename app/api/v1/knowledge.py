@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
-from app.api.deps import CurrentLearner, SessionDep
+from app.api.deps import CurrentLearner, RetagEnqueuerDep, SessionDep
 from app.schemas.knowledge import (
     KCCreate,
     KCDetail,
@@ -24,6 +24,7 @@ from app.schemas.knowledge import (
     TopicCreate,
     TopicRead,
 )
+from app.services import ingestion as ingestion_svc
 from app.services import knowledge as svc
 
 router = APIRouter(tags=["knowledge"])
@@ -61,7 +62,10 @@ async def create_subject(data: SubjectCreate, session: SessionDep, _: CurrentLea
 
 @router.post("/subjects/commit", response_model=SubjectRead, status_code=status.HTTP_201_CREATED)
 async def commit_subject(
-    request: SubjectCommitRequest, session: SessionDep, learner: CurrentLearner
+    request: SubjectCommitRequest,
+    session: SessionDep,
+    learner: CurrentLearner,
+    retag: RetagEnqueuerDep,
 ):
     """Commit a subject with its full topic/KC graph in one atomic transaction.
 
@@ -74,7 +78,7 @@ async def commit_subject(
         )
 
     async with _conflict_409(session):
-        return await svc.create_subject_with_graph(
+        result = await svc.create_subject_with_graph(
             session,
             subject_name=request.subject_name,
             subject_description=request.subject_description,
@@ -82,6 +86,32 @@ async def commit_subject(
             source_ids=request.source_ids,
             learner_id=learner.id,
         )
+    # Moving a source between subjects invalidated its chunk KC tags, which the call above
+    # already deleted. Rebuilding them is a model call per chunk, so it happens in the
+    # background rather than holding this request open; until it lands the source simply has
+    # no tags, which is the honest state, not a wrong one.
+    for source_id in result.reassigned_source_ids:
+        await ingestion_svc.dispatch(retag, source_id)
+    return result.subject
+
+
+class KCCoverageRead(BaseModel):
+    kc_id: uuid.UUID
+    slug: str
+    name: str
+    chunk_count: int
+
+
+@router.get("/subjects/{subject_id}/coverage", response_model=list[KCCoverageRead])
+async def subject_coverage(subject_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+    """Which KCs in this subject the learner's own library actually covers.
+
+    A zero here means the KC can only be taught from the model's own knowledge, with no
+    citable passage behind it — which is the more actionable half of the answer.
+    """
+    if await svc.get_subject(session, subject_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
+    return await svc.kc_coverage(session, learner_id=learner.id, subject_id=subject_id)
 
 
 @router.get("/subjects", response_model=list[SubjectRead])

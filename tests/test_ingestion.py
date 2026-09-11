@@ -135,6 +135,7 @@ async def test_ingest_txt_creates_embedded_chunks(db_session: AsyncSession) -> N
     store = InMemoryBlobStore()
     source = await _make_source(db_session, store, data=b"The cell is the unit of life.")
     result = await ingestion.ingest_source(db_session, store, fake_llm_client(), source.id)
+    assert result is not None  # the source was claimable
 
     assert result.status == SourceStatus.DONE
     assert result.meta["chunk_count"] >= 1
@@ -171,6 +172,7 @@ async def test_ingest_is_idempotent(db_session: AsyncSession) -> None:
 
     await ingestion.ingest_source(db_session, store, fake_llm_client(), source.id)
     first = await _chunk_count(db_session, source.id)
+    await ingestion.reset_for_reingest(db_session, source.id)
     await ingestion.ingest_source(db_session, store, fake_llm_client(), source.id)
     second = await _chunk_count(db_session, source.id)
 
@@ -182,6 +184,7 @@ async def test_ingest_empty_text_fails(db_session: AsyncSession) -> None:
     store = InMemoryBlobStore()
     source = await _make_source(db_session, store, data=b"   \n\t ")
     result = await ingestion.ingest_source(db_session, store, fake_llm_client(), source.id)
+    assert result is not None  # the source was claimable
 
     assert result.status == SourceStatus.FAILED
     assert result.error
@@ -194,6 +197,7 @@ async def test_ingest_unsupported_type_fails(db_session: AsyncSession) -> None:
         db_session, store, data=b"\x00\x01\x02", content_type="application/zip"
     )
     result = await ingestion.ingest_source(db_session, store, fake_llm_client(), source.id)
+    assert result is not None  # the source was claimable
 
     assert result.status == SourceStatus.FAILED
     assert "adapter" in (result.error or "").lower()
@@ -285,6 +289,7 @@ async def test_ingest_tags_chunks_with_subject_scoped_kcs(db_session: AsyncSessi
     client = fake_llm_client('{"tags": [{"kc": 1, "confidence": 0.9}]}')
 
     result = await ingestion.ingest_source(db_session, store, client, source.id)
+    assert result is not None  # the source was claimable
     assert result.status == SourceStatus.DONE
 
     links = (
@@ -307,6 +312,7 @@ async def test_ingest_unscoped_source_skips_kc_tagging(db_session: AsyncSession)
     source = await _make_source(db_session, store, data=b"Unrelated notes about cooking pasta.")
 
     result = await ingestion.ingest_source(db_session, store, client, source.id)
+    assert result is not None  # the source was claimable
 
     assert result.status == SourceStatus.DONE
     assert provider.complete_calls == 0  # no candidate KCs ⇒ the tagger is never consulted
@@ -323,6 +329,7 @@ async def test_reingest_replaces_kc_tags(db_session: AsyncSession) -> None:
 
     await ingestion.ingest_source(db_session, store, client, source.id)
     first = await _chunk_kc_count(db_session, source.id)
+    await ingestion.reset_for_reingest(db_session, source.id)
     await ingestion.ingest_source(db_session, store, client, source.id)
     second = await _chunk_kc_count(db_session, source.id)
 

@@ -13,6 +13,22 @@ export function useConversations() {
   });
 }
 
+/** One assessment item by id — used to restore the practice item a paused session is on after
+ * a reload, where the item is known only as `conversation.active_item_id` (S52). */
+export function useItem(itemId: string | null | undefined) {
+  return useQuery({
+    queryKey: ["item", itemId],
+    enabled: !!itemId,
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/items/{item_id}", {
+        params: { path: { item_id: itemId! } },
+      });
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
 export function useCreateConversation() {
   const queryClient = useQueryClient();
   return useMutation({
