@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -69,23 +69,35 @@ async def _dimension_value(session: AsyncSession, learner_id: uuid.UUID, key: st
     return dim.value if dim is not None else None
 
 
-async def effective_format(session: AsyncSession, learner_id: uuid.UUID, note: Note | None) -> str:
-    """The cascade: explicit choice > learned note_format dimension > heuristic > outline."""
+async def _format_inputs(session: AsyncSession, learner_id: uuid.UUID) -> tuple[object, object]:
+    """The two learner-global profile values the format cascade reads.
+
+    Split out so a caller handling many topics fetches them once rather than once per topic —
+    they cannot differ between topics (S62).
+    """
+    learned = await _dimension_value(session, learner_id, "note_format")
+    errors = await _dimension_value(session, learner_id, "error_type")
+    return learned, errors.get("conceptual", 0) if isinstance(errors, dict) else None
+
+
+def _format_from(note: Note | None, learned: object, conceptual: object) -> str:
+    """The cascade itself, over values already in hand: explicit choice > learned dimension >
+    heuristic > outline."""
     if note is not None and note.format:
         return note.format
-    learned = await _dimension_value(session, learner_id, "note_format")
     if isinstance(learned, str) and learned in FORMATS:
         return learned
     # Heuristic: a majority-conceptual error profile benefits from example-led notes.
-    errors = await _dimension_value(session, learner_id, "error_type")
-    conceptual = errors.get("conceptual", 0) if isinstance(errors, dict) else None
     if isinstance(conceptual, int | float) and conceptual >= 0.5:
         return "worked_examples"
     return FALLBACK_FORMAT
 
 
-async def _reading_level(session: AsyncSession, learner_id: uuid.UUID) -> object:
-    return await _dimension_value(session, learner_id, "reading_level")
+async def effective_format(session: AsyncSession, learner_id: uuid.UUID, note: Note | None) -> str:
+    """The cascade: explicit choice > learned note_format dimension > heuristic > outline."""
+    if note is not None and note.format:
+        return note.format
+    return _format_from(note, *await _format_inputs(session, learner_id))
 
 
 def _cursors(note: Note | None) -> tuple[datetime, datetime]:
@@ -331,7 +343,6 @@ async def _render_and_cache(
             llm,
             atoms=note.substrate,
             note_format=fmt,
-            reading_level=await _reading_level(session, learner_id),
         )
         await log_llm_call(
             learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
@@ -408,7 +419,6 @@ async def refresh_note(
         transcript=gathered.transcript,
         outcomes=gathered.outcomes,
         refs=gathered.refs,
-        reading_level=await _reading_level(session, learner_id),
     )
     await log_llm_call(
         learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
@@ -580,21 +590,85 @@ async def restore_revision(
 async def notes_index(
     session: AsyncSession, learner_id: uuid.UUID, subject_id: uuid.UUID
 ) -> list[dict]:
+    """Every topic in a subject with its note's freshness — a fixed number of queries (S62).
+
+    This used to run six or so per topic: the note, two profile dimensions (both
+    learner-global, so identical every time round the loop), two existence probes for new
+    activity, and a render lookup. The probes are the interesting ones — the message probe's
+    condition is subject-wide, so it asked the same question once per topic and got the same
+    answer.
+
+    Each per-topic question is now asked once for the whole subject and compared in memory:
+    an existence test against a watermark is exactly a comparison against the newest row, and
+    one grouped `max` answers it for every topic at once.
+    """
     topics = (
         await session.scalars(
             select(Topic).where(Topic.subject_id == subject_id).order_by(Topic.name)
         )
     ).all()
+    if not topics:
+        return []
+    topic_ids = [topic.id for topic in topics]
+
+    notes = {
+        note.topic_id: note
+        for note in (
+            await session.scalars(
+                select(Note).where(Note.learner_id == learner_id, Note.topic_id.in_(topic_ids))
+            )
+        ).all()
+    }
+    learned_format, conceptual_share = await _format_inputs(session, learner_id)
+    latest_event = {
+        topic_id: at
+        for topic_id, at in (
+            await session.execute(
+                select(KC.topic_id, func.max(LearningEvent.created_at))
+                .join(LearningEvent, LearningEvent.kc_id == KC.id)
+                .where(
+                    KC.topic_id.in_(topic_ids),
+                    LearningEvent.learner_id == learner_id,
+                    LearningEvent.event_type == "observation",
+                )
+                .group_by(KC.topic_id)
+            )
+        ).all()
+    }
+    # Subject-wide, so one answer serves every topic — which is what the per-topic probe was
+    # computing over and over.
+    latest_message = await session.scalar(
+        select(func.max(Message.created_at))
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(Conversation.learner_id == learner_id, Conversation.subject_id == subject_id)
+    )
+    rendered = {
+        (render.note_id, render.revision_ordinal, render.format)
+        for render in (
+            await session.scalars(
+                select(NoteRender).where(NoteRender.note_id.in_([n.id for n in notes.values()]))
+            )
+        ).all()
+    }
+
     entries: list[dict] = []
     for topic in topics:
-        note = await get_note(session, learner_id, topic.id)
-        fmt = await effective_format(session, learner_id, note)
+        note = notes.get(topic.id)
+        fmt = _format_from(note, learned_format, conceptual_share)
+        messages_watermark, events_watermark = _cursors(note)
+        has_note = note is not None and note.revision_ordinal > 0
+        stale = (latest_event.get(topic.id) or EPOCH) > events_watermark or (
+            latest_message or EPOCH
+        ) > messages_watermark
+        if not stale and has_note and note is not None:
+            # Render-failure recovery: substrate current but no cached render for this format.
+            stale = (note.id, note.revision_ordinal, fmt) not in rendered
         entries.append(
             {
                 "topic_id": topic.id,
                 "topic_name": topic.name,
-                "has_note": note is not None and note.revision_ordinal > 0,
-                "stale": await _is_stale(session, learner_id, topic, note, fmt),
+                "has_note": has_note,
+                "stale": stale,
                 "updated_at": note.updated_at if note is not None else None,
             }
         )

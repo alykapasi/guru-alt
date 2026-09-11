@@ -19,7 +19,7 @@ import uuid
 from collections.abc import Sequence
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -36,6 +36,7 @@ from app.models.assessment import (
     SELF_GRADABLE,
     Item,
     ItemKC,
+    ItemOrigin,
     ItemType,
 )
 from app.models.learning import LearnerKCState, LearningEvent
@@ -47,13 +48,24 @@ from app.services.llm_log import log_llm_call
 log = structlog.get_logger(__name__)
 
 
-async def create_item(session: AsyncSession, data: ItemCreate) -> Item:
+async def create_item(
+    session: AsyncSession, data: ItemCreate, *, author_learner_id: uuid.UUID | None = None
+) -> Item:
+    """Persist one item. With an ``author_learner_id`` it is that learner's alone (S33).
+
+    ``None`` means the platform's own generators wrote it, which is the only provenance that
+    puts an item in the shared bank. There is deliberately no way to promote a learner's item
+    into that bank: nothing in the system can yet establish who is entitled to author an
+    assessment other people are graded against (S25, and real auth in Phase 10).
+    """
     item = Item(
         item_type=data.item_type,
         stem=data.stem,
         answer_key=data.answer_key,
         difficulty=data.difficulty,
         rubric_id=data.rubric_id,
+        origin=ItemOrigin.LEARNER if author_learner_id else ItemOrigin.GENERATED,
+        author_learner_id=author_learner_id,
         kc_links=[ItemKC(kc_id=k.kc_id, weight=k.weight) for k in data.kcs],
     )
     session.add(item)
@@ -61,7 +73,17 @@ async def create_item(session: AsyncSession, data: ItemCreate) -> Item:
     return item
 
 
+def _assessable_by(learner_id: uuid.UUID):
+    """The items ``learner_id`` may be assessed with: the shared bank, plus their own.
+
+    One predicate, used by every read path, so a new one cannot forget it.
+    """
+    return or_(Item.origin == ItemOrigin.GENERATED, Item.author_learner_id == learner_id)
+
+
 async def get_item(session: AsyncSession, item_id: uuid.UUID) -> Item | None:
+    """One item by id, unfiltered — for internal callers that already know it is the
+    learner's. Anything reached from a request should use :func:`get_item_for`."""
     return await session.scalar(
         select(Item)
         .where(Item.id == item_id)
@@ -69,15 +91,41 @@ async def get_item(session: AsyncSession, item_id: uuid.UUID) -> Item | None:
     )
 
 
+async def get_item_for(
+    session: AsyncSession, item_id: uuid.UUID, *, learner_id: uuid.UUID
+) -> Item | None:
+    """One item, if this learner may see it — otherwise ``None``, indistinguishable from
+    absent. Another learner's private item should not be readable *or* answerable: the stem
+    and, for MCQs, the choices are exposed (S54), and answering it would write a mastery
+    observation from a question nobody vouched for."""
+    return await session.scalar(
+        select(Item)
+        .where(Item.id == item_id, _assessable_by(learner_id))
+        .options(selectinload(Item.kc_links), selectinload(Item.rubric))
+    )
+
+
 async def find_item_for_kc(
-    session: AsyncSession, kc_id: uuid.UUID, *, item_type: ItemType | None = None
+    session: AsyncSession,
+    kc_id: uuid.UUID,
+    *,
+    learner_id: uuid.UUID,
+    item_type: ItemType | None = None,
 ) -> Item | None:
     """The oldest bank item assessing ``kc_id``, if any — reuse before generating a new one.
 
     ``item_type``, if given, restricts the search to that type (e.g. the session runner
     preferring a flashcard for a review step) — ``None`` matches any type, the prior behavior.
+
+    Scoped to what ``learner_id`` may be assessed with (S33): reuse used to pick up anything
+    tagged to the KC, so a question and answer key another learner had written became this
+    learner's practice — and the mastery observation it produced was traced to it.
     """
-    stmt = select(Item).join(ItemKC, ItemKC.item_id == Item.id).where(ItemKC.kc_id == kc_id)
+    stmt = (
+        select(Item)
+        .join(ItemKC, ItemKC.item_id == Item.id)
+        .where(ItemKC.kc_id == kc_id, _assessable_by(learner_id))
+    )
     if item_type is not None:
         stmt = stmt.where(Item.item_type == item_type)
     return await session.scalar(
@@ -98,6 +146,7 @@ def item_to_read(item: Item) -> ItemRead:
         rubric_id=item.rubric_id,
         kcs=[ItemKCRead(kc_id=link.kc_id, weight=link.weight) for link in item.kc_links],
         presentation=public_presentation(item_type, item.answer_key),
+        origin=item.origin,
     )
 
 

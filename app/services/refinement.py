@@ -52,10 +52,17 @@ async def run_refinement_turn(
     max_tokens: int,
     max_rounds: int,
     resume: bool,
+    persist_user: bool = True,
 ) -> AsyncIterator[TurnEvent]:
-    """Start or resume the gate, stream the proposal, then persist the outcome."""
-    await add_message(session, conversation.id, ChatRole.USER.value, user_content)
-    await session.commit()
+    """Start or resume the gate, stream the proposal, then persist the outcome.
+
+    ``persist_user`` is False when the caller has already written the learner's message
+    and linked it to a durable turn record (S51); the content is still carried into this
+    turn's model context, it is simply not appended to the transcript a second time.
+    """
+    if persist_user:
+        await add_message(session, conversation.id, ChatRole.USER.value, user_content)
+        await session.commit()
 
     graph = build_refinement_graph(llm)
     config = refinement_config(str(conversation.id))

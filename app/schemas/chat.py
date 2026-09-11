@@ -56,6 +56,26 @@ class MessageRead(BaseModel):
     created_at: datetime
 
 
+class TurnRead(BaseModel):
+    """One recorded attempt at answering one learner message (S51).
+
+    ``status`` is what makes an interruption visible: a turn that ended without producing a
+    reply reads as ``failed`` or ``cancelled`` here, where the transcript alone would just
+    stop. Re-sending the message with the same ``client_turn_id`` retries *this* turn.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    client_turn_id: uuid.UUID | None
+    flow: str  # refinement | tutor | agentic | workflow
+    status: str  # pending | completed | failed | cancelled
+    content: str
+    assistant_message_id: uuid.UUID | None
+    error: str | None
+    created_at: datetime
+
+
 class ChatTurnRequest(BaseModel):
     # A maximum as well as a minimum: an unbounded message is a paid call whose size the
     # learner chooses. Rejected here, before the turn reaches a provider. The bound is a
@@ -72,3 +92,7 @@ class ChatTurnRequest(BaseModel):
     # persisted on the conversation: no migration, and a learner can mix one tool-using or
     # workflow turn into an otherwise plain conversation.
     mode: Literal["chat", "agentic", "workflow"] = "chat"
+    # The client's idempotency key for this turn, so a retry after a dropped stream is *this*
+    # turn again rather than a second turn asking the same thing (S51). Optional: a turn sent
+    # without one is unconstrained, exactly as before this existed.
+    client_turn_id: uuid.UUID | None = None

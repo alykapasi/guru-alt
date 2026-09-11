@@ -79,11 +79,15 @@ async def test_find_item_for_kc_filters_by_type(db_session: AsyncSession) -> Non
     )
     await db_session.commit()
 
-    found = await svc.find_item_for_kc(db_session, kc.id, item_type=ItemType.FLASHCARD)
+    found = await svc.find_item_for_kc(
+        db_session, kc.id, learner_id=uuid.uuid4(), item_type=ItemType.FLASHCARD
+    )
     assert found is not None
     assert found.id == flashcard.id
 
-    found = await svc.find_item_for_kc(db_session, kc.id, item_type=ItemType.MCQ)
+    found = await svc.find_item_for_kc(
+        db_session, kc.id, learner_id=uuid.uuid4(), item_type=ItemType.MCQ
+    )
     assert found is not None
     assert found.id == mcq.id
 
@@ -96,7 +100,12 @@ async def test_find_item_for_kc_type_filter_none_when_no_match(db_session: Async
     db_session.add(ItemKC(item_id=mcq.id, kc_id=kc.id))
     await db_session.commit()
 
-    assert await svc.find_item_for_kc(db_session, kc.id, item_type=ItemType.FILL_BLANK) is None
+    assert (
+        await svc.find_item_for_kc(
+            db_session, kc.id, learner_id=uuid.uuid4(), item_type=ItemType.FILL_BLANK
+        )
+        is None
+    )
 
 
 # --- authoring --------------------------------------------------------------

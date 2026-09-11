@@ -67,6 +67,7 @@ async def run_workflow_turn(
     max_rounds: int,
     resume: bool,
     source_ids: Sequence[uuid.UUID] = (),
+    persist_user: bool = True,
 ) -> AsyncIterator[TurnEvent]:
     """Start or resume the guided-practice workflow, stream it, then persist the outcome.
 
@@ -74,9 +75,14 @@ async def run_workflow_turn(
     latter is an async-unsafe lazy relationship access unless the caller happened to eager-load
     it (see ``app.services.chat.get_conversation``'s ``populate_existing`` note); callers should
     resolve it once, the same way they already resolve ``conversation.subject_id``.
+
+    ``persist_user`` is False when the caller has already written the learner's message
+    and linked it to a durable turn record (S51); the content is still carried into this
+    turn's model context, it is simply not appended to the transcript a second time.
     """
-    await add_message(session, conversation.id, ChatRole.USER.value, user_content)
-    await session.commit()
+    if persist_user:
+        await add_message(session, conversation.id, ChatRole.USER.value, user_content)
+        await session.commit()
 
     graph = build_workflow_graph(llm, session, learner_id=learner_id)
     config = workflow_config(str(conversation.id))

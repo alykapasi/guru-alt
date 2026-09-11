@@ -12,6 +12,7 @@ from typing import Any, cast
 import structlog
 from openai import AsyncOpenAI
 
+from app.core.redact import fingerprint
 from app.llm.types import (
     ChatChunk,
     ChatMessage,
@@ -44,10 +45,10 @@ def _parse_arguments(raw: str | None) -> dict[str, Any]:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        log.warning("llm.tool_arguments_unparseable", raw=raw[:200])
+        log.warning("llm.tool_arguments_unparseable", raw=fingerprint(raw))
         return {}
     if not isinstance(parsed, dict):
-        log.warning("llm.tool_arguments_not_an_object", raw=raw[:200])
+        log.warning("llm.tool_arguments_not_an_object", raw=fingerprint(raw))
         return {}
     return parsed
 

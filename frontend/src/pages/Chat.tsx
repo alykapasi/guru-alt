@@ -8,8 +8,17 @@ import type { Citation } from "../api/sse";
 
 export function Chat() {
   const { conversationId } = useParams<{ conversationId: string }>();
-  const { conversation, messages, isLoadingMessages, pending, error, awaitingGoalAccept, send } =
-    useChatConversation(conversationId);
+  const {
+    conversation,
+    messages,
+    isLoadingMessages,
+    pending,
+    error,
+    canRetry,
+    retry,
+    awaitingGoalAccept,
+    send,
+  } = useChatConversation(conversationId);
   const [citation, setCitation] = useState<Citation | null>(null);
 
   // A session conversation's paused workflow reply must never be shown behind the plain
@@ -38,7 +47,14 @@ export function Chat() {
           />
         )}
         {error && (
-          <p className="text-caption text-error mx-auto w-full max-w-3xl px-6 pb-2">{error}</p>
+          <div className="text-caption text-error mx-auto flex w-full max-w-3xl items-center gap-3 px-6 pb-2">
+            <p>{error}</p>
+            {canRetry && (
+              <button type="button" className="btn btn-ghost btn-xs" onClick={() => void retry()}>
+                Try again
+              </button>
+            )}
+          </div>
         )}
         <Composer disabled={!!pending} onSend={(content, mode) => send(content, { mode })} />
       </div>

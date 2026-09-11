@@ -52,7 +52,27 @@ class Source(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     kind: Mapped[str] = mapped_column(index=True)  # SourceKind
     origin: Mapped[str]  # filename or URL
-    blob_key: Mapped[str | None] = mapped_column(default=None)  # object-store key for raw bytes
+    # Object-store key for the raw bytes. Content-addressed (``blobs/<content_sha256>``), so
+    # two learners uploading the same file reference one stored object. Nothing *derived* is
+    # shared — each learner gets their own extraction, chunks and embeddings — and no learner
+    # can observe that another references the same key.
+    blob_key: Mapped[str | None] = mapped_column(default=None, index=True)
+    # SHA-256 of the raw bytes. Already computed to build the key; it lives here as a column
+    # because a digest buried in a path string cannot answer "do I already have this file?".
+    content_sha256: Mapped[str | None] = mapped_column(default=None, index=True)
+    # SHA-256 of the *canonical* extracted text (app/rag/textnorm.py) — equal for two files
+    # that say the same thing in different containers or dialects, where content_sha256 shares
+    # not one byte. Written after extraction, so unlike the byte hash it cannot save the cost
+    # of getting there; what it saves is embedding the same book twice and then having two
+    # chunks of it compete for every grounding window.
+    text_sha256: Mapped[str | None] = mapped_column(default=None, index=True)
+    # 64-bit SimHash of the same canonical text, as 16 hex characters. Unlike the two digests
+    # above this is compared by *distance*, which is what reaches a scan: OCR errors are
+    # per-character, so a photographed textbook never equals its EPUB however it is
+    # normalised. Deliberately not indexed — near-neighbour search over it is a scan of the
+    # learner's own sources, which is tens of rows; a cross-learner search would need LSH
+    # banding, and cross-learner similarity is not something a learner may observe anyway.
+    simhash: Mapped[str | None] = mapped_column(default=None)
     content_type: Mapped[str | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(index=True, default=SourceStatus.PENDING)
     error: Mapped[str | None] = mapped_column(Text, default=None)

@@ -207,8 +207,36 @@ export interface paths {
          *     One turn at a time per conversation: an overlapping request is refused rather than
          *     allowed to interleave messages or resume the same paused graph twice (see
          *     ``app.services.turn_lock``). The claim is held until the stream ends, however it ends.
+         *
+         *     The turn is recorded before generation and closed on every path out of it (S51). A client
+         *     that supplies ``client_turn_id`` gets retry for free: repeating a failed turn regenerates
+         *     from the same learner message, and repeating a completed one is refused rather than
+         *     answered twice.
          */
         post: operations["send_message_api_v1_conversations__conversation_id__messages_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/turns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Turns
+         * @description The conversation's most recent turns, newest first — how an interruption becomes visible.
+         *
+         *     Reading this also reaps turns abandoned by a disconnect or a restart, so a stranded
+         *     ``pending`` row is reported as ``cancelled`` rather than as work still in progress.
+         */
+        get: operations["list_turns_api_v1_conversations__conversation_id__turns_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -224,7 +252,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create Item */
+        /**
+         * Create Item
+         * @description Author an item. It is this learner's alone — being signed in is not authority to write
+         *     a question, and an answer key, that other learners are then examined against (S33).
+         */
         post: operations["create_item_api_v1_items_post"];
         delete?: never;
         options?: never;
@@ -303,6 +335,11 @@ export interface paths {
          *
          *     The file is streamed to disk in chunks so an arbitrarily large upload never sits in
          *     memory; it is rejected with 413 the moment it exceeds ``max_upload_bytes``.
+         *
+         *     Re-uploading a file this learner already has in the same scope returns that source with
+         *     200 instead of 202, and queues nothing: the saving is the entire pipeline, since identical
+         *     bytes are recognised before a page is OCR'd. A duplicate of a *failed* source is the
+         *     exception — re-sending the file is the obvious way to retry it, so that one is requeued.
          */
         post: operations["upload_source_api_v1_sources_upload_post"];
         delete?: never;
@@ -406,6 +443,33 @@ export interface paths {
          * @description Hybrid-retrieve the most relevant chunks for a query, scoped to the learner.
          */
         post: operations["retrieve_chunks_api_v1_retrieve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/similar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Similar Sources
+         * @description Other sources of this learner that look like this one, nearest first.
+         *
+         *     A suggestion with its evidence attached, not a verdict. Equality catches a re-upload and a
+         *     different container of the same clean text; only a distance reaches a scan, whose OCR
+         *     errors make it unequal to its own EPUB in thousands of places. What a given distance
+         *     *means* has not been measured against real scanned-versus-digital pairs, and
+         *     ``poe simhash-separation`` shows there may be no cut-off that could settle it — so nothing
+         *     here suppresses a source, and the reader gets the number.
+         */
+        get: operations["similar_sources_api_v1_sources__source_id__similar_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -876,6 +940,72 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retention Policy
+         * @description What happens to each store when an account is deleted, and why.
+         *
+         *     Published rather than documented: a learner deciding whether to delete an account should
+         *     be able to read the policy the code actually executes.
+         */
+        get: operations["retention_policy_api_v1_me_retention_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Me
+         * @description Everything held about this learner, as JSON. Uploads appear as metadata, not bytes.
+         */
+        get: operations["export_me_api_v1_me_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Me
+         * @description Erase this learner from every store.
+         *
+         *     Returns the report rather than 204: a deletion that could not remove every uploaded file
+         *     has to say so, because those keys can no longer be found by walking the database.
+         */
+        delete: operations["delete_me_api_v1_me_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -956,6 +1086,8 @@ export interface components {
              * @enum {string}
              */
             mode: "chat" | "agentic" | "workflow";
+            /** Client Turn Id */
+            client_turn_id?: string | null;
         };
         /**
          * ChunkRead
@@ -1075,6 +1207,24 @@ export interface components {
                 [key: string]: unknown;
             }[];
         };
+        /** DeletionReportRead */
+        DeletionReportRead: {
+            /**
+             * Learner Id
+             * Format: uuid
+             */
+            learner_id: string;
+            /** Blobs Deleted */
+            blobs_deleted: number;
+            /** Blobs Retained */
+            blobs_retained: number;
+            /** Blobs Failed */
+            blobs_failed: number;
+            /** Items Deleted */
+            items_deleted: number;
+            /** Complete */
+            complete: boolean;
+        };
         /** DimensionRead */
         DimensionRead: {
             /** Key */
@@ -1092,6 +1242,16 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /**
+             * Observation
+             * @default
+             */
+            observation: string;
         };
         /**
          * GenerateRequest
@@ -1224,6 +1384,11 @@ export interface components {
             presentation?: {
                 [key: string]: unknown;
             } | null;
+            /**
+             * Origin
+             * @default generated
+             */
+            origin: string;
         };
         /**
          * ItemType
@@ -1363,8 +1528,6 @@ export interface components {
             pacing: string;
             /** Example Tags */
             example_tags: string[];
-            /** Reading Level Hint */
-            reading_level_hint: number | null;
             /** Steps */
             steps: components["schemas"]["LessonStepRead"][];
             /**
@@ -1611,6 +1774,11 @@ export interface components {
             /** Dimensions */
             dimensions: components["schemas"]["DimensionRead"][];
         };
+        /** RetentionPolicyRead */
+        RetentionPolicyRead: {
+            /** Stores */
+            stores: components["schemas"]["StoreRetentionRead"][];
+        };
         /**
          * RetrievalHit
          * @description A retrieved chunk with its fused score and provenance.
@@ -1682,6 +1850,23 @@ export interface components {
             item?: components["schemas"]["ItemRead"] | null;
         };
         /**
+         * SimilarSourceRead
+         * @description A source that looks like another, with the evidence for saying so.
+         *
+         *     ``distance`` is differing bits out of 64 and ``agreement`` the share that match. Both are
+         *     reported rather than reduced to a verdict: ``poe simhash-separation`` measured that a badly
+         *     scanned copy of the same book and a document half of which is a different book sit at the
+         *     same distance, so no cut-off distinguishes them and the reader is better placed than the
+         *     number. Nothing here suppresses, blocks, or deletes a source.
+         */
+        SimilarSourceRead: {
+            source: components["schemas"]["SourceRead"];
+            /** Distance */
+            distance: number;
+            /** Agreement */
+            agreement: number;
+        };
+        /**
          * SourceRead
          * @description An ingestion source and its current status.
          */
@@ -1710,6 +1895,15 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /** StoreRetentionRead */
+        StoreRetentionRead: {
+            /** Table */
+            table: string;
+            /** Disposition */
+            disposition: string;
+            /** Reason */
+            reason: string;
         };
         /**
          * SubjectCommitRequest
@@ -1822,6 +2016,38 @@ export interface components {
             name: string;
             /** Description */
             description: string | null;
+        };
+        /**
+         * TurnRead
+         * @description One recorded attempt at answering one learner message (S51).
+         *
+         *     ``status`` is what makes an interruption visible: a turn that ended without producing a
+         *     reply reads as ``failed`` or ``cancelled`` here, where the transcript alone would just
+         *     stop. Re-sending the message with the same ``client_turn_id`` retries *this* turn.
+         */
+        TurnRead: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Client Turn Id */
+            client_turn_id: string | null;
+            /** Flow */
+            flow: string;
+            /** Status */
+            status: string;
+            /** Content */
+            content: string;
+            /** Assistant Message Id */
+            assistant_message_id: string | null;
+            /** Error */
+            error: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -2387,6 +2613,39 @@ export interface operations {
             };
         };
     };
+    list_turns_api_v1_conversations__conversation_id__turns_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     create_item_api_v1_items_post: {
         parameters: {
             query?: never;
@@ -2685,6 +2944,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RetrievalHit"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    similar_sources_api_v1_sources__source_id__similar_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SimilarSourceRead"][];
                 };
             };
             /** @description Validation Error */
@@ -3538,6 +3830,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retention_policy_api_v1_me_retention_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionPolicyRead"];
+                };
+            };
+        };
+    };
+    export_me_api_v1_me_export_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    delete_me_api_v1_me_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionReportRead"];
                 };
             };
         };

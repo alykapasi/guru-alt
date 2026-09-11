@@ -139,8 +139,11 @@ async def test_next_item_honors_a_profile_preferred_item_type(db_session: AsyncS
     db_session.add(
         ProfileDimension(
             learner_id=learner.id,
-            key="format_effectiveness",
-            value={"mcq": {"mean_score": 0.2}, "fill_blank": {"mean_score": 0.9}},
+            key="score_by_format",
+            value={
+                "mcq": {"mean_score": 0.2, "mean_difficulty": 0.5},
+                "fill_blank": {"mean_score": 0.9, "mean_difficulty": 0.5},
+            },
             uncertainty=0.3,
             kind="trait",
             source="behavioral",
@@ -168,8 +171,11 @@ async def test_next_item_preferred_type_generation_wins_over_any_type_reuse(
     db_session.add(
         ProfileDimension(
             learner_id=learner.id,
-            key="format_effectiveness",
-            value={"flashcard": {"mean_score": 0.9}},
+            key="score_by_format",
+            value={
+                "flashcard": {"mean_score": 0.9, "mean_difficulty": 0.5},
+                "mcq": {"mean_score": 0.5, "mean_difficulty": 0.5},
+            },
             uncertainty=0.3,
             kind="trait",
             source="behavioral",
@@ -199,8 +205,11 @@ async def test_next_item_preferred_type_generation_failure_falls_back_to_any_typ
     db_session.add(
         ProfileDimension(
             learner_id=learner.id,
-            key="format_effectiveness",
-            value={"flashcard": {"mean_score": 0.9}},
+            key="score_by_format",
+            value={
+                "flashcard": {"mean_score": 0.9, "mean_difficulty": 0.5},
+                "mcq": {"mean_score": 0.5, "mean_difficulty": 0.5},
+            },
             uncertainty=0.3,
             kind="trait",
             source="behavioral",

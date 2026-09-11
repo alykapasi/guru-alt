@@ -38,6 +38,22 @@ SELF_GRADABLE: frozenset[ItemType] = frozenset({ItemType.FLASHCARD})
 """Flashcards: the learner self-rates recall, which drives FSRS scheduling (slice 5)."""
 
 
+class ItemOrigin(StrEnum):
+    """Who authored an item — which decides who may be assessed with it (S33).
+
+    ``items`` is a global table, so any authenticated learner writing one used to add a
+    question *and its answer key* to a bank other learners are then examined against. Being
+    signed in is not authority to author someone else's assessment.
+
+    Stored as its own column rather than inferred from ``author_learner_id is None``: the FK
+    is ``ON DELETE SET NULL``, so deleting a learner would otherwise promote every private
+    item they wrote into the shared bank.
+    """
+
+    GENERATED = "generated"  # produced by the platform's own generators; shared
+    LEARNER = "learner"  # authored through POST /items; private to its author
+
+
 class Rubric(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """Per-KC grading criteria consumed by LLM rubric grading (§7.6)."""
 
@@ -59,6 +75,13 @@ class Item(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     difficulty: Mapped[float] = mapped_column(default=0.0)
     rubric_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("rubrics.id", ondelete="SET NULL"), default=None
+    )
+    # Authority to assess with this item — see ItemOrigin. A learner-authored item is theirs
+    # alone; nothing here promotes one to the shared bank, because nothing in the system can
+    # yet establish who is entitled to (S25/Phase 10 auth own that).
+    origin: Mapped[str] = mapped_column(index=True, default=ItemOrigin.GENERATED)
+    author_learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="SET NULL"), index=True, default=None
     )
 
     kc_links: Mapped[list["ItemKC"]] = relationship(

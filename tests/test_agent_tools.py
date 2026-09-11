@@ -10,6 +10,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.tools import Tool, build_tools
+from app.agent.untrusted import untrusted_body
 from app.core.config import get_settings
 from app.llm import ModelRole
 from app.llm.registry import fake_llm_client
@@ -175,7 +176,7 @@ async def test_fetch_webpage_falls_back_to_plain_decode_for_non_html(
     result = await _fetch_webpage(tools).execute({"url": "https://example.com/notes.txt"})
 
     assert not result.is_error
-    assert result.content == "plain notes content"
+    assert untrusted_body(result.content) == "plain notes content"
 
 
 async def test_fetch_webpage_unsupported_content_type_is_a_tool_error(
@@ -227,4 +228,5 @@ async def test_fetch_webpage_truncates_to_the_configured_cap(db_session: AsyncSe
     result = await _fetch_webpage(tools).execute({"url": "https://example.com/long"})
 
     assert not result.is_error
-    assert len(result.content) <= max_chars + len("\n...[truncated]")
+    body = untrusted_body(result.content)
+    assert len(body) <= max_chars + len("\n...[truncated]")

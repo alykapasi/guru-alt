@@ -28,6 +28,7 @@ from app.core.config import Settings, get_settings
 from app.llm import LLMClient
 from app.models.source import Source, SourceKind, SourceStatus
 from app.rag import pipeline
+from app.rag import simhash as simhash_mod
 from app.rag.demux import MediaDemuxer
 from app.rag.fetch import Fetcher, FetchError, FetchTransportError, default_fetch
 from app.rag.transcription import Transcriber
@@ -37,6 +38,11 @@ from app.storage import DEFAULT_CONTENT_TYPE, BlobStore
 logger = logging.getLogger(__name__)
 
 _HASH_CHUNK = 1024 * 1024  # 1 MiB — stream large files past the hasher without buffering them
+
+
+def digest_of(data: bytes | Path) -> str:
+    """SHA-256 of an upload, whether it is in memory or on disk."""
+    return _digest_path(data) if isinstance(data, Path) else hashlib.sha256(data).hexdigest()
 
 
 def _digest_path(path: Path) -> str:
@@ -57,6 +63,7 @@ async def create_source(
     origin: str,
     content_type: str | None,
     data: bytes | Path,
+    content_sha256: str | None = None,
     subject_id: uuid.UUID | None = None,
     topic_id: uuid.UUID | None = None,
     meta: dict | None = None,
@@ -65,6 +72,9 @@ async def create_source(
 
     ``data`` is either bytes (small, in-memory) or a local file ``Path`` (large uploads,
     streamed to the store without buffering). Either way the blob key is content-addressed.
+
+    ``content_sha256`` lets a caller that has already digested the bytes — to check for a
+    duplicate before getting here — avoid reading a large upload off disk a second time.
     """
     subject_id, topic_id = await knowledge.resolve_source_scope(
         session, subject_id=subject_id, topic_id=topic_id
@@ -83,21 +93,167 @@ async def create_source(
     await session.flush()  # assign source.id
 
     ctype = content_type or DEFAULT_CONTENT_TYPE
+    digest = content_sha256 or digest_of(data)
+    key = blob_key_for(digest)
     if isinstance(data, Path):
-        key = f"{learner_id}/{source.id}/{_digest_path(data)}"
         await blobstore.upload(key, data, content_type=ctype)
     else:
-        key = f"{learner_id}/{source.id}/{hashlib.sha256(data).hexdigest()}"
         await blobstore.put(key, data, content_type=ctype)
+    # Written unconditionally, never skipped when the key already exists: an identical write is
+    # a no-op for identical bytes, and skipping would lose a race against a concurrent delete
+    # of the last other reference.
     source.blob_key = key
+    source.content_sha256 = digest
     try:
         await session.commit()
     except Exception:
-        # The bytes are already in the store but no row will reference them. Nothing will ever
-        # look for that key again, so it would sit there permanently, billed and unattributable.
-        await _discard_blob(blobstore, key)
+        # The bytes are in the store but this row will not reference them. Another learner's
+        # source may, though — the key is content-addressed — so this must not delete blindly.
+        # Suppressed: cleaning up must never mask the error that made cleanup necessary.
+        try:
+            await unreference_blob(session, blobstore, key, excluding=source.id)
+        except Exception:
+            logger.warning("could not delete unreferenced blob %s", key, exc_info=True)
         raise
     return source
+
+
+async def find_duplicate(
+    session: AsyncSession,
+    *,
+    learner_id: uuid.UUID,
+    content_sha256: str,
+    subject_id: uuid.UUID | None,
+    topic_id: uuid.UUID | None,
+) -> Source | None:
+    """This learner's existing source for exactly these bytes in exactly this scope.
+
+    Scope is part of the identity on purpose. The same textbook uploaded under two subjects is
+    a real intent — it covers both — and retrieval is subject-scoped, so the second copy never
+    competes with the first for a place in a grounding window. Only a re-upload into the
+    *same* scope is a duplicate, and that one is pure waste: a second extraction, a second set
+    of embeddings, and two chunks saying the same thing crowding each other out of every
+    answer.
+    """
+    return await session.scalar(
+        select(Source)
+        .where(
+            Source.learner_id == learner_id,
+            Source.content_sha256 == content_sha256,
+            Source.subject_id.is_(subject_id)
+            if subject_id is None
+            else Source.subject_id == subject_id,
+            Source.topic_id.is_(topic_id) if topic_id is None else Source.topic_id == topic_id,
+        )
+        .order_by(Source.created_at)
+        .limit(1)
+    )
+
+
+async def create_or_reuse_source(
+    session: AsyncSession,
+    blobstore: BlobStore,
+    *,
+    learner_id: uuid.UUID,
+    kind: SourceKind,
+    origin: str,
+    content_type: str | None,
+    data: bytes | Path,
+    content_sha256: str,
+    subject_id: uuid.UUID | None = None,
+    topic_id: uuid.UUID | None = None,
+    meta: dict | None = None,
+) -> tuple[Source, bool]:
+    """The learner's source for these bytes, and whether it needs ingesting.
+
+    Returns ``(source, queue_it)``. A file the learner already has in this scope is handed
+    back untouched rather than ingested a second time — the saving is the whole pipeline, not
+    just the storage, because this is known before a single page is OCR'd.
+
+    One exception: a duplicate of a source that previously *failed* is put back within reach
+    of a claim. Re-uploading the file is the obvious way to retry it, and refusing to would
+    leave a learner re-sending a document that silently does nothing.
+    """
+    subject_id, topic_id = await knowledge.resolve_source_scope(
+        session, subject_id=subject_id, topic_id=topic_id
+    )
+    existing = await find_duplicate(
+        session,
+        learner_id=learner_id,
+        content_sha256=content_sha256,
+        subject_id=subject_id,
+        topic_id=topic_id,
+    )
+    if existing is not None:
+        if existing.status != SourceStatus.FAILED:
+            return existing, False
+        retried = await reset_for_reingest(session, existing.id)
+        return (retried or existing), retried is not None
+
+    source = await create_source(
+        session,
+        blobstore,
+        learner_id=learner_id,
+        kind=kind,
+        origin=origin,
+        content_type=content_type,
+        data=data,
+        content_sha256=content_sha256,
+        subject_id=subject_id,
+        topic_id=topic_id,
+        meta=meta,
+    )
+    return source, True
+
+
+@dataclass(frozen=True)
+class SimilarSource:
+    """A source that looks like another, and how much of it agrees."""
+
+    source: Source
+    distance: int
+
+    @property
+    def agreement(self) -> float:
+        """Share of the 64 hash bits that match — the evidence, shown rather than judged."""
+        return (simhash_mod.BITS - self.distance) / simhash_mod.BITS
+
+
+async def similar_sources(
+    session: AsyncSession, source: Source, *, limit: int = 5
+) -> list[SimilarSource]:
+    """This learner's other sources, nearest first, with the distance that says why.
+
+    A *suggestion*, never an action. ``poe simhash-separation`` measured why: a badly scanned
+    copy of the same book and a document that is half this book and half another both sit
+    around 16 bits apart, so no cut-off separates them. That is the limit of what shingle
+    overlap can tell you rather than a threshold to tune, so the distance is reported and a
+    person decides. A wrong reading then costs a wasted suggestion, not a rejected upload.
+
+    Scanned in Python over the learner's own rows — tens of them. A cross-learner search would
+    need LSH banding, for something a learner is not permitted to observe anyway.
+    """
+    if source.simhash is None:
+        return []
+    mine = simhash_mod.from_hex(source.simhash)
+    others = (
+        await session.scalars(
+            select(Source).where(
+                Source.learner_id == source.learner_id,
+                Source.id != source.id,
+                Source.simhash.is_not(None),
+            )
+        )
+    ).all()
+    scored = [
+        SimilarSource(
+            source=other, distance=simhash_mod.distance(mine, simhash_mod.from_hex(other.simhash))
+        )
+        for other in others
+        if other.simhash is not None
+    ]
+    scored.sort(key=lambda s: (s.distance, s.source.created_at))
+    return scored[:limit]
 
 
 async def create_url_source(
@@ -381,19 +537,68 @@ async def _fetch_into_blob(
     """Fetch a URL source's page into the blob store, recording its content type."""
     data, content_type = await fetch(source.origin)
     digest = hashlib.sha256(data).hexdigest()
-    key = f"{source.learner_id}/{source.id}/{digest}"
+    key = blob_key_for(digest)
     await blobstore.put(key, data, content_type=content_type)
     source.blob_key = key
+    source.content_sha256 = digest
     source.content_type = content_type
     await session.flush()
 
 
-async def _discard_blob(blobstore: BlobStore, key: str) -> None:
-    """Best-effort delete of a blob nothing will ever reference. Never masks the real error."""
-    try:
-        await blobstore.delete(key)
-    except Exception:
-        logger.warning("could not delete orphaned blob %s", key, exc_info=True)
+def blob_key_for(content_sha256: str) -> str:
+    """The object key for these bytes — content alone, no learner or source in the path.
+
+    Two learners uploading the same file therefore write the same key and one object is
+    stored. Nothing derived is shared: each gets their own extraction, chunks and embeddings,
+    and neither can observe that the other references it.
+    """
+    return f"blobs/{content_sha256}"
+
+
+async def is_blob_referenced(
+    session: AsyncSession, key: str, *, excluding: uuid.UUID | None = None
+) -> bool:
+    """Whether any source other than ``excluding`` still points at these bytes.
+
+    Derived from ``sources`` rather than kept as a reference count. A counter drifts — every
+    missed decrement leaks an object forever and every missed increment deletes one somebody
+    is using — and reconciling it needs exactly this query anyway.
+
+    ``excluding`` is what a source cleaning up after its own failed write passes: its row is
+    flushed into the session, so an unqualified check sees it and concludes the bytes are in
+    use by the very row that is about to be rolled back.
+    """
+    stmt = select(Source.id).where(Source.blob_key == key)
+    if excluding is not None:
+        stmt = stmt.where(Source.id != excluding)
+    return (await session.scalar(stmt.limit(1))) is not None
+
+
+async def unreference_blob(
+    session: AsyncSession,
+    blobstore: BlobStore,
+    key: str,
+    *,
+    excluding: uuid.UUID | None = None,
+) -> bool:
+    """Drop a blob if nothing references it any more. ``True`` if the bytes were deleted.
+
+    A store failure is *raised*, not swallowed: a caller deleting an account has to be able to
+    report bytes it could not remove, and "still referenced" and "refused by the store" are
+    opposite outcomes that must not collapse into one return value. The one caller that needs
+    silence — a failed upload cleaning up after itself — suppresses it explicitly.
+
+    The check and the delete are not atomic — the store is not in the transaction — so an
+    upload that commits in the window between them leaves a row pointing at bytes just
+    removed. That is a narrow race with a visible, recoverable outcome: ingestion fails on the
+    missing key and ``reset_for_reingest`` puts the source back in reach after a re-upload.
+    Closing it properly needs a grace period and a sweeper, which the retention policy
+    deliberately does not have yet (S61).
+    """
+    if await is_blob_referenced(session, key, excluding=excluding):
+        return False
+    await blobstore.delete(key)
+    return True
 
 
 def _is_terminal(exc: Exception) -> bool:

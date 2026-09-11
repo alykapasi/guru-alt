@@ -50,6 +50,9 @@ class ItemRead(BaseModel):
     rubric_id: uuid.UUID | None
     kcs: list[ItemKCRead]
     presentation: dict | None = None
+    # Who wrote it: "generated" (the platform, shared) or "learner" (whoever is reading it,
+    # since a learner's own items are never served to anyone else). See ItemOrigin (S33).
+    origin: str = "generated"
 
 
 class AnswerSubmit(BaseModel):

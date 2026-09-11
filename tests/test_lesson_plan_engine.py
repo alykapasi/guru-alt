@@ -168,21 +168,19 @@ def test_scaffolding_from_profile_maps_every_dimension() -> None:
         "optimal_challenge": 0.62,
         "help_seeking": 0.3,
         "persistence": 0.8,
-        "format_effectiveness": {
+        "score_by_format": {
             "mcq": {"mean_score": 0.7, "mean_difficulty": 0.5, "n": 5},
             "cloze": {"mean_score": 0.9, "mean_difficulty": 0.5, "n": 5},
         },
         "pace": {"median_seconds": 12.0, "trend": "speeding_up"},
         "interests": ["basketball", "cooking"],
-        "reading_level": 8.5,
     }
     hints = scaffolding_from_profile(values)
     assert hints.target_difficulty == 0.62
     assert hints.hint_density == "low"  # low help-seeking + high persistence
-    assert hints.preferred_item_type == "cloze"  # higher mean_score
+    assert hints.preferred_item_type == "cloze"  # wins on score at equal difficulty
     assert hints.pacing == "brisk"
     assert hints.example_tags == ["basketball", "cooking"]
-    assert hints.reading_level_hint == 8.5
 
 
 def test_scaffolding_from_profile_partial_snapshot_defaults_the_rest() -> None:
@@ -192,7 +190,44 @@ def test_scaffolding_from_profile_partial_snapshot_defaults_the_rest() -> None:
     assert hints.preferred_item_type is None
     assert hints.pacing == "standard"
     assert hints.example_tags == []
-    assert hints.reading_level_hint is None
+
+
+# --- format preference: a proxy that used to route learners toward easy work (S44) ----------
+
+
+def _formats(**by_type: tuple[float, float]) -> dict[str, dict]:
+    return {
+        t: {"mean_score": score, "mean_difficulty": difficulty, "n": 5}
+        for t, (score, difficulty) in by_type.items()
+    }
+
+
+def test_a_format_that_only_scores_higher_because_it_is_easier_is_not_preferred() -> None:
+    """The defect: max(mean_score) recommended whichever format asked the easiest questions,
+    on evidence that says nothing about which format teaches better."""
+    hints = scaffolding_from_profile(
+        {"score_by_format": _formats(mcq=(0.95, 0.2), short_answer=(0.6, 0.8))}
+    )
+    assert hints.preferred_item_type is None
+
+
+def test_a_format_that_wins_at_comparable_difficulty_is_preferred() -> None:
+    hints = scaffolding_from_profile(
+        {"score_by_format": _formats(mcq=(0.9, 0.55), short_answer=(0.6, 0.6))}
+    )
+    assert hints.preferred_item_type == "mcq"
+
+
+def test_a_margin_too_small_to_mean_anything_prefers_nothing() -> None:
+    hints = scaffolding_from_profile(
+        {"score_by_format": _formats(mcq=(0.72, 0.5), short_answer=(0.7, 0.5))}
+    )
+    assert hints.preferred_item_type is None
+
+
+def test_one_format_alone_has_nothing_to_be_better_than() -> None:
+    hints = scaffolding_from_profile({"score_by_format": _formats(mcq=(0.9, 0.5))})
+    assert hints.preferred_item_type is None
 
 
 def test_scaffolding_from_profile_hint_density_high_for_high_help_seeking_low_persistence() -> None:

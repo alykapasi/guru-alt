@@ -34,7 +34,6 @@ class LessonPlan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     goal: Mapped[str | None] = mapped_column(Text, default=None)
     pacing: Mapped[str] = mapped_column(default="standard")
     example_tags: Mapped[list[str]] = mapped_column(JSONB, default=list)
-    reading_level_hint: Mapped[float | None] = mapped_column(default=None)
     # list[dict]: kc_id, order, step_type ("new"|"review"), status ("pending"|"active"|"done"),
     # target_difficulty, hint_density, preferred_item_type.
     steps: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)

@@ -9,16 +9,23 @@ requests.
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
+import structlog
 import trafilatura
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.egress import carries_retrieved_text
+from app.agent.untrusted import as_untrusted
 from app.core.config import get_settings
 from app.llm import LLMClient, ToolDef
 from app.rag.fetch import Fetcher, FetchError, safe_fetch
 from app.rag.retrieval import RetrievalHit, retrieve
 from app.services.turn_common import format_grounding
 
+log = structlog.get_logger(__name__)
+
+_MAX_URL_CHARS = 2048  # beyond ordinary use, and capacity is what exfiltration needs
 _HTML_CONTENT_TYPES = {"text/html", "application/xhtml+xml"}
 _UNSUPPORTED_CONTENT_TYPE_PREFIXES = ("image/", "audio/", "video/")
 _UNSUPPORTED_CONTENT_TYPES = {"application/pdf", "application/octet-stream"}
@@ -89,7 +96,7 @@ def build_tools(
             source_ids=source_ids,
             citations=citations,
         ),
-        _fetch_webpage_tool(fetch=fetch),
+        _fetch_webpage_tool(fetch=fetch, retrieved=citations),
     ]
 
 
@@ -151,11 +158,31 @@ def _extract_text(data: bytes, content_type: str) -> str:
     return decoded
 
 
-def _fetch_webpage_tool(*, fetch: Fetcher) -> Tool:
+def _fetch_webpage_tool(*, fetch: Fetcher, retrieved: CitationAccumulator) -> Tool:
     async def execute(args: dict[str, object]) -> ToolResult:
         url = args.get("url")
         if not isinstance(url, str) or not url.strip():
             return ToolResult(content="A non-empty url is required.", is_error=True)
+        url = url.strip()
+        if len(url) > _MAX_URL_CHARS:
+            return ToolResult(content="That URL is too long to fetch.", is_error=True)
+        if "@" in urlsplit(url).netloc:
+            # Credentials in a URL are sent to the host; nothing a learner asks for needs
+            # them, and the userinfo field is a payload slot like any other (S31).
+            return ToolResult(
+                content="URLs with embedded credentials are not fetched.", is_error=True
+            )
+        if carries_retrieved_text(url, [hit.text for hit in retrieved.hits]):
+            # The turn has read the learner's private materials, and this URL carries a run of
+            # them to a third party. Refused whether the model was tricked into it or not.
+            log.warning("tools.fetch_refused_carrying_retrieved_text", host=urlsplit(url).netloc)
+            return ToolResult(
+                content=(
+                    "That URL carries text from the learner's own materials, so it was not "
+                    "fetched. Search the materials directly instead of sending them anywhere."
+                ),
+                is_error=True,
+            )
         try:
             data, content_type = await fetch(url)
         except FetchError as exc:
@@ -168,7 +195,7 @@ def _fetch_webpage_tool(*, fetch: Fetcher) -> Tool:
         max_chars = get_settings().fetch_webpage_max_chars
         if len(text) > max_chars:
             text = text[:max_chars] + "\n...[truncated]"
-        return ToolResult(content=text)
+        return ToolResult(content=as_untrusted("FETCHED PAGE", text))
 
     return Tool(
         name="fetch_webpage",
