@@ -15,6 +15,14 @@ export type OnboardingTurnEvent =
 export interface KCProposal {
   name: string;
   description: string;
+  /** Stable handle for this KC within one proposal, assigned by the backend's parser. */
+  key?: string;
+  /** Keys of the KCs that come first — the prerequisite edges the planner orders by (S22).
+   * Declared so the review step's edits carry them: they survive today only because every
+   * handler spreads the object, and a refactor that rebuilt one would drop them silently.
+   * Renaming a KC is safe (edges reference keys, not names), and deleting one leaves a
+   * dangling reference that the backend drops rather than failing the commit. */
+  requires?: string[];
 }
 
 export interface TopicProposal {

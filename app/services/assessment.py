@@ -19,7 +19,7 @@ import uuid
 from collections.abc import Sequence
 
 import structlog
-from sqlalchemy import or_, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -112,7 +112,15 @@ async def find_item_for_kc(
     learner_id: uuid.UUID,
     item_type: ItemType | None = None,
 ) -> Item | None:
-    """The oldest bank item assessing ``kc_id``, if any — reuse before generating a new one.
+    """The freshest bank item assessing ``kc_id``, if any — reuse before generating a new one.
+
+    Freshest means *least recently answered by this learner*, with never-answered first. This
+    used to be ``ORDER BY created_at``, which is stable: a learner practising a KC twice got
+    the same question twice, and practising it ten times got it ten times. What that measures
+    after the first attempt is recall of one question, not the component — and because every
+    attempt still updated mastery, repeating the answer the learner had just been told drove
+    the estimate up. A KC's bank is small, so ordering by exposure is what makes a second
+    visit a different problem (S14).
 
     ``item_type``, if given, restricts the search to that type (e.g. the session runner
     preferring a flashcard for a review step) — ``None`` matches any type, the prior behavior.
@@ -121,6 +129,18 @@ async def find_item_for_kc(
     tagged to the KC, so a question and answer key another learner had written became this
     learner's practice — and the mastery observation it produced was traced to it.
     """
+    # Correlated per candidate item, which is cheap because a KC's bank is small and
+    # ix_learning_events_learner_item makes each lookup an index probe.
+    last_answered = (
+        select(func.max(LearningEvent.created_at))
+        .where(
+            LearningEvent.learner_id == learner_id,
+            LearningEvent.event_type == "observation",
+            LearningEvent.payload["item_id"].astext == cast(Item.id, String),
+        )
+        .correlate(Item)
+        .scalar_subquery()
+    )
     stmt = (
         select(Item)
         .join(ItemKC, ItemKC.item_id == Item.id)
@@ -130,7 +150,9 @@ async def find_item_for_kc(
         stmt = stmt.where(Item.item_type == item_type)
     return await session.scalar(
         stmt.options(selectinload(Item.kc_links), selectinload(Item.rubric))
-        .order_by(Item.created_at)
+        # created_at second so the order is total: two never-answered items still come back
+        # in a fixed order rather than whatever the scan happened to produce.
+        .order_by(last_answered.asc().nullsfirst(), Item.created_at)
         .limit(1)
     )
 

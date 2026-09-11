@@ -45,3 +45,4 @@ sweep-artifacts/
 
 # Mined real-data eval datasets (Phase 9b) — never committed
 tests/eval/datasets/*.json
+.playwright-mcp/

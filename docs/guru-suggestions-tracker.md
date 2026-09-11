@@ -61,7 +61,7 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | S11 | Make targeted prerequisite detours an explicit planning capability. | Routine revision changes status, review order, and scaffolding hints while preserving remaining new-topic order. [R5] | Investigate and address the prerequisite blocking the learner, then return to the original objective. | High | Accepted |
 | S12 | Apply difficulty targeting to question selection/generation. | The session runner explicitly documents target difficulty as unapplied. [R6] | The learner's estimated capability affects the actual task they receive. | High | Accepted |
 | S13 | Distinguish assisted retries from independent demonstrations in mastery evidence. | Guided practice hints and retries the same question; every attempt updates mastery. Hint context is omitted by that workflow and is not used by the estimator even when recorded elsewhere. [R7–R8] | Prevent assistance and repeated exposure from producing unjustified mastery confidence. | First | Implemented (see below) |
-| S14 | Select fresh assessment items with awareness of prior exposure, and check delayed retention and transfer. | Bank selection returns the oldest matching item without considering the learner's exposure. [R2] | Establish that the learner can solve a different problem without help and retain that capability. | First | Accepted |
+| S14 | Select fresh assessment items with awareness of prior exposure, and check delayed retention and transfer. | Bank selection returns the oldest matching item without considering the learner's exposure. [R2] | Establish that the learner can solve a different problem without help and retain that capability. | First | Implemented (see below) |
 | S15 | Connect exploratory conversation to structured learning evidence through a deliberate assessment mechanism. | Plain chat can ask questions, but its conversational answers do not directly update mastery. [R9] | Make the initial learner-led experience contribute trustworthy evidence without treating all conversation as proof of mastery. | High | Accepted |
 | S16 | Share appropriate learner context and learning-state access across chat, agentic, and guided modes. | Plain chat injects memory and plan hints; agentic service does not inject those same contexts. [R9–R10] | Switching modes retains relevant understanding of the learner and their goal. | High | Accepted |
 | S17 | Persist resumable guided-practice state durably. | Workflow uses an in-memory checkpointer. [R7] | A restart does not lose the paused practice state needed to continue correctly. | Before reliable external use | Accepted |
@@ -76,7 +76,7 @@ These are new proposals from the second review; the user's acceptance of prior s
 
 | ID | Suggestion | Evidence / consequence | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
-| S22 | Generate, validate, and persist prerequisite relationships during curriculum creation. | CurriculumProposal and create_subject_with_graph contain topics and KCs but no prerequisite edges. Newly generated curricula therefore lack the dependencies the planner needs. [R13–R14] | First | Proposed |
+| S22 | Generate, validate, and persist prerequisite relationships during curriculum creation. | CurriculumProposal and create_subject_with_graph contain topics and KCs but no prerequisite edges. Newly generated curricula therefore lack the dependencies the planner needs. [R13–R14] | First | Implemented (see below) |
 | S23 | Validate the prerequisite graph, including multi-node cycles and references, before relying on its order. | Edge creation checks self-loops and existence but not longer cycles; topo_sort appends unresolved nodes when a cycle occurs. [R5, R15] | High | Proposed |
 | S24 | Define concept identity and cross-subject prerequisite handling explicitly. | Each KC belongs to one topic. Duplicate concepts get separate IDs and mastery states; the planner's candidate pool and edge loading do not establish a complete cross-subject traversal. Cross-subject edges are possible in the schema, so this is an incomplete policy rather than a database prohibition. [R14, R16, R11] | High | Proposed |
 | S25 | Separate shared, curated knowledge from learner-specific generated curricula, with ownership and publishing rules. | Subjects are global, listing is unscoped, commit rejects a duplicate subject name globally, and learner-authenticated routes can add global topics/KCs/edges. Personal goal-derived structure has no explicit private draft boundary. [R14–R16] | Before multi-user release | Proposed |
@@ -84,6 +84,109 @@ These are new proposals from the second review; the user's acceptance of prior s
 | S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Proposed |
 | S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Proposed |
 | S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Proposed |
+
+### S14 — Select fresh items with awareness of exposure, and check retention and transfer
+
+**Status:** Partially implemented (branch `feat/s22-s14`) · **Priority:** First
+
+**Implemented — a second visit is a different question.** Bank selection was `ORDER BY
+created_at`, which is *stable*: a learner practising a component twice got the same question
+twice, and ten times got it ten times. After the first attempt that measures recall of one
+question rather than the component — and because every attempt still updated mastery,
+re-answering what the learner had just been told drove the estimate up. Selection now orders by
+when this learner last answered each item, never-answered first, with `created_at` second so
+the order stays total.
+
+**Implemented — the lookup does not scale with the bank.** Exposure is a correlated subquery,
+so the cost is the same whether a KC has two items or twelve; the test asserts the count does
+not grow rather than pinning a number, because the constant part is the caller's eager load.
+Migration `0036` adds a partial expression index on `(learner_id, payload->>'item_id')` for
+observations — the item id lives in the payload rather than a column, so without it each
+lookup is a scan of every observation the learner has ever produced.
+
+**Implemented — the estimate now says what it rests on.** `mastery.kc_evidence` reports, per
+KC, how many attempts, how many *distinct* items, how many distinct items answered with no hint
+and no earlier look in the sitting, and the span to the last unaided demonstration. A single
+number cannot distinguish four different problems solved unaided over three weeks from one
+question answered four times in ten minutes, and only one of those is what "mastered" is meant
+to claim. `transfer_shown` and `retention_shown` sit alongside `assessed` on the mastery read,
+which is the same honesty S46 applied to the denominator.
+
+**Implemented — measured on the clock the update used, not the transaction's.** The span uses
+the `observed_at` S56 added, falling back to `created_at` for older rows. `created_at` is
+`now()` at transaction start, so a batch written together ties and a span across it reads as
+zero — which is exactly what the first run of these tests showed.
+
+**Implemented — reading it costs one query for a whole subject.** `subject_mastery` went from
+three queries to four, grouped for the entire drill-down. Asserted by a query-count budget, so
+a later per-KC call cannot quietly put the page back where S62 found it.
+
+**Measured.** 16 tests; seven mutations each fail at least one — reverting selection to
+`created_at`, dropping the learner filter from exposure, ignoring hints, ignoring re-looks,
+measuring the span on the transaction clock, letting one item count as transfer, and removing
+the evidence read from the page. The re-look mutation survived the first round, because
+excluding a repeat changes the *span* and nothing pinned that; a test was added for it.
+
+**Not done.** Nothing *schedules* a delayed unassisted probe — FSRS decides when a component
+comes back, and this only makes that revisit a different question when the bank has one. A KC
+with a single item still repeats it, because generation is not triggered by exhaustion of fresh
+ones. `retention_min_days` is a floor (1.0) chosen to separate "later that week" from
+"immediately after being shown", not a calibrated interval, and it does not vary by component —
+calibrating it needs the delayed-outcome study S59 covers. Transfer is counted as "a different
+item", which is not the same as a *different kind of problem*: two near-identical generated
+MCQs count as two. Nothing gates mastery on either signal; they are reported, not enforced.
+And the frontend does not render them yet — the fields reach the API and stop there.
+
+### S22 — Generate, validate, and persist prerequisite relationships during curriculum creation
+
+**Status:** Partially implemented (branch `feat/s22-s14`) · **Priority:** First
+
+**Implemented — a generated curriculum now has edges.** `KCProposal` carries a `key` and a
+`requires` list, the generation prompt asks for prerequisites by name, and
+`create_subject_with_graph` writes the `KCEdge` rows. Before this the proposal contained topics
+and KCs and nothing else, so every generated subject handed the planner a flat list — while
+ordering by prerequisites is the planner's entire job.
+
+**Implemented — names are resolved to keys at parse time, not at commit.** The model writes
+prerequisites by name because that is what it is good at; the parser turns them into stable
+per-proposal keys immediately. The learner then renames a KC in the review step without
+breaking the edge, which a name-based reference would have done silently. Matching is
+case-insensitive and whitespace-collapsed: the model writes the prerequisite list separately
+from the name it is referring to, so exact matching drops real edges over a capital letter.
+
+**Implemented — three model failure modes degrade instead of failing.** A prerequisite naming
+something outside the curriculum, a KC naming itself, and a cycle are all *ordinary* output,
+not exceptions. Each is dropped and logged. Rejecting the curriculum instead would make
+generated subjects less reliable than they were before this existed, when they had no edges to
+be wrong about. `acyclic` keeps every edge that does not close a cycle, considering them in
+proposal order so the result is a function of the input rather than of dictionary iteration.
+
+**Implemented — the cycle check runs again at commit.** Parsing validates the model's output;
+the commit endpoint receives a *request body*, which a client is free to have edited in
+between. The two failure modes that matters for are a foreign-key error that fails the whole
+commit, and a stored cycle — which `topo_sort` tolerates by appending the leftovers, so it does
+not surface as an error at all. It surfaces as an order, and the learner is taught in it.
+
+**Implemented — the edges survive the review round trip.** `/onboarding/curriculum` explicitly
+rebuilt each KC as `{name, description}`, so anything else was dropped between generation and
+commit. It now carries `key` and `requires`, and the frontend types declare them — they
+survived only because every review handler happens to spread the object, and a refactor that
+rebuilt one would have silently removed every edge again.
+
+**Measured.** 21 tests, and seven mutations each fail at least one: disabling cycle detection,
+making name matching exact, allowing self-references, removing edge creation, skipping the
+commit-time re-validation, and dropping either `key` or `requires` from the API response. The
+last two survived the first mutation round — nothing covered the round trip, which is precisely
+where the edges were being lost — so that test was added.
+
+**Not done.** Edge `weight` is always 1.0; nothing proposes or uses a strength. Prerequisites
+are only resolved *within one proposal*, so a curriculum cannot depend on a KC in a subject the
+learner already has — that needs the concept identity S24 covers. Nothing validates the graph
+on the direct `POST /kcs/{id}/prerequisites` path, which is still S23's, and nothing re-checks
+an existing subject's graph. A dropped edge is logged and not surfaced to the learner, so a
+curriculum whose ordering was quietly weakened looks identical to one the model got right. And
+nothing measures whether the generated orderings are *pedagogically* correct — only that they
+are acyclic and resolvable.
 
 ## Open decisions
 
@@ -151,6 +254,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-09 | Third implementation pass, branch `fix/tracker-s51-s31` (stacked on the second): S51 (`4809fae`), S44 (`4a55279`), S33 (`f80f0f6`), S61 (`4836971`), S31 (`cabd2a0`) and S62 (`67c1226`). `uv run poe check` green (856 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0030`–`0032`. All six are marked *partially* implemented and each says what it left; the largest gaps are an explicit presentation preference to replace the reading-level inference (S44), any path for a learner's item to become shared at all (S33), orphaned-blob reconciliation and a retention *schedule* (S61), adversarial evaluation against a real model (S31), and latency as opposed to query-count budgets (S62). Two things worth recording. S62 began by *measuring*: the subject-mastery page cost 15 queries on a 2x2 subject and 147 on an 8x8, and the fixes are verified by a counter rather than asserted. And two of my own S31 tests initially passed for the wrong reason — a base64 exfiltration test that an unreachable host would also have satisfied, and a nonce-uniqueness test comparing body text rather than delimiters — both caught by mutating the code they were meant to cover. S61's completeness test ("every table with a `learner_id` has a stated disposition") caught a table misnamed in the retention map on its first run. |
 | 2026-09-10 | S77 added and implemented, branch `feat/source-dedup` (stacked on the third pass): content-addressed shared blobs (`b44ad51`), within-learner exact dedup (`1d49309`), canonical-text dedup (`9b437fe`), and near-duplicate suggestions (`ef04f40`). Not a review finding — a user request to hash uploads against duplicates, "ideally strong enough to catch similar files". `uv run poe check` green (885 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0033`–`0035`. The request needed correcting before it could be built: a cryptographic hash is designed *not* to do this, so it became three mechanisms — byte equality, canonical-text equality, and a locality-sensitive distance. The third was measured before being trusted (`poe simhash-separation`), and the measurement changed the design: a badly scanned copy of a book and a document half of which is a different book sit at the same distance, so no cut-off separates them and the near-duplicate check reports rather than decides. Also re-opened S61: sharing a blob key across learners means "delete this account's bytes" now has to mean "unless somebody else references them". |
 | 2026-09-11 | Fourth implementation pass, branch `fix/tracker-s53-s60` (off merged `main`, after PRs #17–#19): S53 (`e49000b`), S56 (`978a549`) and S60 (`f07bc8f`) — the last three items that were still *Proposed* and technical. `uv run poe check` green (914 passed, 4 skipped); `npm run lint`, `npm run test` and `npm run build` green. No migrations. All three are marked *partially* implemented and each says what it left. Three things worth recording. **S53's defects were found by looking at the rendered page, not the code**: the type scale lived in `@layer components`, which Tailwind cannot compose into a variant, so every `[&_h2]:text-h3` in the notes renderer had been generating no CSS and headings rendered at body size; `$$x$$` on one line came out inline; and `\(x\)` rendered as literal backslashes. None was visible in review. The frontend also had **no test framework at all**, so "renders correctly" was not a claim anything could check — vitest is now in CI. **S56 found the same class of bug twice**: ordering a learner's history by `created_at` is ordering it by the transaction clock, which ties for anything committed together, so both the step order and a seed-ordering guard were unreliable; steps are now ordered by the timestamp the update itself used. **S60 surfaced a packaging defect** — `alembic` was a dev-group dependency, so a production image could not run the first step of its own deployment. Everything S60 claims was executed against a running containerised stack, including stopping MinIO to confirm readiness 503s while liveness stays 200. Also worth recording: a `docker build ... | tail` reported success while the build had failed, because the pipe's exit status is `tail`'s — the first "the image builds" claim was wrong and was caught by rechecking the exit code explicitly. |
+| 2026-09-11 | Fifth pass, branch `feat/s22-s14` — the first items taken from the *register* rather than the autopsy, both marked **First**: S22 (`bfcc78c`) and S14 (`6eb56cc`). `uv run poe check` green (952 passed, 4 skipped); `npm run lint` and `npm run build` green. Migration `0036`. Both are marked *partially* implemented and each says what it left. Two defects here were of the kind that look correct in review and only show up in behaviour. **Selection was `ORDER BY created_at`** — stable, so practising a component twice served the same question twice, while every attempt still updated mastery: the estimate rose on the learner re-answering what they had just been told. **Generated curricula had no prerequisite edges at all**, so the planner — whose entire job is ordering by prerequisites — was ordering a flat list. Three things worth recording. S22's edges were being dropped at a place no test looked: `/onboarding/curriculum` rebuilt each KC as `{name, description}`, so the round trip through the learner's review discarded them; two mutations survived the first round because of it. S14's span measurement reported a nine-day gap as **zero** on its first run, which is the `created_at`-is-the-transaction-clock finding from S56 arriving in a second place — it now uses the `observed_at` that item recorded. And prerequisites are resolved from names to stable keys at *parse* time specifically so the learner renaming a KC in the review step cannot silently break an edge. |
 
 ## Remaining architecture autopsy — source pass
 

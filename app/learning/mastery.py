@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import distinct, func, select
+from sqlalchemy import DateTime, Integer, and_, case, distinct, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -497,3 +497,93 @@ class GlickoTracer:
 
 DEFAULT_TRACER: KnowledgeTracer = GlickoTracer()
 """The tracer the engine runs today. Swapping it (→ DKT) touches only this binding."""
+
+
+class KCEvidence(BaseModel):
+    """What a KC's mastery estimate actually rests on (S14).
+
+    The estimate is one number and cannot say whether it came from solving four different
+    problems unaided over three weeks or from answering the same question four times in ten
+    minutes after being told the answer. Those are not the same claim about a learner, and
+    only one of them is what "mastered" is meant to mean.
+
+    Counting is over the KC-tagged event log, so it needs no new table and covers history
+    recorded before this existed.
+    """
+
+    kc_id: uuid.UUID
+    attempts: int
+    # Distinct items, and distinct items answered with no hint and no earlier look at that
+    # same question in the sitting — the assistance signal S13 already records.
+    distinct_items: int
+    unassisted_items: int
+    # Days between the first attempt at this KC and the most recent *unassisted* one. None
+    # when nothing here was ever answered unaided.
+    span_days: float | None
+
+    @property
+    def transfer_shown(self) -> bool:
+        """Solved more than one different problem for this KC, unaided."""
+        return self.unassisted_items >= 2
+
+    def retention_shown(self, *, min_days: float) -> bool:
+        """Demonstrated unaided at least ``min_days`` after first meeting the component."""
+        return self.span_days is not None and self.span_days >= min_days
+
+
+async def kc_evidence(
+    session: AsyncSession, learner_id: uuid.UUID, kc_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, KCEvidence]:
+    """Evidence quality for many KCs in one query.
+
+    One query for the whole set, like ``estimate_kcs``: this is read alongside a subject's
+    mastery roll-up, and a per-KC call there would put the page back where S62 found it.
+    KCs with no observations are absent from the result rather than present and empty — the
+    caller already knows which it asked for, and "no evidence" is not a row.
+    """
+    if not kc_ids:
+        return {}
+    # An attempt is unassisted when it used no hints and was not a re-look at the same
+    # question in the same sitting. Both are recorded per event by ``record_observation``.
+    unassisted = and_(
+        func.coalesce(LearningEvent.payload["hints_used"].astext.cast(Integer), 0) == 0,
+        func.coalesce(LearningEvent.payload["prior_attempts"].astext.cast(Integer), 0) == 0,
+    )
+    item = LearningEvent.payload["item_id"].astext
+    # `observed_at` and not `created_at`, for the reason S56 records: `created_at` is the
+    # transaction's clock, so a batch written together ties and an event recorded with an
+    # explicit time does not match it at all. Older rows have no `observed_at` and fall back.
+    when = func.coalesce(
+        LearningEvent.payload["observed_at"].astext.cast(DateTime), LearningEvent.created_at
+    )
+    rows = await session.execute(
+        select(
+            LearningEvent.kc_id,
+            func.count(distinct(func.coalesce(LearningEvent.attempt_id, LearningEvent.id))),
+            func.count(distinct(item)),
+            func.count(distinct(case((unassisted, item)))),
+            func.min(when),
+            func.max(case((unassisted, when))),
+        )
+        .where(
+            LearningEvent.learner_id == learner_id,
+            LearningEvent.event_type == "observation",
+            LearningEvent.kc_id.in_(kc_ids),
+        )
+        .group_by(LearningEvent.kc_id)
+    )
+    out: dict[uuid.UUID, KCEvidence] = {}
+    for kc_id, attempts, items, unassisted_items, first_at, last_unassisted_at in rows:
+        if kc_id is None:
+            continue
+        span = None
+        if first_at is not None and last_unassisted_at is not None:
+            span = (last_unassisted_at - first_at).total_seconds() / _SECONDS_PER_DAY
+        out[kc_id] = KCEvidence(
+            kc_id=kc_id,
+            attempts=int(attempts or 0),
+            distinct_items=int(items or 0),
+            unassisted_items=int(unassisted_items or 0),
+            span_days=span,
+        )
+    return out

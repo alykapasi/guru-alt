@@ -19,6 +19,15 @@ class KCMasteryRead(BaseModel):
     uncertainty: float
     mastered: bool
     assessed: bool
+    # What the estimate rests on (S14). The same number can come from four different problems
+    # solved unaided over weeks or from one question answered four times in ten minutes, and
+    # those are not the same claim — so the counts travel with it.
+    distinct_items: int = 0
+    unassisted_items: int = 0
+    # Solved a *different* problem unaided, and demonstrated unaided after a delay. Both are
+    # false for a component whose whole history is one question in one sitting.
+    transfer_shown: bool = False
+    retention_shown: bool = False
 
 
 class TopicMasteryRead(BaseModel):

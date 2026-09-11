@@ -23,8 +23,8 @@ CURRICULUM_REPLY = """{
             "name": "Photosynthesis Basics",
             "description": "Introduction to photosynthesis",
             "kcs": [
-                {"name": "Light Reactions", "description": "The light-dependent reactions"},
-                {"name": "Dark Reactions", "description": "The light-independent reactions (Calvin cycle)"}
+                {"name": "Light Reactions", "description": "The light-dependent reactions", "requires": ["Thylakoid"]},
+                {"name": "Dark Reactions", "description": "The light-independent reactions (Calvin cycle)", "requires": ["Light Reactions"]}
             ]
         },
         {
@@ -131,6 +131,27 @@ async def test_curriculum_endpoint_returns_proposal(
     assert len(data["topics"]) == 2
     assert data["topics"][0]["name"] == "Photosynthesis Basics"
     assert len(data["topics"][0]["kcs"]) == 2
+
+
+async def test_curriculum_endpoint_carries_the_prerequisite_graph(
+    api_client: AsyncClient, fake_llm_curriculum: None
+) -> None:
+    """The response is what the learner reviews and posts back on commit, so an edge dropped
+    here is an edge that never reaches the database — which is how generated subjects ended
+    up with no prerequisites at all (S22)."""
+    response = await api_client.post(
+        f"{API}/onboarding/curriculum",
+        json={"goal": "Learn about photosynthesis", "source_ids": None},
+    )
+    assert response.status_code == 200
+    topics = response.json()["topics"]
+
+    by_name = {kc["name"]: kc for topic in topics for kc in topic["kcs"]}
+    assert all(kc["key"] for kc in by_name.values()), "every KC needs a stable handle"
+    assert by_name["Dark Reactions"]["requires"] == [by_name["Light Reactions"]["key"]]
+    # And one that points into a different topic, which is the case a per-topic pass misses.
+    assert by_name["Light Reactions"]["requires"] == [by_name["Thylakoid"]["key"]]
+    assert by_name["Thylakoid"]["requires"] == []
 
 
 async def test_curriculum_endpoint_400_on_llm_failure(
