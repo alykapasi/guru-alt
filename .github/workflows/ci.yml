@@ -69,7 +69,7 @@ jobs:
         run: uv run poe test
 
   frontend:
-    name: frontend lint · build
+    name: frontend lint · test · build
     runs-on: ubuntu-latest
 
     defaults:
@@ -90,6 +90,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Test
+        run: npm run test
 
       # `tsc -b && vite build` — the type-check gate for the frontend as well as the build.
       - name: Build

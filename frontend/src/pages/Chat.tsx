@@ -58,7 +58,11 @@ export function Chat() {
         )}
         <Composer disabled={!!pending} onSend={(content, mode) => send(content, { mode })} />
       </div>
-      {citation && <CitationPane citation={citation} onClose={() => setCitation(null)} />}
+      {citation && (
+        <aside className="border-base-300 flex w-80 shrink-0 flex-col border-l">
+          <CitationPane citation={citation} onClose={() => setCitation(null)} />
+        </aside>
+      )}
     </div>
   );
 }

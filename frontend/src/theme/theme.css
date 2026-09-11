@@ -97,45 +97,48 @@
 }
 
 /* Type scale (docs/superpowers plan §0) — semantic classes so components reach for a role,
-   not a raw Tailwind text-* utility picked by feel. */
-@layer components {
-  .text-display {
-    font-family: var(--font-display);
-    font-weight: 600;
-    font-size: 3.5rem;
-    line-height: 3.75rem;
-    letter-spacing: -0.01em;
-  }
-  .text-h1 {
-    font-family: var(--font-display);
-    font-weight: 600;
-    font-size: 2.25rem;
-    line-height: 2.75rem;
-  }
-  .text-h2 {
-    font-family: var(--font-display);
-    font-weight: 600;
-    font-size: 1.5rem;
-    line-height: 2rem;
-  }
-  .text-h3 {
-    font-family: var(--font-sans);
-    font-weight: 600;
-    font-size: 1.125rem;
-    line-height: 1.625rem;
-  }
-  .text-body {
-    font-family: var(--font-sans);
-    font-weight: 400;
-    font-size: 1rem;
-    line-height: 1.625rem;
-  }
-  .text-caption {
-    font-family: var(--font-sans);
-    font-weight: 500;
-    font-size: 0.875rem;
-    line-height: 1.25rem;
-  }
+   not a raw Tailwind text-* utility picked by feel.
+
+   Declared with `@utility`, not `@layer components`: a plain component class cannot be composed
+   into a variant, so `[&_h2]:text-h3` — how the Markdown renderer styles content it does not
+   author — silently generated no CSS at all, and every heading in a note rendered at body size
+   because Tailwind's preflight had already flattened the browser default. */
+@utility text-display {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 3.5rem;
+  line-height: 3.75rem;
+  letter-spacing: -0.01em;
+}
+@utility text-h1 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 2.25rem;
+  line-height: 2.75rem;
+}
+@utility text-h2 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.5rem;
+  line-height: 2rem;
+}
+@utility text-h3 {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 1.125rem;
+  line-height: 1.625rem;
+}
+@utility text-body {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: 1rem;
+  line-height: 1.625rem;
+}
+@utility text-caption {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
 }
 
 body {

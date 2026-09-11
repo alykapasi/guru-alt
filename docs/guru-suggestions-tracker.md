@@ -1196,7 +1196,65 @@ open, and this is one of the things they would cover.
 
 ### S53 — Support technical content rendering and working citations in practice
 
-**Status:** Proposed · **Priority:** High for initial audience
+**Status:** Partially implemented (branch `fix/tracker-s53-s60`) · **Priority:** High for initial
+audience
+
+**Implemented — one renderer, used everywhere content is shown.** `RichText` (Markdown + GFM +
+LaTeX + code + citations) now backs the chat transcript, notes, and the practice item's stem,
+which previously rendered plain text, bare Markdown, and plain text respectively. Raw HTML stays
+disabled: everything passing through here is model output or another learner's uploaded
+material, so react-markdown's escaping is the security property, not a default to relax later.
+
+**Implemented — citations survive being inside real prose.** Markers are rewritten on the parsed
+tree, not the raw string. The old split-the-string approach broke whatever block a marker sat
+inside, and could not tell a citation from Markdown's own bracket syntax; `[1](https://…)` is
+already a link by the time the rewrite runs, so it is no longer a candidate. Code and TeX are
+skipped, so `row[1]` and `x_{[1]}` stay as written, and a marker we hold no citation for goes
+back exactly as the model wrote it rather than becoming a control that does nothing.
+
+**Implemented — guided practice can open its evidence.** `Session` passed `() => {}`, so every
+citation there rendered as a live-looking button that did nothing. It now opens the same
+`CitationPane` chat uses, stacked above the item rather than replacing it: a learner opening a
+citation is checking a source *in order to answer*, so hiding the question would defeat the
+click. Both side panels stopped owning their own column to make that possible.
+
+**Implemented — three rendering defects found by looking at the output, not the code.**
+*Headings did not exist.* The type scale was declared in `@layer components`, and a plain
+component class cannot be composed into a Tailwind variant, so `[&_h2]:text-h3` — how notes
+styled content they do not author — generated no CSS at all. With preflight having already
+flattened the browser default, every heading in every note rendered at body size. The scale is
+now declared with `@utility`.
+*Standalone equations were inline.* remark-math treats `$$` as display only when the delimiters
+sit on their own lines, so `$$\det(A - \lambda I) = 0$$` — how models and GitHub both write a
+standalone equation — came out cramped mid-paragraph. A paragraph containing nothing but one
+equation is promoted; `$$x$$` mid-sentence still renders inline.
+*LaTeX's own delimiters did not render.* `\(x\)` and `\[x\]` arrived as literal backslashes.
+They are normalised on the source rather than the tree, because `\(` is a CommonMark escape for
+a literal paren: by the time any plugin runs the backslashes are gone and `(x)` cannot be told
+from ordinary parentheses.
+
+**Implemented — the frontend has tests, and CI runs them.** There was no frontend test framework
+at all, so "renders correctly" was not a claim anything could check. Vitest + Testing Library
+under `npm run test`, wired into the existing CI job (now *lint · test · build*). 19 tests cover
+what the plain renderer could not show, both citation states, the three defects above, and the
+four ways a `[N]` must *not* become a citation. Every one was mutation-checked; the first pass
+had two guards each making the same decision twice, so neither could fail — they are now one
+decision each.
+
+**Implemented — the initial download got smaller.** The renderer is ~300kB of KaTeX and unified,
+and adding it took the bundle from 141kB to 235kB gzipped, paid on the landing page. It is now a
+lazy chunk whose fallback is the text itself (a spinner would make a streaming reply visibly
+disappear on first paint). Initial download **141kB → 106kB gzipped**, because react-markdown
+moved out of it too.
+
+**Not done.** Code is not syntax-highlighted — it is monospaced, scrollable, and verbatim, but
+not coloured; every option costs more than the whole renderer currently does. The learner's own
+messages are still rendered literally rather than as Markdown, deliberately: showing someone
+their message back with their asterisks turned into emphasis means they can no longer see what
+they sent. Indented four-space code blocks are not detected by the LaTeX-delimiter normaliser
+(fenced and inline code are). Keyboard and screen-reader behaviour is asserted only through
+roles and labels in jsdom — no real assistive-technology pass, and no browser-level test of the
+stacked panel layout beyond the screenshot it was checked against.
 
 **Evidence:** Chat renders plain text with citation buttons, not Markdown/math/code. Notes use basic ReactMarkdown without math plugins. Session passes a no-op citation click handler, so its citation controls cannot open evidence.
 
