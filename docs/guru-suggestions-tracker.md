@@ -58,7 +58,7 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | S08 | Build one trustworthy end-to-end learning sequence before adding more breadth. | The assessment and planning machinery exists, but diagnosis and teaching decisions are weakly connected. | Detect a specific gap → ask a discriminating question → teach → test a fresh unassisted application → revisit later. | First | Accepted |
 | S09 | Add structured diagnosis of specific misconceptions and prerequisite gaps, with uncertainty and supporting evidence. | Placement infers rough levels; grading returns a single score and short rationale. These do not establish why an answer failed. [R1–R3] | Distinguish forgotten notation, a procedural error, and a conceptual misunderstanding before choosing help. | High | Implemented (see below) |
 | S10 | Preserve component-specific assessment evidence and define explicit grading criteria for generated open questions. | The same aggregate score updates every tagged component with different weights; generated short questions have no explicit rubric. [R2–R4] | Avoid treating a failure in projections as equal evidence of failure in every skill involved in least squares. | High | Implemented (see below) |
-| S11 | Make targeted prerequisite detours an explicit planning capability. | Routine revision changes status, review order, and scaffolding hints while preserving remaining new-topic order. [R5] | Investigate and address the prerequisite blocking the learner, then return to the original objective. | High | Accepted |
+| S11 | Make targeted prerequisite detours an explicit planning capability. | Routine revision changes status, review order, and scaffolding hints while preserving remaining new-topic order. [R5] | Investigate and address the prerequisite blocking the learner, then return to the original objective. | High | Implemented (see below) |
 | S12 | Apply difficulty targeting to question selection/generation. | The session runner explicitly documents target difficulty as unapplied. [R6] | The learner's estimated capability affects the actual task they receive. | High | Implemented (see below) |
 | S13 | Distinguish assisted retries from independent demonstrations in mastery evidence. | Guided practice hints and retries the same question; every attempt updates mastery. Hint context is omitted by that workflow and is not used by the estimator even when recorded elsewhere. [R7–R8] | Prevent assistance and repeated exposure from producing unjustified mastery confidence. | First | Implemented (see below) |
 | S14 | Select fresh assessment items with awareness of prior exposure, and check delayed retention and transfer. | Bank selection returns the oldest matching item without considering the learner's exposure. [R2] | Establish that the learner can solve a different problem without help and retain that capability. | First | Implemented (see below) |
@@ -84,6 +84,63 @@ These are new proposals from the second review; the user's acceptance of prior s
 | S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Proposed |
 | S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Proposed |
 | S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Proposed |
+
+### S11 — Make targeted prerequisite detours an explicit planning move
+
+**Status:** Partially implemented (branch `feat/s09-s10-s11`) · **Priority:** High
+
+**Implemented — the plan can now say "the reason you cannot do this is something earlier".**
+Revision reordered steps, flipped statuses and refreshed scaffolding hints, all within the
+order the plan was generated with. A learner stuck on least squares because they never learned
+projections got least squares again, rescaffolded. `detour` is a third step type, carrying
+`detour_for` (the component the learner was actually working towards) and `detour_reason`.
+Without those two fields a detour is indistinguishable from the plan changing its mind about
+the order, which is the thing a learner would reasonably lose trust over.
+
+**Implemented — two triggers, and the second is why this works at all.** The grader naming a
+prerequisite (S09) acts on a single answer: being told the failure is upstream is the whole
+point of having asked. But most generated items are MCQs, which produce no diagnosis — so
+there is a behavioural fallback, `detour_min_failures` consecutive attempts below
+`detour_failure_threshold` with a prerequisite still unmastered. Without it detours would only
+ever fire on open questions, which is a minority of what the system actually asks.
+
+**Implemented — one level at a time.** Only *direct* prerequisites are considered. Jumping
+three levels back on one bad answer is not a teaching decision anyone would defend, and it is
+not needed: if the prerequisite the learner detours to is itself blocked, the next failure
+detours again. Detours compose over time instead of being computed all at once.
+
+**Implemented — returning to the objective needs no mechanism.** A detour step retires the way
+any step does, when its KC is mastered, and the step it was blocking becomes active again.
+There is no separate "return" path to get wrong.
+
+**Implemented — a detour outranks due reviews.** It is the direct response to the failure that
+just happened, and putting a queue of flashcards between the two breaks that connection, while
+FSRS intervals are measured in days and tolerate a few minutes.
+
+**Implemented — the struggle signal counts back from the latest attempt and stops at the first
+that went well.** A learner who failed twice and then succeeded is not stuck; a lifetime tally
+would say they were, forever. Ordered by `observed_at` rather than `created_at`, for the reason
+S56 recorded.
+
+**Measured.** 20 tests; 11 mutations, all killed. One survived the first round and found a real
+defect: `list_prerequisites` had no `ORDER BY`, so which prerequisite a stuck learner was sent
+to was decided by the query planner — and could be decided differently on the next revision.
+That is the same defect S23 found in subject-wide edges, in a place where the consequence is
+what the learner is taught next. The query is ordered now, and the test inserts rows in the
+opposite order to their timestamps so heap order and declaration order genuinely disagree.
+
+**Not done.** `detour_min_failures` (2) and `detour_failure_threshold` (0.5) are uncalibrated
+v1 choices in the spirit of the placement mappings — "not just a bad day" and "did not
+substantially do it" — and S18 owns turning them into numbers. Nothing *investigates* the
+prerequisite: the detour sends the learner to ordinary practice on it, not to a diagnostic
+sequence that would establish whether it really is the blocker, so a wrongly chosen detour
+costs real time and nothing detects that. Nothing limits how often a learner can be detoured,
+or prevents a component from being detoured away from repeatedly. Detours are not recorded as
+events, so the question "did detouring help?" cannot be asked of the data — which is exactly
+the kind of question S59 exists for, and this deliberately does not answer it. The frontend
+does not render a detour differently from any other step, so the explanation the two new fields
+exist to carry does not yet reach the learner. And a diagnosed prerequisite outside the KC's
+direct prerequisites is dropped rather than treated as evidence the *graph* is wrong.
 
 ### S09 — Say why an answer failed, not just how far
 

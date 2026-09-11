@@ -193,11 +193,19 @@ async def revise_plan(
     due_reviews = await _due_review_kc_ids(session, learner_id, all_kc_ids)
     scaffolding = await _scaffolding(session, learner_id)
 
+    # Decided against the plan *before* revision, on purpose: the answer that triggered this
+    # was given for whatever step was active then, and that is the component the evidence is
+    # about. Reading it after revision would ask about a step the learner has not seen.
+    detour = await _prerequisite_detour(
+        session, learner_id=learner_id, plan=plan, mastered=mastered
+    )
+
     revised = engine.revise_steps(
         cast("list[engine.StepDict]", plan.steps),
         mastered_kc_ids=mastered,
         due_review_kc_ids=due_reviews,
         scaffolding=scaffolding,
+        detour=detour,
     )
     # Only now is it known which steps this revision finished, and so how much room the
     # horizon has for the rest of the objective. Extending before that would never see any.
@@ -214,6 +222,8 @@ async def revise_plan(
             mastered_kc_ids=mastered,
             due_review_kc_ids=due_reviews,
             scaffolding=scaffolding,
+            # Not passed again: the first pass already inserted it, and re-deciding here would
+            # append a second identical step for the same prerequisite.
         )
     plan.steps = cast("list[dict[str, Any]]", revised)
     _apply_plan_level_hints(plan, scaffolding)
@@ -222,6 +232,60 @@ async def revise_plan(
     await session.commit()
     await session.refresh(plan)
     return plan
+
+
+async def _prerequisite_detour(
+    session: AsyncSession,
+    *,
+    learner_id: uuid.UUID,
+    plan: LessonPlan,
+    mastered: set[uuid.UUID],
+) -> engine.Detour | None:
+    """Whether this learner should be sent to a prerequisite before the step they are on (S11).
+
+    Ordered so the cheap checks come first. Most revisions run after an answer that went fine,
+    and those must not pay for the graph queries: the struggle read is one indexed query on
+    events the learner already produced, and everything else is skipped unless it finds
+    something.
+    """
+    active = next(
+        (
+            step
+            for step in plan.steps
+            if step.get("status") == "active" and step.get("step_type") == "new"
+        ),
+        None,
+    )
+    if active is None:
+        return None  # a review or an existing detour is active; nothing is blocked here
+    blocked_id = uuid.UUID(active["kc_id"])
+    if blocked_id in mastered:
+        return None  # they just finished it — the failure that prompted this is history
+
+    settings = get_settings()
+    struggle = await mastery.recent_struggle(
+        session, learner_id, blocked_id, threshold=settings.detour_failure_threshold
+    )
+    if (
+        not struggle.diagnosed_prerequisite
+        and struggle.consecutive_failures < settings.detour_min_failures
+    ):
+        return None
+
+    edges = await knowledge_svc.list_prerequisites(session, blocked_id)
+    prereq_ids = [edge.prereq_kc_id for edge in edges]
+    if not prereq_ids:
+        return None  # nothing upstream to detour to, so the difficulty is here
+    names = {kc.id: kc.name for kc in await knowledge_svc.get_kcs(session, prereq_ids)}
+    return engine.prerequisite_detour(
+        blocked_kc_id=blocked_id,
+        prerequisites=prereq_ids,
+        prerequisite_names=names,
+        mastered=await _mastered_kc_ids(session, learner_id, prereq_ids),
+        diagnosed_name=struggle.diagnosed_prerequisite,
+        consecutive_failures=struggle.consecutive_failures,
+        min_failures=settings.detour_min_failures,
+    )
 
 
 async def mark_revision_pending(

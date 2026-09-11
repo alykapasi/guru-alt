@@ -20,6 +20,12 @@ class LessonStepRead(BaseModel):
     target_difficulty: float | None
     hint_density: str | None
     preferred_item_type: str | None
+    # Set only on a "detour" step (S11): the component the learner was actually working
+    # towards when a prerequisite turned out to be blocking them, and why the detour was
+    # taken. Without these a detour is indistinguishable from the plan simply changing its
+    # mind about the order, which is the thing a learner would reasonably lose trust over.
+    detour_for: uuid.UUID | None = None
+    detour_reason: str | None = None
 
 
 class LessonPlanRead(BaseModel):

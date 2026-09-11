@@ -416,8 +416,24 @@ async def add_prerequisite(
 
 
 async def list_prerequisites(session: AsyncSession, kc_id: uuid.UUID) -> Sequence[KCEdge]:
-    result = await session.scalars(select(KCEdge).where(KCEdge.kc_id == kc_id))
+    """This KC's direct prerequisites, in declaration order.
+
+    Ordered for the same reason ``list_edges_for_subject`` is (S23): a prerequisite detour
+    picks the *first* outstanding one (S11), so an unordered scan would let the query planner
+    choose where a stuck learner is sent. Same caveat — edges written in one transaction tie
+    on the clock and fall through to the primary key.
+    """
+    result = await session.scalars(
+        select(KCEdge).where(KCEdge.kc_id == kc_id).order_by(KCEdge.created_at, KCEdge.id)
+    )
     return result.all()
+
+
+async def get_kcs(session: AsyncSession, kc_ids: Sequence[uuid.UUID]) -> Sequence[KC]:
+    """Several KCs by id, in one query. Order is unspecified — callers key by id."""
+    if not kc_ids:
+        return []
+    return (await session.scalars(select(KC).where(KC.id.in_(list(kc_ids))))).all()
 
 
 async def list_edges_for_subject(session: AsyncSession, subject_id: uuid.UUID) -> Sequence[KCEdge]:

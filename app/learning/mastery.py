@@ -17,13 +17,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import DateTime, Integer, and_, case, distinct, func, select
+from sqlalchemy import DateTime, Float, Integer, and_, case, distinct, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.learning import scheduler
 from app.learning.assistance import evidence_credit
+from app.learning.diagnosis import FailureKind
 from app.learning.tracer import Estimate, GlickoEstimator, MasteryEstimator, aggregate
 from app.models.knowledge import KC, Topic
 from app.models.learning import LearnerKCState, LearningEvent
@@ -443,6 +444,68 @@ async def due_reviews(
         )
     ).all()
     return [ReviewItem.model_validate(s) for s in states]
+
+
+class Struggle(BaseModel):
+    """How badly, and why, a learner is currently stuck on one component (S11).
+
+    ``consecutive_failures`` counts back from the most recent attempt and stops at the first
+    one that went well — a learner who failed twice and then succeeded is not stuck, and a
+    lifetime tally would say they were forever.
+    """
+
+    consecutive_failures: int = 0
+    diagnosed_prerequisite: str = ""
+    """The prerequisite the grader named in the most recent attempt that blamed one (S09).
+    Free text, and not resolved to a KC here: the planner owns the graph."""
+
+
+async def recent_struggle(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    kc_id: uuid.UUID,
+    *,
+    threshold: float,
+    limit: int = 10,
+) -> Struggle:
+    """Read the learner's recent run of attempts at ``kc_id``, newest first.
+
+    Ordered by ``observed_at``, not ``created_at``, for the reason S56 recorded: `created_at`
+    is the transaction's clock, so a batch written together ties and the "most recent"
+    attempt would be whichever row the scan happened to reach first.
+    """
+    when = func.coalesce(
+        LearningEvent.payload["observed_at"].astext.cast(DateTime), LearningEvent.created_at
+    )
+    rows = (
+        await session.execute(
+            select(
+                LearningEvent.payload["score"].astext.cast(Float),
+                LearningEvent.payload["diagnosis"],
+            )
+            .where(
+                LearningEvent.learner_id == learner_id,
+                LearningEvent.kc_id == kc_id,
+                LearningEvent.event_type == "observation",
+            )
+            .order_by(when.desc(), LearningEvent.id.desc())
+            .limit(limit)
+        )
+    ).all()
+
+    failures = 0
+    for score, _ in rows:
+        if score is None or score >= threshold:
+            break
+        failures += 1
+
+    named = ""
+    for _, raw in rows:
+        if isinstance(raw, dict) and raw.get("kind") == FailureKind.PREREQUISITE.value:
+            named = str(raw.get("prerequisite", "")).strip()
+            if named:
+                break
+    return Struggle(consecutive_failures=failures, diagnosed_prerequisite=named)
 
 
 async def rollup_topic(
