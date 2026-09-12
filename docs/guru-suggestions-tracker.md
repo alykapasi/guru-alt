@@ -978,6 +978,34 @@ calibrating it needs the delayed-outcome study S59 covers. Transfer is counted a
 item", which is not the same as a *different kind of problem*: two near-identical generated
 MCQs count as two. Nothing gates mastery on either signal; they are reported, not enforced.
 
+**Implemented (third pass, branch `feat/residue-pass`) — running out of questions now makes
+one instead of repeating.** Exposure-ordered reuse makes a revisit a different question *while
+the bank holds a spare*. Past that it silently went back to repeating, and a component with one
+item re-asked the exact question the learner had just been told the answer to. That is the
+failure the ordering existed to stop, arriving one bank size later: an answer recalled from the
+last exchange measures memory of the exchange, not retention of the component — and it still
+moved the estimate upwards, so the thinnest banks produced the most confident numbers.
+
+Selection can now ask for an item this learner has *never answered* and get nothing rather than
+the least-recently-seen one, which is what makes exhaustion detectable; the caller generates
+instead. Generation is triggered by exhaustion rather than by every request, so a spare
+question is still the free win it was. The seen-item fallback stays as the last resort: a model
+that will not produce a parseable item must not end the session, and a repeated question is
+worse evidence than a fresh one but much better than none.
+
+**Measured (third pass).** 5 tests, 3 mutations, all killed. An existing test is part of the
+result: `test_due_reviews_endpoint_reuses_an_existing_flashcard` asserted the old repetition as
+the desired behaviour — it answered the only item and then required the same one back. It has
+been split into the two claims that are actually true now: an *unseen* bank item is still
+reused for free, and a review does not re-ask the question it already asked.
+
+**Still not done.** Nothing *schedules* a delayed unassisted probe — FSRS still decides when a
+component returns, and this only guarantees that what returns is a question the learner has not
+seen. `retention_min_days` is still an uncalibrated floor that does not vary by component.
+Transfer is still "a different item", which is not the same as a different *kind* of problem:
+two near-identical generated questions count as two. And nothing gates mastery on either
+signal; they are reported, not enforced.
+
 **Implemented (second pass, branch `feat/finish-partials-1`) — the estimate shows what it
 rests on.** The counts have travelled with the estimate since this item was built and were
 displayed nowhere, so the dashboard showed "62% · mastered" and left the reader to assume the

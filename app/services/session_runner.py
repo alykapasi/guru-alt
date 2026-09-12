@@ -90,35 +90,25 @@ async def item_for_kc(
 ) -> Item | None:
     """Resolve something answerable for ``kc``, preferring ``preferred_type`` if given.
 
-    Order: reuse a bank item of ``preferred_type`` (a free win even for types we can't
-    generate) → generate one of ``preferred_type`` (only if a generator exists) → reuse any
-    bank item for the KC → generate a ``default_type`` item.
+    Order: an *unseen* bank item of ``preferred_type`` → generate one (if a generator exists)
+    → any bank item of that type, seen or not → any bank item for the KC → generate a
+    ``default_type`` item. See ``_fresh_or_generate`` for why exhaustion triggers generation
+    rather than only emptiness (S14).
 
     ``default_type`` is a parameter rather than a constant so the choice is made by whoever
     knows what the item is for; see ``DEFAULT_GENERATED_TYPE`` for why the default is open.
     """
     if preferred_type is not None:
-        item = await assessment_svc.find_item_for_kc(
+        item = await _fresh_or_generate(
             session,
-            kc.id,
+            llm,
+            kc,
             learner_id=learner_id,
             item_type=preferred_type,
             target_difficulty=target_difficulty,
         )
         if item is not None:
             return item
-        generator = item_generation.GENERATORS.get(preferred_type)
-        if generator is not None:
-            item = await _generate_and_log(
-                session,
-                llm,
-                kc,
-                learner_id=learner_id,
-                generator=generator,
-                target_difficulty=target_difficulty,
-            )
-            if item is not None:
-                return item
 
     item = await assessment_svc.find_item_for_kc(
         session, kc.id, learner_id=learner_id, target_difficulty=target_difficulty
@@ -155,21 +145,66 @@ async def short_answer_item_for_kc(
     pass would have meant both quietly opting out of S12.
     """
     target_difficulty = await practice_target_for_kc(session, learner_id=learner_id, kc_id=kc.id)
-    item = await assessment_svc.find_item_for_kc(
-        session,
-        kc.id,
-        learner_id=learner_id,
-        item_type=ItemType.SHORT,
-        target_difficulty=target_difficulty,
-    )
-    if item is not None:
-        return item
-    return await _generate_and_log(
+    return await _fresh_or_generate(
         session,
         llm,
         kc,
         learner_id=learner_id,
-        generator=item_generation.generate_short_item,
+        item_type=ItemType.SHORT,
+        target_difficulty=target_difficulty,
+    )
+
+
+async def _fresh_or_generate(
+    session: AsyncSession,
+    llm: LLMClient,
+    kc: KC,
+    *,
+    learner_id: uuid.UUID,
+    item_type: ItemType,
+    target_difficulty: float | None,
+) -> Item | None:
+    """An item of ``item_type`` this learner has not answered before, generating one if the
+    bank is used up (S14).
+
+    Exposure-ordered reuse makes a revisit a different question only while there is a spare
+    question to be different. A component with one item repeated it, which is the failure the
+    ordering existed to stop: an answer recalled from the last time it was given measures
+    memory of that exchange, not retention of the component — and it still moved the estimate
+    upwards, so the thinnest banks produced the most confident numbers.
+
+    Generation is therefore triggered by *exhaustion* rather than only by emptiness. The
+    seen-item fallback stays as the last resort: a repeated question is worse evidence than a
+    fresh one and far better than telling a learner there is nothing to practise, so a model
+    that will not produce a parseable item does not end the session.
+    """
+    item = await assessment_svc.find_item_for_kc(
+        session,
+        kc.id,
+        learner_id=learner_id,
+        item_type=item_type,
+        target_difficulty=target_difficulty,
+        unseen_only=True,
+    )
+    if item is not None:
+        return item
+    generator = item_generation.GENERATORS.get(item_type)
+    if generator is not None:
+        generated = await _generate_and_log(
+            session,
+            llm,
+            kc,
+            learner_id=learner_id,
+            generator=generator,
+            target_difficulty=target_difficulty,
+        )
+        if generated is not None:
+            return generated
+    return await assessment_svc.find_item_for_kc(
+        session,
+        kc.id,
+        learner_id=learner_id,
+        item_type=item_type,
         target_difficulty=target_difficulty,
     )
 

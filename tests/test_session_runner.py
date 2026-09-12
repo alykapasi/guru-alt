@@ -14,7 +14,7 @@ from app.models.assessment import RUBRIC_GRADABLE, ItemType
 from app.models.chat import LLMCall
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
-from app.models.learning import LearnerKCState
+from app.models.learning import LearnerKCState, LearningEvent
 from app.models.profile import ProfileDimension
 from app.services import lesson_plan as lesson_plan_svc
 from app.services import session_runner as svc
@@ -399,3 +399,75 @@ async def test_the_due_review_queue_serves_the_escalated_format(
     resolved = [item for _review, item in pairs if item is not None]
     assert len(resolved) == 1
     assert resolved[0].item_type == ItemType.SHORT
+
+
+# --- a revisit is a different question, even when the bank runs out (S14) --------------------
+
+
+async def test_a_component_with_one_item_does_not_repeat_it(db_session: AsyncSession) -> None:
+    """Exposure ordering makes a revisit different only while there is a spare question to be
+    different. With one item it had nothing to choose between and re-asked the question the
+    learner had just been told the answer to — which measures memory of that exchange, and
+    still moved the estimate up."""
+    learner, _subject, root, _dependent = await _graph(db_session)
+    seen, _ = await item_generation.generate_short_item(
+        db_session, fake_llm_client(SHORT_REPLY), root
+    )
+    assert seen is not None
+    await _fail_review(db_session, learner, root, 1.0)
+    db_session.add(
+        LearningEvent(
+            learner_id=learner.id,
+            kc_id=root.id,
+            event_type="observation",
+            payload={"item_id": str(seen.id), "score": 1.0},
+        )
+    )
+    await db_session.flush()
+
+    item = await svc.short_answer_item_for_kc(
+        db_session, fake_llm_client(SHORT_REPLY), learner_id=learner.id, kc=root
+    )
+    assert item is not None
+    assert item.id != seen.id
+
+
+async def test_an_unseen_bank_item_is_still_reused_for_free(db_session: AsyncSession) -> None:
+    """Generation is triggered by exhaustion, not by every request — a spare question is a
+    free win and paying to invent another would be waste."""
+    learner, _subject, root, _dependent = await _graph(db_session)
+    unseen, _ = await item_generation.generate_short_item(
+        db_session, fake_llm_client(SHORT_REPLY), root
+    )
+    assert unseen is not None
+    calls_before = len((await db_session.scalars(select(LLMCall))).all())
+
+    item = await svc.short_answer_item_for_kc(
+        db_session, fake_llm_client(SHORT_REPLY), learner_id=learner.id, kc=root
+    )
+    assert item is not None and item.id == unseen.id
+    assert len((await db_session.scalars(select(LLMCall))).all()) == calls_before
+
+
+async def test_a_repeated_question_beats_no_question_at_all(db_session: AsyncSession) -> None:
+    """The last resort, and the reason it exists: a model that will not produce a parseable
+    item must not end the session. Worse evidence is still evidence; nothing is not."""
+    learner, _subject, root, _dependent = await _graph(db_session)
+    seen, _ = await item_generation.generate_short_item(
+        db_session, fake_llm_client(SHORT_REPLY), root
+    )
+    assert seen is not None
+    db_session.add(
+        LearningEvent(
+            learner_id=learner.id,
+            kc_id=root.id,
+            event_type="observation",
+            payload={"item_id": str(seen.id), "score": 1.0},
+        )
+    )
+    await db_session.flush()
+
+    item = await svc.short_answer_item_for_kc(
+        db_session, fake_llm_client("not json"), learner_id=learner.id, kc=root
+    )
+    assert item is not None and item.id == seen.id
