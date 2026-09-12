@@ -102,6 +102,35 @@ class KCCoverageRead(BaseModel):
     chunk_count: int
 
 
+class SacrificedEdgeRead(BaseModel):
+    prereq_kc_id: uuid.UUID
+    prereq_slug: str
+    prereq_name: str
+    kc_id: uuid.UUID
+    kc_slug: str
+    kc_name: str
+
+
+@router.get(
+    "/subjects/{subject_id}/prerequisite-conflicts",
+    response_model=list[SacrificedEdgeRead],
+)
+async def subject_prerequisite_conflicts(
+    subject_id: uuid.UUID, session: SessionDep, learner: CurrentLearner
+):
+    """Prerequisites this subject declares that its lesson plans cannot honour (S23).
+
+    A cycle means two components each claim to come before the other. Planning resolves it by
+    dropping whichever edge closes the ring, so a plan is still produced — but one component
+    is then scheduled before something it was declared to depend on, and until now that showed
+    up only in a log line. An empty list is the ordinary answer and means the stored graph
+    justifies the order the learner is taught in.
+    """
+    if await svc.get_subject(session, subject_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
+    return await svc.sacrificed_prerequisites(session, subject_id)
+
+
 @router.get("/subjects/{subject_id}/coverage", response_model=list[KCCoverageRead])
 async def subject_coverage(subject_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
     """Which KCs in this subject the learner's own library actually covers.

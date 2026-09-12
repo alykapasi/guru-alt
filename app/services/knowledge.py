@@ -462,6 +462,76 @@ async def list_edges_for_subject(session: AsyncSession, subject_id: uuid.UUID) -
     return result.all()
 
 
+@dataclass(frozen=True)
+class SacrificedEdge:
+    """A prerequisite the stored graph declares that planning cannot honour (S23)."""
+
+    prereq_kc_id: uuid.UUID
+    prereq_slug: str
+    prereq_name: str
+    kc_id: uuid.UUID
+    kc_slug: str
+    kc_name: str
+
+
+async def sacrificed_prerequisites(
+    session: AsyncSession, subject_id: uuid.UUID
+) -> list[SacrificedEdge]:
+    """The edges plan generation has to drop for this subject to admit an order at all.
+
+    Plan generation already survives a stored cycle: it runs the edge set through
+    ``prerequisites.acyclic``, drops whichever edges close a ring, and orders by what remains
+    (see ``app.services.lesson_plan``). That is the right behaviour — refusing to plan would
+    strand the learner over an edge they did not create — but it was only ever written to a
+    log. A subject whose dependencies were quietly sacrificed looked exactly like one with
+    none, so nothing could tell a learner their ordering was weakened, and nothing could tell
+    an operator which edge to go and fix.
+
+    This answers that question without changing any of it. It loads the same edges in the same
+    order and applies the same rule, so what it reports is what planning actually dropped
+    rather than a second opinion that could disagree with it — the two would drift the moment
+    they were computed differently.
+
+    Read-only by design. Removing the edge is a curriculum decision with no obviously correct
+    side: the cycle means two components each claim to come first, and which claim is wrong is
+    not something the graph knows. Reporting it puts that decision in front of someone who can
+    make it.
+    """
+    edges = await list_edges_for_subject(session, subject_id)
+    _, dropped = prerequisites.acyclic([(e.prereq_kc_id, e.kc_id) for e in edges])
+    if not dropped:
+        return []
+
+    # Every node of a reported ring is necessarily inside this subject, because
+    # ``list_edges_for_subject`` loads only edges whose *dependent* is in it: a ring needs
+    # each node to appear as a dependent, so a ring closing through a KC elsewhere never
+    # reaches this edge set at all. That is a real limit rather than a lost case — planning
+    # loads the same set, so such a constraint is not one it honours and then breaks; it is
+    # one neither subject's ordering ever sees. Enforcing across subjects needs the concept
+    # identity S24 covers. The lookup below still tolerates a missing row so a KC deleted
+    # between the two queries degrades to a named gap instead of a crash.
+    named = {
+        kc.id: kc
+        for kc in await session.scalars(
+            select(KC).where(KC.id.in_({kc_id for edge in dropped for kc_id in edge}))
+        )
+    }
+    sacrificed: list[SacrificedEdge] = []
+    for prereq_id, kc_id in dropped:
+        prereq, dependent = named.get(prereq_id), named.get(kc_id)
+        sacrificed.append(
+            SacrificedEdge(
+                prereq_kc_id=prereq_id,
+                prereq_slug=prereq.slug if prereq else "",
+                prereq_name=prereq.name if prereq else "(unknown component)",
+                kc_id=kc_id,
+                kc_slug=dependent.slug if dependent else "",
+                kc_name=dependent.name if dependent else "(unknown component)",
+            )
+        )
+    return sacrificed
+
+
 async def subjects_for_kcs(session: AsyncSession, kc_ids: Iterable[uuid.UUID]) -> set[uuid.UUID]:
     """Distinct subject ids that own any of ``kc_ids`` (KC -> Topic -> Subject)."""
     kc_ids = list(kc_ids)

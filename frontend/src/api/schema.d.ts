@@ -1217,6 +1217,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/subjects/{subject_id}/prerequisite-conflicts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Subject Prerequisite Conflicts
+         * @description Prerequisites this subject declares that its lesson plans cannot honour (S23).
+         *
+         *     A cycle means two components each claim to come before the other. Planning resolves it by
+         *     dropping whichever edge closes the ring, so a plan is still produced — but one component
+         *     is then scheduled before something it was declared to depend on, and until now that showed
+         *     up only in a log line. An empty list is the ordinary answer and means the stored graph
+         *     justifies the order the learner is taught in.
+         */
+        get: operations["subject_prerequisite_conflicts_api_v1_subjects__subject_id__prerequisite_conflicts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/subjects/{subject_id}/topics": {
         parameters: {
             query?: never;
@@ -2501,6 +2527,27 @@ export interface components {
             kc_id: string;
             /** Uncertainty */
             uncertainty: number;
+        };
+        /** SacrificedEdgeRead */
+        SacrificedEdgeRead: {
+            /**
+             * Kc Id
+             * Format: uuid
+             */
+            kc_id: string;
+            /** Kc Name */
+            kc_name: string;
+            /** Kc Slug */
+            kc_slug: string;
+            /**
+             * Prereq Kc Id
+             * Format: uuid
+             */
+            prereq_kc_id: string;
+            /** Prereq Name */
+            prereq_name: string;
+            /** Prereq Slug */
+            prereq_slug: string;
         };
         /**
          * SessionListRead
@@ -4681,6 +4728,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlacementPromptRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    subject_prerequisite_conflicts_api_v1_subjects__subject_id__prerequisite_conflicts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SacrificedEdgeRead"][];
                 };
             };
             /** @description Validation Error */
