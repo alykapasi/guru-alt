@@ -1000,7 +1000,7 @@ async def test_the_report_is_still_there_after_the_stream_is_gone(
     # A fresh read of the transcript: no stream, no in-flight state — what a reload sees.
     r = await api_client.get(f"/api/v1/conversations/{conversation.id}/messages")
     assert r.status_code == 200, r.text
-    reported = [m for m in r.json() if m["check_result"] is not None]
+    reported = [m for m in r.json()["messages"] if m["check_result"] is not None]
     assert len(reported) == 1
     assert reported[0]["role"] == "assistant"
     assert reported[0]["check_result"]["item_id"] == str(item.id)
@@ -1027,8 +1027,8 @@ async def test_only_the_reply_that_graded_it_carries_the_report(
 
     r = await api_client.get(f"/api/v1/conversations/{conversation.id}/messages")
     assert r.status_code == 200, r.text
-    assert r.json(), "the turn should have produced a transcript"
-    assert all(m["check_result"] is None for m in r.json())
+    assert r.json()["messages"], "the turn should have produced a transcript"
+    assert all(m["check_result"] is None for m in r.json()["messages"])
 
 
 # --- a check the conversation asked for, not the plan (S15) ----------------------------------
@@ -1095,7 +1095,7 @@ async def test_the_declaration_is_not_left_in_the_transcript(
         app.dependency_overrides.pop(get_llm_client, None)
 
     stored = await api_client.get(f"/api/v1/conversations/{conversation.id}/messages")
-    assistant = [m for m in stored.json() if m["role"] == "assistant"]
+    assistant = [m for m in stored.json()["messages"] if m["role"] == "assistant"]
     assert assistant, "the turn should have produced a reply"
     assert all("CHECK" not in m["content"] for m in assistant)
 

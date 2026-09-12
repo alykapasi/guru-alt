@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -190,20 +190,46 @@ async def list_conversations(
     return result.all()
 
 
-async def list_messages(session: AsyncSession, conversation_id: uuid.UUID) -> Sequence[Message]:
-    """Every message in a conversation, oldest first (the transcript the client renders).
+async def list_messages(
+    session: AsyncSession,
+    conversation_id: uuid.UUID,
+    *,
+    limit: int,
+    before: uuid.UUID | None = None,
+) -> tuple[Sequence[Message], bool]:
+    """One page of a conversation, oldest first, newest page by default (S62).
 
-    ``id`` breaks the tie because ``created_at`` is transaction-start time: two messages
-    written in one transaction carry the *same* timestamp, and ordering on it alone left their
-    order to the planner. Harmless while rendering a whole transcript; not harmless once a
-    window is taken from one end of it.
+    Returns ``(messages, has_more)``. This used to return the entire transcript, which is a
+    query whose cost grows with how much the learner has talked and has no ceiling at all —
+    the turn window (S47) bounds what a *turn* forwards to a model, but the client's own read
+    of the history was unbounded. A conversation big enough to matter is exactly the one a
+    person is most invested in, so the failure arrives at the worst moment.
+
+    ``has_more`` is computed by asking for one row past the page rather than by counting the
+    transcript. A count is a second full scan of the thing being avoided, and the client only
+    needs to know whether an "earlier" control should exist.
+
+    ``before`` pages backwards, taking the page that ends just before that message. The cursor
+    is keyed on ``(created_at, id)``, not ``created_at`` alone: ``created_at`` is
+    transaction-start time, so messages written in one transaction share a timestamp, and a
+    timestamp-only cursor would either skip them or repeat them forever.
     """
+    stmt = select(Message).where(Message.conversation_id == conversation_id)
+    if before is not None:
+        anchor = await session.get(Message, before)
+        # An unknown or foreign cursor yields the newest page rather than an error: the client
+        # holding a stale id (a deleted message, a conversation switched underneath it) wants
+        # a transcript, and refusing gives it a broken screen instead.
+        if anchor is not None and anchor.conversation_id == conversation_id:
+            stmt = stmt.where(
+                tuple_(Message.created_at, Message.id) < (anchor.created_at, anchor.id)
+            )
     result = await session.scalars(
-        select(Message)
-        .where(Message.conversation_id == conversation_id)
-        .order_by(Message.created_at, Message.id)
+        stmt.order_by(Message.created_at.desc(), Message.id.desc()).limit(limit + 1)
     )
-    return result.all()
+    rows = list(result.all())
+    has_more = len(rows) > limit
+    return list(reversed(rows[:limit])), has_more
 
 
 async def recent_messages(

@@ -225,3 +225,92 @@ async def test_an_honest_graph_is_ordered_by_every_edge_it_has(
 
     order = await _plan_order(db_session, learner, subject)
     assert order == [str(c.id), str(b.id), str(a.id)]
+
+
+# --- reporting the edge that gave way (S23) -----------------------------------
+
+
+async def test_a_subject_with_no_cycle_reports_nothing_sacrificed(
+    db_session: AsyncSession,
+) -> None:
+    """The ordinary answer. An empty list is the claim that the order the learner is taught
+    in is justified by every prerequisite the graph declares."""
+    subject, (a, b, c) = await _graph(db_session, 3)
+    await _edges(db_session, [(a, b), (b, c)])
+
+    assert await knowledge_svc.sacrificed_prerequisites(db_session, subject.id) == []
+
+
+async def test_the_edge_planning_dropped_is_the_edge_reported(
+    db_session: AsyncSession,
+) -> None:
+    """The report has to agree with what planning actually did, not offer a second opinion.
+    Both read the same ordered edge set and apply the same rule, so the edge named here is
+    the one the learner's order failed to honour."""
+    learner = await _learner(db_session)
+    subject, (a, b, c) = await _graph(db_session, 3)
+    await _edges(db_session, [(a, b), (b, c), (c, a)])  # the last closes the ring
+
+    sacrificed = await knowledge_svc.sacrificed_prerequisites(db_session, subject.id)
+    assert len(sacrificed) == 1
+    assert (sacrificed[0].prereq_kc_id, sacrificed[0].kc_id) == (c.id, a.id)
+
+    # And it is genuinely the constraint the plan broke: a is taught before c, though the
+    # dropped edge declared c a prerequisite of a.
+    order = await _plan_order(db_session, learner, subject)
+    assert order.index(str(a.id)) < order.index(str(c.id))
+
+
+async def test_the_report_names_the_components_not_just_their_ids(
+    db_session: AsyncSession,
+) -> None:
+    """An operator reading this has to be able to act on it. Two UUIDs do not say which
+    piece of curriculum is wrong."""
+    subject, (a, b) = await _graph(db_session, 2)
+    await _edges(db_session, [(a, b), (b, a)])
+
+    (edge,) = await knowledge_svc.sacrificed_prerequisites(db_session, subject.id)
+    assert (edge.prereq_name, edge.prereq_slug) == (b.name, b.slug)
+    assert (edge.kc_name, edge.kc_slug) == (a.name, a.slug)
+
+
+async def test_a_ring_closing_through_another_subject_is_not_reported_here(
+    db_session: AsyncSession,
+) -> None:
+    """Pinning the boundary, because it is easy to read this endpoint as stronger than it is.
+
+    The subject's edge view holds only edges whose *dependent* lives in it, and a ring needs
+    every node to appear as a dependent — so a ring closing through a KC in another subject
+    never reaches this edge set. Nothing is reported, and nothing was dropped: planning loads
+    exactly the same set, so this is a constraint neither subject's ordering ever enforced,
+    not one that was honoured and then quietly sacrificed. Crossing that boundary needs the
+    concept identity S24 covers.
+    """
+    subject, (a, b) = await _graph(db_session, 2)
+    _, (outsider,) = await _graph(db_session, 1)
+    await _edges(db_session, [(a, b), (b, outsider), (outsider, a)])
+
+    assert await knowledge_svc.sacrificed_prerequisites(db_session, subject.id) == []
+
+
+async def test_the_endpoint_reports_the_conflict_to_the_learner(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The whole point of the item: a weakened ordering was visible only in a log line."""
+    subject, (a, b) = await _graph(db_session, 2)
+    await _edges(db_session, [(a, b), (b, a)])
+    await db_session.commit()
+
+    r = await api_client.get(f"{API}/subjects/{subject.id}/prerequisite-conflicts")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 1
+    assert body[0]["prereq_kc_id"] == str(b.id)
+    assert body[0]["kc_id"] == str(a.id)
+
+
+async def test_the_endpoint_404s_on_a_subject_that_does_not_exist(
+    api_client: AsyncClient,
+) -> None:
+    r = await api_client.get(f"{API}/subjects/{uuid.uuid4()}/prerequisite-conflicts")
+    assert r.status_code == 404

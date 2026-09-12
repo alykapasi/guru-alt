@@ -16,6 +16,9 @@ export function Session() {
   const {
     messages,
     isLoadingMessages,
+    hasEarlierMessages,
+    isLoadingEarlier,
+    loadEarlierMessages,
     pending,
     error,
     canRetry,
@@ -54,6 +57,9 @@ export function Session() {
             awaitingGoalAccept={false}
             onAcceptGoal={() => {}}
             onCitationClick={setCitation}
+            hasEarlier={hasEarlierMessages}
+            isLoadingEarlier={isLoadingEarlier}
+            onLoadEarlier={loadEarlierMessages}
           />
         )}
         {error && (

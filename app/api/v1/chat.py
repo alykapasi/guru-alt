@@ -22,10 +22,11 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentLearner, EngineDep, LLMClientDep, SessionDep
+from app.api.deps import CurrentLearner, EngineDep, LLMClientDep, SessionDep, SettingsDep
 from app.core.config import get_settings
 from app.llm import LLMClient
 from app.models.chat import Conversation, ConversationPhase, Message, TurnStatus
@@ -121,12 +122,41 @@ async def delete_conversation(
     await svc.delete_conversation(session, conversation)
 
 
-@router.get("/conversations/{conversation_id}/messages", response_model=list[MessageRead])
-async def list_messages(conversation_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+class MessagePage(BaseModel):
+    """One page of a transcript, oldest first, plus whether older messages exist (S62)."""
+
+    messages: list[MessageRead]
+    has_more: bool
+
+
+@router.get("/conversations/{conversation_id}/messages", response_model=MessagePage)
+async def list_messages(
+    conversation_id: uuid.UUID,
+    session: SessionDep,
+    settings: SettingsDep,
+    learner: CurrentLearner,
+    limit: int | None = None,
+    before: uuid.UUID | None = None,
+):
+    """A page of this conversation, newest page by default; ``before`` walks backwards.
+
+    The page is bounded rather than optional. An unbounded transcript read is a query whose
+    cost grows with how much the learner has said, and the conversation big enough to break it
+    is the one they care most about.
+    """
     conversation = await svc.get_conversation(session, conversation_id)
     if conversation is None or conversation.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
-    return await svc.list_messages(session, conversation_id)
+    size = limit if limit is not None else settings.chat_transcript_page_size
+    # Clamped, not rejected. A client asking for more than the ceiling wants as much
+    # transcript as it can have, and a 422 there would be a worse answer than the ceiling.
+    size = max(1, min(size, settings.chat_transcript_page_max))
+    messages, has_more = await svc.list_messages(
+        session, conversation_id, limit=size, before=before
+    )
+    return MessagePage(
+        messages=[MessageRead.model_validate(m) for m in messages], has_more=has_more
+    )
 
 
 class TurnFlow(StrEnum):
