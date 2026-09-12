@@ -42,20 +42,68 @@ REPAIR: dict[FailureKind, str] = {
 }
 
 
-def diagnosis_notes(result: GradeResult, kc_names: Mapping[uuid.UUID, str]) -> list[str]:
+RECURRENCE_MIN = 2
+"""Prior occurrences of the same failure kind before it is treated as a pattern (S09).
+
+Two earlier ones, so the third time is when the teaching changes. One repeat is a coincidence
+worth nothing; by the third the explanation on offer has demonstrably not worked, and repeating
+it a fourth time is the system being stubborn rather than the learner being slow.
+
+Uncalibrated, like every other threshold here (S18) — but note what it is *not* gated on. The
+per-diagnosis ``confidence`` is the model's own and is uncalibrated in a way no amount of
+tuning fixes, so nothing may branch on it. A count of independent observations is a different
+kind of evidence, and it is the one this branches on.
+"""
+
+
+def _ordinal(n: int) -> str:
+    """``3`` -> ``"3rd"``. Teens are the exception every naive version gets wrong."""
+    if 11 <= (n % 100) <= 13:
+        return f"{n}th"
+    return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
+
+
+def _recurrence_note(name: str, kind: FailureKind, times_before: int) -> str:
+    """What to say once a failure kind stops looking like a slip."""
+    return (
+        f"This is the {_ordinal(times_before + 1)} time {name} has gone wrong the same way "
+        f"({kind.value}), across separate attempts. Treat it as a settled wrong idea rather "
+        "than a slip: the explanation already given has not worked, so change the "
+        "representation entirely or go back to what this rests on. Do not repeat it."
+    )
+
+
+def diagnosis_notes(
+    result: GradeResult,
+    kc_names: Mapping[uuid.UUID, str],
+    *,
+    prior_kinds: Mapping[uuid.UUID, Mapping[FailureKind, int]] | None = None,
+) -> list[str]:
     """One sentence per diagnosed component, saying what went wrong and what to do about it.
 
     Empty where nothing was diagnosed, which is every deterministic path: an MCQ knows the
     answer was wrong and nothing about why, and a prompt that asserted a reason the evidence
     does not carry would have the tutor confidently repair a misconception nobody found.
+
+    ``prior_kinds`` is how often each kind has already come up on each component
+    (``mastery.prior_failure_kinds``). Without it every mistake is described as if it were the
+    first, which is the specific failure this argument fixes: one persistent wrong belief and
+    five unrelated slips produced identical instructions, and they need opposite ones.
     """
     notes: list[str] = []
+    seen = prior_kinds or {}
     for kc_id, diagnosis in result.diagnoses.items():
         repair = REPAIR.get(diagnosis.kind)
         if repair is None:  # NONE and INCOMPLETE: nothing diagnosed to repair
             continue
         name = kc_names.get(kc_id, "that part")
-        notes.append(f"On {name}, what went wrong was {diagnosis.kind.value}. {repair}")
+        times_before = seen.get(kc_id, {}).get(diagnosis.kind, 0)
+        if times_before >= RECURRENCE_MIN:
+            # The recurrence supersedes the one-off repair rather than being appended to it:
+            # "re-explain the idea" is exactly the advice that has already failed twice.
+            notes.append(_recurrence_note(name, diagnosis.kind, times_before))
+        else:
+            notes.append(f"On {name}, what went wrong was {diagnosis.kind.value}. {repair}")
         if diagnosis.evidence and diagnosis.evidence_verbatim:
             # Only a span actually found in the response is quoted back. An unverified quote
             # is still usable as a diagnosis, but showing a learner words they never wrote as
@@ -76,7 +124,12 @@ def component_split(result: GradeResult, kc_names: Mapping[uuid.UUID, str]) -> s
 
 
 def teaching_note(
-    result: GradeResult, kc_names: Mapping[uuid.UUID, str], *, opening: str, closing: str
+    result: GradeResult,
+    kc_names: Mapping[uuid.UUID, str],
+    *,
+    opening: str,
+    closing: str,
+    prior_kinds: Mapping[uuid.UUID, Mapping[FailureKind, int]] | None = None,
 ) -> str:
     """The whole instruction: what it scored, how the parts did, what to repair, what to do.
 
@@ -89,6 +142,6 @@ def teaching_note(
     split = component_split(result, kc_names)
     if split is not None:
         parts.append(split)
-    parts.extend(diagnosis_notes(result, kc_names))
+    parts.extend(diagnosis_notes(result, kc_names, prior_kinds=prior_kinds))
     parts.append(closing)
     return " ".join(parts)

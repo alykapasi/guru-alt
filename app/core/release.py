@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
+from app.core import mail
 from app.core.config import AppEnv, Settings
 
 # The docker-compose credentials. Present in production means nobody set the real ones.
@@ -75,6 +76,14 @@ def production_problems(settings: Settings) -> list[str]:
     # Auth (S21). The development sign-in seam issues a session for the dev learner with no
     # credential at all, so leaving it on in production is not a weak password — it is no
     # password, for anybody who finds the endpoint.
+    if settings.password_reset_enabled and not getattr(
+        mail.build_mailer(), "production_safe", False
+    ):
+        problems.append(
+            "GURU_PASSWORD_RESET_ENABLED is on with no production mail transport — the reset "
+            "token would be written to the application log instead of being delivered"
+        )
+
     if settings.dev_auto_login:
         problems.append(
             "GURU_DEV_AUTO_LOGIN is on — /auth/dev-login issues a session with no credential"

@@ -48,6 +48,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Change Email
+         * @description Move to a new address, proving the password.
+         *
+         *     No verification of the new address, which is the honest gap: until a message can be
+         *     delivered (``app.core.mail``) there is no way to establish that the learner owns what they
+         *     typed, and a typo here costs them the account.
+         */
+        post: operations["change_email_api_v1_auth_email_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -125,6 +149,73 @@ export interface paths {
         get: operations["me_api_v1_auth_me_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Change Password
+         * @description Set a new password. Every *other* session ends; this one keeps working.
+         *
+         *     Signing the learner out of the tab they are typing in would make the safe action annoying,
+         *     and a password change is often a response to suspecting another device — so the other
+         *     devices are what stop working.
+         */
+        post: operations["change_password_api_v1_auth_password_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request Password Reset
+         * @description Start a reset. Answers the same whether or not the address has an account.
+         */
+        post: operations["request_password_reset_api_v1_auth_password_reset_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/password-reset/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm Password Reset
+         * @description Spend a reset token and set the new password. Every session ends.
+         *
+         *     A reset is what somebody does when they think the account may not be theirs alone, so
+         *     leaving the intruder's session working would make it a gesture.
+         */
+        post: operations["confirm_password_reset_api_v1_auth_password_reset_confirm_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -529,7 +620,14 @@ export interface paths {
         delete: operations["delete_memory_api_v1_memory__memory_id__delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Correct Memory
+         * @description Say what is actually true, rather than only being able to erase what is not (S16).
+         *
+         *     Returns the *new* memory: a correction supersedes rather than overwrites, so the id
+         *     changes and a client holding the old one is holding a superseded row (see the service).
+         */
+        patch: operations["correct_memory_api_v1_memory__memory_id__patch"];
         trace?: never;
     };
     "/api/v1/onboarding/curriculum": {
@@ -787,8 +885,9 @@ export interface paths {
         /**
          * Due Reviews
          * @description KCs whose FSRS-scheduled review has come due, soonest first, each paired with an
-         *     answerable flashcard where one was eagerly resolved (see ``session_runner.due_review_items``
-         *     and the ``reviews_due_item_limit`` cost bound).
+         *     answerable item where one was eagerly resolved — a flashcard normally, an open question
+         *     where the component keeps failing (see ``session_runner.due_review_items`` and the
+         *     ``reviews_due_item_limit`` cost bound).
          */
         get: operations["due_reviews_api_v1_reviews_due_get"];
         put?: never;
@@ -1372,6 +1471,60 @@ export interface components {
             satisfied: boolean;
         };
         /**
+         * CheckComponentRead
+         * @description One knowledge component of a graded conversational answer, as the learner sees it.
+         *
+         *     Every optional field is optional because the evidence genuinely may not exist, not because
+         *     it was inconvenient to fill in. ``score`` is null when the grader could not tell the
+         *     components apart — an MCQ has one outcome (S10) — and ``failure_kind`` is null when nothing
+         *     diagnosed it, which is every deterministic path (S09). Rendering must keep that difference:
+         *     "we could not tell" and "it was fine" are not the same thing to say to a learner.
+         */
+        CheckComponentRead: {
+            /** Ability */
+            ability: number;
+            /** Failure Detail */
+            failure_detail?: string | null;
+            /** Failure Kind */
+            failure_kind?: string | null;
+            /**
+             * Kc Id
+             * Format: uuid
+             */
+            kc_id: string;
+            /** Kc Name */
+            kc_name: string;
+            /** Prior Ability */
+            prior_ability: number;
+            /** Recurrence */
+            recurrence?: number | null;
+            /** Score */
+            score?: number | null;
+            /** Uncertainty */
+            uncertainty: number;
+        };
+        /**
+         * CheckResultRead
+         * @description What happened to an answer the learner gave in conversation (S15).
+         *
+         *     Until this existed, a conversational answer was graded, updated mastery, rescheduled the
+         *     card and revised the plan — and the learner was told none of it. The tutor's reply was the
+         *     only evidence anything had happened, and a reply is not a record.
+         */
+        CheckResultRead: {
+            /** Components */
+            components: components["schemas"]["CheckComponentRead"][];
+            /** Correct */
+            correct: boolean;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Score */
+            score: number;
+        };
+        /**
          * ChunkRead
          * @description A stored chunk as exposed for debugging — text + provenance, not the raw vector.
          */
@@ -1574,6 +1727,19 @@ export interface components {
             updated_at: string;
             /** Value */
             value: unknown;
+        };
+        /**
+         * EmailChange
+         * @description Move to a new address. The password is the proof, for the same reason as above.
+         */
+        EmailChange: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Password */
+            password: string;
         };
         /**
          * FailureKind
@@ -2003,6 +2169,19 @@ export interface components {
             password: string;
         };
         /**
+         * MemoryCorrection
+         * @description What the learner says is actually true (S16).
+         *
+         *     Only the text. The kind stays as extracted, and the provenance of the *correction* is the
+         *     learner rather than a conversation — letting a client restate either would be letting it
+         *     describe where a belief came from, which is the part that has to be the system's own
+         *     record.
+         */
+        MemoryCorrection: {
+            /** Content */
+            content: string;
+        };
+        /**
          * MemoryRead
          * @description A stored memory as exposed to the learner — not the raw embedding.
          */
@@ -2026,6 +2205,7 @@ export interface components {
         };
         /** MessageRead */
         MessageRead: {
+            check_result?: components["schemas"]["CheckResultRead"] | null;
             /** Citations */
             citations: {
                 [key: string]: unknown;
@@ -2131,6 +2311,34 @@ export interface components {
             learner_edit_md?: string | null;
             /** Ordinal */
             ordinal: number;
+        };
+        /**
+         * PasswordChange
+         * @description Set a new password, proving you know the current one.
+         *
+         *     The current password is required even though the caller already holds a valid session: a
+         *     session is not proof of the person, and a borrowed laptop is a session.
+         */
+        PasswordChange: {
+            /** Current Password */
+            current_password: string;
+            /** New Password */
+            new_password: string;
+        };
+        /** PasswordResetConfirm */
+        PasswordResetConfirm: {
+            /** New Password */
+            new_password: string;
+            /** Token */
+            token: string;
+        };
+        /** PasswordResetRequest */
+        PasswordResetRequest: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
         };
         /** PlacementPromptRead */
         PlacementPromptRead: {
@@ -2269,8 +2477,10 @@ export interface components {
          * ReviewItemRead
          * @description A KC whose FSRS review is due (the review-queue projection).
          *
-         *     ``item`` is an answerable practice item resolved for the KC (typically a flashcard —
-         *     see ``session_runner.due_review_items``), or ``None`` past the request's item-resolution
+         *     ``item`` is an answerable practice item resolved for the KC — a flashcard normally, an
+         *     open question where the component has been failing its reviews and a self-rating would
+         *     record the fall without the reason (see ``session_runner.review_item_type``) — or ``None``
+         *     past the request's item-resolution
          *     cap (``reviews_due_item_limit``) — the due list itself is bounded separately (much more
          *     generously, see ``mastery.due_reviews``'s ``due_reviews_limit``), only item resolution
          *     beyond ``reviews_due_item_limit`` is skipped.
@@ -2655,6 +2865,39 @@ export interface operations {
             };
         };
     };
+    change_email_api_v1_auth_email_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmailChange"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LearnerRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     login_api_v1_auth_login_post: {
         parameters: {
             query?: never;
@@ -2740,6 +2983,101 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LearnerRead"];
+                };
+            };
+        };
+    };
+    change_password_api_v1_auth_password_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordChange"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_password_reset_api_v1_auth_password_reset_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_password_reset_api_v1_auth_password_reset_confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetConfirm"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3434,6 +3772,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    correct_memory_api_v1_memory__memory_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryCorrection"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryRead"];
+                };
             };
             /** @description Validation Error */
             422: {

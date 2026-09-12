@@ -24,10 +24,12 @@ from app.models.assessment import ItemType
 from app.models.chat import Conversation, ConversationPhase, LLMCall, Message
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
+from app.models.learning import LearnerKCState
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.schemas.assessment import ItemCreate, ItemKCRef
 from app.services import assessment as assessment_svc
 from app.services import lesson_plan as lesson_plan_svc
+from app.services.lesson_plan import MASTERY_ABILITY_THRESHOLD, MASTERY_UNCERTAINTY_THRESHOLD
 from app.services.turn_common import TurnEvent
 from app.services.workflow import is_awaiting_reply, run_workflow_turn
 from tests.embedding import FAKE_SPACE
@@ -440,3 +442,91 @@ async def test_a_grade_with_nothing_diagnosed_adds_no_repair() -> None:
     assert "0.00" in note and "not correct" in note
     for kind in FailureKind:
         assert kind.value not in note
+
+
+async def test_guided_practice_leaves_the_report_in_the_transcript(
+    db_session: AsyncSession,
+) -> None:
+    """The report has to survive the stream on this flow too (S15). Guided practice is where
+    most attempts happen, so a report that only exists while the socket is open is missing
+    from the place a learner spends most of their time."""
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=RIGHT_GRADE), FakeTurn(text=RESPOND_2)]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice")
+    await _drain(db_session, llm, conv, user_content="sunlight -> sugars", resume=True)
+
+    messages = (
+        await db_session.scalars(
+            select(Message).where(Message.conversation_id == conv.id).order_by(Message.created_at)
+        )
+    ).all()
+    reported = [m for m in messages if m.check_result is not None]
+    assert len(reported) == 1, "exactly the reply that graded the answer carries it"
+    assert reported[0].role == "assistant"
+    assert reported[0].check_result is not None
+    assert reported[0].check_result["correct"] is True
+    assert reported[0].check_result["components"]
+
+
+async def test_the_opening_round_grades_nothing_and_reports_nothing(
+    db_session: AsyncSession,
+) -> None:
+    """The first turn presents a question and has marked no answer, so there is nothing
+    truthful to attach to it."""
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(script=[FakeTurn(text=PRESENT)])
+    await _drain(db_session, llm, conv, user_content="let's practice")
+
+    messages = (
+        await db_session.scalars(select(Message).where(Message.conversation_id == conv.id))
+    ).all()
+    assert messages, "the opening round should have produced a transcript"
+    assert all(m.check_result is None for m in messages)
+
+
+async def test_a_paused_question_the_learner_has_since_outgrown_is_not_resumed(
+    db_session: AsyncSession,
+) -> None:
+    """The failure S17's durability created. A volatile checkpoint could not outlive much, so
+    a paused question was never very stale; a durable one outlives the mastery the learner
+    picked up somewhere else, and resuming then grades an answer to a question the system
+    itself no longer thinks they should be asked."""
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(script=[FakeTurn(text=PRESENT)])
+    await _drain(db_session, llm, conv, user_content="let's practice")
+    assert await is_awaiting_reply(llm, db_session, conv.id, learner_id=conv.learner_id)
+
+    kc = await db_session.scalar(select(KC).where(KC.slug == "photosynthesis"))
+    assert kc is not None
+    db_session.add(
+        LearnerKCState(
+            learner_id=conv.learner_id,
+            kc_id=kc.id,
+            ability=MASTERY_ABILITY_THRESHOLD + 0.5,
+            uncertainty=MASTERY_UNCERTAINTY_THRESHOLD - 0.1,
+        )
+    )
+    await db_session.flush()
+
+    assert not await is_awaiting_reply(llm, db_session, conv.id, learner_id=conv.learner_id)
+    # Discarded rather than re-evaluated on every later turn — and the turn that follows goes
+    # to ordinary chat, the same degradation the gate uses for state that is genuinely gone.
+    assert not await is_awaiting_reply(llm, db_session, conv.id, learner_id=conv.learner_id)
+
+
+async def test_a_paused_question_that_is_still_current_resumes_normally(
+    db_session: AsyncSession,
+) -> None:
+    """The other side of the boundary: revalidation must not become a way to lose a paused
+    exercise somebody is in the middle of."""
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=WRONG_GRADE), FakeTurn(text=RESPOND_1)]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice")
+
+    assert await is_awaiting_reply(llm, db_session, conv.id, learner_id=conv.learner_id)
+    events = await _drain(db_session, llm, conv, user_content="a guess", resume=True)
+    assert any(e.type == "awaiting_reply" for e in events)

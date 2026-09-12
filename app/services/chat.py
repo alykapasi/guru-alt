@@ -15,17 +15,19 @@ from sqlalchemy.orm import selectinload
 
 from app.agent.tutor import TutorState, build_tutor_graph
 from app.core.config import get_settings
-from app.learning import conversation_evidence, feedback, mastery
+from app.learning import conversation_evidence, declared_check, feedback, mastery
+from app.learning import prerequisites as prereq_index
 from app.learning.conversation_evidence import TurnIntent
+from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult, InvalidResponse
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
-from app.models.assessment import Item
+from app.models.assessment import Item, ItemType
 from app.models.chat import Conversation, ConversationPhase, ConversationSource, Message
 from app.models.knowledge import KC
 from app.models.learning import LearnerKCState
 from app.rag.retrieval import retrieve
-from app.schemas.assessment import AnswerSubmit
+from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRef
 from app.schemas.chat import CheckResultRead
 from app.services import assessment as assessment_svc
 from app.services import knowledge as knowledge_svc
@@ -66,6 +68,10 @@ class CheckOutcome:
     result: GradeResult
     priors: Mapping[uuid.UUID, mastery.Estimate]
     states: Sequence[LearnerKCState]
+    # How often each failure kind has already come up per component, read before this attempt
+    # was recorded (S09). A slip and a settled wrong idea are the same shape on one attempt,
+    # and the response they need is opposite.
+    prior_kinds: Mapping[uuid.UUID, Mapping[FailureKind, int]]
 
 
 def _check_note(item: Item) -> str:
@@ -97,6 +103,7 @@ def _check_result(outcome: CheckOutcome, kcs: Sequence[KC]) -> CheckResultRead:
         priors=outcome.priors,
         states=outcome.states,
         kcs=kcs,
+        prior_kinds=outcome.prior_kinds,
     )
 
 
@@ -110,6 +117,7 @@ def _feedback_note(outcome: CheckOutcome, kc_names: Mapping[uuid.UUID, str]) -> 
     return feedback.teaching_note(
         outcome.result,
         kc_names,
+        prior_kinds=outcome.prior_kinds,
         opening="The learner has just attempted that question.",
         closing=(
             "Respond to what they actually wrote, then follow the guidance above. Do not pose "
@@ -274,7 +282,11 @@ async def _resolve_check(
 
     # Read before grading: `answer_item` returns the posterior, and a posterior with nothing
     # to compare it against is not something a learner can act on.
-    priors = await mastery.estimate_kcs(session, learner_id, [link.kc_id for link in item.kc_links])
+    kc_ids = [link.kc_id for link in item.kc_links]
+    priors = await mastery.estimate_kcs(session, learner_id, kc_ids)
+    # Read here too, and for the same reason: once this attempt is recorded the count would
+    # include it, and "this is the third time" has to mean three counting this one.
+    prior_kinds = await mastery.prior_failure_kinds(session, learner_id, kc_ids)
     try:
         result, states = await assessment_svc.answer_item(
             session,
@@ -297,7 +309,9 @@ async def _resolve_check(
     except Exception as exc:
         log.error("chat.check_grading_failed", item_id=str(item.id), error=str(exc))
         return item, None
-    return None, CheckOutcome(item=item, result=result, priors=priors, states=states)
+    return None, CheckOutcome(
+        item=item, result=result, priors=priors, states=states, prior_kinds=prior_kinds
+    )
 
 
 async def _pose_check(
@@ -319,6 +333,47 @@ async def _pose_check(
         return None
     return await session_runner_svc.short_answer_item_for_kc(
         session, llm, learner_id=learner_id, kc=kc
+    )
+
+
+async def _materialise_declared_check(
+    session: AsyncSession,
+    *,
+    learner_id: uuid.UUID,
+    subject_id: uuid.UUID,
+    declared: declared_check.DeclaredCheck,
+) -> Item | None:
+    """Turn a tutor's declaration into a real, gradable item — or ``None`` (S15).
+
+    The component name is resolved against this subject's graph, and a name that resolves to
+    nothing is dropped rather than guessed at. The tutor sees the conversation, not the graph,
+    so it can name something true and irrelevant, or something that is not a component at all;
+    the same rule the detour applies to a diagnosed prerequisite.
+
+    The item is authored **to the learner** (S33) rather than added to the shared bank. A
+    question the tutor improvised for one conversation is not something other learners should
+    be assessed against — it has no reviewed rubric, no difficulty target, and no provenance
+    beyond one exchange. Scoping it means it can still be reused for *this* learner, which is
+    the right amount of permanence for it.
+
+    No rubric, so it is graded by ``grade_open``'s stated fallback. That is a real limitation
+    and it is the honest one: the alternative is a second model call to invent criteria for a
+    question that may never be answered.
+    """
+    kcs = await knowledge_svc.list_kcs_for_subject(session, subject_id)
+    index, _ = prereq_index.index_by_name([(str(kc.id), kc.name) for kc in kcs])
+    key = index.get(prereq_index.normalise(declared.component))
+    if key is None:
+        log.info("chat.declared_check_unresolved", component=declared.component)
+        return None
+    return await assessment_svc.create_item(
+        session,
+        ItemCreate(
+            item_type=ItemType.SHORT,
+            stem=declared.question,
+            kcs=[ItemKCRef(kc_id=uuid.UUID(key))],
+        ),
+        author_learner_id=learner_id,
     )
 
 
@@ -398,6 +453,11 @@ async def run_tutor_turn(
         conversation.active_item_scaffolds = 0
     if open_check is not None:
         notes.append(_check_note(open_check))
+    elif subject_id is not None:
+        # Only where an answer could be attributed: a subject-less conversation has no graph to
+        # resolve a component against, so inviting a declaration there is inviting one that is
+        # always dropped.
+        notes.append(declared_check.INSTRUCTION)
 
     hits = []
     grounding = None
@@ -448,6 +508,16 @@ async def run_tutor_turn(
         yield TurnEvent(type="error", detail="generation failed")
         return
 
+    # Stripped before anything else sees it: it is addressed to the system, and a learner
+    # reading their own transcript should not find machinery in it.
+    reply, declared = declared_check.extract(reply)
+    if declared is not None and open_check is None and subject_id is not None:
+        open_check = await _materialise_declared_check(
+            session, learner_id=learner_id, subject_id=subject_id, declared=declared
+        )
+        if open_check is not None:
+            conversation.active_item_scaffolds = 0
+
     citations = extract_citations(reply, hits)
     assistant = await add_message(
         session,
@@ -456,6 +526,7 @@ async def run_tutor_turn(
         reply,
         model=spec.model,
         citations=citations,
+        check_result=check_result,
     )
     cost = await log_llm_call(
         learner_id=learner_id,

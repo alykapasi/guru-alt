@@ -12,6 +12,8 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
+from app.learning import lesson_plan as engine
 from app.learning import mastery
 from app.learning.diagnosis import FailureKind
 from app.learning.lesson_plan import (
@@ -27,9 +29,11 @@ from app.learning.lesson_plan import (
 )
 from app.learning.mastery import Observation
 from app.llm.registry import fake_llm_client
+from app.models.assessment import RUBRIC_GRADABLE
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
-from app.models.learning import LearnerKCState
+from app.models.learning import LearnerKCState, LearningEvent
+from app.models.profile import ProfileDimension
 from app.services import knowledge as knowledge_svc
 from app.services import lesson_plan as svc
 
@@ -55,7 +59,12 @@ def test_a_named_prerequisite_is_acted_on_immediately() -> None:
         diagnosed_name="orthogonal  PROJECTION",
         consecutive_failures=1,
     )
-    assert detour == Detour(prereq_kc_id=prereq, blocked_kc_id=blocked, reason=DETOUR_DIAGNOSED)
+    assert detour == Detour(
+        prereq_kc_id=prereq,
+        blocked_kc_id=blocked,
+        reason=DETOUR_DIAGNOSED,
+        consecutive_failures=1,
+    )
 
 
 def test_repeated_failure_alone_is_enough() -> None:
@@ -445,3 +454,182 @@ async def test_which_prerequisite_a_stuck_learner_is_sent_to_is_decided_not_obse
         consecutive_failures=2,
     )
     assert detour is not None and detour.prereq_kc_id == first.id
+
+
+# --- recorded, capped, and asked in a format that can answer the question (S11) ------------
+
+
+async def _stuck(session: AsyncSession) -> tuple[Learner, Subject, KC, KC]:
+    """A learner active on ``blocked`` with a lapsed prerequisite and two failures behind them."""
+    learner, subject, prereq, blocked = await _graph(session)
+    session.add(
+        LearnerKCState(learner_id=learner.id, kc_id=prereq.id, ability=2.0, uncertainty=0.2)
+    )
+    await session.flush()
+    await _plan(session, learner, subject)
+    state = await session.scalar(
+        select(LearnerKCState).where(
+            LearnerKCState.learner_id == learner.id, LearnerKCState.kc_id == prereq.id
+        )
+    )
+    assert state is not None
+    state.ability = -1.0
+    state.uncertainty = 0.9
+    await session.flush()
+    await _observe(session, learner, blocked, 0.1)
+    await _observe(session, learner, blocked, 0.1)
+    return learner, subject, prereq, blocked
+
+
+async def _detour_events(session: AsyncSession, learner: Learner) -> list[LearningEvent]:
+    rows = await session.scalars(
+        select(LearningEvent).where(
+            LearningEvent.learner_id == learner.id,
+            LearningEvent.event_type == mastery.DETOUR_EVENT,
+        )
+    )
+    return list(rows)
+
+
+async def test_taking_a_detour_is_written_to_the_event_log(db_session: AsyncSession) -> None:
+    """Without this "did detouring help?" cannot be asked of the data, because there is no
+    data — a detour was a plan mutation that left no trace a decision had been made."""
+    learner, subject, prereq, blocked = await _stuck(db_session)
+
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+
+    events = await _detour_events(db_session, learner)
+    assert len(events) == 1
+    # Tagged to the blocked component: the question is whether detouring helped *it*.
+    assert events[0].kc_id == blocked.id
+    assert events[0].payload["prereq_kc_id"] == str(prereq.id)
+    assert events[0].payload["consecutive_failures"] == 2
+
+
+async def test_revising_again_does_not_record_a_second_detour(db_session: AsyncSession) -> None:
+    """Revision runs on every graded answer, so a detour must be recorded once per trip."""
+    learner, subject, _prereq, _blocked = await _stuck(db_session)
+
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+
+    assert len(await _detour_events(db_session, learner)) == 1
+
+
+async def test_a_detour_decided_but_not_inserted_is_not_recorded(
+    db_session: AsyncSession,
+) -> None:
+    """``revise_steps`` declines a detour whose step is already open. The decision and the
+    insertion are separate outcomes, and recording the decision would put the learner on the
+    record for a trip they were never sent on — and spend one of their two against the cap.
+
+    Reaching it takes a hand-built plan, because the ordering rules normally make an open
+    detour the active step and the trigger only fires on an active *new* one. That is exactly
+    why the guard is here rather than left to the callers happening not to hit it.
+    """
+    learner, subject, prereq, blocked = await _stuck(db_session)
+    plan = await svc.get_lesson_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    steps = [dict(step) for step in plan.steps]
+    for step in steps:
+        step["status"] = "active" if step["kc_id"] == str(blocked.id) else "pending"
+    steps.append(
+        {
+            "kc_id": str(prereq.id),
+            "order": 99,
+            "step_type": "detour",
+            "status": "pending",
+            "target_difficulty": None,
+            "hint_density": None,
+            "preferred_item_type": None,
+            "detour_for": str(blocked.id),
+            "detour_reason": "repeated_failure",
+        }
+    )
+    plan.steps = steps
+    await db_session.flush()
+
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+
+    assert await _detour_events(db_session, learner) == []
+
+
+async def test_the_same_prerequisite_is_not_offered_forever(db_session: AsyncSession) -> None:
+    """The trigger reads the current run of failures, so nothing stopped a learner being sent
+    back to a prerequisite that was not the problem after every single failed attempt."""
+    learner, subject, prereq, blocked = await _stuck(db_session)
+    # Two trips already taken and neither unstuck them.
+    for _ in range(get_settings().detour_max_repeats):
+        mastery.record_detour(
+            db_session,
+            learner_id=learner.id,
+            blocked_kc_id=blocked.id,
+            prereq_kc_id=prereq.id,
+            reason="repeated_failure",
+            consecutive_failures=2,
+        )
+    await db_session.flush()
+
+    revised = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert revised is not None
+    assert not any(step["step_type"] == "detour" for step in revised.steps)
+
+
+async def test_one_trip_short_of_the_cap_still_detours(db_session: AsyncSession) -> None:
+    """The boundary in the other direction, so the cap is a cap and not an off switch."""
+    learner, subject, prereq, blocked = await _stuck(db_session)
+    for _ in range(get_settings().detour_max_repeats - 1):
+        mastery.record_detour(
+            db_session,
+            learner_id=learner.id,
+            blocked_kc_id=blocked.id,
+            prereq_kc_id=prereq.id,
+            reason="repeated_failure",
+            consecutive_failures=2,
+        )
+    await db_session.flush()
+
+    revised = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert revised is not None
+    assert any(step["step_type"] == "detour" for step in revised.steps)
+
+
+async def test_a_detour_asks_in_a_format_that_can_say_why(db_session: AsyncSession) -> None:
+    """A detour is the claim "you cannot do this because you cannot do that". Ordinary practice
+    on the prerequisite does not test that claim; an answer that can be diagnosed does."""
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+
+    revised = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert revised is not None
+    step = next(s for s in revised.steps if s["step_type"] == "detour")
+    assert step["kc_id"] == str(prereq.id)
+    assert step["preferred_item_type"] == engine.DETOUR_ITEM_TYPE
+    assert step["preferred_item_type"] in {t.value for t in RUBRIC_GRADABLE}
+
+
+async def test_a_format_preference_does_not_override_a_detour(db_session: AsyncSession) -> None:
+    """``score_by_format`` answers "which formats does this learner do well on", which is the
+    wrong question to ask of a step whose whole purpose is to find something out."""
+    learner, subject, _prereq, _blocked = await _stuck(db_session)
+    db_session.add(
+        ProfileDimension(
+            learner_id=learner.id,
+            key="score_by_format",
+            value={
+                "flashcard": {"mean_score": 0.9, "mean_difficulty": 0.5},
+                "mcq": {"mean_score": 0.5, "mean_difficulty": 0.5},
+            },
+            uncertainty=0.3,
+            kind="trait",
+            source="behavioral",
+        )
+    )
+    await db_session.flush()
+
+    revised = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert revised is not None
+    detour_step = next(s for s in revised.steps if s["step_type"] == "detour")
+    other = next(s for s in revised.steps if s["step_type"] == "new" and s["status"] != "done")
+    assert detour_step["preferred_item_type"] == engine.DETOUR_ITEM_TYPE
+    assert other["preferred_item_type"] == "flashcard"

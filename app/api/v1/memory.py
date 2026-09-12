@@ -11,8 +11,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from app.api.deps import CurrentLearner, MemoryWriteBackEnqueuerDep, SessionDep
-from app.schemas.memory import MemoryRead, WriteBackAck
+from app.api.deps import CurrentLearner, LLMClientDep, MemoryWriteBackEnqueuerDep, SessionDep
+from app.schemas.memory import MemoryCorrection, MemoryRead, WriteBackAck
 from app.services import chat as chat_svc
 from app.services import memory as svc
 
@@ -44,6 +44,25 @@ async def list_memory(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ):
     return await svc.list_memories(session, learner.id, limit=limit)
+
+
+@router.patch("/memory/{memory_id}", response_model=MemoryRead)
+async def correct_memory(
+    memory_id: uuid.UUID,
+    body: MemoryCorrection,
+    session: SessionDep,
+    learner: CurrentLearner,
+    llm: LLMClientDep,
+):
+    """Say what is actually true, rather than only being able to erase what is not (S16).
+
+    Returns the *new* memory: a correction supersedes rather than overwrites, so the id
+    changes and a client holding the old one is holding a superseded row (see the service).
+    """
+    corrected = await svc.correct_memory(session, llm, learner.id, memory_id, content=body.content)
+    if corrected is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "memory not found")
+    return corrected
 
 
 @router.delete("/memory/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)

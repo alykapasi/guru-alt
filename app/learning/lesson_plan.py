@@ -21,6 +21,19 @@ OBJECTIVE_ROLE = ModelRole.FAST
 """Objective selection is a cheap classification task — same tier as placement inference."""
 
 StepType = Literal["new", "review", "detour"]
+
+DETOUR_ITEM_TYPE = "short"
+"""What a detour step asks with, whatever the learner's format preference says (S11).
+
+A detour is a hypothesis — "the reason you cannot do this is that you cannot do that yet" —
+and ordinary practice on the prerequisite does not test it. An open question does: it produces
+a failure kind and a per-component split on the *prerequisite*, so the answer says whether the
+prerequisite is genuinely missing or whether the detour was a wrong turn. A format that cannot
+say why an answer failed cannot test a claim about why an answer failed.
+
+It deliberately overrides ``score_by_format``. That dimension is about which formats a learner
+does well on, which is the wrong question to ask of a step whose purpose is to find something
+out."""
 StepStatus = Literal["pending", "active", "done"]
 
 DETOUR_DIAGNOSED = "diagnosed"
@@ -54,6 +67,11 @@ class Detour:
     prereq_kc_id: uuid.UUID
     blocked_kc_id: uuid.UUID
     reason: str
+    # How long the run of failures was when this was decided. Carried so the event log can
+    # record how stuck the learner actually was, rather than only that a detour happened —
+    # "detoured after two misses" and "detoured after six" are different situations and a
+    # later look at whether detours help needs to be able to tell them apart.
+    consecutive_failures: int = 0
 
 
 def prerequisite_detour(
@@ -97,6 +115,7 @@ def prerequisite_detour(
                 prereq_kc_id=uuid.UUID(target),
                 blocked_kc_id=blocked_kc_id,
                 reason=DETOUR_DIAGNOSED,
+                consecutive_failures=consecutive_failures,
             )
     if consecutive_failures >= min_failures:
         # The first in prerequisite order: nearest to where they already are.
@@ -104,6 +123,7 @@ def prerequisite_detour(
             prereq_kc_id=candidates[0],
             blocked_kc_id=blocked_kc_id,
             reason=DETOUR_REPEATED_FAILURE,
+            consecutive_failures=consecutive_failures,
         )
     return None
 
@@ -561,6 +581,8 @@ def revise_steps(
             continue
         step["target_difficulty"] = scaffolding.target_difficulty
         step["hint_density"] = scaffolding.hint_density
-        step["preferred_item_type"] = scaffolding.preferred_item_type
+        step["preferred_item_type"] = (
+            DETOUR_ITEM_TYPE if step["step_type"] == "detour" else scaffolding.preferred_item_type
+        )
 
     return result

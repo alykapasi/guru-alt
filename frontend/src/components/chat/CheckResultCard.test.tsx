@@ -16,6 +16,7 @@ function component(overrides: Partial<CheckComponent> = {}): CheckComponent {
     uncertainty: 0.9,
     failure_kind: null,
     failure_detail: null,
+    recurrence: null,
     ...overrides,
   };
 }
@@ -122,5 +123,51 @@ describe("the graded-answer card", () => {
     );
     expect(screen.getByText("Projection")).toBeInTheDocument();
     expect(screen.getByText("Least squares")).toBeInTheDocument();
+  });
+});
+
+describe("a mistake that keeps coming back", () => {
+  it("says so once it has stopped looking like a slip", () => {
+    render(
+      <CheckResultCard
+        result={result({
+          components: [component({ failure_kind: "conceptual", recurrence: 2 })],
+        })}
+      />,
+    );
+    expect(screen.getByText(/3rd time this has come up/)).toBeInTheDocument();
+  });
+
+  it("stays quiet on a first mistake, which is a slip until shown otherwise", () => {
+    render(
+      <CheckResultCard
+        result={result({
+          components: [component({ failure_kind: "conceptual", recurrence: 0 })],
+        })}
+      />,
+    );
+    expect(screen.queryByText(/time this has come up/)).not.toBeInTheDocument();
+  });
+
+  it("stays quiet on one repeat, because two of anything is a coincidence", () => {
+    render(
+      <CheckResultCard
+        result={result({
+          components: [component({ failure_kind: "conceptual", recurrence: 1 })],
+        })}
+      />,
+    );
+    expect(screen.queryByText(/time this has come up/)).not.toBeInTheDocument();
+  });
+
+  it("gets the ordinal right past the teens rather than saying 11rd", () => {
+    render(
+      <CheckResultCard
+        result={result({
+          components: [component({ failure_kind: "notation", recurrence: 10 })],
+        })}
+      />,
+    );
+    expect(screen.getByText(/11th time this has come up/)).toBeInTheDocument();
   });
 });

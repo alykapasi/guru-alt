@@ -13,6 +13,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { Uploads } from "./pages/Uploads";
 import { Notes } from "./pages/Notes";
 import { NoteView } from "./pages/NoteView";
+import { Memory } from "./pages/Memory";
 import { SubjectWizard } from "./pages/SubjectWizard";
 
 /** Keys Chat on conversationId so switching conversations remounts it fresh — its local
@@ -51,6 +52,7 @@ function App() {
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="uploads" element={<Uploads />} />
             <Route path="notes" element={<Notes />} />
+            <Route path="memory" element={<Memory />} />
             <Route path="notes/:topicId" element={<NoteView />} />
             <Route path="subjects/new" element={<SubjectWizard />} />
           </Route>

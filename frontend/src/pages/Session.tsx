@@ -22,7 +22,6 @@ export function Session() {
     retry,
     item,
     sessionDetail,
-    checkResult,
     send,
   } = useChatConversation(conversationId);
   const hasStartedRef = useRef(false);
@@ -79,7 +78,7 @@ export function Session() {
           answering to show it would defeat the click. */}
       <aside className="border-base-300 divide-base-300 flex w-80 shrink-0 flex-col divide-y border-l">
         {citation && <CitationPane citation={citation} onClose={() => setCitation(null)} />}
-        <ItemPanel item={item} detail={sessionDetail} checkResult={checkResult} />
+        <ItemPanel item={item} detail={sessionDetail} />
       </aside>
     </div>
   );

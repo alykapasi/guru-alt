@@ -13,6 +13,7 @@ from datetime import timedelta
 
 from taskiq import TaskiqEvents, TaskiqState
 
+from app.agent import checkpointing
 from app.core.config import get_settings
 from app.core.db import SessionFactory
 from app.llm import build_llm_client
@@ -21,6 +22,7 @@ from app.rag import pipeline
 from app.rag.demux import build_demuxer
 from app.rag.transcription import build_transcriber
 from app.services import auth as auth_svc
+from app.services import checkpoints as checkpoints_svc
 from app.services import ingestion
 from app.services import memory as memory_svc
 from app.storage import build_blob_store
@@ -101,8 +103,43 @@ async def _purge_sessions_once() -> None:
             session,
             keep_revoked_for=timedelta(hours=settings.session_revoked_retention_hours),
         )
-    if removed:
-        logger.info("purged %d dead session(s)", removed)
+        # The same sweep, because they are the same kind of row: credentials-adjacent state
+        # that answers no question once its window has passed. Splitting them into two timers
+        # would double the scheduling surface for no operational difference.
+        spent = await auth_svc.purge_password_resets(
+            session, older_than=timedelta(hours=settings.password_reset_used_retention_hours)
+        )
+        attempts = await auth_svc.purge_sign_in_attempts(
+            session, older_than=timedelta(hours=settings.sign_in_attempt_retention_hours)
+        )
+    if removed or spent or attempts:
+        logger.info(
+            "purged %d dead session(s), %d spent reset(s), %d sign-in attempt(s)",
+            removed,
+            spent,
+            attempts,
+        )
+
+
+async def _purge_checkpoints_once() -> None:
+    """Discard paused graph state for conversations nobody has come back to (S17)."""
+    settings = get_settings()
+    async with SessionFactory() as session:
+        discarded = await checkpoints_svc.prune(
+            session, older_than=timedelta(days=settings.checkpoint_retention_days)
+        )
+    if discarded:
+        logger.info("discarded %d abandoned checkpoint thread(s)", discarded)
+
+
+async def _purge_checkpoints_loop(interval: int) -> None:
+    """Sweep abandoned checkpoints forever, surviving its own failures like the others."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await _purge_checkpoints_once()
+        except Exception:
+            logger.exception("checkpoint purge sweep failed; will retry")
 
 
 async def _purge_sessions_loop(interval: int) -> None:
@@ -137,6 +174,22 @@ async def _stop_session_purge(state: TaskiqState) -> None:
     await _cancel(getattr(state, "session_purge", None))
 
 
+async def _start_checkpoint_purge(state: TaskiqState) -> None:
+    interval = get_settings().checkpoint_purge_interval_seconds
+    if interval <= 0:
+        return
+    # The worker owns its own checkpointer pool: pruning goes through the saver rather than
+    # through SQL (see ``app.agent.checkpointing.discard_thread``), and without this the
+    # sweep would run against the volatile fallback and silently discard nothing.
+    await checkpointing.start()
+    state.checkpoint_purge = asyncio.create_task(_purge_checkpoints_loop(interval))
+
+
+async def _stop_checkpoint_purge(state: TaskiqState) -> None:
+    await _cancel(getattr(state, "checkpoint_purge", None))
+    await checkpointing.stop()
+
+
 async def _cancel(task: asyncio.Task | None) -> None:
     if task is None:
         return
@@ -165,3 +218,5 @@ broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_reconciler)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_reconciler)
 broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_session_purge)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_session_purge)
+broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_checkpoint_purge)
+broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_checkpoint_purge)

@@ -48,6 +48,33 @@ class SessionRead(BaseModel):
     current: bool = False
 
 
+class PasswordChange(BaseModel):
+    """Set a new password, proving you know the current one.
+
+    The current password is required even though the caller already holds a valid session: a
+    session is not proof of the person, and a borrowed laptop is a session.
+    """
+
+    current_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+
+
+class EmailChange(BaseModel):
+    """Move to a new address. The password is the proof, for the same reason as above."""
+
+    password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+    email: EmailStr
+
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str = Field(min_length=1, max_length=512)
+    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+
+
 class SessionListRead(BaseModel):
     """Every live session for the current learner."""
 

@@ -153,6 +153,35 @@ class Settings(BaseSettings):
 
     # How often the worker deletes sessions that can no longer authenticate anybody. An auth
     # table nobody prunes grows for the life of the deployment; 0 turns the sweep off.
+    # How long a conversation may sit untouched before its paused graph state is discarded
+    # (S17). Durability was only half a lifecycle: nothing ever ended a checkpoint, so the
+    # table only grew and a practice abandoned in March stayed resumable in September. Weeks
+    # rather than days because the cost of being wrong is asymmetric — a pruned checkpoint
+    # costs a learner their place in one paused exercise, and a kept one costs a row.
+    checkpoint_retention_days: int = 30
+    # 0 disables the sweep, like every other interval here.
+    checkpoint_purge_interval_seconds: int = 6 * 3600
+
+    # Sign-in throttling (S21). Argon2 is deliberately slow, which defends the stored hashes
+    # and makes every attempt a cost to *us* — so an unthrottled sign-in endpoint is a way to
+    # spend our CPU at an attacker's convenience. Two counters, because they are two different
+    # attacks: many failures against one address is somebody working on one account, many from
+    # one client across addresses is credential stuffing, and neither counter sees the other.
+    # Numbers chosen to sit well clear of a person mistyping their own password (S18).
+    sign_in_window_minutes: int = 15
+    sign_in_max_failures_per_email: int = 10
+    sign_in_max_failures_per_client: int = 30
+    sign_in_attempt_retention_hours: int = 24
+
+    # How long a password-reset token is good for. Short, because it is a bearer credential
+    # sitting in somebody's inbox: the window is the exposure.
+    password_reset_ttl_minutes: int = 30
+    password_reset_used_retention_hours: int = 24
+    # Off by default, and the release gate refuses production while it is on without a real
+    # mail transport (``app.core.mail``): a reset nobody can deliver is worse than no reset,
+    # because it looks like one.
+    password_reset_enabled: bool = False
+
     session_purge_interval_seconds: int = 3600
 
     # The development sign-in seam: a single endpoint that issues a session for the dev learner
@@ -242,6 +271,24 @@ class Settings(BaseSettings):
     # is "not a bad day", and half marks is "did not substantially do it" (S18).
     detour_failure_threshold: float = 0.5
     detour_min_failures: int = 2
+
+    # How many times one prerequisite may be tried for one blocked component before the
+    # planner stops offering it (S11). Nothing bounded this: the rule fires on the *current*
+    # run of failures, so a learner stuck on a component whose prerequisite is not actually
+    # the problem was sent back to the same prerequisite after every failed attempt, forever.
+    # Two trips is enough to have tested the hypothesis; a third is the planner insisting.
+    # Uncalibrated, like its neighbours (S18).
+    detour_max_repeats: int = 2
+
+    # When a due review stops being worth self-rating (S09/S10). A flashcard is graded by the
+    # learner's own rating, so a component failed repeatedly on review produces a falling
+    # ability and no account of *why* — the one situation where the cheap format is the wrong
+    # one. At this many consecutive failures the review is served as an open question instead,
+    # which the grader can diagnose and split by component. Uncalibrated in the same spirit as
+    # the detour triggers (S18); it deliberately shares detour_failure_threshold's definition
+    # of "failed", because two thresholds that can disagree about that would let the same
+    # attempt be a failure to one part of the system and not to another.
+    review_diagnose_min_failures: int = 2
 
     # Cap on how many KCs a generated lesson plan targets at once — cost/UX bound on a
     # runaway subject graph. Review steps (due retention) are added on top, uncapped.
