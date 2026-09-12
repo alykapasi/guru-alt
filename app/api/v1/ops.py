@@ -5,11 +5,14 @@ monitor, neither of which holds a learner session, and both of which poll — so
 does per-learner work, and nothing here returns anything about a learner.
 """
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, Query, Response, status
 
 from app.api.deps import BlobStoreDep, SessionDep, SettingsDep
+from app.core.alerts import AlertReport, evaluate
 from app.core.readiness import ReadinessReport, readiness
 from app.services.ingestion import IngestionBacklog, backlog
+from app.services.spend import SpendWindow
+from app.services.spend import window as spend_window
 
 router = APIRouter(tags=["ops"])
 
@@ -39,3 +42,37 @@ async def ingestion_backlog(session: SessionDep, settings: SettingsDep):
     is what learners experience as an upload that never becomes a lesson.
     """
     return await backlog(session, settings=settings)
+
+
+@router.get("/ops/spend", response_model=SpendWindow)
+async def spend(
+    session: SessionDep,
+    settings: SettingsDep,
+    hours: int | None = Query(default=None, ge=1, le=24 * 90),
+):
+    """Model spend over a window, by role and by model (S60).
+
+    Cost has been recorded per call since Phase 1 and capped per learner since S47; nothing
+    watched the total, so the first signal was the bill. `cost_usd` is a **floor** whenever
+    `unpriced_calls` is non-zero — a NULL price means the model has no known one, which is
+    deliberately distinct from a local model that genuinely cost nothing.
+    """
+    return await spend_window(session, settings=settings, hours=hours)
+
+
+@router.get("/ops/alerts", response_model=AlertReport)
+async def alerts(session: SessionDep, store: BlobStoreDep, settings: SettingsDep):
+    """Which conditions are worth acting on right now, and what to do about each (S60).
+
+    The signals existed and nothing evaluated them, which put the thresholds in a runbook and
+    the remembering in a person. This is the predicate: anything that can poll HTTP and read a
+    JSON field can alert on it. It answers 200 whether or not anything is firing — readiness is
+    the endpoint that 503s, and taking an instance out of rotation because its bill is high
+    would be the wrong response to the right signal.
+    """
+    return evaluate(
+        readiness=await readiness(session, store),
+        backlog=await backlog(session, settings=settings),
+        spend=await spend_window(session, settings=settings),
+        settings=settings,
+    )

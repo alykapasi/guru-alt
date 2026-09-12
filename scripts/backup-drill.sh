@@ -46,10 +46,17 @@ before="$(counts "$DB")"
 after="$(counts "$SCRATCH")"
 pg dropdb -U "$USER" --if-exists "$SCRATCH"
 
-if [[ "$before" == "$after" ]]; then
-  echo "OK — $(wc -l <<< "$before" | tr -d ' ') tables, row counts identical"
-  exit 0
+if [[ "$before" != "$after" ]]; then
+  echo "MISMATCH between $DB and its restored copy:" >&2
+  diff <(echo "$before") <(echo "$after") >&2 || true
+  exit 1
 fi
-echo "MISMATCH between $DB and its restored copy:" >&2
-diff <(echo "$before") <(echo "$after") >&2 || true
-exit 1
+echo "OK — $(wc -l <<< "$before" | tr -d ' ') tables, row counts identical"
+
+# The dump does not contain the uploaded bytes. Blobs live in the object store and are shared
+# by content hash (S77), so a database that restores perfectly alongside an empty bucket gives
+# you a library that looks intact and sources that cannot be re-ingested from anything. A
+# restore drill that stops at the row counts would report exactly that as a success.
+echo
+echo "checking the object store still holds what the database references ..."
+uv run poe blob-check

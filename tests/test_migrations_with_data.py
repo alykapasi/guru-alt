@@ -16,8 +16,6 @@ import pytest
 
 from tests.migration_harness import database_at, upgrade
 
-pytestmark = pytest.mark.asyncio
-
 SCRATCH = "guru_migration_test"
 
 

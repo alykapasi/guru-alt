@@ -26,8 +26,6 @@ from tests.conftest import sign_in
 API = "/api/v1"
 PASSWORD = "a sufficiently long password"
 
-pytestmark = pytest.mark.asyncio
-
 
 def _cookie(response) -> str | None:
     return response.cookies.get(get_settings().session_cookie_name)

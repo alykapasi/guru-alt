@@ -17,7 +17,6 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, func, select
@@ -36,8 +35,6 @@ from app.services import auth, ingestion
 from tests.conftest import sign_in
 
 API = "/api/v1"
-
-pytestmark = pytest.mark.asyncio
 
 
 @pytest_asyncio.fixture

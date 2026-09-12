@@ -140,6 +140,17 @@ class Settings(BaseSettings):
     # None = host-only, which is right unless the API and the app are on sibling subdomains.
     session_cookie_domain: str | None = None
 
+    # Spend watch (S60). Cost has been recorded per call since Phase 1 and capped per learner
+    # since S47; nothing looked at the total, so the failure mode was a bill discovered monthly.
+    # None = report spend but assert nothing about it.
+    spend_window_hours: int = 24
+    spend_budget_usd: float | None = None
+
+    # Alert thresholds (S60). These are the numbers docs/OPERATIONS.md tells an operator to
+    # watch, in the one place something can evaluate them.
+    alert_pending_age_seconds: float = 900.0
+    alert_expired_leases: int = 1
+
     # How often the worker deletes sessions that can no longer authenticate anybody. An auth
     # table nobody prunes grows for the life of the deployment; 0 turns the sweep off.
     session_purge_interval_seconds: int = 3600

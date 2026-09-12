@@ -27,8 +27,6 @@ from tests.embedding import FAKE_SPACE
 API = "/api/v1"
 EMBED_DIM = 768
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture
 async def other_learner(db_session: AsyncSession) -> Learner:

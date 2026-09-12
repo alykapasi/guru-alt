@@ -85,8 +85,34 @@ nothing is processed at all.
 | `expired_leases` > 0 for longer than `GURU_INGEST_RECONCILE_INTERVAL_SECONDS` | The reconciler is not running | `uv run poe reconcile-ingestion` to sweep now, then find out why the worker's timer is not firing. |
 | `failed` rising | Sources exhausting `ingest_max_attempts` | Read `sources.error`; these are parked, not retried. |
 
-Cost and token use are logged per call (`llm_calls`, tagged by role and model) — see
-`app/services/accounting.py`. There is no alerting on spend yet; see *Not covered*.
+`/api/v1/ops/spend` is the bill so far. Cost and token use are logged per call (`llm_calls`,
+tagged by role and model); this totals a window and splits it by role and by model. Set
+`GURU_SPEND_BUDGET_USD` and `GURU_SPEND_WINDOW_HOURS` to make it assert something.
+
+> `cost_usd` is a **floor** whenever `unpriced_calls` is non-zero. A NULL price means the model
+> has no known one, which is deliberately not the same as 0.00 — a local model that genuinely
+> cost nothing. A deployment running entirely on unpriced models would otherwise report as
+> spending nothing at all.
+
+### `/api/v1/ops/alerts` — the conditions, evaluated
+
+Every threshold in this section, checked in one place, with the action for each in the response
+body. It answers 200 whether or not anything is firing: `firing` is the field to alert on, and
+`checked` lists what was evaluated so a silent report is distinguishable from checks that never
+ran. Readiness is the endpoint that returns 503 — taking an instance out of rotation because
+its bill is high would be the wrong response to the right signal.
+
+| Alert | Severity | Means |
+| --- | --- | --- |
+| `dependencies_unavailable` | critical | A dependency a request needs is not answering. The instance is already out of rotation. |
+| `durable_checkpoints_off` | critical | The checkpointer fell back to in-process state: paused practice will not survive a restart, and two workers can resume the same one (S17). |
+| `ingestion_stalled` | critical | Work waiting, nothing in flight — a dead consumer. |
+| `ingestion_backlog_ageing` | warning | Oldest pending source past `GURU_ALERT_PENDING_AGE_SECONDS`. Saturated if `processing` is at the cap; otherwise treat as stalled. |
+| `leases_expired` | warning | Claimed sources with a lapsed lease, at or past `GURU_ALERT_EXPIRED_LEASES`. Persisting means the reconciler is not running. |
+| `spend_over_budget` | warning | Window spend past `GURU_SPEND_BUDGET_USD`. A runaway is usually one loop, not general growth. |
+
+Point any HTTP poller at it and alert on `firing`. Nothing about which alerting system you use
+has to be decided for the thresholds to live in one place and be tested.
 
 ## Deploying a release
 
@@ -131,8 +157,22 @@ anything differs. Run it on a schedule. A backup nobody has restored is a hypoth
 
 **The object store is not in the database dump.** Blobs live under `blobs/<sha256>` and are
 shared across learners by content hash (S77); `sources.blob_key` references them. A restored
-database with an empty bucket has sources that cannot be re-ingested. Back the bucket up
-separately (`mc mirror`, or the provider's own replication).
+database with an empty bucket has sources that cannot be re-ingested — every row present, every
+byte gone, and nothing to re-derive them from. Back the bucket up separately: bucket
+replication or versioning at the provider, or `mc mirror` on a schedule. That mechanism is
+infrastructure, not application code, and this repository does not implement it.
+
+What this repository *does* do is tell you whether a restore is valid:
+
+```bash
+uv run poe blob-check    # every blob the database references, confirmed present
+```
+
+Run it **after a restore and before letting learners back in**, and on a schedule to catch a
+bucket lifecycle rule quietly expiring objects the database still points at. It exits non-zero
+with the affected sources named, so it works as a deployment gate rather than something
+somebody reads. `backup-drill` now finishes by running it, because a drill that stops at the
+row counts would report a database restored alongside an empty bucket as a success.
 
 ## Not covered
 
@@ -143,12 +183,14 @@ Honest gaps, so nobody discovers them mid-incident:
   backup drill have all been executed — against the local compose stack. The managed-Postgres
   and real-S3 equivalents are untested, and so is anything about network policy, TLS
   termination or secret delivery.
-- **No alerting.** The signals above exist and are worth polling; nothing polls them, and there
-  is no paging, dashboard, or error tracker wired up.
-- **No spend alerting.** Cost is recorded per call and bounded per learner
-  (`learner_daily_token_limit`); nothing watches the total.
+- **No paging, dashboard, or error tracker.** `/api/v1/ops/alerts` evaluates the conditions and
+  `/api/v1/ops/spend` totals the bill, but nothing *polls* either: no scheduler, no
+  notification channel, no history. The predicate exists; the delivery does not.
+- **No object-store backup mechanism.** `blob-check` verifies a restore; configuring bucket
+  replication or a mirror schedule is yours to do, and nothing checks that you have.
 - **No blue/green or canary.** The procedure above is a rolling restart.
 - **Restore is not automated.** `backup-drill` proves a dump restores; promoting a restored
   database to primary is a manual decision and a manual DSN change.
-- **No migration test against representative existing data** — only against a fresh database
+- **Migration coverage against existing data is partial.** Two revisions have a data case
+  (`tests/test_migrations_with_data.py`); nothing requires a new migration to come with one
   (tracker item S58).

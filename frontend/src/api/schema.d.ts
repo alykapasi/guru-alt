@@ -599,6 +599,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ops/alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Alerts
+         * @description Which conditions are worth acting on right now, and what to do about each (S60).
+         *
+         *     The signals existed and nothing evaluated them, which put the thresholds in a runbook and
+         *     the remembering in a person. This is the predicate: anything that can poll HTTP and read a
+         *     JSON field can alert on it. It answers 200 whether or not anything is firing — readiness is
+         *     the endpoint that 503s, and taking an instance out of rotation because its bill is high
+         *     would be the wrong response to the right signal.
+         */
+        get: operations["alerts_api_v1_ops_alerts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ops/ingestion": {
         parameters: {
             query?: never;
@@ -616,6 +642,31 @@ export interface paths {
          *     is what learners experience as an upload that never becomes a lesson.
          */
         get: operations["ingestion_backlog_api_v1_ops_ingestion_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ops/spend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Spend
+         * @description Model spend over a window, by role and by model (S60).
+         *
+         *     Cost has been recorded per call since Phase 1 and capped per learner since S47; nothing
+         *     watched the total, so the first signal was the bill. `cost_usd` is a **floor** whenever
+         *     `unpriced_calls` is non-zero — a NULL price means the model has no known one, which is
+         *     deliberately distinct from a local model that genuinely cost nothing.
+         */
+        get: operations["spend_api_v1_ops_spend_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1244,6 +1295,33 @@ export interface components {
             observations_prior_7d: number;
             /** Streak Days */
             streak_days: number;
+        };
+        /**
+         * Alert
+         * @description One condition, and what an operator does about it.
+         */
+        Alert: {
+            /** Action */
+            action: string;
+            /** Detail */
+            detail: string;
+            /** Name */
+            name: string;
+            /**
+             * Severity
+             * @enum {string}
+             */
+            severity: "critical" | "warning";
+        };
+        /**
+         * AlertReport
+         * @description Which conditions are firing right now.
+         */
+        AlertReport: {
+            /** Checked */
+            checked: string[];
+            /** Firing */
+            firing: components["schemas"]["Alert"][];
         };
         /**
          * AnswerSubmit
@@ -2299,6 +2377,55 @@ export interface components {
             subject_id: string | null;
             /** Topic Id */
             topic_id: string | null;
+        };
+        /**
+         * SpendBucket
+         * @description Spend attributed to one role or one model.
+         */
+        SpendBucket: {
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: number;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Name */
+            name: string;
+            /** Output Tokens */
+            output_tokens: number;
+            /** Unpriced Calls */
+            unpriced_calls: number;
+        };
+        /**
+         * SpendWindow
+         * @description Total model spend over a window, and whether it is over budget.
+         */
+        SpendWindow: {
+            /** Budget Usd */
+            budget_usd: number | null;
+            /** By Model */
+            by_model: components["schemas"]["SpendBucket"][];
+            /** By Role */
+            by_role: components["schemas"]["SpendBucket"][];
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: number;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Output Tokens */
+            output_tokens: number;
+            /** Over Budget */
+            over_budget: boolean;
+            /**
+             * Since
+             * Format: date-time
+             */
+            since: string;
+            /** Unpriced Calls */
+            unpriced_calls: number;
+            /** Window Hours */
+            window_hours: number;
         };
         /** StoreRetentionRead */
         StoreRetentionRead: {
@@ -3405,6 +3532,26 @@ export interface operations {
             };
         };
     };
+    alerts_api_v1_ops_alerts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertReport"];
+                };
+            };
+        };
+    };
     ingestion_backlog_api_v1_ops_ingestion_get: {
         parameters: {
             query?: never;
@@ -3421,6 +3568,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IngestionBacklog"];
+                };
+            };
+        };
+    };
+    spend_api_v1_ops_spend_get: {
+        parameters: {
+            query?: {
+                hours?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpendWindow"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

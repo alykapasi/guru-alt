@@ -35,5 +35,8 @@ class InMemoryBlobStore:
     async def delete(self, key: str) -> None:
         self._store.pop(key, None)
 
+    async def exists(self, key: str) -> bool:
+        return key in self._store
+
     async def presigned_url(self, key: str, *, expires_in: int = 3600) -> str:
         return f"memory://{key}"

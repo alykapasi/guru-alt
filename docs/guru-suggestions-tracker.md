@@ -2306,7 +2306,8 @@ but it means they cannot run concurrently with each other either.
 
 ### S60 — Provide an operational release and recovery path
 
-**Status:** Partially implemented (branch `fix/tracker-s53-s60`) · **Priority:** Before production
+**Status:** Partially implemented (branch `fix/tracker-s53-s60`; extended on branch
+`feat/s21-s58-s60`) · **Priority:** Before production
 
 **Implemented — there is now something to deploy.** A `Dockerfile` builds the API and the worker
 as one image with two commands (building them separately is how a worker ends up running a job
@@ -2356,16 +2357,58 @@ and confirmed `/health` 200, `/api/v1/ready` 200 with both dependencies passing,
 what it exists for. All 35 migrations round-trip to base and back. `backup-drill` dumped 81KB
 and matched 27 tables; corrupting the restored copy makes it fail and name the table.
 
-**Not done.** Nothing has been rehearsed against real infrastructure — managed Postgres, real
-S3, TLS, secret delivery and network policy are all untested. There is no alerting: the signals
-exist and are worth polling, but nothing polls them, and there is no paging or dashboard. Cost
-is recorded per call and capped per learner, but nothing watches the total. No blue/green or
-canary — the documented rollout is a rolling restart. Restore is not automated past proving a
-dump restores; promoting a restored database is a manual DSN change. Migrations are still only
-tested against a fresh database, not representative existing data (S58). And the object store is
-not covered by the database backup — blobs are shared by content hash (S77), so a restored
-database with an empty bucket has sources that cannot be re-ingested; the runbook says so and
-points at `mc mirror`, but nothing runs it.
+**Implemented (second pass, branch `feat/s21-s58-s60`) — the signals are evaluated, not just
+exposed.** The honest note above was that readiness, queue age and lease health "exist and are
+worth polling, but nothing polls them". A signal nobody evaluates is documentation rather than
+monitoring: it moves both the thresholds and the remembering onto a person who is, by
+definition, busy with something else at the moment it matters. `/api/v1/ops/alerts` is the
+predicate — every threshold in the runbook, checked in one place, each firing condition
+carrying the value that tripped it and the action for it. Anything that can poll HTTP and read
+a JSON field can alert on it, so nothing about *which* alerting system gets used had to be
+decided in order for the thresholds to live somewhere testable. It answers 200 whether or not
+anything is firing: readiness is the endpoint that 503s, and taking an instance out of rotation
+because its bill is high would be the wrong response to the right signal. `checked` lists what
+was evaluated, so a silent report is distinguishable from checks that never ran.
+
+**Implemented — something watches the total.** Cost has been recorded per call since Phase 1
+and capped per learner since S47; nothing looked at the sum, so the first signal was the bill.
+`/api/v1/ops/spend` totals a window and splits it the two ways an operator acts on — which role
+and which model — against an optional budget. The number that is not what it looks like is the
+total: `cost_usd` is nullable and NULL means *no known price*, deliberately distinct from 0.0,
+which means a local model that genuinely cost nothing (S48). Summing NULLs as zero would report
+a deployment running entirely on unpriced models as spending nothing at all, which is the most
+expensive way to be wrong, so unpriced calls are counted and reported alongside and the alert
+says so in its own text when the figure is a floor.
+
+**Implemented — a restore can now be shown to be valid.** The dump does not contain the
+uploaded bytes, and blobs are shared by content hash (S77), so a database restored beside an
+empty bucket is worse than an obvious failure: every `Source` row is present, the library looks
+intact, and nothing can re-derive the bytes because de-duplication means no other copy exists.
+`poe blob-check` walks every referenced key and asks the store whether it is there, exiting
+non-zero with the affected sources named so it works as a deployment gate rather than something
+somebody reads. `backup-drill` now ends by running it — a drill that stopped at the row counts
+would have reported exactly that failure as a success. This needed one addition to the storage
+seam, `exists()`, a metadata lookup rather than a read: answering by `get` would download the
+corpus to learn that it is still there. The S3 implementation was verified against the running
+MinIO, since the in-memory store cannot exercise `head_object` or its error path.
+
+The *reverse* direction is deliberately absent. Objects nothing references are a cleanup
+question rather than a correctness one, and deleting them safely is the orphan reconciliation
+S61 owns.
+
+**Not done.** Still nothing rehearsed against real infrastructure — managed Postgres, real S3,
+TLS, secret delivery and network policy are all untested, and this pass changed nothing about
+that. **Nothing polls the alerts**: the predicate exists, the delivery does not — no scheduler,
+no notification channel, no history, no dashboard, and therefore no way to see that a condition
+was firing and stopped. The thresholds themselves are chosen rather than derived: a fifteen
+minute pending age is a guess in the same spirit as S18's placement mappings, and no incident
+has yet suggested a number. There is no object-store *backup mechanism* — `blob-check` verifies
+a restore, while replication or a mirror schedule remains an infrastructure task this
+repository neither performs nor checks that you have performed. Spend has no per-window
+history, so "is this month worse than last?" cannot be asked; nothing attributes cost to a
+feature rather than a model role; and the budget is a report rather than a brake, since nothing
+refuses work when it is exceeded. No blue/green or canary. Promoting a restored database is
+still a manual DSN change.
 
 **Evidence:** Compose explicitly provides local dependencies, not a deployable API/frontend/worker release. /health is liveness only. The reviewed repo has no demonstrated backup/restore, deployment rollback, readiness, worker-lag alerts, or production configuration validation.
 
