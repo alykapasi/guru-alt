@@ -2197,7 +2197,8 @@ and wiring it through `run_cell`. Prompt-version identity is not yet recorded.
 
 ### S58 — Expand CI to cover the delivered product and actual failure boundaries
 
-**Status:** Partially implemented (`36c16e5`, branch `fix/tracker-s54-s38`) · **Priority:** Before release
+**Status:** Partially implemented (`36c16e5`, branch `fix/tracker-s54-s38`; extended on branch
+`feat/s21-s58-s60`) · **Priority:** Before release
 
 **Implemented:** Three gates that were missing entirely.
 
@@ -2228,10 +2229,60 @@ It also produced two order-dependent failures that had nothing to do with the co
 They now require `GURU_LIVE_MODEL_TESTS=1` (`tests/live_models.py`), which also de-duplicates the
 model probe that was copied across three files. Full suite: 667 passed, 4 skipped, **23s**.
 
-**Still open:** browser/e2e journeys, API-contract gates between frontend and backend,
-separate-session concurrency tests (the fixture still shares one savepoint-joined session, so it
-cannot exercise real cross-connection commits), queue integration, fault injection, and migration
-tests against representative *existing* data rather than only a fresh database.
+**Implemented (second pass, branch `feat/s21-s58-s60`) — the contract between the two halves
+is now a gate.** `frontend/src/api/schema.d.ts` is generated from the API's OpenAPI document,
+and `npm run gen:api` pointed at a *running dev server* — so the committed types were only ever
+as current as the last time somebody remembered to start one and re-run it. A backend change
+that removed a field or renamed a route could merge, and the frontend would keep compiling
+against the shape that used to be there: a type-checker approving code that cannot work.
+`poe openapi` dumps the document from the app object — no server, no database, no network —
+which is what lets `poe api-contract` regenerate the types and fail on any difference. It is a
+third CI job, and it was checked by mutation: adding a field to a response model makes it exit
+non-zero. Generation is deterministic (sorted keys), so the check cannot fail on ordering.
+
+**Implemented — a fixture that can lose a race.** Every other API test shares one session
+inside one transaction that is rolled back. That is the right default, and it cannot express
+the failures that matter here: two "concurrent" requests on one savepoint-joined session are
+not concurrent and never commit, so a unique constraint cannot be violated, a lease cannot be
+lost to somebody else, and an idempotency key is checked against writes the other request has
+not made. `live_client` drives the app with its own session factory — each request its own
+connection, each commit real — and cleans up by deleting the learner and letting the cascade
+run. Five tests, one per boundary where losing the race corrupts something rather than merely
+failing: one attempt submitted twice at once, one address registered twice at once, one source
+claimed by two workers, one session used and revoked across connections.
+
+**It found a defect on the first run, and the defect was in code whose docstring described the
+fix.** `answer_item` documents that "a concurrent duplicate loses at commit and replays the
+winner's grade instead of raising", and it has an `except IntegrityError` around
+`session.commit()` that does exactly that. But the tracer *flushes* the observation, so under a
+real race the unique index fires inside `DEFAULT_TRACER.update(...)` — which sat one line
+*above* the `try`. The loser of a genuine double-submission got a 500 instead of their grade.
+The data was never wrong (the constraint did its job); the response was. The sequential test
+that has covered S34 since it was written passes either way, because a read-then-write retry
+never reaches the flush. Moved inside the guard, and mutation-checked.
+
+**Implemented — migrations against data that was already there.** CI migrates a fresh database
+and round-trips every revision, which proves a revision *executes*. The risk a production
+upgrade carries is different: that existing rows survive it, keep their meaning, and satisfy
+whatever constraint it adds. `tests/migration_harness.py` gives a test a scratch database at a
+chosen revision, a plain connection to seed it, and then the upgrade under test. Two rules make
+the result mean anything, and both are in the module docstring: seed with SQL and never with
+the ORM (the models describe `head`, so seeding through them writes data no real deployment
+could have held), and use a scratch database rather than downgrading the suite's own underneath
+every other test. Three cases: that 0039 leaves pre-auth learners with no invented address and
+a constraint that accepts them, that several credential-less learners do not collide on the
+unique index, and that a conversation predating 0037 comes through with `0` rather than `NULL`
+— the `server_default` trap, verified by removing the server default and watching the test fail.
+
+**Still open:** browser/e2e journeys — the upload→curriculum→chat→practice→notes path in a real
+browser is still unwritten, and it is now the largest single gap here. Queue *integration*: the
+worker's tasks are tested, delivery through a real Redis broker is not, and no CI job runs one.
+Fault injection: nothing exercises a blob store or a provider failing mid-operation on purpose.
+The migration harness covers two revisions rather than being applied to every future one, and
+nothing requires a new migration to come with a data case. `guru_migration_test` is a fixed
+name, so the harness assumes the suite is not run in parallel against one server. And the
+cross-connection tests share the process-wide engine, disposing it on the way out — correct,
+but it means they cannot run concurrently with each other either.
 
 **Evidence:** CI builds/tests the backend and applies migrations, but has no frontend install/build/lint or browser workflow. Backend fixtures use one transactional session with savepoints, and many workflow tests use canned model responses; these do not establish separate-worker or real-commit behavior.
 

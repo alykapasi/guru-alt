@@ -241,8 +241,13 @@ async def answer_item(
         correct=result.correct,
         detail=result.detail,
     )
-    await mastery.DEFAULT_TRACER.update(session, observation)
     try:
+        # Inside the guard, not before it: the tracer *flushes* the observation, so under a
+        # genuine race the unique index fires here rather than at commit. With this call
+        # outside, the loser of a real double-submission got a 500 while the sequential retry
+        # path — which never reaches the flush — worked, so nothing short of two connections
+        # could see it (S58).
+        await mastery.DEFAULT_TRACER.update(session, observation)
         await session.commit()
     except IntegrityError:
         await session.rollback()
