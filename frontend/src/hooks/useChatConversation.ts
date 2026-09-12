@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useConversations, useItem, useMessages } from "../api/hooks";
-import { isTerminal, streamTurn, type ItemEvent, type SendMessageBody } from "../api/sse";
+import {
+  isTerminal,
+  streamTurn,
+  type CheckResult,
+  type ItemEvent,
+  type SendMessageBody,
+} from "../api/sse";
 
 export interface PendingTurn {
   userContent: string;
@@ -38,6 +44,10 @@ export function useChatConversation(conversationId: string | undefined) {
   const [liveItem, setLiveItem] = useState<ItemEvent | null>(null);
   const [sessionDetail, setSessionDetail] = useState<string | null>(null);
   const [liveAwaitingReply, setLiveAwaitingReply] = useState(false);
+  // What the turn that just ended did to the learner's mastery, if it graded an answer (S15).
+  // Transient by design: it belongs to the turn, not to the transcript, and the next turn
+  // clears it rather than leaving a stale verdict beside a newer question.
+  const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
 
   // Abort the in-flight turn when this hook goes away. Without it the fetch outlived the
   // component that started it: tokens kept arriving for a conversation nobody was looking at,
@@ -68,6 +78,9 @@ export function useChatConversation(conversationId: string | undefined) {
       if (!conversationId) return;
       setError(null);
       setFailed(null);
+      // Cleared as the new turn starts, not when its result arrives: the previous answer's
+      // verdict must not sit beside a newer question as though it belonged to it.
+      setCheckResult(null);
       setPending({ userContent: turn.content, assistantText: "", toolCalls: [] });
 
       const body: SendMessageBody = {
@@ -100,6 +113,7 @@ export function useChatConversation(conversationId: string | undefined) {
             setLiveItem(ev.item);
             setSessionDetail(ev.detail);
             setLiveAwaitingReply(false);
+            setCheckResult(ev.check_result);
           }
         }
         if (!sawTerminal) {
@@ -155,6 +169,7 @@ export function useChatConversation(conversationId: string | undefined) {
     item,
     sessionDetail,
     awaitingReply,
+    checkResult,
     send,
   };
 }

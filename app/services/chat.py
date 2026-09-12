@@ -15,7 +15,7 @@ from sqlalchemy.orm import selectinload
 
 from app.agent.tutor import TutorState, build_tutor_graph
 from app.core.config import get_settings
-from app.learning import conversation_evidence
+from app.learning import conversation_evidence, mastery
 from app.learning.conversation_evidence import TurnIntent
 from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult, InvalidResponse
@@ -24,8 +24,10 @@ from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.models.assessment import Item
 from app.models.chat import Conversation, ConversationPhase, ConversationSource, Message
 from app.models.knowledge import KC
+from app.models.learning import LearnerKCState
 from app.rag.retrieval import retrieve
 from app.schemas.assessment import AnswerSubmit
+from app.schemas.chat import CheckComponentRead, CheckResultRead
 from app.services import assessment as assessment_svc
 from app.services import knowledge as knowledge_svc
 from app.services import learner_context
@@ -52,10 +54,18 @@ TUTOR_SYSTEM_PROMPT = (
 
 @dataclass(frozen=True)
 class CheckOutcome:
-    """A conversational attempt that was graded — what the tutor is told before it replies."""
+    """A conversational attempt that was graded.
+
+    Carries what the tutor is told before it replies *and* what the learner is told after: the
+    same grade serves both, and they must not be allowed to drift apart. ``priors`` is each
+    component's ability before the update, read before grading, so the movement can be reported
+    as a movement rather than as a number the learner has no baseline for.
+    """
 
     item: Item
     result: GradeResult
+    priors: Mapping[uuid.UUID, mastery.Estimate]
+    states: Sequence[LearnerKCState]
 
 
 _REPAIR: dict[FailureKind, str] = {
@@ -95,6 +105,51 @@ def _check_note(item: Item) -> str:
         "it yet. Keep it in play: restate it in your own words if that helps, but do not swap "
         "in a different question, because their next answer is graded against this one.\n"
         f"Practice question: {item.stem}"
+    )
+
+
+def _check_result(outcome: CheckOutcome, kcs: Sequence[KC]) -> CheckResultRead:
+    """The same grade the tutor was given, in the form the learner can read (S15).
+
+    Deliberately built from one source with ``_feedback_note``: the reply the learner sees and
+    the record they can check it against must not be able to disagree, and they would if each
+    were assembled from its own reading of the result.
+
+    A component the grader could not score separately carries ``None`` rather than the item's
+    aggregate. Copying the aggregate down would present one verdict as several measurements,
+    which is the exact error S10 exists to stop.
+    """
+    posterior = {state.kc_id: state for state in outcome.states}
+    components: list[CheckComponentRead] = []
+    for kc in kcs:
+        prior = outcome.priors.get(kc.id)
+        state = posterior.get(kc.id)
+        diagnosis = outcome.result.diagnoses.get(kc.id)
+        components.append(
+            CheckComponentRead(
+                kc_id=kc.id,
+                kc_name=kc.name,
+                score=outcome.result.component_scores.get(kc.id),
+                prior_ability=prior.ability if prior is not None else 0.0,
+                ability=state.ability if state is not None else 0.0,
+                uncertainty=state.uncertainty if state is not None else 1.0,
+                # `none` and `incomplete` name no failure, so they are reported as no
+                # diagnosis rather than as a kind the learner would have to interpret.
+                failure_kind=(
+                    diagnosis.kind.value if diagnosis is not None and diagnosis.actionable else None
+                ),
+                failure_detail=(
+                    diagnosis.evidence
+                    if diagnosis is not None and diagnosis.actionable and diagnosis.evidence
+                    else None
+                ),
+            )
+        )
+    return CheckResultRead(
+        item_id=outcome.item.id,
+        score=outcome.result.score,
+        correct=outcome.result.correct,
+        components=components,
     )
 
 
@@ -289,8 +344,11 @@ async def _resolve_check(
         conversation.active_item_scaffolds += 1
         return item, None
 
+    # Read before grading: `answer_item` returns the posterior, and a posterior with nothing
+    # to compare it against is not something a learner can act on.
+    priors = await mastery.estimate_kcs(session, learner_id, [link.kc_id for link in item.kc_links])
     try:
-        result, _states = await assessment_svc.answer_item(
+        result, states = await assessment_svc.answer_item(
             session,
             learner_id,
             item,
@@ -311,7 +369,7 @@ async def _resolve_check(
     except Exception as exc:
         log.error("chat.check_grading_failed", item_id=str(item.id), error=str(exc))
         return item, None
-    return None, CheckOutcome(item=item, result=result)
+    return None, CheckOutcome(item=item, result=result, priors=priors, states=states)
 
 
 async def _pose_check(
@@ -394,9 +452,11 @@ async def run_tutor_turn(
         session, llm, learner_id=learner_id, conversation=conversation, user_content=user_content
     )
     notes: list[str] = []
+    check_result: CheckResultRead | None = None
     if outcome is not None:
         kcs = await knowledge_svc.get_kcs(session, [link.kc_id for link in outcome.item.kc_links])
         notes.append(_feedback_note(outcome, {kc.id: kc.name for kc in kcs}))
+        check_result = _check_result(outcome, kcs)
     elif open_check is None and context.plan is not None and subject_id is not None:
         # Subject-scoped only, and the asymmetry with plan *grounding* is deliberate. A
         # subject-less conversation still gets grounding from whichever plan the learner was
@@ -487,6 +547,7 @@ async def run_tutor_turn(
         # rather than one the turn merely mentioned — see ``_phase_after``.
         detail="check" if open_check is not None else "",
         citations=citations,
+        check_result=check_result,
     )
 
 

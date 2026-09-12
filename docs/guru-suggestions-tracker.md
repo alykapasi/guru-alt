@@ -277,7 +277,8 @@ part of "shared context" that matters most once the memory is wrong.
 
 ### S15 — Make a conversation produce evidence, without making all of it evidence
 
-**Status:** Partially implemented (branch `feat/s15-s16-s17`) · **Priority:** High
+**Status:** Partially implemented (branch `feat/s15-s16-s17`; extended on branch
+`feat/finish-partials-1`) · **Priority:** High
 
 **Implemented — the second door to the tracer.** Mastery was reachable from exactly one place:
 `answer_item`, called by the guided-practice workflow and by the `POST /items/{id}/answer`
@@ -340,6 +341,36 @@ that the tutor is actually told the question in play; and nothing reset the scaf
 between checks, so help given for one question would have discounted every later answer, with
 the count never falling.
 
+**Implemented (second pass, branch `feat/finish-partials-1`) — the learner is told what
+happened to their answer.** The gap this closes was recorded above as one clause and is larger
+than it reads: an answer given in conversation was graded, moved the ability estimate,
+rescheduled the FSRS card and revised the lesson plan, and the only evidence any of that had
+happened was the tutor's next paragraph. A reply is not a record. It cannot be checked, it does
+not say which component moved or by how much, and a learner who disagreed with the grade had
+nothing to disagree *with*.
+
+The grade never left the server at all — `TurnEvent` carried tokens, an item and citations, and
+no result — so this is a channel before it is a rendering. `CheckResultRead` now rides the
+`done` frame on the turn that graded something, and null on every other turn, which is most of
+them. It is built from the same `CheckOutcome` as the tutor's own instruction, deliberately:
+the reply the learner reads and the record they check it against must not be able to disagree,
+and they would if each were assembled from its own reading of the result.
+
+**Implemented — absent evidence is shown as absent.** The card reports a component's own score
+only where the grader produced one, and a reason only where something diagnosed it. Copying the
+item's aggregate into each component would present one verdict as several measurements (S10),
+and `none`/`incomplete` are reported as *no* diagnosis rather than as kinds the learner would
+have to interpret, because "we could not tell" and "it was fine" are different things to say
+to somebody about their own work (S09). The grader's confidence is deliberately not carried:
+a language model's self-reported confidence is not calibrated, and putting a number on it tells
+the learner it is. The failure kinds are rendered in the learner's terms rather than the
+grader's vocabulary — "procedural" is jargon at the exact moment somebody is already stuck.
+
+Mastery is shown as a *movement* — the prior read before grading, against the posterior — and
+labelled with S46's language, since sigmoid(ability) is expected score on a question of average
+difficulty rather than the share of a topic understood. A change below a tenth of a point is
+shown as unchanged rather than given a direction the estimate does not really have.
+
 **Not done.** The check is posed from the plan's active step, so a conversation about something
 the plan is not currently on gets no check — the tutor's own comprehension questions in prose
 are still invisible to the tracer, and making *those* evidence would need the tutor to declare a
@@ -350,10 +381,13 @@ so a failure in the narrow window after that commit leaves the check open and a 
 record a second observation; the HTTP endpoint solves this with a client-supplied `attempt_id`
 and chat has none. The frontend renders the item but never submits an answer to it — the
 learner's answer reaches the grader only by being typed as an ordinary message, which is the
-intended path, but it means the item widget is still display-only. Nothing surfaces to the
-learner that an answer was graded or that their mastery moved. And whether a conversational
-attempt is *worth* as much as a submitted one is assumed, not measured: the scaffold discount is
-S18's arbitrary-threshold problem in a new place.
+intended path, but it means the item widget is still display-only. The report is transient: it
+belongs to the turn rather than the transcript, so a reload loses it, and there is no history a
+learner could scroll back through — the evidence exists in `learning_events` and nothing
+surfaces it. Guided practice still shows only "correct" or "good effort", so the same answer
+graded through the workflow tells the learner less than one typed into chat. And whether a
+conversational attempt is *worth* as much as a submitted one is assumed, not measured: the
+scaffold discount is S18's arbitrary-threshold problem in a new place.
 
 ### S09 — Say why an answer failed, not just how far
 

@@ -17,6 +17,7 @@ from app.llm.types import ChatMessage, ChatRole, Usage
 from app.models.chat import Message
 from app.rag.retrieval import RetrievalHit
 from app.schemas.assessment import ItemRead
+from app.schemas.chat import CheckResultRead
 
 _CITATION_MARKER = re.compile(r"\[(\d+)\]")
 
@@ -107,3 +108,7 @@ class TurnEvent:
     # Citations grounding this turn's reply, if any — set on "done" for subject-scoped
     # conversations only. See extract_citations above.
     citations: list[dict] = field(default_factory=list)
+    # What happened to an answer the learner gave in conversation, when this turn graded one
+    # (S15). Set on "done". The tutor's reply already reflects the grade; this is the part the
+    # learner can check it against, because a reply is not a record.
+    check_result: CheckResultRead | None = None

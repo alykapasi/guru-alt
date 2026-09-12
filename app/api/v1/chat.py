@@ -435,6 +435,11 @@ async def send_message(
                         "item": ev.item.model_dump(mode="json") if ev.item else None,
                         "detail": ev.detail,
                         "citations": ev.citations,
+                        # Present only on a turn that graded an answer the learner gave in
+                        # conversation (S15) — null on every other turn, which is most of them.
+                        "check_result": (
+                            ev.check_result.model_dump(mode="json") if ev.check_result else None
+                        ),
                     }
                 )
             elif ev.type == "awaiting_reply":

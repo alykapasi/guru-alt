@@ -96,3 +96,42 @@ class ChatTurnRequest(BaseModel):
     # turn again rather than a second turn asking the same thing (S51). Optional: a turn sent
     # without one is unconstrained, exactly as before this existed.
     client_turn_id: uuid.UUID | None = None
+
+
+class CheckComponentRead(BaseModel):
+    """One knowledge component of a graded conversational answer, as the learner sees it.
+
+    Every optional field is optional because the evidence genuinely may not exist, not because
+    it was inconvenient to fill in. ``score`` is null when the grader could not tell the
+    components apart — an MCQ has one outcome (S10) — and ``failure_kind`` is null when nothing
+    diagnosed it, which is every deterministic path (S09). Rendering must keep that difference:
+    "we could not tell" and "it was fine" are not the same thing to say to a learner.
+    """
+
+    kc_id: uuid.UUID
+    kc_name: str
+    score: float | None = None
+    # Ability on the logit scale, before and after this answer. Both, because a posterior on
+    # its own gives the learner no baseline to read it against.
+    prior_ability: float
+    ability: float
+    uncertainty: float
+    failure_kind: str | None = None
+    # The grader's own sentence about what went wrong. Shown as written rather than
+    # paraphrased; confidence is deliberately not exposed, because a language model's
+    # self-reported confidence is not calibrated and a number implies it is (S09).
+    failure_detail: str | None = None
+
+
+class CheckResultRead(BaseModel):
+    """What happened to an answer the learner gave in conversation (S15).
+
+    Until this existed, a conversational answer was graded, updated mastery, rescheduled the
+    card and revised the plan — and the learner was told none of it. The tutor's reply was the
+    only evidence anything had happened, and a reply is not a record.
+    """
+
+    item_id: uuid.UUID
+    score: float
+    correct: bool
+    components: list[CheckComponentRead]
