@@ -391,7 +391,8 @@ scaffold discount is S18's arbitrary-threshold problem in a new place.
 
 ### S09 — Say why an answer failed, not just how far
 
-**Status:** Partially implemented (branch `feat/s09-s10-s11`) · **Priority:** High
+**Status:** Partially implemented (branch `feat/s09-s10-s11`; extended on branch
+`feat/finish-partials-1`) · **Priority:** High
 
 **Implemented — the grader answers a closed question about *why*.** Grading returned a score
 and a sentence of prose. Both are real information and neither is actionable: "0.4, the learner
@@ -437,19 +438,29 @@ answer, and measuring whether these labels predict anything is S59's work. And t
 itself is asserted, not derived: five kinds chosen because they imply different responses, not
 because any study of these learners produced them.
 
+**Implemented (second pass, branch `feat/finish-partials-1`) — the diagnosis now chooses the
+help, on both surfaces.** S15 made plain chat branch on the failure kind. Guided practice — the
+flow most attempts actually happen in — still graded an answer, stored a kind, and told the
+tutor a bare score, so the surface a learner spends most of their time on made the least of the
+evidence the grader produced. Both flows now build the instruction through
+`app.learning.feedback`, one module, so the same mistake cannot be described two ways depending
+on which button the learner pressed — the defect S16 fixed for learner context, arriving in a
+second place. The kind also reaches the learner: rendered in their terms rather than the
+grader's vocabulary, because "procedural" is jargon at the exact moment somebody is stuck.
+
 **Not done — the rest.** Objective items carry no diagnosis and cannot: an MCQ knows the answer
 was wrong and nothing about why, and manufacturing a reason from that would commit the exact
 error this item exists to fix. Since MCQ is the default generated type, most attempts still
-produce no diagnosis at all. Nothing yet *uses* the diagnosis to choose help — the tutor is not
-told it, scaffolding does not change with it, and only `prerequisite` is acted on, by S11.
+produce no diagnosis at all. Scaffolding still does not change with the kind — the teaching
+move does, the hint density does not — and only `prerequisite` reaches the planner, by S11.
 Placement still infers rough levels with no diagnosis attached. Nothing aggregates diagnoses
 across attempts, so a misconception recurring five times reads as five unrelated events rather
-than one persistent belief. And the field reaches the API without the frontend rendering it or
-its generated types knowing it exists (S58).
+than one persistent belief.
 
 ### S10 — Preserve component-specific evidence, and grade open questions to a stated standard
 
-**Status:** Partially implemented (branch `feat/s09-s10-s11`) · **Priority:** High
+**Status:** Partially implemented (branch `feat/s09-s10-s11`; extended on branch
+`feat/finish-partials-1`) · **Priority:** High
 
 **Implemented — a failed component no longer condemns the ones that passed.**
 `record_observation` applied the item's single score to every tagged KC, varying only the
@@ -507,8 +518,14 @@ divides one unit across components by weight, which arguably understates a genui
 per-component judgement — but changing what `weight` means is a calibration decision, not a
 plumbing one. Generated criteria are never reviewed, revised, or reused across items for the
 same KC, so two questions on one component can be marked to two different standards. Existing
-items keep their null rubric; there is no backfill. And `component_scores` reaches the API but
-the frontend does not render it, nor do its generated types know the field exists yet (S58).
+items keep their null rubric; there is no backfill.
+
+**Implemented (second pass, branch `feat/finish-partials-1`) — the split reaches the learner.**
+Both flows now report each component by name with its own score, and a component the grader
+could not score separately shows *no* score rather than the item's aggregate. That asymmetry is
+the point: copying the aggregate down would present one verdict as several measurements, which
+is precisely the error this item exists to stop, and it would do it in the one place a learner
+would read it as a measurement of themselves.
 
 ### S23 — Validate the prerequisite graph before relying on its order
 
@@ -2614,6 +2631,12 @@ until its next regenerate.
 **Code:** [app/services/lesson_plan.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/services/lesson_plan.py), [app/core/config.py](https://github.com/alykapasi/guru-alt/blob/0d9b7f8abb1c623d0c46f3a53dda210a4790289f/app/core/config.py).
 
 ### S76 — Establish whether the vector arm of retrieval actually returns what it should
+
+> **Fresh sighting, 2026-09-12.** `tests/eval/test_eval.py::test_retrieval_eval_gate` failed
+> once during a full-suite run and then passed three times in isolation, on the parent commit,
+> and on a re-run of the whole suite. Still order-dependent, still not reproduced on demand,
+> still unexplained — recorded because the last entry said it had not recurred since being
+> measured, and now it has.
 
 **Status:** Measured (`poe retrieval-recall`) — no code change; a decision is now possible on
 evidence · **Priority:** Revisit before the first learner with a large corpus

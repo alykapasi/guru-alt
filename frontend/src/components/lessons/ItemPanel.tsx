@@ -2,7 +2,8 @@ import { Link } from "react-router-dom";
 import { CircleCheck, RotateCcw, Sprout } from "lucide-react";
 import { useKC } from "../../api/hooks";
 import { RichText } from "../content/RichText";
-import type { ItemEvent } from "../../api/sse";
+import type { CheckResult, ItemEvent } from "../../api/sse";
+import { CheckResultCard } from "../chat/CheckResultCard";
 
 // The workflow's "mastered" detail means this one item was graded correct, ending the round
 // early (see app/agent/workflow.py's route_after_respond) — it is NOT the same as the lesson
@@ -16,7 +17,18 @@ const DETAIL_COPY: Record<string, { label: string; icon: typeof Sprout }> = {
 /** The persistent side panel next to a guided-practice session's transcript — the current
  * practice item plus its outcome once the workflow ends (see MASTERPLAN's gamification
  * decision: a clear, understated success state, not a celebratory animation). */
-export function ItemPanel({ item, detail }: { item: ItemEvent | null; detail: string | null }) {
+export function ItemPanel({
+  item,
+  detail,
+  checkResult,
+}: {
+  item: ItemEvent | null;
+  detail: string | null;
+  /** The attempt this round graded, if any. Shown between rounds as well as at the end —
+   * a learner about to answer the same question again needs to know what the last attempt
+   * actually did, not just that it was wrong (S15). */
+  checkResult: CheckResult | null;
+}) {
   const kcId = item?.kcs[0]?.kc_id;
   const { data: kc } = useKC(kcId);
   const outcome = detail ? DETAIL_COPY[detail] : undefined;
@@ -35,6 +47,7 @@ export function ItemPanel({ item, detail }: { item: ItemEvent | null; detail: st
           <RichText content={item.stem} className="text-base-content/90" />
         </div>
       )}
+      {checkResult && <CheckResultCard result={checkResult} />}
       {outcome && (
         <div className="border-base-300 mt-auto flex flex-col gap-3 border-t pt-4">
           <p className="text-body text-primary flex items-center gap-2">

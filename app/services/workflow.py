@@ -20,6 +20,7 @@ from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.models.chat import Conversation
 from app.models.knowledge import KC
 from app.rag.retrieval import RetrievalHit, retrieve
+from app.schemas.chat import CheckResultRead
 from app.services import assessment as assessment_svc
 from app.services import learner_context
 from app.services.assessment import item_to_read
@@ -174,6 +175,11 @@ async def run_workflow_turn(
     item = await assessment_svc.get_item(session, uuid.UUID(snapshot.values["item_id"]))
     item_read = item_to_read(item) if item is not None else None
 
+    # The report for the attempt this turn graded, if it graded one. Absent on the opening
+    # turn, which presents a question and has nothing to report yet.
+    graded = snapshot.values.get("check_result")
+    check_result = CheckResultRead.model_validate(graded) if graded else None
+
     citations = extract_citations(last_message, hits) if not resume else []
     assistant = await add_message(
         session,
@@ -199,6 +205,10 @@ async def run_workflow_turn(
             detail="practice",
             item=item_read,
             citations=citations,
+            # The round that matters most for this: the learner has answered, is being given
+            # a hint, and is about to answer again — so what the last attempt actually did is
+            # the thing they need in front of them (S15).
+            check_result=check_result,
         )
         return
 
@@ -211,4 +221,5 @@ async def run_workflow_turn(
         item=item_read,
         detail=detail,
         citations=citations,
+        check_result=check_result,
     )

@@ -15,9 +15,8 @@ from sqlalchemy.orm import selectinload
 
 from app.agent.tutor import TutorState, build_tutor_graph
 from app.core.config import get_settings
-from app.learning import conversation_evidence, mastery
+from app.learning import conversation_evidence, feedback, mastery
 from app.learning.conversation_evidence import TurnIntent
-from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult, InvalidResponse
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
@@ -27,7 +26,7 @@ from app.models.knowledge import KC
 from app.models.learning import LearnerKCState
 from app.rag.retrieval import retrieve
 from app.schemas.assessment import AnswerSubmit
-from app.schemas.chat import CheckComponentRead, CheckResultRead
+from app.schemas.chat import CheckResultRead
 from app.services import assessment as assessment_svc
 from app.services import knowledge as knowledge_svc
 from app.services import learner_context
@@ -38,6 +37,7 @@ from app.services.llm_log import log_llm_call
 from app.services.turn_common import (
     TurnEvent,
     add_message,
+    build_check_result,
     extract_citations,
     format_grounding,
     to_chat_messages,
@@ -68,30 +68,6 @@ class CheckOutcome:
     states: Sequence[LearnerKCState]
 
 
-_REPAIR: dict[FailureKind, str] = {
-    # One teaching move per failure kind, taken from what each kind means in
-    # ``app.learning.diagnosis``. This is the join the diagnosis vocabulary was built for: it
-    # was defined so code could branch on it, and until now nothing did — the label was stored,
-    # returned to the client, and never allowed to change what the learner was told next.
-    FailureKind.NOTATION: (
-        "Name the convention they missed and move on — the underlying idea was there, so do "
-        "not re-teach it."
-    ),
-    FailureKind.PROCEDURAL: (
-        "Walk through the step they carried out wrongly. Do not re-explain the idea; they "
-        "have it, and hearing it again will not fix the execution."
-    ),
-    FailureKind.CONCEPTUAL: (
-        "Re-teach the idea itself from a different angle, and do not offer more practice yet "
-        "— repetition on a wrong idea entrenches it."
-    ),
-    FailureKind.PREREQUISITE: (
-        "The gap is upstream of what you asked. Say so plainly, and address that earlier idea "
-        "before returning to this question."
-    ),
-}
-
-
 def _check_note(item: Item) -> str:
     """Tell the tutor which question is actually on the table.
 
@@ -109,85 +85,37 @@ def _check_note(item: Item) -> str:
 
 
 def _check_result(outcome: CheckOutcome, kcs: Sequence[KC]) -> CheckResultRead:
-    """The same grade the tutor was given, in the form the learner can read (S15).
+    """The learner-facing report for a conversational check.
 
-    Deliberately built from one source with ``_feedback_note``: the reply the learner sees and
-    the record they can check it against must not be able to disagree, and they would if each
-    were assembled from its own reading of the result.
-
-    A component the grader could not score separately carries ``None`` rather than the item's
-    aggregate. Copying the aggregate down would present one verdict as several measurements,
-    which is the exact error S10 exists to stop.
+    Built by the same function guided practice uses (``turn_common.build_check_result``), from
+    the same ``CheckOutcome`` the tutor's own instruction is built from — the reply the learner
+    reads and the record they check it against must not be able to disagree.
     """
-    posterior = {state.kc_id: state for state in outcome.states}
-    components: list[CheckComponentRead] = []
-    for kc in kcs:
-        prior = outcome.priors.get(kc.id)
-        state = posterior.get(kc.id)
-        diagnosis = outcome.result.diagnoses.get(kc.id)
-        components.append(
-            CheckComponentRead(
-                kc_id=kc.id,
-                kc_name=kc.name,
-                score=outcome.result.component_scores.get(kc.id),
-                prior_ability=prior.ability if prior is not None else 0.0,
-                ability=state.ability if state is not None else 0.0,
-                uncertainty=state.uncertainty if state is not None else 1.0,
-                # `none` and `incomplete` name no failure, so they are reported as no
-                # diagnosis rather than as a kind the learner would have to interpret.
-                failure_kind=(
-                    diagnosis.kind.value if diagnosis is not None and diagnosis.actionable else None
-                ),
-                failure_detail=(
-                    diagnosis.evidence
-                    if diagnosis is not None and diagnosis.actionable and diagnosis.evidence
-                    else None
-                ),
-            )
-        )
-    return CheckResultRead(
+    return build_check_result(
         item_id=outcome.item.id,
-        score=outcome.result.score,
-        correct=outcome.result.correct,
-        components=components,
+        result=outcome.result,
+        priors=outcome.priors,
+        states=outcome.states,
+        kcs=kcs,
     )
 
 
 def _feedback_note(outcome: CheckOutcome, kc_names: Mapping[uuid.UUID, str]) -> str:
-    """Turn a grade into an instruction about what to teach next.
+    """The tutor's instruction after grading a conversational check.
 
-    Reports the per-component split and the diagnosis only where the grader actually produced
-    them (S09, S10). An MCQ knows an answer was wrong and nothing about why, and this must read
-    the same way — a prompt that asserts a reason the evidence does not carry would have the
-    tutor confidently repair a misconception nobody diagnosed.
+    The evidence is read by ``app.learning.feedback``, shared with guided practice, so the two
+    flows cannot reach different conclusions about the same mistake. Only the framing is local:
+    a conversational check must not be followed by another question in the same turn.
     """
-    verdict = "correct" if outcome.result.correct else "not correct"
-    parts = [
-        f"The learner has just attempted that question. It graded {outcome.result.score:.2f} "
-        f"({verdict})."
-    ]
-    if outcome.result.component_scores:
-        split = "; ".join(
-            f"{kc_names.get(kc_id, 'one component')}: {score:.2f}"
-            for kc_id, score in outcome.result.component_scores.items()
-        )
-        parts.append(f"Part by part — {split}.")
-    for kc_id, diagnosis in outcome.result.diagnoses.items():
-        repair = _REPAIR.get(diagnosis.kind)
-        if repair is None:  # NONE and INCOMPLETE: nothing diagnosed to repair
-            continue
-        name = kc_names.get(kc_id, "that part")
-        parts.append(f"On {name}, what went wrong was {diagnosis.kind.value}. {repair}")
-        if diagnosis.evidence and diagnosis.evidence_verbatim:
-            # Only a span actually found in the response is quoted back. An unverified quote
-            # is still usable as a diagnosis, but showing a learner words they never wrote as
-            # though they wrote them is its own failure (S09).
-            parts.append(f'They wrote: "{diagnosis.evidence}".')
-    parts.append(
-        "Respond to what they actually wrote, then follow the guidance above. Do not pose "
-        "another practice question this turn."
+    return feedback.teaching_note(
+        outcome.result,
+        kc_names,
+        opening="The learner has just attempted that question.",
+        closing=(
+            "Respond to what they actually wrote, then follow the guidance above. Do not pose "
+            "another practice question this turn."
+        ),
     )
-    return " ".join(parts)
 
 
 async def create_conversation(

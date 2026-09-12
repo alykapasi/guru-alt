@@ -453,6 +453,11 @@ async def send_message(
                         "detail": ev.detail,
                         "item": ev.item.model_dump(mode="json") if ev.item else None,
                         "citations": ev.citations,
+                        # Guided practice reports the attempt it just graded here, mid-round,
+                        # where the learner is about to answer the same question again (S15).
+                        "check_result": (
+                            ev.check_result.model_dump(mode="json") if ev.check_result else None
+                        ),
                     }
                 )
             elif ev.type == "committed":

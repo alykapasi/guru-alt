@@ -6,18 +6,22 @@ modules importing each other.
 
 import re
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.untrusted import as_untrusted
+from app.learning.grading import GradeResult
+from app.learning.mastery import Estimate
 from app.llm.types import ChatMessage, ChatRole, Usage
 from app.models.chat import Message
+from app.models.knowledge import KC
+from app.models.learning import LearnerKCState
 from app.rag.retrieval import RetrievalHit
 from app.schemas.assessment import ItemRead
-from app.schemas.chat import CheckResultRead
+from app.schemas.chat import CheckComponentRead, CheckResultRead
 
 _CITATION_MARKER = re.compile(r"\[(\d+)\]")
 
@@ -112,3 +116,53 @@ class TurnEvent:
     # (S15). Set on "done". The tutor's reply already reflects the grade; this is the part the
     # learner can check it against, because a reply is not a record.
     check_result: CheckResultRead | None = None
+
+
+def build_check_result(
+    *,
+    item_id: uuid.UUID,
+    result: GradeResult,
+    priors: Mapping[uuid.UUID, Estimate],
+    states: Sequence[LearnerKCState],
+    kcs: Sequence[KC],
+) -> CheckResultRead:
+    """The grade, in the form the learner can read (S15).
+
+    Shared by every flow that grades an answer, for the same reason the teaching instruction is
+    (``app.learning.feedback``): one mistake must not be described two ways depending on which
+    button the learner pressed.
+
+    A component the grader could not score separately carries ``None`` rather than the item's
+    aggregate — copying the aggregate down would present one verdict as several measurements,
+    which is the exact error S10 exists to stop. ``none`` and ``incomplete`` carry no diagnosis,
+    because "we could not tell" and "it was fine" are different things to say to somebody about
+    their own work (S09), and the grader's confidence is not carried at all: a language model's
+    self-reported confidence is not calibrated, and a number implies it is.
+    """
+    posterior = {state.kc_id: state for state in states}
+    components: list[CheckComponentRead] = []
+    for kc in kcs:
+        prior = priors.get(kc.id)
+        state = posterior.get(kc.id)
+        diagnosis = result.diagnoses.get(kc.id)
+        actionable = diagnosis is not None and diagnosis.actionable
+        components.append(
+            CheckComponentRead(
+                kc_id=kc.id,
+                kc_name=kc.name,
+                score=result.component_scores.get(kc.id),
+                prior_ability=prior.ability if prior is not None else 0.0,
+                ability=state.ability if state is not None else 0.0,
+                uncertainty=state.uncertainty if state is not None else 1.0,
+                failure_kind=diagnosis.kind.value if actionable and diagnosis else None,
+                failure_detail=(
+                    diagnosis.evidence if actionable and diagnosis and diagnosis.evidence else None
+                ),
+            )
+        )
+    return CheckResultRead(
+        item_id=item_id,
+        score=result.score,
+        correct=result.correct,
+        components=components,
+    )

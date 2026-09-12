@@ -75,6 +75,9 @@ export type TurnEvent =
       detail: string;
       item: ItemEvent | null;
       citations: Citation[];
+      /** Guided practice reports the attempt it just graded here, mid-round — the learner is
+       * about to answer the same question again, which is when it matters most. */
+      check_result: CheckResult | null;
     }
   | { type: "committed"; goal: string; detail: string }
   | { type: "tool_call"; detail: string };

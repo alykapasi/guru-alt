@@ -109,6 +109,7 @@ export function useChatConversation(conversationId: string | undefined) {
             setLiveItem(ev.item);
             setSessionDetail(ev.detail);
             setLiveAwaitingReply(true);
+            setCheckResult(ev.check_result);
           } else if (ev.type === "done") {
             setLiveItem(ev.item);
             setSessionDetail(ev.detail);

@@ -12,6 +12,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_llm_client
+from app.learning import feedback
+from app.learning.diagnosis import Diagnosis, FailureKind
+from app.learning.grading import GradeResult
 from app.llm.providers import FakeProvider
 from app.llm.providers.fake import FakeTurn
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
@@ -378,3 +381,62 @@ async def test_a_paused_session_records_the_item_it_is_waiting_on(
     row = next(c for c in listed if c["id"] == conversation_id)
     assert row["phase"] == ConversationPhase.CHATTING
     assert row["active_item_id"] is None
+
+
+# --- what guided practice does with the diagnosis (S09, S10, S15) -------------------------------
+
+
+async def test_the_graded_note_carries_the_repair_the_failure_kind_calls_for() -> None:
+    """Guided practice is where most attempts happen, and it was told only a number — so the
+    surface the learner spends most of their time on made the least of the evidence."""
+    kc_id = uuid.uuid4()
+    note = feedback.teaching_note(
+        GradeResult(
+            score=0.3,
+            correct=False,
+            detail={},
+            diagnoses={kc_id: Diagnosis(kind=FailureKind.CONCEPTUAL, confidence=0.8)},
+        ),
+        {kc_id: "Velocity"},
+        opening="The learner has just attempted that practice question.",
+        closing="",
+    )
+    assert "Re-teach the idea itself" in note
+    assert "do not offer more practice yet" in note
+
+
+async def test_both_flows_describe_one_mistake_the_same_way() -> None:
+    """Plain chat and guided practice reaching different conclusions about one learner's one
+    mistake is the same defect S16 fixed for learner context, in a different place."""
+    kc_id = uuid.uuid4()
+    result = GradeResult(
+        score=0.4,
+        correct=False,
+        detail={},
+        component_scores={kc_id: 0.4},
+        diagnoses={kc_id: Diagnosis(kind=FailureKind.PROCEDURAL, confidence=0.7)},
+    )
+    names = {kc_id: "Velocity"}
+    chat_note = feedback.teaching_note(result, names, opening="X", closing="")
+    practice_note = feedback.teaching_note(result, names, opening="Y", closing="")
+
+    body = feedback.diagnosis_notes(result, names)
+    assert body  # the shared part is non-empty
+    for sentence in body:
+        assert sentence in chat_note
+        assert sentence in practice_note
+    split = feedback.component_split(result, names)
+    assert split is not None and split in chat_note
+
+
+async def test_a_grade_with_nothing_diagnosed_adds_no_repair() -> None:
+    """An MCQ knows an answer was wrong and nothing about why."""
+    note = feedback.teaching_note(
+        GradeResult(score=0.0, correct=False, detail={}),
+        {},
+        opening="The learner has just attempted that practice question.",
+        closing="",
+    )
+    assert "0.00" in note and "not correct" in note
+    for kind in FailureKind:
+        assert kind.value not in note
