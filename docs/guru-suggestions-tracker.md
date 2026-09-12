@@ -1157,6 +1157,65 @@ built, so `vi.stubGlobal` after import never applied, the test reached the real 
 gate. The signed-out assertion would have passed with the gate deleted. The client now resolves
 `fetch` per call, and the test was re-checked by mutation afterwards.
 
+**Implemented (third pass, branch `feat/residue-pass`) — a way back in, and a limit on
+guessing at one.** Sign-in worked and everything around it did not.
+
+*Recovery.* A reset token, single-use, short-lived, stored only as a fingerprint for the same
+reason a session token is — a dump, a backup or a log line must not be a way in. Requesting one
+answers identically whether or not the address has an account, because whether somebody has an
+account here is exactly what the sign-in path refuses to say, and a reset endpoint that
+distinguishes hands that oracle back through another door. Completing one revokes **every**
+session: a reset is what somebody does when they suspect the account is not theirs alone, so
+leaving the intruder's session working would make it a gesture. A learner with no password hash
+can still request one — their account has no password *yet*, which is a reason to be able to set
+one rather than a reason to be locked out, and refusing would leak which accounts authenticate
+some other way.
+
+*Throttling.* Argon2 is deliberately slow, which defends the stored hashes and makes every
+attempt a cost to **us** — so an unthrottled sign-in endpoint was a way to spend our CPU at an
+attacker's convenience. Failures are counted in the database, not in a process's memory: an
+in-memory counter is per-process, so two workers hand an attacker twice the budget and a
+restart hands them a fresh one, which throttles the honest user who mistyped and nobody else.
+Two counters, because they are two different attacks — many failures against one address is
+somebody working on one account; many from one client across addresses is credential stuffing,
+which the per-address counter never sees because each address fails once or twice. Only
+failures are written, so the common path costs nothing extra, and the refusal is a cheap
+indexed read rather than a hash. It answers **429**, not 401: this is the one distinction worth
+making, because it is the only way somebody locked out by another person's guessing can tell
+what is happening to them.
+
+*Self-service.* Password and address changes, each requiring the password — a session is not
+proof of the person, and a borrowed laptop is a session. A password change revokes every
+*other* session and keeps the current one: it is usually a response to suspecting another
+device, and signing somebody out of the tab they are typing in makes the safe action the
+annoying one.
+
+*Delivery is a seam with one honest implementation.* `app.core.mail` has `LoggingMailer`, which
+writes the message to the log — genuinely useful in development, genuinely not a production
+mailer. Password reset is therefore **off by default**, and `app.core.release` refuses to start
+a production instance with it on while that is the only transport. The two ways of working
+around the missing transport are both worse than the gap: returning the token in the HTTP
+response turns "I forgot my password" into "give me a reset for any address I can name", and a
+pretend SMTP client would be discovered by the first real deployment, during an incident, while
+somebody is locked out.
+
+**Measured (third pass).** 21 tests, 9 mutations, all killed. One survived first time — nothing
+covered the endpoint actually *recording* a failure, so the throttle read a counter that tests
+never showed being incremented, which is an unthrottled endpoint with paperwork. Two existing
+gates earned their keep: `poe db-check` caught the new tables' timestamps drifting from
+`TimestampMixin`, and S61's retention map refused the build until somebody decided what
+deleting an account does to a reset token.
+
+**Still not done.** No email verification, on registration or on change — so a typo in a new
+address costs the account, and nothing establishes that a registered address is reachable
+before it becomes the way back in. The throttle keys on the socket peer rather than
+`X-Forwarded-For`, which is correct while no proxy is trusted and wrong the moment one is in
+front of it, and nothing yet lets a deployment declare one. No second factor. Sessions still do
+not rotate their token on a password change, and there is still no absolute lifetime
+independent of the sliding TTL. And `sign_in_attempts` records addresses, which is learner data
+under another name — it has no `learner_id`, so S61's retention map does not see it and account
+deletion does not clear it; the 24-hour sweep is the only thing that does.
+
 **Not done.** There is no admin role and no authorization *tier* — every authenticated learner
 can still create global subjects, topics, KCs and edges, which is S25's ownership model and is
 untouched here; the boundary this tests is "not yours" for learner-owned rows, not "not yours

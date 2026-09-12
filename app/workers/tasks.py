@@ -103,8 +103,22 @@ async def _purge_sessions_once() -> None:
             session,
             keep_revoked_for=timedelta(hours=settings.session_revoked_retention_hours),
         )
-    if removed:
-        logger.info("purged %d dead session(s)", removed)
+        # The same sweep, because they are the same kind of row: credentials-adjacent state
+        # that answers no question once its window has passed. Splitting them into two timers
+        # would double the scheduling surface for no operational difference.
+        spent = await auth_svc.purge_password_resets(
+            session, older_than=timedelta(hours=settings.password_reset_used_retention_hours)
+        )
+        attempts = await auth_svc.purge_sign_in_attempts(
+            session, older_than=timedelta(hours=settings.sign_in_attempt_retention_hours)
+        )
+    if removed or spent or attempts:
+        logger.info(
+            "purged %d dead session(s), %d spent reset(s), %d sign-in attempt(s)",
+            removed,
+            spent,
+            attempts,
+        )
 
 
 async def _purge_checkpoints_once() -> None:

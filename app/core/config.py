@@ -162,6 +162,26 @@ class Settings(BaseSettings):
     # 0 disables the sweep, like every other interval here.
     checkpoint_purge_interval_seconds: int = 6 * 3600
 
+    # Sign-in throttling (S21). Argon2 is deliberately slow, which defends the stored hashes
+    # and makes every attempt a cost to *us* — so an unthrottled sign-in endpoint is a way to
+    # spend our CPU at an attacker's convenience. Two counters, because they are two different
+    # attacks: many failures against one address is somebody working on one account, many from
+    # one client across addresses is credential stuffing, and neither counter sees the other.
+    # Numbers chosen to sit well clear of a person mistyping their own password (S18).
+    sign_in_window_minutes: int = 15
+    sign_in_max_failures_per_email: int = 10
+    sign_in_max_failures_per_client: int = 30
+    sign_in_attempt_retention_hours: int = 24
+
+    # How long a password-reset token is good for. Short, because it is a bearer credential
+    # sitting in somebody's inbox: the window is the exposure.
+    password_reset_ttl_minutes: int = 30
+    password_reset_used_retention_hours: int = 24
+    # Off by default, and the release gate refuses production while it is on without a real
+    # mail transport (``app.core.mail``): a reset nobody can deliver is worse than no reset,
+    # because it looks like one.
+    password_reset_enabled: bool = False
+
     session_purge_interval_seconds: int = 3600
 
     # The development sign-in seam: a single endpoint that issues a session for the dev learner
