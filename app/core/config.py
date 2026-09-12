@@ -192,6 +192,15 @@ class Settings(BaseSettings):
     # what you are given does not teach. Uncalibrated against our own learners (S18).
     practice_target_success_rate: float = 0.75
 
+    # A prerequisite detour (S11) sends a stuck learner one level upstream before returning
+    # them to the component they were on. Two triggers: the grader naming a prerequisite
+    # outright, which acts immediately, and this behavioural fallback for everything that
+    # produces no diagnosis — most generated items are MCQs, which cannot produce one. Both
+    # numbers are uncalibrated v1 choices in the spirit of the placement mappings: two failures
+    # is "not a bad day", and half marks is "did not substantially do it" (S18).
+    detour_failure_threshold: float = 0.5
+    detour_min_failures: int = 2
+
     # Cap on how many KCs a generated lesson plan targets at once — cost/UX bound on a
     # runaway subject graph. Review steps (due retention) are added on top, uncapped.
     lesson_plan_max_steps: int = 20

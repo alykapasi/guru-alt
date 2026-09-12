@@ -56,9 +56,9 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | ID | Suggestion | Current evidence / gap | Desired result | Priority | Status |
 | --- | --- | --- | --- | --- | --- |
 | S08 | Build one trustworthy end-to-end learning sequence before adding more breadth. | The assessment and planning machinery exists, but diagnosis and teaching decisions are weakly connected. | Detect a specific gap → ask a discriminating question → teach → test a fresh unassisted application → revisit later. | First | Accepted |
-| S09 | Add structured diagnosis of specific misconceptions and prerequisite gaps, with uncertainty and supporting evidence. | Placement infers rough levels; grading returns a single score and short rationale. These do not establish why an answer failed. [R1–R3] | Distinguish forgotten notation, a procedural error, and a conceptual misunderstanding before choosing help. | High | Accepted |
-| S10 | Preserve component-specific assessment evidence and define explicit grading criteria for generated open questions. | The same aggregate score updates every tagged component with different weights; generated short questions have no explicit rubric. [R2–R4] | Avoid treating a failure in projections as equal evidence of failure in every skill involved in least squares. | High | Accepted |
-| S11 | Make targeted prerequisite detours an explicit planning capability. | Routine revision changes status, review order, and scaffolding hints while preserving remaining new-topic order. [R5] | Investigate and address the prerequisite blocking the learner, then return to the original objective. | High | Accepted |
+| S09 | Add structured diagnosis of specific misconceptions and prerequisite gaps, with uncertainty and supporting evidence. | Placement infers rough levels; grading returns a single score and short rationale. These do not establish why an answer failed. [R1–R3] | Distinguish forgotten notation, a procedural error, and a conceptual misunderstanding before choosing help. | High | Implemented (see below) |
+| S10 | Preserve component-specific assessment evidence and define explicit grading criteria for generated open questions. | The same aggregate score updates every tagged component with different weights; generated short questions have no explicit rubric. [R2–R4] | Avoid treating a failure in projections as equal evidence of failure in every skill involved in least squares. | High | Implemented (see below) |
+| S11 | Make targeted prerequisite detours an explicit planning capability. | Routine revision changes status, review order, and scaffolding hints while preserving remaining new-topic order. [R5] | Investigate and address the prerequisite blocking the learner, then return to the original objective. | High | Implemented (see below) |
 | S12 | Apply difficulty targeting to question selection/generation. | The session runner explicitly documents target difficulty as unapplied. [R6] | The learner's estimated capability affects the actual task they receive. | High | Implemented (see below) |
 | S13 | Distinguish assisted retries from independent demonstrations in mastery evidence. | Guided practice hints and retries the same question; every attempt updates mastery. Hint context is omitted by that workflow and is not used by the estimator even when recorded elsewhere. [R7–R8] | Prevent assistance and repeated exposure from producing unjustified mastery confidence. | First | Implemented (see below) |
 | S14 | Select fresh assessment items with awareness of prior exposure, and check delayed retention and transfer. | Bank selection returns the oldest matching item without considering the learner's exposure. [R2] | Establish that the learner can solve a different problem without help and retain that capability. | First | Implemented (see below) |
@@ -84,6 +84,184 @@ These are new proposals from the second review; the user's acceptance of prior s
 | S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Proposed |
 | S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Proposed |
 | S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Proposed |
+
+### S11 — Make targeted prerequisite detours an explicit planning move
+
+**Status:** Partially implemented (branch `feat/s09-s10-s11`) · **Priority:** High
+
+**Implemented — the plan can now say "the reason you cannot do this is something earlier".**
+Revision reordered steps, flipped statuses and refreshed scaffolding hints, all within the
+order the plan was generated with. A learner stuck on least squares because they never learned
+projections got least squares again, rescaffolded. `detour` is a third step type, carrying
+`detour_for` (the component the learner was actually working towards) and `detour_reason`.
+Without those two fields a detour is indistinguishable from the plan changing its mind about
+the order, which is the thing a learner would reasonably lose trust over.
+
+**Implemented — two triggers, and the second is why this works at all.** The grader naming a
+prerequisite (S09) acts on a single answer: being told the failure is upstream is the whole
+point of having asked. But most generated items are MCQs, which produce no diagnosis — so
+there is a behavioural fallback, `detour_min_failures` consecutive attempts below
+`detour_failure_threshold` with a prerequisite still unmastered. Without it detours would only
+ever fire on open questions, which is a minority of what the system actually asks.
+
+**Implemented — one level at a time.** Only *direct* prerequisites are considered. Jumping
+three levels back on one bad answer is not a teaching decision anyone would defend, and it is
+not needed: if the prerequisite the learner detours to is itself blocked, the next failure
+detours again. Detours compose over time instead of being computed all at once.
+
+**Implemented — returning to the objective needs no mechanism.** A detour step retires the way
+any step does, when its KC is mastered, and the step it was blocking becomes active again.
+There is no separate "return" path to get wrong.
+
+**Implemented — a detour outranks due reviews.** It is the direct response to the failure that
+just happened, and putting a queue of flashcards between the two breaks that connection, while
+FSRS intervals are measured in days and tolerate a few minutes.
+
+**Implemented — the struggle signal counts back from the latest attempt and stops at the first
+that went well.** A learner who failed twice and then succeeded is not stuck; a lifetime tally
+would say they were, forever. Ordered by `observed_at` rather than `created_at`, for the reason
+S56 recorded.
+
+**Measured.** 20 tests; 11 mutations, all killed. One survived the first round and found a real
+defect: `list_prerequisites` had no `ORDER BY`, so which prerequisite a stuck learner was sent
+to was decided by the query planner — and could be decided differently on the next revision.
+That is the same defect S23 found in subject-wide edges, in a place where the consequence is
+what the learner is taught next. The query is ordered now, and the test inserts rows in the
+opposite order to their timestamps so heap order and declaration order genuinely disagree.
+
+**Not done.** `detour_min_failures` (2) and `detour_failure_threshold` (0.5) are uncalibrated
+v1 choices in the spirit of the placement mappings — "not just a bad day" and "did not
+substantially do it" — and S18 owns turning them into numbers. Nothing *investigates* the
+prerequisite: the detour sends the learner to ordinary practice on it, not to a diagnostic
+sequence that would establish whether it really is the blocker, so a wrongly chosen detour
+costs real time and nothing detects that. Nothing limits how often a learner can be detoured,
+or prevents a component from being detoured away from repeatedly. Detours are not recorded as
+events, so the question "did detouring help?" cannot be asked of the data — which is exactly
+the kind of question S59 exists for, and this deliberately does not answer it. The frontend
+does not render a detour differently from any other step, so the explanation the two new fields
+exist to carry does not yet reach the learner. And a diagnosed prerequisite outside the KC's
+direct prerequisites is dropped rather than treated as evidence the *graph* is wrong.
+
+### S09 — Say why an answer failed, not just how far
+
+**Status:** Partially implemented (branch `feat/s09-s10-s11`) · **Priority:** High
+
+**Implemented — the grader answers a closed question about *why*.** Grading returned a score
+and a sentence of prose. Both are real information and neither is actionable: "0.4, the learner
+confused the two forms" and "0.4, the learner never learned what a basis is" are the same
+number and the same shape, so nothing downstream could choose different help for them — and one
+of those two needs the plan changed rather than the explanation reworded. `grade_open` now also
+returns a `kind` from a fixed vocabulary: `notation` (right idea, wrong symbol), `procedural`
+(right method, botched), `conceptual` (wrong or missing idea), `prerequisite` (the failure is
+upstream of what was asked), `incomplete` (nothing demonstrated either way), and `none`. A
+closed vocabulary rather than free text, because the point is for code to branch on it; prose
+can only be shown to a person.
+
+**Implemented — per component, and for single-component questions too.** Each component of a
+multi-KC answer gets its own diagnosis (S10 supplies the components). A one-component question
+gets one as well — that is exactly where a bare number says least, because there is no second
+component to compare it against.
+
+**Implemented — the quote is checked against what the learner actually wrote.** A model asked
+to justify a judgement will produce a supporting quote whether or not one exists, so
+`evidence_verbatim` records whether the span was really found in the response
+(whitespace-insensitive and case-folded, reusing the curriculum's own name normalisation — a
+reflowed quote is not the thing worth catching, an invented one is). A failed check does not
+discard the diagnosis; it is a reason not to show the learner those words as their own.
+
+**Implemented — it is stored where it can be queried.** The diagnosis goes into each KC's
+observation event alongside the score, and survives an idempotent retry. A rationale that only
+ever reached the response body is a sentence nobody can query.
+
+**Implemented — `incomplete` is kept out of `actionable`.** It looks like a failure and says
+the least of any label: blank, off-topic or abandoned means nothing was demonstrated either
+way, and reading it as evidence the learner cannot do the thing is precisely the error a
+one-dimensional score was already making.
+
+**Measured.** 25 tests; 9 mutations, all killed — never checking the quote, letting a correct
+component keep stray fields, leaving confidence unclamped, treating `incomplete` as actionable,
+never storing the diagnosis, dropping it from the payload, ignoring the single-component shape,
+ignoring the per-component shape, and losing it on replay.
+
+**Not done — the three limits worth stating plainly.** `confidence` is the model's own, and a
+language model's self-reported confidence is not calibrated; it is a ranking hint, and nothing
+gates on it. Nothing establishes that a diagnosis is *right* — it is one model's reading of one
+answer, and measuring whether these labels predict anything is S59's work. And the vocabulary
+itself is asserted, not derived: five kinds chosen because they imply different responses, not
+because any study of these learners produced them.
+
+**Not done — the rest.** Objective items carry no diagnosis and cannot: an MCQ knows the answer
+was wrong and nothing about why, and manufacturing a reason from that would commit the exact
+error this item exists to fix. Since MCQ is the default generated type, most attempts still
+produce no diagnosis at all. Nothing yet *uses* the diagnosis to choose help — the tutor is not
+told it, scaffolding does not change with it, and only `prerequisite` is acted on, by S11.
+Placement still infers rough levels with no diagnosis attached. Nothing aggregates diagnoses
+across attempts, so a misconception recurring five times reads as five unrelated events rather
+than one persistent belief. And the field reaches the API without the frontend rendering it or
+its generated types knowing it exists (S58).
+
+### S10 — Preserve component-specific evidence, and grade open questions to a stated standard
+
+**Status:** Partially implemented (branch `feat/s09-s10-s11`) · **Priority:** High
+
+**Implemented — a failed component no longer condemns the ones that passed.**
+`record_observation` applied the item's single score to every tagged KC, varying only the
+*weight* — and weight scales how far an estimate moves, never which way. So the tracker's own
+example was exact: botching the projection in a least-squares problem drove down every skill
+the question touched, including the ones the learner had just demonstrated in the same answer.
+An `Observation` now carries optional `kc_scores`, and each KC updates from its own.
+
+**Implemented — retention follows the component, not the item.** FSRS scheduling is per-KC
+state, so it takes the per-KC score too. A component the learner demonstrated no longer comes
+back as soon as the one they failed, which is the whole point of scheduling per component.
+
+**Implemented — the grader marks each component.** `grade_open` takes the item's KCs by name
+and description and is asked to score each one separately, with an explicit instruction not to
+average them away. A single-component item keeps the original, cheaper single-score prompt,
+because there the aggregate already *is* that component's score. A rubric reaches only the
+component it was written for: `Rubric.kc_id` names one KC, and handing its criteria to every
+component of a multi-KC item tells the grader to mark two other components against a third
+one's standard.
+
+**Implemented — generated open questions carry the criteria they will be graded against.**
+This turned out to be larger than "generated short questions have no explicit rubric": nothing
+in the entire system had ever written a `Rubric` row. The table existed, `Item.rubric_id` was
+always null, and every open answer in the product's history was graded against `grade_open`'s
+fallback string, "(no explicit rubric; grade on correctness and completeness)". An open
+question with no stated standard is graded to whatever standard the grader improvises that day,
+which is not a standard. The question and its criteria are now written in the same call, by the
+model that knows what it was asking for.
+
+**Implemented — degradation is asymmetric, deliberately.** A missing overall score still makes
+a grade unusable and raises. A mangled component list costs only the *extra* resolution: the
+answer grades, every KC falls back to the aggregate, and the behaviour is exactly what existed
+before. Same for criteria — a reply without usable ones still yields the question.
+
+**Measured.** 18 tests; 9 mutations, all killed — ignoring the component score in the estimate,
+scheduling on the aggregate, always claiming a breakdown, dropping the grader's breakdown on
+the way in, replaying a component mark as the item score, never using the per-component prompt,
+dropping the component-number bounds, applying one rubric to every component, and discarding
+generated criteria. A tenth, deliberately inert, survived as a control on the harness.
+
+Two defects surfaced while building it, both from the same root — `payload["score"]` now means
+this KC's score rather than the item's. The idempotent-retry path read that key to rebuild the
+grade, so a replayed attempt would have reported one component's mark as the whole answer's.
+And rebuilding the breakdown from the fan-out gave a *single*-component grade a
+`component_scores` map its first response never had — resolution invented after the fact, which
+is worse than none. The payload records `component_scored` so a replay can tell the difference.
+
+**Not done.** Objective items are unchanged and cannot be otherwise: an MCQ has one outcome, so
+a multi-KC MCQ still applies one verdict to every tagged component. Since MCQ is the default
+generated type, most items in practice still carry no per-component resolution — this buys
+precision on open questions specifically. Nothing checks that the model's per-component marks
+are *right*; they are one model's judgement, ungated and uncalibrated (S18, S59), and the
+components it is asked about are whatever `kc_tagging` attached. Evidence apportioning still
+divides one unit across components by weight, which arguably understates a genuine
+per-component judgement — but changing what `weight` means is a calibration decision, not a
+plumbing one. Generated criteria are never reviewed, revised, or reused across items for the
+same KC, so two questions on one component can be marked to two different standards. Existing
+items keep their null rubric; there is no backfill. And `component_scores` reaches the API but
+the frontend does not render it, nor do its generated types know the field exists yet (S58).
 
 ### S23 — Validate the prerequisite graph before relying on its order
 
@@ -408,7 +586,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-09 | Third implementation pass, branch `fix/tracker-s51-s31` (stacked on the second): S51 (`4809fae`), S44 (`4a55279`), S33 (`f80f0f6`), S61 (`4836971`), S31 (`cabd2a0`) and S62 (`67c1226`). `uv run poe check` green (856 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0030`–`0032`. All six are marked *partially* implemented and each says what it left; the largest gaps are an explicit presentation preference to replace the reading-level inference (S44), any path for a learner's item to become shared at all (S33), orphaned-blob reconciliation and a retention *schedule* (S61), adversarial evaluation against a real model (S31), and latency as opposed to query-count budgets (S62). Two things worth recording. S62 began by *measuring*: the subject-mastery page cost 15 queries on a 2x2 subject and 147 on an 8x8, and the fixes are verified by a counter rather than asserted. And two of my own S31 tests initially passed for the wrong reason — a base64 exfiltration test that an unreachable host would also have satisfied, and a nonce-uniqueness test comparing body text rather than delimiters — both caught by mutating the code they were meant to cover. S61's completeness test ("every table with a `learner_id` has a stated disposition") caught a table misnamed in the retention map on its first run. |
 | 2026-09-10 | S77 added and implemented, branch `feat/source-dedup` (stacked on the third pass): content-addressed shared blobs (`b44ad51`), within-learner exact dedup (`1d49309`), canonical-text dedup (`9b437fe`), and near-duplicate suggestions (`ef04f40`). Not a review finding — a user request to hash uploads against duplicates, "ideally strong enough to catch similar files". `uv run poe check` green (885 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0033`–`0035`. The request needed correcting before it could be built: a cryptographic hash is designed *not* to do this, so it became three mechanisms — byte equality, canonical-text equality, and a locality-sensitive distance. The third was measured before being trusted (`poe simhash-separation`), and the measurement changed the design: a badly scanned copy of a book and a document half of which is a different book sit at the same distance, so no cut-off separates them and the near-duplicate check reports rather than decides. Also re-opened S61: sharing a blob key across learners means "delete this account's bytes" now has to mean "unless somebody else references them". |
 | 2026-09-11 | Fourth implementation pass, branch `fix/tracker-s53-s60` (off merged `main`, after PRs #17–#19): S53 (`e49000b`), S56 (`978a549`) and S60 (`f07bc8f`) — the last three items that were still *Proposed* and technical. `uv run poe check` green (914 passed, 4 skipped); `npm run lint`, `npm run test` and `npm run build` green. No migrations. All three are marked *partially* implemented and each says what it left. Three things worth recording. **S53's defects were found by looking at the rendered page, not the code**: the type scale lived in `@layer components`, which Tailwind cannot compose into a variant, so every `[&_h2]:text-h3` in the notes renderer had been generating no CSS and headings rendered at body size; `$$x$$` on one line came out inline; and `\(x\)` rendered as literal backslashes. None was visible in review. The frontend also had **no test framework at all**, so "renders correctly" was not a claim anything could check — vitest is now in CI. **S56 found the same class of bug twice**: ordering a learner's history by `created_at` is ordering it by the transaction clock, which ties for anything committed together, so both the step order and a seed-ordering guard were unreliable; steps are now ordered by the timestamp the update itself used. **S60 surfaced a packaging defect** — `alembic` was a dev-group dependency, so a production image could not run the first step of its own deployment. Everything S60 claims was executed against a running containerised stack, including stopping MinIO to confirm readiness 503s while liveness stays 200. Also worth recording: a `docker build ... | tail` reported success while the build had failed, because the pipe's exit status is `tail`'s — the first "the image builds" claim was wrong and was caught by rechecking the exit code explicitly. |
-| 2026-09-11 | Fifth pass, branch `feat/s22-s14` — the first items taken from the *register* rather than the autopsy, both marked **First**: S22 (`bfcc78c`) and S14 (`6eb56cc`). `uv run poe check` green (952 passed, 4 skipped); `npm run lint` and `npm run build` green. Migration `0036`. Both are marked *partially* implemented and each says what it left. Two defects here were of the kind that look correct in review and only show up in behaviour. **Selection was `ORDER BY created_at`** — stable, so practising a component twice served the same question twice, while every attempt still updated mastery: the estimate rose on the learner re-answering what they had just been told. **Generated curricula had no prerequisite edges at all**, so the planner — whose entire job is ordering by prerequisites — was ordering a flat list. Three things worth recording. S22's edges were being dropped at a place no test looked: `/onboarding/curriculum` rebuilt each KC as `{name, description}`, so the round trip through the learner's review discarded them; two mutations survived the first round because of it. S14's span measurement reported a nine-day gap as **zero** on its first run, which is the `created_at`-is-the-transaction-clock finding from S56 arriving in a second place — it now uses the `observed_at` that item recorded. And prerequisites are resolved from names to stable keys at *parse* time specifically so the learner renaming a KC in the review step cannot silently break an edge. || 2026-09-11 | Sixth pass, branch `feat/s12-s23` (off merged `main`, after PR #21): S12 (`943642d`) and S23 (`37d3a25`). `uv run poe check` green (1024 passed, 4 skipped). No migrations. S12 is marked *partially* implemented; S23 is complete. **S12's recorded gap was the smaller half of it.** The session runner documented target difficulty as unapplied, which was true — but no generator had ever written `Item.difficulty`, and generation is how items come to exist, so the entire scale was the column default of 0.0. Applying a target to a bank of zeros would have been a no-op dressed as a feature, and a stored 0.0 was not a missing value: the tracer scored every question as if pitched at the population average, and the `optimal_challenge` profile dimension was the mean of a column of zeros. The target now comes from the tracer's per-KC ability rather than that dimension, because difficulty already shares the logit scale with ability — and practice and assessment deliberately target opposite ends of it, since `E * (1 - E)` peaks at a 50% expectation. **S23's own change created a defect that testing caught.** Dropping a cycle-closing edge depends on the order edges are read in, and the plan path fed `acyclic` an unordered scan, so the query planner decided which prerequisite to sacrifice and two regenerations could honour different ones; a three-node cycle test passed and failed by luck until the query was ordered. The generic rewrite also silently lost runtime type enforcement — beartype declines to decorate PEP 695 generic functions and only *warns*, so two functions stopped being checked while everything still passed. Also worth recording: one S12 test asserted a placement target of 0.0, which is also the old default, so it would have passed with the feature removed entirely — rewritten before the mutation round, not after. |
+| 2026-09-11 | Fifth pass, branch `feat/s22-s14` — the first items taken from the *register* rather than the autopsy, both marked **First**: S22 (`bfcc78c`) and S14 (`6eb56cc`). `uv run poe check` green (952 passed, 4 skipped); `npm run lint` and `npm run build` green. Migration `0036`. Both are marked *partially* implemented and each says what it left. Two defects here were of the kind that look correct in review and only show up in behaviour. **Selection was `ORDER BY created_at`** — stable, so practising a component twice served the same question twice, while every attempt still updated mastery: the estimate rose on the learner re-answering what they had just been told. **Generated curricula had no prerequisite edges at all**, so the planner — whose entire job is ordering by prerequisites — was ordering a flat list. Three things worth recording. S22's edges were being dropped at a place no test looked: `/onboarding/curriculum` rebuilt each KC as `{name, description}`, so the round trip through the learner's review discarded them; two mutations survived the first round because of it. S14's span measurement reported a nine-day gap as **zero** on its first run, which is the `created_at`-is-the-transaction-clock finding from S56 arriving in a second place — it now uses the `observed_at` that item recorded. And prerequisites are resolved from names to stable keys at *parse* time specifically so the learner renaming a KC in the review step cannot silently break an edge. || 2026-09-11 | Sixth pass, branch `feat/s12-s23` (off merged `main`, after PR #21): S12 (`943642d`) and S23 (`37d3a25`). `uv run poe check` green (1024 passed, 4 skipped). No migrations. S12 is marked *partially* implemented; S23 is complete. **S12's recorded gap was the smaller half of it.** The session runner documented target difficulty as unapplied, which was true — but no generator had ever written `Item.difficulty`, and generation is how items come to exist, so the entire scale was the column default of 0.0. Applying a target to a bank of zeros would have been a no-op dressed as a feature, and a stored 0.0 was not a missing value: the tracer scored every question as if pitched at the population average, and the `optimal_challenge` profile dimension was the mean of a column of zeros. The target now comes from the tracer's per-KC ability rather than that dimension, because difficulty already shares the logit scale with ability — and practice and assessment deliberately target opposite ends of it, since `E * (1 - E)` peaks at a 50% expectation. **S23's own change created a defect that testing caught.** Dropping a cycle-closing edge depends on the order edges are read in, and the plan path fed `acyclic` an unordered scan, so the query planner decided which prerequisite to sacrifice and two regenerations could honour different ones; a three-node cycle test passed and failed by luck until the query was ordered. The generic rewrite also silently lost runtime type enforcement — beartype declines to decorate PEP 695 generic functions and only *warns*, so two functions stopped being checked while everything still passed. Also worth recording: one S12 test asserted a placement target of 0.0, which is also the old default, so it would have passed with the feature removed entirely — rewritten before the mutation round, not after. || 2026-09-12 | Seventh pass, branch `feat/s09-s10-s11` (off merged `main`, after PR #22): S10 (`530643c`), S09 (`8eeec92`) and S11 (`8aa314a`) — the S08 spine, built in dependency order, since diagnosis needs per-component evidence and detours need diagnosis. `uv run poe check` green (1087 passed, 4 skipped); `npm run lint` and `npm run build` green. No migrations. All three are marked *partially* implemented and each says what it left. **S10's second half was larger than recorded.** The tracker said generated short questions have no explicit rubric; in fact *nothing in the system had ever written a `Rubric` row* — the table existed, `Item.rubric_id` was always null, and every open answer in the product's history was graded against the "(no explicit rubric; grade on correctness and completeness)" fallback. Its first half was exactly as recorded: one score landed on every tagged KC, varying only the weight, and weight scales how far an estimate moves rather than which way — so the tracker's own least-squares example was literal. **Three defects surfaced in testing rather than review, two of them from one root.** Making `payload["score"]` mean the per-KC score broke the idempotent-retry path, which read that key to rebuild the grade and would have reported one component's mark as the whole answer's; and rebuilding the breakdown from the event fan-out gave a *single*-component grade a `component_scores` map its first response never had — resolution invented after the fact. The payload now records `component_scored` so a replay can tell the difference. The third: `list_prerequisites` had no `ORDER BY`, so which prerequisite a stuck learner was detoured to was decided by the query planner, and could be decided differently on the next revision — the same defect S23 found in subject-wide edges, arriving in a place where the consequence is what the learner is taught next. **The honest limit across all three:** MCQ is the default generated type, and an MCQ has one outcome — so it carries no per-component breakdown and no diagnosis, and most attempts in practice still produce neither. S11's behavioural trigger exists precisely because of that. |
 
 ## Remaining architecture autopsy — source pass
 

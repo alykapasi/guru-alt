@@ -11,16 +11,23 @@ import uuid
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
+from app.learning import prerequisites as prereq_index
 from app.learning.placement_inference import KCCandidate
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
 
 OBJECTIVE_ROLE = ModelRole.FAST
 """Objective selection is a cheap classification task — same tier as placement inference."""
 
-StepType = Literal["new", "review"]
+StepType = Literal["new", "review", "detour"]
 StepStatus = Literal["pending", "active", "done"]
+
+DETOUR_DIAGNOSED = "diagnosed"
+DETOUR_REPEATED_FAILURE = "repeated_failure"
+"""Why a detour was taken. The first is the grader saying so outright (S09); the second is the
+learner failing the same component repeatedly with a prerequisite still unmastered — no
+diagnosis needed, which is what keeps detours reachable from objective items."""
 
 
 class StepDict(TypedDict):
@@ -33,6 +40,72 @@ class StepDict(TypedDict):
     target_difficulty: float | None
     hint_density: str | None
     preferred_item_type: str | None
+    # Set only on a "detour" step: the component the learner was actually trying to reach.
+    # NotRequired because every plan written before detours existed has no such key, and a
+    # revision must not have to migrate a plan to read it.
+    detour_for: NotRequired[str | None]
+    detour_reason: NotRequired[str | None]
+
+
+@dataclass(frozen=True)
+class Detour:
+    """A prerequisite to send the learner to before the component they are stuck on (S11)."""
+
+    prereq_kc_id: uuid.UUID
+    blocked_kc_id: uuid.UUID
+    reason: str
+
+
+def prerequisite_detour(
+    *,
+    blocked_kc_id: uuid.UUID,
+    prerequisites: Sequence[uuid.UUID],
+    prerequisite_names: Mapping[uuid.UUID, str],
+    mastered: Iterable[uuid.UUID],
+    diagnosed_name: str = "",
+    consecutive_failures: int = 0,
+    min_failures: int = 2,
+) -> Detour | None:
+    """Which prerequisite, if any, is worth investigating before the blocked component.
+
+    Two independent triggers, deliberately. The grader naming a prerequisite (S09) is direct
+    evidence and acts on a single answer — being told the failure is upstream is the whole
+    point of asking. Repeated failure with an unmastered prerequisite is the behavioural
+    fallback, and it exists because most generated items are MCQs, which produce no diagnosis
+    at all; without it detours would only ever fire on open questions.
+
+    Only *direct* prerequisites are considered. Jumping three levels back on one bad answer
+    is not a teaching decision anyone would defend, and it is not needed: if the prerequisite
+    the learner detours to is itself blocked, the next failure detours again, one level at a
+    time.
+
+    A diagnosed name that matches nothing here is dropped. The grader sees the question, not
+    the graph, so it can name something true and irrelevant — or something that is not a
+    component at all.
+    """
+    done = set(mastered)
+    candidates = [kc_id for kc_id in prerequisites if kc_id not in done]
+    if not candidates:
+        return None  # nothing upstream is outstanding, so the difficulty is here
+    if diagnosed_name:
+        index, _ = prereq_index.index_by_name(
+            [(str(kc_id), prerequisite_names.get(kc_id, "")) for kc_id in candidates]
+        )
+        target = index.get(prereq_index.normalise(diagnosed_name))
+        if target is not None:
+            return Detour(
+                prereq_kc_id=uuid.UUID(target),
+                blocked_kc_id=blocked_kc_id,
+                reason=DETOUR_DIAGNOSED,
+            )
+    if consecutive_failures >= min_failures:
+        # The first in prerequisite order: nearest to where they already are.
+        return Detour(
+            prereq_kc_id=candidates[0],
+            blocked_kc_id=blocked_kc_id,
+            reason=DETOUR_REPEATED_FAILURE,
+        )
+    return None
 
 
 @dataclass(frozen=True)
@@ -364,6 +437,7 @@ def revise_steps(
     mastered_kc_ids: Iterable[uuid.UUID],
     due_review_kc_ids: Sequence[uuid.UUID],
     scaffolding: ScaffoldingHints,
+    detour: Detour | None = None,
 ) -> list[StepDict]:
     """Re-derive status/order/hints over an existing step list. Pure, no DB, no LLM — this is
     what makes revision cheap enough to run on every graded answer and profile refresh.
@@ -371,8 +445,16 @@ def revise_steps(
     ``due_review_kc_ids`` must already be ordered soonest-due first (as
     ``mastery.due_reviews`` returns them) — that order becomes the review-step ordering.
 
-    1. A ``"new"`` step whose KC is now mastered flips to ``"done"`` (one-way ratchet — a KC
-       that later needs review again gets a fresh review step, not an un-done "new" step).
+    0. A ``detour`` (S11) is inserted ahead of everything as its own step, unless one for that
+       prerequisite is already open. It sorts *before* due reviews: a detour is the direct
+       response to the failure that just happened, and putting a queue of flashcards between
+       the two breaks that connection — while FSRS intervals are measured in days and tolerate
+       a few minutes. When its KC is mastered it flips to ``"done"`` like anything else, and
+       the step it was blocking becomes active again with no separate "return" mechanism.
+
+    1. A ``"new"`` or ``"detour"`` step whose KC is now mastered flips to ``"done"`` (one-way
+       ratchet — a KC that later needs review again gets a fresh review step, not an un-done
+       "new" step).
     2. An existing non-done ``"review"`` step whose KC is no longer due flips to ``"done"``
        (it was reviewed, or the retention window passed). A due KC with no existing non-done
        review step gets a new ``"pending"`` one.
@@ -390,8 +472,38 @@ def revise_steps(
     due_set = set(due_order)
 
     for step in result:
-        if step["step_type"] == "new" and step["status"] != "done" and step["kc_id"] in mastered:
+        if (
+            step["step_type"] in ("new", "detour")
+            and step["status"] != "done"
+            and step["kc_id"] in mastered
+        ):
             step["status"] = "done"
+
+    if detour is not None:
+        prereq_id = str(detour.prereq_kc_id)
+        already_open = any(
+            step["step_type"] == "detour"
+            and step["status"] != "done"
+            and step["kc_id"] == prereq_id
+            for step in result
+        )
+        # A detour to a component the learner has already mastered would send them to work
+        # they have demonstrated; the decision is made against mastery, but the plan may have
+        # moved on since.
+        if not already_open and prereq_id not in mastered:
+            result.append(
+                StepDict(
+                    kc_id=prereq_id,
+                    order=0,
+                    step_type="detour",
+                    status="pending",
+                    target_difficulty=None,
+                    hint_density=None,
+                    preferred_item_type=None,
+                    detour_for=str(detour.blocked_kc_id),
+                    detour_reason=detour.reason,
+                )
+            )
 
     covered: set[str] = set()
     for step in result:
@@ -422,8 +534,10 @@ def revise_steps(
 
     def _bucket(step: StepDict) -> int:
         if step["status"] == "done":
-            return 2
-        return 0 if step["step_type"] == "review" else 1
+            return 3
+        if step["step_type"] == "detour":
+            return 0
+        return 1 if step["step_type"] == "review" else 2
 
     def _within_bucket(step: StepDict) -> Any:
         if step["status"] != "done" and step["step_type"] == "review":

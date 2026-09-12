@@ -16,21 +16,22 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import DateTime, Integer, and_, case, distinct, func, select
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from sqlalchemy import DateTime, Float, Integer, and_, case, distinct, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.learning import scheduler
 from app.learning.assistance import evidence_credit
+from app.learning.diagnosis import FailureKind
 from app.learning.tracer import Estimate, GlickoEstimator, MasteryEstimator, aggregate
 from app.models.knowledge import KC, Topic
 from app.models.learning import LearnerKCState, LearningEvent
 
 _SECONDS_PER_DAY = 86_400.0
 
-EVENT_SCHEMA_VERSION = 2
+EVENT_SCHEMA_VERSION = 3
 """Payload shape of an ``observation`` event.
 
 1 — score/difficulty/weight/credit and the grader's verdict.
@@ -59,11 +60,19 @@ class Observation(BaseModel):
     scale the evidence down (see :mod:`app.learning.assistance`). ``prior_attempts`` counts
     earlier looks at this same question in this sitting, not lifetime practice — a review
     weeks later is an independent demonstration and counts fully.
+
+    ``kc_scores`` is how a grader says the components did *differently* (S10). Without it the
+    one ``score`` lands on every tagged KC, so a learner who set a least-squares problem up
+    correctly and then botched the projection has the projection failure counted as evidence
+    against every skill the question touched — including the ones they demonstrated. Only
+    graders that can actually tell the components apart supply it; an MCQ has one outcome and
+    cannot, so it stays ``None`` there and the aggregate applies, exactly as before.
     """
 
     learner_id: uuid.UUID
     kc_weights: dict[uuid.UUID, float]
     score: float = Field(ge=0.0, le=1.0)
+    kc_scores: dict[uuid.UUID, float] | None = None
     difficulty: float = 0.0
     item_id: uuid.UUID | None = None
     response: dict | None = None
@@ -73,6 +82,11 @@ class Observation(BaseModel):
     attempt_id: uuid.UUID | None = None
     correct: bool | None = None
     detail: dict | None = None
+    kc_diagnoses: dict[uuid.UUID, dict] | None = None
+    """Per-KC structured diagnosis, already serialised (S09). Stored on the event so the
+    reason an answer failed survives alongside the number, where the planner and any later
+    analysis can reach it — a rationale that only ever reached the response body is a
+    sentence nobody can query."""
 
     @field_validator("kc_weights")
     @classmethod
@@ -82,6 +96,22 @@ class Observation(BaseModel):
         if any(w <= 0.0 for w in v.values()):
             raise ValueError("KC weights must be positive")
         return v
+
+    @model_validator(mode="after")
+    def _component_scores_belong_to_this_item(self) -> "Observation":
+        """A per-KC score for a KC the item is not tagged to is silently ignored downstream,
+        which is the quiet kind of wrong — the grader believed it was marking something this
+        answer covered. Rejected here instead."""
+        if self.kc_scores is None:
+            return self
+        stray = set(self.kc_scores) - set(self.kc_weights)
+        if stray:
+            raise ValueError(
+                f"kc_scores names KCs the item does not assess: {sorted(map(str, stray))}"
+            )
+        if any(not 0.0 <= v <= 1.0 for v in self.kc_scores.values()):
+            raise ValueError("component scores must be within [0, 1]")
+        return self
 
 
 class ReviewItem(BaseModel):
@@ -221,6 +251,10 @@ async def record_observation(
     updated: list[LearnerKCState] = []
     for kc_id, raw_w in obs.kc_weights.items():
         weight = raw_w / total_w
+        # The score for *this* component where the grader could tell them apart, the item's
+        # aggregate where it could not. Both are recorded below; this is the one the estimate
+        # and the review schedule are built from, because both are per-KC facts.
+        kc_score = obs.score if obs.kc_scores is None else obs.kc_scores.get(kc_id, obs.score)
         state = await _get_or_create_state(session, obs.learner_id, kc_id)
         elapsed_days = _elapsed_days(state.last_seen_at, now)
         decayed = estimator.decay(_estimate_of(state), elapsed_days=elapsed_days)
@@ -229,13 +263,13 @@ async def record_observation(
         # instead of what today's estimator would have predicted (S56).
         predicted = estimator.expected(decayed, difficulty=obs.difficulty)
         post = estimator.update(
-            decayed, score=obs.score, difficulty=obs.difficulty, weight=weight * credit
+            decayed, score=kc_score, difficulty=obs.difficulty, weight=weight * credit
         )
         state.ability = post.ability
         state.uncertainty = post.uncertainty
         state.last_seen_at = now
         # Advance FSRS retention scheduling for this KC and denormalize the next due date.
-        state.fsrs_card, state.due_at = scheduler.review(state.fsrs_card, score=obs.score, now=now)
+        state.fsrs_card, state.due_at = scheduler.review(state.fsrs_card, score=kc_score, now=now)
         session.add(
             LearningEvent(
                 learner_id=obs.learner_id,
@@ -243,7 +277,19 @@ async def record_observation(
                 event_type="observation",
                 attempt_id=attempt_id,
                 payload={
-                    "score": obs.score,
+                    # This KC's own score. Every consumer of an observation event — the
+                    # profile estimators, the evidence summary, replay — is asking a per-KC
+                    # question, so the per-KC number is the one that belongs under this key.
+                    "score": kc_score,
+                    # What the item scored as a whole, kept so an answer can still be
+                    # reassembled from its per-KC fan-out.
+                    "item_score": obs.score,
+                    # Whether `score` above is a *distinct* judgement of this component or
+                    # just the item's aggregate landing on it. Without the flag a replay
+                    # cannot tell the two apart, and would hand back a per-component
+                    # breakdown for an MCQ that never had one — resolution invented after
+                    # the fact, which is worse than none.
+                    "component_scored": obs.kc_scores is not None,
                     "difficulty": obs.difficulty,
                     "weight": weight,
                     "item_id": str(obs.item_id) if obs.item_id is not None else None,
@@ -254,6 +300,7 @@ async def record_observation(
                     "credit": credit,
                     "correct": obs.correct,
                     "detail": obs.detail,
+                    "diagnosis": (obs.kc_diagnoses or {}).get(kc_id),
                     "estimator": estimator.name,
                     # Everything a replay needs to reproduce this step exactly (S56).
                     # `observed_at` rather than the row's `created_at`: `created_at` is the
@@ -397,6 +444,68 @@ async def due_reviews(
         )
     ).all()
     return [ReviewItem.model_validate(s) for s in states]
+
+
+class Struggle(BaseModel):
+    """How badly, and why, a learner is currently stuck on one component (S11).
+
+    ``consecutive_failures`` counts back from the most recent attempt and stops at the first
+    one that went well — a learner who failed twice and then succeeded is not stuck, and a
+    lifetime tally would say they were forever.
+    """
+
+    consecutive_failures: int = 0
+    diagnosed_prerequisite: str = ""
+    """The prerequisite the grader named in the most recent attempt that blamed one (S09).
+    Free text, and not resolved to a KC here: the planner owns the graph."""
+
+
+async def recent_struggle(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    kc_id: uuid.UUID,
+    *,
+    threshold: float,
+    limit: int = 10,
+) -> Struggle:
+    """Read the learner's recent run of attempts at ``kc_id``, newest first.
+
+    Ordered by ``observed_at``, not ``created_at``, for the reason S56 recorded: `created_at`
+    is the transaction's clock, so a batch written together ties and the "most recent"
+    attempt would be whichever row the scan happened to reach first.
+    """
+    when = func.coalesce(
+        LearningEvent.payload["observed_at"].astext.cast(DateTime), LearningEvent.created_at
+    )
+    rows = (
+        await session.execute(
+            select(
+                LearningEvent.payload["score"].astext.cast(Float),
+                LearningEvent.payload["diagnosis"],
+            )
+            .where(
+                LearningEvent.learner_id == learner_id,
+                LearningEvent.kc_id == kc_id,
+                LearningEvent.event_type == "observation",
+            )
+            .order_by(when.desc(), LearningEvent.id.desc())
+            .limit(limit)
+        )
+    ).all()
+
+    failures = 0
+    for score, _ in rows:
+        if score is None or score >= threshold:
+            break
+        failures += 1
+
+    named = ""
+    for _, raw in rows:
+        if isinstance(raw, dict) and raw.get("kind") == FailureKind.PREREQUISITE.value:
+            named = str(raw.get("prerequisite", "")).strip()
+            if named:
+                break
+    return Struggle(consecutive_failures=failures, diagnosed_prerequisite=named)
 
 
 async def rollup_topic(

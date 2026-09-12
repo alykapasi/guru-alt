@@ -5,6 +5,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.learning.diagnosis import Diagnosis
 from app.models.assessment import AUTO_GRADABLE, ItemType
 
 
@@ -79,12 +80,21 @@ class KCEstimateRead(BaseModel):
 
 
 class GradeRead(BaseModel):
-    """The grade plus the per-KC mastery the answer produced."""
+    """The grade plus the per-KC mastery the answer produced.
+
+    ``component_scores`` is how each knowledge component did, where the grader could tell them
+    apart (S10) — empty for an MCQ and for anything else with one outcome, because inventing a
+    breakdown from a single verdict would be presenting a guess as a measurement.
+    """
 
     score: float
     correct: bool
     detail: dict
     estimates: list[KCEstimateRead]
+    component_scores: dict[uuid.UUID, float] = Field(default_factory=dict)
+    # Why each component fell short (S09). Empty for deterministic grading, which knows the
+    # answer was wrong and nothing about why.
+    diagnoses: dict[uuid.UUID, Diagnosis] = Field(default_factory=dict)
 
 
 class ReviewItemRead(BaseModel):

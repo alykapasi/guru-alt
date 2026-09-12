@@ -81,6 +81,8 @@ async def answer_item(
         correct=result.correct,
         detail=result.detail,
         estimates=[KCEstimateRead.model_validate(s) for s in states],
+        component_scores=result.component_scores,
+        diagnoses=result.diagnoses,
     )
 
 
