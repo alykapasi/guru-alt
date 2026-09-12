@@ -256,11 +256,10 @@ def _build_stream(
             session,
             llm,
             learner_id=learner_id,
-            conversation_id=conversation.id,
+            conversation=conversation,
             history=history,
             user_content=data.content,
             max_tokens=settings.chat_max_tokens,
-            subject_id=conversation.subject_id,
             source_ids=conversation.source_ids,
             persist_user=False,
         )

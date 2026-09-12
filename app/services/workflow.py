@@ -21,8 +21,8 @@ from app.models.chat import Conversation
 from app.models.knowledge import KC
 from app.rag.retrieval import RetrievalHit, retrieve
 from app.services import assessment as assessment_svc
+from app.services import learner_context
 from app.services.assessment import item_to_read
-from app.services.lesson_plan import get_active_step_context
 from app.services.llm_log import log_llm_call
 from app.services.session_runner import short_answer_item_for_kc
 from app.services.turn_common import (
@@ -79,6 +79,12 @@ async def run_workflow_turn(
     ``persist_user`` is False when the caller has already written the learner's message
     and linked it to a durable turn record (S51); the content is still carried into this
     turn's model context, it is simply not appended to the transcript a second time.
+
+    The system prompt is assembled once, on the fresh start, through
+    ``app.services.learner_context`` (S16) — so guided practice now carries the conversation's
+    goal and what is remembered about the learner, not only the step it is practising. A resumed
+    round reuses the prompt held in the checkpoint rather than rebuilding it, which is also why
+    the shared context is read exactly once per practice session rather than once per round.
     """
     if persist_user:
         await add_message(session, conversation.id, ChatRole.USER.value, user_content)
@@ -95,9 +101,10 @@ async def run_workflow_turn(
     if resume:
         run_input = Command(resume={"response_text": user_content})
     else:
-        step = await get_active_step_context(
-            session, learner_id, subject_id=conversation.subject_id
+        context = await learner_context.gather(
+            session, llm, learner_id=learner_id, conversation=conversation, query=user_content
         )
+        step = context.plan
         if step is None:
             yield TurnEvent(type="error", detail="no active lesson-plan step to practice")
             return
@@ -111,10 +118,7 @@ async def run_workflow_turn(
                 type="error", detail="couldn't prepare a practice item for the current step"
             )
             return
-        system = (
-            f"{WORKFLOW_SYSTEM_PROMPT}\n\nKnowledge component: {step.kc_name}. "
-            f"Practice problem: {item.stem}"
-        )
+        grounding = None
         if conversation.subject_id is not None:
             hits = await retrieve(
                 session,
@@ -126,8 +130,15 @@ async def run_workflow_turn(
                 limit=get_settings().chat_grounding_limit,
             )
             grounding = format_grounding(hits)
-            if grounding is not None:
-                system = f"{system}\n\n{grounding}"
+        system = learner_context.compose(
+            WORKFLOW_SYSTEM_PROMPT,
+            context,
+            extra=[f"Knowledge component: {step.kc_name}. Practice problem: {item.stem}"],
+            grounding=grounding,
+            # The problem is already chosen and the prompt above forbids substituting another,
+            # so the item-selection hints are withheld — see ``learner_context``.
+            task_fixed=True,
+        )
         run_input = {
             "messages": [ChatMessage(role=ChatRole.USER, content=user_content)],
             "system": system,

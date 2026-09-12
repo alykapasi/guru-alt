@@ -63,7 +63,7 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | S13 | Distinguish assisted retries from independent demonstrations in mastery evidence. | Guided practice hints and retries the same question; every attempt updates mastery. Hint context is omitted by that workflow and is not used by the estimator even when recorded elsewhere. [R7–R8] | Prevent assistance and repeated exposure from producing unjustified mastery confidence. | First | Implemented (see below) |
 | S14 | Select fresh assessment items with awareness of prior exposure, and check delayed retention and transfer. | Bank selection returns the oldest matching item without considering the learner's exposure. [R2] | Establish that the learner can solve a different problem without help and retain that capability. | First | Implemented (see below) |
 | S15 | Connect exploratory conversation to structured learning evidence through a deliberate assessment mechanism. | Plain chat can ask questions, but its conversational answers do not directly update mastery. [R9] | Make the initial learner-led experience contribute trustworthy evidence without treating all conversation as proof of mastery. | High | Implemented (see below) |
-| S16 | Share appropriate learner context and learning-state access across chat, agentic, and guided modes. | Plain chat injects memory and plan hints; agentic service does not inject those same contexts. [R9–R10] | Switching modes retains relevant understanding of the learner and their goal. | High | Accepted |
+| S16 | Share appropriate learner context and learning-state access across chat, agentic, and guided modes. | Plain chat injects memory and plan hints; agentic service does not inject those same contexts. [R9–R10] | Switching modes retains relevant understanding of the learner and their goal. | High | Implemented (see below) |
 | S17 | Persist resumable guided-practice state durably. | Workflow uses an in-memory checkpointer. [R7] | A restart does not lose the paused practice state needed to continue correctly. | Before reliable external use | Accepted |
 | S18 | Calibrate mastery, placement, and scaffolding heuristics against real evidence. | Placement mappings, completion thresholds, and profile-to-scaffolding thresholds are explicitly described as arbitrary or uncalibrated. [R1, R5, R11] | Progress estimates and teaching choices correspond to demonstrated capability. | High; requires data | Accepted |
 | S19 | Retain the useful existing foundations while improving the teaching loop. | Pure estimation logic, persistent per-component state, event logging, prerequisite planning, and provider abstraction already exist. | Improve the behavior incrementally using existing boundaries. | Ongoing | Accepted |
@@ -141,6 +141,62 @@ the kind of question S59 exists for, and this deliberately does not answer it. T
 does not render a detour differently from any other step, so the explanation the two new fields
 exist to carry does not yet reach the learner. And a diagnosed prerequisite outside the KC's
 direct prerequisites is dropped rather than treated as evidence the *graph* is wrong.
+
+### S16 — One learner, whichever mode is running
+
+**Status:** Partially implemented (branch `feat/s15-s16-s17`) · **Priority:** High
+
+**Implemented — one assembler, one order.** Plain chat folded three things into its system
+prompt: the conversation's committed goal, the lesson plan's active step, and the facts
+remembered about this learner. The agentic path folded in none of them. Guided practice folded
+in only the step it was already practising — not the goal, not the memory. `learner_context`
+now assembles all three and composes them in one pinned order (base → goal → plan focus →
+flow-specific notes → retrieval grounding → memory), and all three flows go through it.
+
+**Implemented — the framing that makes this a defect rather than three designs.** The client
+offers the modes as a toggle on a single conversation. So this was never three products with
+three levels of knowledge; it was one conversation forgetting who it was talking to whenever
+the learner pressed a different button, and remembering again when they pressed back. A learner
+who had spent ten turns establishing that they think in pictures and are working towards a
+specific exam got a tool-using answer that knew neither.
+
+**Implemented — the one thing deliberately not shared.** The agentic flow still does no upfront
+retrieval. It has a `search_materials` tool, so retrieving into the prompt as well would pay for
+the same passages twice and pre-empt the decision the tool exists to let the model make. That is
+the single documented exception, and there is a test that it stays one.
+
+**Implemented — item-selection hints are withheld once a task is fixed.** `hint_density` and the
+plan's focus describe *how to teach* and go everywhere. The difficulty band and preferred item
+type describe *what task to set*. Guided practice is told in the same breath to pose one exact
+problem and not to invent a different one; adding "aim at a challenging level" to that prompt is
+an instruction to do the thing it was just forbidden to do. The same now applies to a plain-chat
+turn holding an open check (S15). One rule, stated once: when a specific item is in play, the
+selection hints are not sent.
+
+**Implemented — a check is not grounding.** Merging the three flows exposed an asymmetry worth
+keeping. `get_active_step_context` falls back to a cross-subject heuristic for a subject-less
+conversation, so a "general" conversation gets plan grounding from whichever plan the learner
+was last on. It does *not* get a check: grounding aimed at the wrong subject costs a slightly
+odd paragraph, while answering a check writes a mastery observation, and one recorded against a
+KC picked by a heuristic is evidence about a skill the conversation may never have touched.
+
+**Measured.** 9 tests; 11 mutations, all killed, plus an inert control that survived. Two
+survivors found real gaps. The memory-fencing test asserted only that the label appeared, which
+a prompt that merely mentions the words would also satisfy — it now asserts the nonce-delimited
+block and the instruction that prefaces it. And nothing pinned that guided practice withholds
+the difficulty band, so the rule above existed only in a comment.
+
+**Not done.** "Appropriate" context is still one set for every mode; nothing decides that a
+bounded tool action needs less of the learner's history than a teaching turn does, and the
+agentic prompt is now measurably longer on every turn for context it may not use. Memory
+retrieval is an embedding call per turn, so extending it to the agentic and workflow flows
+extended that cost to them; nothing caches it within a conversation, and guided practice avoids
+the repeat only incidentally, because a resumed round reuses the prompt held in the checkpoint.
+The refinement gate is the fourth flow and is deliberately left out — it runs before a goal
+exists, which is most of what this shares. Nothing tests that a *future* flow goes through the
+assembler, so the property this fixes can still decay by addition rather than by edit. And the
+learner cannot see or correct what the system believes it remembers about them, which is the
+part of "shared context" that matters most once the memory is wrong.
 
 ### S15 — Make a conversation produce evidence, without making all of it evidence
 

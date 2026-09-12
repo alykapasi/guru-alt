@@ -404,6 +404,33 @@ async def test_a_posed_check_is_marked_so_the_router_records_it(
     assert system is not None and item.stem in system
 
 
+async def test_a_general_conversation_is_grounded_but_never_checked(
+    db_session: AsyncSession,
+) -> None:
+    """A subject-less conversation still gets plan grounding, from whichever plan the learner
+    was last on. It does not get a check: grounding aimed at the wrong subject costs an odd
+    paragraph, while answering a check writes a mastery observation — and one recorded against
+    a KC chosen by a cross-subject heuristic is evidence about a skill this conversation may
+    never have touched."""
+    learner = await _learner(db_session)
+    _subject, kc = await _planned_subject(db_session, learner.id)
+    item, _ = await item_generation.generate_short_item(
+        db_session, fake_llm_client(SHORT_REPLY), kc
+    )
+    assert item is not None
+    conversation = Conversation(learner_id=learner.id, subject_id=None, goal="learn")
+    db_session.add(conversation)
+    await db_session.commit()
+
+    client, provider = _role_client(fast="", smart="A reply.")
+    events = await _tutor_turn(db_session, client, conversation)
+
+    done = next(e for e in events if e.type == "done")  # ty: ignore[unresolved-attribute]
+    assert done.item is None and done.detail == ""  # ty: ignore[unresolved-attribute]
+    (system,) = provider.streamed_systems
+    assert system is not None and "lesson-plan focus" in system  # grounded all the same
+
+
 async def test_a_new_check_starts_with_no_help_recorded_against_it(
     db_session: AsyncSession,
 ) -> None:

@@ -13,7 +13,8 @@ from app.agent.tools import CitationAccumulator, build_tools
 from app.core.config import get_settings
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, ToolCall, Usage
-from app.models.chat import Message
+from app.models.chat import Conversation, Message
+from app.services import learner_context
 from app.services.llm_log import log_llm_call
 from app.services.turn_common import (
     TurnEvent,
@@ -35,11 +36,10 @@ async def run_agentic_turn(
     llm: LLMClient,
     *,
     learner_id: uuid.UUID,
-    conversation_id: uuid.UUID,
+    conversation: Conversation,
     history: Sequence[Message],
     user_content: str,
     max_tokens: int,
-    subject_id: uuid.UUID | None = None,
     source_ids: Sequence[uuid.UUID] = (),
     persist_user: bool = True,
 ) -> AsyncIterator[TurnEvent]:
@@ -51,31 +51,43 @@ async def run_agentic_turn(
 
     Citations (Phase 7) come only from ``search_materials`` calls actually made this turn —
     unlike ``run_tutor_turn``, there's no upfront retrieval; the model decides if/when to
-    search, and the ``CitationAccumulator`` collects whatever it found across every call.
+    search, and the ``CitationAccumulator`` collects whatever it found across every call. That
+    is the one piece of context this flow does *not* share with the others, and deliberately:
+    it has a search tool, so retrieving into the prompt as well would pay for the same passages
+    twice and pre-empt the decision the tool exists to let the model make.
+
+    Everything else about the learner — the conversation's goal, the plan's active step, what
+    is remembered about them — is the same context plain chat and guided practice get, assembled
+    by ``app.services.learner_context`` (S16). Before that, this flow had none of it: the same
+    conversation forgot who it was talking to whenever the learner switched to this mode.
 
     ``persist_user`` is False when the caller has already written the learner's message
     and linked it to a durable turn record (S51); the content is still carried into this
     turn's model context, it is simply not appended to the transcript a second time.
     """
+    conversation_id = conversation.id
     messages = to_chat_messages(history)
     messages.append(ChatMessage(role=ChatRole.USER, content=user_content))
     if persist_user:
         await add_message(session, conversation_id, ChatRole.USER.value, user_content)
         await session.commit()
 
+    context = await learner_context.gather(
+        session, llm, learner_id=learner_id, conversation=conversation, query=user_content
+    )
     citation_acc = CitationAccumulator()
     tools = build_tools(
         session,
         llm,
         learner_id=learner_id,
-        subject_id=subject_id,
+        subject_id=conversation.subject_id,
         source_ids=source_ids or None,
         citations=citation_acc,
     )
     spec = llm.spec(ModelRole.SMART)
     initial: AgenticState = {
         "messages": messages,
-        "system": AGENTIC_SYSTEM_PROMPT,
+        "system": learner_context.compose(AGENTIC_SYSTEM_PROMPT, context),
         "max_tokens": max_tokens,
         "max_iterations": get_settings().agentic_max_iterations,
         "iterations": 0,

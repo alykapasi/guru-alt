@@ -14,16 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agent.tutor import TutorState, build_tutor_graph
-from app.agent.untrusted import as_untrusted
 from app.core.config import get_settings
-from app.learning import conversation_evidence, difficulty
+from app.learning import conversation_evidence
 from app.learning.conversation_evidence import TurnIntent
 from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult, InvalidResponse
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
-from app.memory import retrieval as memory_retrieval
-from app.memory.retrieval import MemoryHit
 from app.models.assessment import Item
 from app.models.chat import Conversation, ConversationPhase, ConversationSource, Message
 from app.models.knowledge import KC
@@ -31,9 +28,10 @@ from app.rag.retrieval import retrieve
 from app.schemas.assessment import AnswerSubmit
 from app.services import assessment as assessment_svc
 from app.services import knowledge as knowledge_svc
+from app.services import learner_context
 from app.services import session_runner as session_runner_svc
 from app.services.assessment import item_to_read
-from app.services.lesson_plan import PlanGroundingContext, get_active_step_context
+from app.services.lesson_plan import PlanGroundingContext
 from app.services.llm_log import log_llm_call
 from app.services.turn_common import (
     TurnEvent,
@@ -50,23 +48,6 @@ TUTOR_SYSTEM_PROMPT = (
     "concisely, check the learner's understanding with questions, and prefer worked "
     "examples over lecturing. Adapt to the learner's level."
 )
-
-
-def _plan_grounding_note(context: PlanGroundingContext) -> str:
-    parts = [
-        f"The learner's current lesson-plan focus in {context.subject_name}: {context.kc_name}."
-    ]
-    if context.target_difficulty is not None:
-        # A band, not the number. This used to interpolate the raw logit, which meant the
-        # tutor's system prompt carried the sentence "Target difficulty: 0.00." — and since
-        # nothing had ever written a difficulty to an item, 0.00 was the only value it could
-        # take. An instruction a model cannot act on is not a neutral one; it still steers.
-        parts.append(f"Aim at a {difficulty.band(context.target_difficulty)} level.")
-    if context.hint_density is not None:
-        parts.append(f"Hint density: {context.hint_density}.")
-    if context.preferred_item_type is not None:
-        parts.append(f"Preferred item type: {context.preferred_item_type}.")
-    return " ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -152,16 +133,6 @@ def _feedback_note(outcome: CheckOutcome, kc_names: Mapping[uuid.UUID, str]) -> 
         "another practice question this turn."
     )
     return " ".join(parts)
-
-
-def _memory_note(hits: Sequence[MemoryHit]) -> str:
-    facts = "; ".join(f"[{h.kind}] {h.content}" for h in hits)
-    # Fenced as data (S31): a memory is extracted from conversation text, so a hostile passage
-    # that reached one turn can be quoted back into every later one as remembered fact.
-    return (
-        "What you remember about this learner from past conversations:\n"
-        f"{as_untrusted('LEARNER MEMORY', facts)}"
-    )
 
 
 async def create_conversation(
@@ -415,31 +386,33 @@ async def run_tutor_turn(
         await add_message(session, conversation_id, ChatRole.USER.value, user_content)
         await session.commit()
 
-    system = TUTOR_SYSTEM_PROMPT
-    if conversation.goal:
-        system = (
-            f"{TUTOR_SYSTEM_PROMPT}\n\nThe learner's stated goal for this conversation: "
-            f"{conversation.goal}"
-        )
-    plan_context = await get_active_step_context(session, learner_id, subject_id=subject_id)
-    if plan_context is not None:
-        system = f"{system}\n\n{_plan_grounding_note(plan_context)}"
+    context = await learner_context.gather(
+        session, llm, learner_id=learner_id, conversation=conversation, query=user_content
+    )
 
     open_check, outcome = await _resolve_check(
         session, llm, learner_id=learner_id, conversation=conversation, user_content=user_content
     )
+    notes: list[str] = []
     if outcome is not None:
         kcs = await knowledge_svc.get_kcs(session, [link.kc_id for link in outcome.item.kc_links])
-        system = f"{system}\n\n{_feedback_note(outcome, {kc.id: kc.name for kc in kcs})}"
-    elif open_check is None and plan_context is not None:
+        notes.append(_feedback_note(outcome, {kc.id: kc.name for kc in kcs}))
+    elif open_check is None and context.plan is not None and subject_id is not None:
+        # Subject-scoped only, and the asymmetry with plan *grounding* is deliberate. A
+        # subject-less conversation still gets grounding from whichever plan the learner was
+        # last on, because a soft hint aimed at the wrong subject costs a slightly odd
+        # paragraph. A check is not a hint: answering it writes a mastery observation, and
+        # writing one against a KC picked by a cross-subject heuristic is evidence about a
+        # skill the conversation may have had nothing to do with.
         open_check = await _pose_check(
-            session, llm, learner_id=learner_id, plan_context=plan_context
+            session, llm, learner_id=learner_id, plan_context=context.plan
         )
         conversation.active_item_scaffolds = 0
     if open_check is not None:
-        system = f"{system}\n\n{_check_note(open_check)}"
+        notes.append(_check_note(open_check))
 
     hits = []
+    grounding = None
     if subject_id is not None:
         hits = await retrieve(
             session,
@@ -451,18 +424,16 @@ async def run_tutor_turn(
             limit=get_settings().chat_grounding_limit,
         )
         grounding = format_grounding(hits)
-        if grounding is not None:
-            system = f"{system}\n\n{grounding}"
 
-    memory_hits = await memory_retrieval.retrieve(
-        session,
-        llm,
-        user_content,
-        learner_id=learner_id,
-        limit=get_settings().memory_retrieval_limit,
+    system = learner_context.compose(
+        TUTOR_SYSTEM_PROMPT,
+        context,
+        extra=notes,
+        grounding=grounding,
+        # An open check is a fixed task: the tutor is told not to swap the question, so it must
+        # not also be told what level to aim a new one at.
+        task_fixed=open_check is not None,
     )
-    if memory_hits:
-        system = f"{system}\n\n{_memory_note(memory_hits)}"
 
     spec = llm.spec(ModelRole.SMART)
     initial: TutorState = {
