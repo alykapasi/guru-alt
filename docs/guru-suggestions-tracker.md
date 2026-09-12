@@ -87,7 +87,8 @@ These are new proposals from the second review; the user's acceptance of prior s
 
 ### S11 — Make targeted prerequisite detours an explicit planning move
 
-**Status:** Partially implemented (branch `feat/s09-s10-s11`) · **Priority:** High
+**Status:** Partially implemented (branch `feat/s09-s10-s11`; extended on branch
+`feat/finish-partials-1`) · **Priority:** High
 
 **Implemented — the plan can now say "the reason you cannot do this is something earlier".**
 Revision reordered steps, flipped statuses and refreshed scaffolding hints, all within the
@@ -137,10 +138,18 @@ sequence that would establish whether it really is the blocker, so a wrongly cho
 costs real time and nothing detects that. Nothing limits how often a learner can be detoured,
 or prevents a component from being detoured away from repeatedly. Detours are not recorded as
 events, so the question "did detouring help?" cannot be asked of the data — which is exactly
-the kind of question S59 exists for, and this deliberately does not answer it. The frontend
-does not render a detour differently from any other step, so the explanation the two new fields
-exist to carry does not yet reach the learner. And a diagnosed prerequisite outside the KC's
-direct prerequisites is dropped rather than treated as evidence the *graph* is wrong.
+the kind of question S59 exists for, and this deliberately does not answer it. And a diagnosed
+prerequisite outside the KC's direct prerequisites is dropped rather than treated as evidence
+the *graph* is wrong.
+
+**Implemented (second pass, branch `feat/finish-partials-1`) — the detour explains itself.**
+`detour_for` and `detour_reason` were recorded precisely so a learner could be told why their
+plan changed, and then rendered nowhere: a detour appeared in the plan as an ordinary "New"
+step, which is exactly the state the two fields exist to prevent. A reordering nobody explains
+is indistinguishable from the plan changing its mind. The row now says it is a detour, names
+the component it is clearing the way back to, and carries the planner's own reason — and keeps
+saying the first two when the component cannot be named, because a detour with no explanation
+at all is the thing being removed.
 
 ### S17 — A paused conversation that outlives the process that paused it
 
