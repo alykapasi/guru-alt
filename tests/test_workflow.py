@@ -11,7 +11,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import DEV_LEARNER_HANDLE, get_llm_client
+from app.api.deps import get_llm_client
 from app.llm.providers import FakeProvider
 from app.llm.providers.fake import FakeTurn
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
@@ -38,11 +38,14 @@ RIGHT_GRADE = '{"score": 0.9, "rationale": "much better"}'
 
 
 async def _learner_and_subject_with_active_step(
-    session: AsyncSession, *, handle: str | None = None
+    session: AsyncSession, *, learner: Learner | None = None
 ) -> tuple[Learner, Subject]:
-    learner = Learner(handle=handle or f"l-{uuid.uuid4().hex[:8]}")
+    """Pass ``learner=api_learner`` when an API call in the same test must own the plan."""
+    if learner is None:
+        learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+        session.add(learner)
     subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Bio")
-    session.add_all([learner, subject])
+    session.add(subject)
     await session.flush()
     topic = Topic(subject_id=subject.id, slug="t", name="T")
     session.add(topic)
@@ -313,14 +316,12 @@ def _parse_sse(text: str) -> list[dict]:
 
 
 async def test_dispatch_mode_workflow_then_resume_without_re_specifying_mode(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, api_learner: Learner
 ) -> None:
     # The stub auth seam always resolves to the dev learner — seed the plan/item for that
     # exact learner, then create the conversation through the real endpoint (not a raw DB
     # insert with an unrelated learner_id, which the router would 404 on).
-    _learner, subject = await _learner_and_subject_with_active_step(
-        db_session, handle=DEV_LEARNER_HANDLE
-    )
+    _learner, subject = await _learner_and_subject_with_active_step(db_session, learner=api_learner)
     r = await api_client.post(f"{API}/conversations", json={"subject_id": str(subject.id)})
     conversation_id = r.json()["id"]
 
@@ -346,13 +347,11 @@ async def test_dispatch_mode_workflow_then_resume_without_re_specifying_mode(
 
 
 async def test_a_paused_session_records_the_item_it_is_waiting_on(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, api_learner: Learner
 ) -> None:
     """Without this the item exists only inside one SSE event, so a refresh loses the
     question the learner was on (S52)."""
-    _learner, subject = await _learner_and_subject_with_active_step(
-        db_session, handle=DEV_LEARNER_HANDLE
-    )
+    _learner, subject = await _learner_and_subject_with_active_step(db_session, learner=api_learner)
     r = await api_client.post(f"{API}/conversations", json={"subject_id": str(subject.id)})
     conversation_id = r.json()["id"]
 

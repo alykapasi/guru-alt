@@ -70,6 +70,15 @@ class S3BlobStore:
         async with self._session.client(**self._kwargs) as s3:
             await s3.delete_object(Bucket=self._bucket, Key=key)
 
+    async def exists(self, key: str) -> bool:
+        """HEAD the object. Any client error means "not there as far as we can tell"."""
+        async with self._session.client(**self._kwargs) as s3:
+            try:
+                await s3.head_object(Bucket=self._bucket, Key=key)
+            except ClientError:
+                return False
+            return True
+
     async def presigned_url(self, key: str, *, expires_in: int = 3600) -> str:
         async with self._session.client(**self._kwargs) as s3:
             url: str = await s3.generate_presigned_url(

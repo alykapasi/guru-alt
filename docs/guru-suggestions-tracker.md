@@ -68,7 +68,7 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | S18 | Calibrate mastery, placement, and scaffolding heuristics against real evidence. | Placement mappings, completion thresholds, and profile-to-scaffolding thresholds are explicitly described as arbitrary or uncalibrated. [R1, R5, R11] | Progress estimates and teaching choices correspond to demonstrated capability. | High; requires data | Accepted |
 | S19 | Retain the useful existing foundations while improving the teaching loop. | Pure estimation logic, persistent per-component state, event logging, prerequisite planning, and provider abstraction already exist. | Improve the behavior incrementally using existing boundaries. | Ongoing | Accepted |
 | S20 | Synchronize documentation with implementation and the clarified mission. | README describes the frontend as future work; roadmap labels the experiment suite not started despite tooling being present. Audience guidance also needs the nuance agreed here. | Future reviews and implementation plans start from an accurate description. | Supporting | Accepted |
-| S21 | Replace the development identity stub before real multi-user access; review production readiness separately. | The inspected auth dependency resolves a single dev learner. [R12] | Real learner identity and tested authorization boundaries before independent user access. | Before external multi-user use | Accepted |
+| S21 | Replace the development identity stub before real multi-user access; review production readiness separately. | The inspected auth dependency resolves a single dev learner. [R12] | Real learner identity and tested authorization boundaries before independent user access. | Before external multi-user use | Implemented (see below) |
 
 ### Knowledge graph and content pipeline — second review
 
@@ -733,6 +733,111 @@ curriculum whose ordering was quietly weakened looks identical to one the model 
 nothing measures whether the generated orderings are *pedagogically* correct — only that they
 are acyclic and resolvable.
 
+### S21 — Replace the development identity stub
+
+**Status:** Partially implemented (branch `feat/s21-s58-s60`) · **Priority:** Before external
+multi-user use
+
+**Implemented — the seam was one function, and it is now a real one.** `get_current_learner`
+resolved a learner with handle `dev`, and *created* it if absent. So every route received a
+`Learner` whether or not the caller had proved anything, and the first request any stranger
+made would manufacture the account it then acted as. It now reads a session token, resolves it
+to the learner who owns it, and raises 401 when there is none. Nothing above it changed —
+which is the claim the MASTERPLAN made for threading `learner_id` everywhere from day one, and
+it held: 74 uses of `CurrentLearner` across fourteen routers needed no edits at all.
+
+**Implemented — a credential, and a session that can be withdrawn.** `learners` gains `email`
+and `password_hash`; `learner_sessions` holds one row per live session. Two hashes, for two
+threat models: Argon2id for the password, because it is low-entropy and chosen by a person, and
+SHA-256 for the session token, because it is 256 bits of CSPRNG output with no candidates to
+enumerate — and putting a deliberately slow hash on the path of *every authenticated request*
+would be a denial-of-service mechanism, not a defence. The token is stored only as a
+fingerprint, so a dump, a backup (S60) or a log line cannot be replayed as a login.
+
+The session is a row rather than a signed token on purpose. A self-contained signed claim
+cannot be withdrawn before it expires, which makes "log out everywhere", "revoke the session
+on the laptop I lost" and account deletion into promises the server cannot keep. The cost is
+one indexed read per request; the benefit is that revocation is immediate and tested as such.
+
+**Implemented — both credential columns are nullable, and that is the honest shape.** No
+existing learner is given a fabricated address. A learner with neither is one with no way to
+sign in, which is the truth about every row that predates this migration; an address with no
+hash is what an externally-authenticated learner would look like, so adding a second way in
+does not need the table to change. The one nonsensical combination — a password with no
+address, which can neither be used nor recovered — is refused by a check constraint rather
+than documented.
+
+**Implemented — the development seam is an endpoint, not a fallback.** `POST /auth/dev-login`
+issues a session for the `dev` learner with no credential, so `poe dev` and the frontend still
+work against an empty database. It is deliberately *not* a branch inside the resolver: a
+fallback is invisible, appears in no schema, and is exactly the shape of an auth boundary that
+looks present and is not. This one is in the OpenAPI document, returns 404 unless
+`GURU_DEV_AUTO_LOGIN` is on, and production refuses to **start** while it is — alongside a new
+refusal for a session cookie that would cross plain HTTP (`app/core/release.py`).
+
+**Implemented — the suite tests the real resolver, not an override of it.** The obvious way to
+keep 600 API tests passing was to leave the dev fallback on under `GURU_ENV=test`, and it would
+have been worthless: every test would have run through the bypass and the boundary would have
+been exercised nowhere. Instead `api_client` is genuinely authenticated — it holds a session
+cookie minted through `app.services.auth` for the new `api_learner` fixture — so every API test
+in the suite now goes through the same resolver production uses. Ten test files had reached for
+the magic `DEV_LEARNER_HANDLE` constant to seed "the learner the API acts as"; they take the
+fixture instead, and the constant is gone from the test suite entirely.
+
+**Implemented — a sweep, because an auth table nobody prunes grows forever.** The worker deletes
+sessions that can no longer authenticate anybody, on the same timer pattern as the ingestion
+reconciler. A revoked row is kept for a week first: while it exists, presenting that token is
+distinguishable from presenting one that never existed, which is the difference between "your
+session was ended" and a failure nobody can diagnose. This is deliberately not a repeat of
+S17's unbounded checkpoint table.
+
+**Implemented — the client sends the credential.** Six raw `fetch` calls and the typed client
+now go through one credentialed path (`apiFetch` / `credentials: "include"`). Without it the
+browser holds a perfectly valid session and every request is still a 401, which reads as a
+broken login rather than a missing option. `/app/*` is behind a gate that redirects a
+signed-out browser to a sign-in page and remembers where they were going; the gate is not the
+security boundary and says so — the API refuses the request whatever the client renders.
+
+**Measured.** 52 new backend tests and 3 frontend ones. 39 cover identity itself: that an
+unknown address and a wrong password are indistinguishable in both status and message, that a
+learner with no password hash is not a way in, that an expired, revoked, or deleted-owner
+session stops working *at use time* rather than at issue time, that the token never appears in
+a response body or in the database, that the cookie is httpOnly, and that eleven learner routes
+answer 401 with no session while the three operational endpoints stay open. 13 more are the
+cross-learner boundary: B holds a live session and asks for A's conversation, source, memory,
+note, plan, mastery and export, by id. **All 13 passed on the first run** — the `learner_id`
+threading was genuinely being used to scope, not merely being carried. That is worth stating
+plainly as a null result rather than dressed up as a fix.
+
+**Mutated.** 13 behaviour mutations against the resolver, the credential check and the
+production guards: 12 killed and one equivalent — removing the duplicate-address pre-check
+changes nothing, because the unique constraint is what actually decides, which is what the
+function's own docstring says. Plus one inert control, which survived as it should.
+
+**Two things worth recording.** Seven of those boundary tests failed on their first run and
+none of them was an application bug — wrong enum member, wrong embedding dimension, a column
+that does not exist. Worth noting because a cross-learner test that errors in setup looks
+exactly like one that passes if you only read the summary line. And the frontend guard test
+**passed for the wrong reason**: `openapi-fetch` captures `globalThis.fetch` when the client is
+built, so `vi.stubGlobal` after import never applied, the test reached the real network,
+`ECONNREFUSED` produced a query error, and a query error is indistinguishable from a 401 to the
+gate. The signed-out assertion would have passed with the gate deleted. The client now resolves
+`fetch` per call, and the test was re-checked by mutation afterwards.
+
+**Not done.** There is no admin role and no authorization *tier* — every authenticated learner
+can still create global subjects, topics, KCs and edges, which is S25's ownership model and is
+untouched here; the boundary this tests is "not yours" for learner-owned rows, not "not yours
+to publish". No password reset, no email verification, and therefore no recovery: a forgotten
+password is currently an operator's problem. No rate limiting on sign-in — Argon2 makes each
+attempt expensive for the server as well as the attacker, which is a denial-of-service shape
+the login path does not yet defend against, and Phase 11 owns it. No second factor. Sessions
+do not rotate their token on privilege change, and there is no absolute lifetime independent of
+the sliding TTL. The learner cannot change their own email or password through the API. CSRF
+rests on `SameSite=lax` plus an explicit CORS allowlist rather than a token, which is adequate
+for a same-site deployment and is exactly the assumption to revisit if the app is ever served
+cross-site. And the admin portal and audited impersonation that P10 pairs with this are not
+started.
+
 ## Open decisions
 
 | ID | Question | Current position |
@@ -799,7 +904,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-09 | Third implementation pass, branch `fix/tracker-s51-s31` (stacked on the second): S51 (`4809fae`), S44 (`4a55279`), S33 (`f80f0f6`), S61 (`4836971`), S31 (`cabd2a0`) and S62 (`67c1226`). `uv run poe check` green (856 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0030`–`0032`. All six are marked *partially* implemented and each says what it left; the largest gaps are an explicit presentation preference to replace the reading-level inference (S44), any path for a learner's item to become shared at all (S33), orphaned-blob reconciliation and a retention *schedule* (S61), adversarial evaluation against a real model (S31), and latency as opposed to query-count budgets (S62). Two things worth recording. S62 began by *measuring*: the subject-mastery page cost 15 queries on a 2x2 subject and 147 on an 8x8, and the fixes are verified by a counter rather than asserted. And two of my own S31 tests initially passed for the wrong reason — a base64 exfiltration test that an unreachable host would also have satisfied, and a nonce-uniqueness test comparing body text rather than delimiters — both caught by mutating the code they were meant to cover. S61's completeness test ("every table with a `learner_id` has a stated disposition") caught a table misnamed in the retention map on its first run. |
 | 2026-09-10 | S77 added and implemented, branch `feat/source-dedup` (stacked on the third pass): content-addressed shared blobs (`b44ad51`), within-learner exact dedup (`1d49309`), canonical-text dedup (`9b437fe`), and near-duplicate suggestions (`ef04f40`). Not a review finding — a user request to hash uploads against duplicates, "ideally strong enough to catch similar files". `uv run poe check` green (885 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0033`–`0035`. The request needed correcting before it could be built: a cryptographic hash is designed *not* to do this, so it became three mechanisms — byte equality, canonical-text equality, and a locality-sensitive distance. The third was measured before being trusted (`poe simhash-separation`), and the measurement changed the design: a badly scanned copy of a book and a document half of which is a different book sit at the same distance, so no cut-off separates them and the near-duplicate check reports rather than decides. Also re-opened S61: sharing a blob key across learners means "delete this account's bytes" now has to mean "unless somebody else references them". |
 | 2026-09-11 | Fourth implementation pass, branch `fix/tracker-s53-s60` (off merged `main`, after PRs #17–#19): S53 (`e49000b`), S56 (`978a549`) and S60 (`f07bc8f`) — the last three items that were still *Proposed* and technical. `uv run poe check` green (914 passed, 4 skipped); `npm run lint`, `npm run test` and `npm run build` green. No migrations. All three are marked *partially* implemented and each says what it left. Three things worth recording. **S53's defects were found by looking at the rendered page, not the code**: the type scale lived in `@layer components`, which Tailwind cannot compose into a variant, so every `[&_h2]:text-h3` in the notes renderer had been generating no CSS and headings rendered at body size; `$$x$$` on one line came out inline; and `\(x\)` rendered as literal backslashes. None was visible in review. The frontend also had **no test framework at all**, so "renders correctly" was not a claim anything could check — vitest is now in CI. **S56 found the same class of bug twice**: ordering a learner's history by `created_at` is ordering it by the transaction clock, which ties for anything committed together, so both the step order and a seed-ordering guard were unreliable; steps are now ordered by the timestamp the update itself used. **S60 surfaced a packaging defect** — `alembic` was a dev-group dependency, so a production image could not run the first step of its own deployment. Everything S60 claims was executed against a running containerised stack, including stopping MinIO to confirm readiness 503s while liveness stays 200. Also worth recording: a `docker build ... | tail` reported success while the build had failed, because the pipe's exit status is `tail`'s — the first "the image builds" claim was wrong and was caught by rechecking the exit code explicitly. |
-| 2026-09-11 | Fifth pass, branch `feat/s22-s14` — the first items taken from the *register* rather than the autopsy, both marked **First**: S22 (`bfcc78c`) and S14 (`6eb56cc`). `uv run poe check` green (952 passed, 4 skipped); `npm run lint` and `npm run build` green. Migration `0036`. Both are marked *partially* implemented and each says what it left. Two defects here were of the kind that look correct in review and only show up in behaviour. **Selection was `ORDER BY created_at`** — stable, so practising a component twice served the same question twice, while every attempt still updated mastery: the estimate rose on the learner re-answering what they had just been told. **Generated curricula had no prerequisite edges at all**, so the planner — whose entire job is ordering by prerequisites — was ordering a flat list. Three things worth recording. S22's edges were being dropped at a place no test looked: `/onboarding/curriculum` rebuilt each KC as `{name, description}`, so the round trip through the learner's review discarded them; two mutations survived the first round because of it. S14's span measurement reported a nine-day gap as **zero** on its first run, which is the `created_at`-is-the-transaction-clock finding from S56 arriving in a second place — it now uses the `observed_at` that item recorded. And prerequisites are resolved from names to stable keys at *parse* time specifically so the learner renaming a KC in the review step cannot silently break an edge. || 2026-09-11 | Sixth pass, branch `feat/s12-s23` (off merged `main`, after PR #21): S12 (`943642d`) and S23 (`37d3a25`). `uv run poe check` green (1024 passed, 4 skipped). No migrations. S12 is marked *partially* implemented; S23 is complete. **S12's recorded gap was the smaller half of it.** The session runner documented target difficulty as unapplied, which was true — but no generator had ever written `Item.difficulty`, and generation is how items come to exist, so the entire scale was the column default of 0.0. Applying a target to a bank of zeros would have been a no-op dressed as a feature, and a stored 0.0 was not a missing value: the tracer scored every question as if pitched at the population average, and the `optimal_challenge` profile dimension was the mean of a column of zeros. The target now comes from the tracer's per-KC ability rather than that dimension, because difficulty already shares the logit scale with ability — and practice and assessment deliberately target opposite ends of it, since `E * (1 - E)` peaks at a 50% expectation. **S23's own change created a defect that testing caught.** Dropping a cycle-closing edge depends on the order edges are read in, and the plan path fed `acyclic` an unordered scan, so the query planner decided which prerequisite to sacrifice and two regenerations could honour different ones; a three-node cycle test passed and failed by luck until the query was ordered. The generic rewrite also silently lost runtime type enforcement — beartype declines to decorate PEP 695 generic functions and only *warns*, so two functions stopped being checked while everything still passed. Also worth recording: one S12 test asserted a placement target of 0.0, which is also the old default, so it would have passed with the feature removed entirely — rewritten before the mutation round, not after. || 2026-09-12 | Seventh pass, branch `feat/s09-s10-s11` (off merged `main`, after PR #22): S10 (`530643c`), S09 (`8eeec92`) and S11 (`8aa314a`) — the S08 spine, built in dependency order, since diagnosis needs per-component evidence and detours need diagnosis. `uv run poe check` green (1087 passed, 4 skipped); `npm run lint` and `npm run build` green. No migrations. All three are marked *partially* implemented and each says what it left. **S10's second half was larger than recorded.** The tracker said generated short questions have no explicit rubric; in fact *nothing in the system had ever written a `Rubric` row* — the table existed, `Item.rubric_id` was always null, and every open answer in the product's history was graded against the "(no explicit rubric; grade on correctness and completeness)" fallback. Its first half was exactly as recorded: one score landed on every tagged KC, varying only the weight, and weight scales how far an estimate moves rather than which way — so the tracker's own least-squares example was literal. **Three defects surfaced in testing rather than review, two of them from one root.** Making `payload["score"]` mean the per-KC score broke the idempotent-retry path, which read that key to rebuild the grade and would have reported one component's mark as the whole answer's; and rebuilding the breakdown from the event fan-out gave a *single*-component grade a `component_scores` map its first response never had — resolution invented after the fact. The payload now records `component_scored` so a replay can tell the difference. The third: `list_prerequisites` had no `ORDER BY`, so which prerequisite a stuck learner was detoured to was decided by the query planner, and could be decided differently on the next revision — the same defect S23 found in subject-wide edges, arriving in a place where the consequence is what the learner is taught next. **The honest limit across all three:** MCQ is the default generated type, and an MCQ has one outcome — so it carries no per-component breakdown and no diagnosis, and most attempts in practice still produce neither. S11's behavioural trigger exists precisely because of that. | || 2026-09-12 | Eighth pass, branch `feat/s15-s16-s17` (off merged `main`, after PR #23): S15 (`b8ed124`), S16 (`5cf5ce0`) and S17 (`1cad57d`) — the rest of the S08 spine bar calibration. `uv run poe check` green (1160 passed, 4 skipped); `npm run lint` and `npm run build` green. Migrations `0037` (conversational scaffold count) and `0038` (onboarding session ownership). All three are marked *partially* implemented and each says what it left. **S15's recorded gap was again the smaller half.** Conversational answers did not update mastery, as recorded — but every subject-scoped tutor turn already resolved a *fresh* practice item, handed it to the client as a widget, never mentioned it to the tutor, and discarded it next turn. The tutor's own prompt tells it to check understanding with questions, so it asked one question in prose while the client displayed another, and neither was graded; the conversation's phase said `chatting` throughout. The fix is a check that is posed once and stays open, an intent gate whose every failure mode resolves to “record nothing”, and grading through the existing `answer_item` path. S09 and S10 were built last pass and consumed by nothing; the failure kind now selects the teaching move, and `none`/`incomplete` select none at all. **S17's blast radius was written down before it was needed.** The turn lock and the onboarding registry were each documented as deliberately exactly as strong as the in-memory checkpointer, and that was right — but the reverse is not symmetric: a durable checkpointer with an in-process lock is *worse* than what came before, because any worker can then resume the same paused practice and write two mastery observations for one answer. All three moved together. **A tooling defect invalidated results and was caught by a control.** The mutation harness reverted files with `mv`, which can restore a timestamp matching the `.pyc` written during the mutated run whenever a mutation preserves file size — so Python kept using the mutated bytecode afterwards. It produced a run of false kills including a docstring-only control, and could as easily have produced false survivals; the harness now clears `__pycache__` on both sides and treats a test-selection error as a failure rather than a survival. Every S17 mutation was re-run on the fixed harness and S15/S16 were spot-checked on it. Also worth recording: making the turn lock durable exposed that it had been reaching for the process-wide engine, which tests never use — the lock is now injected, because a lock taken on a different engine is a lock on a different backend, which is no lock at all. |
+| 2026-09-11 | Fifth pass, branch `feat/s22-s14` — the first items taken from the *register* rather than the autopsy, both marked **First**: S22 (`bfcc78c`) and S14 (`6eb56cc`). `uv run poe check` green (952 passed, 4 skipped); `npm run lint` and `npm run build` green. Migration `0036`. Both are marked *partially* implemented and each says what it left. Two defects here were of the kind that look correct in review and only show up in behaviour. **Selection was `ORDER BY created_at`** — stable, so practising a component twice served the same question twice, while every attempt still updated mastery: the estimate rose on the learner re-answering what they had just been told. **Generated curricula had no prerequisite edges at all**, so the planner — whose entire job is ordering by prerequisites — was ordering a flat list. Three things worth recording. S22's edges were being dropped at a place no test looked: `/onboarding/curriculum` rebuilt each KC as `{name, description}`, so the round trip through the learner's review discarded them; two mutations survived the first round because of it. S14's span measurement reported a nine-day gap as **zero** on its first run, which is the `created_at`-is-the-transaction-clock finding from S56 arriving in a second place — it now uses the `observed_at` that item recorded. And prerequisites are resolved from names to stable keys at *parse* time specifically so the learner renaming a KC in the review step cannot silently break an edge. || 2026-09-11 | Sixth pass, branch `feat/s12-s23` (off merged `main`, after PR #21): S12 (`943642d`) and S23 (`37d3a25`). `uv run poe check` green (1024 passed, 4 skipped). No migrations. S12 is marked *partially* implemented; S23 is complete. **S12's recorded gap was the smaller half of it.** The session runner documented target difficulty as unapplied, which was true — but no generator had ever written `Item.difficulty`, and generation is how items come to exist, so the entire scale was the column default of 0.0. Applying a target to a bank of zeros would have been a no-op dressed as a feature, and a stored 0.0 was not a missing value: the tracer scored every question as if pitched at the population average, and the `optimal_challenge` profile dimension was the mean of a column of zeros. The target now comes from the tracer's per-KC ability rather than that dimension, because difficulty already shares the logit scale with ability — and practice and assessment deliberately target opposite ends of it, since `E * (1 - E)` peaks at a 50% expectation. **S23's own change created a defect that testing caught.** Dropping a cycle-closing edge depends on the order edges are read in, and the plan path fed `acyclic` an unordered scan, so the query planner decided which prerequisite to sacrifice and two regenerations could honour different ones; a three-node cycle test passed and failed by luck until the query was ordered. The generic rewrite also silently lost runtime type enforcement — beartype declines to decorate PEP 695 generic functions and only *warns*, so two functions stopped being checked while everything still passed. Also worth recording: one S12 test asserted a placement target of 0.0, which is also the old default, so it would have passed with the feature removed entirely — rewritten before the mutation round, not after. || 2026-09-12 | Seventh pass, branch `feat/s09-s10-s11` (off merged `main`, after PR #22): S10 (`530643c`), S09 (`8eeec92`) and S11 (`8aa314a`) — the S08 spine, built in dependency order, since diagnosis needs per-component evidence and detours need diagnosis. `uv run poe check` green (1087 passed, 4 skipped); `npm run lint` and `npm run build` green. No migrations. All three are marked *partially* implemented and each says what it left. **S10's second half was larger than recorded.** The tracker said generated short questions have no explicit rubric; in fact *nothing in the system had ever written a `Rubric` row* — the table existed, `Item.rubric_id` was always null, and every open answer in the product's history was graded against the "(no explicit rubric; grade on correctness and completeness)" fallback. Its first half was exactly as recorded: one score landed on every tagged KC, varying only the weight, and weight scales how far an estimate moves rather than which way — so the tracker's own least-squares example was literal. **Three defects surfaced in testing rather than review, two of them from one root.** Making `payload["score"]` mean the per-KC score broke the idempotent-retry path, which read that key to rebuild the grade and would have reported one component's mark as the whole answer's; and rebuilding the breakdown from the event fan-out gave a *single*-component grade a `component_scores` map its first response never had — resolution invented after the fact. The payload now records `component_scored` so a replay can tell the difference. The third: `list_prerequisites` had no `ORDER BY`, so which prerequisite a stuck learner was detoured to was decided by the query planner, and could be decided differently on the next revision — the same defect S23 found in subject-wide edges, arriving in a place where the consequence is what the learner is taught next. **The honest limit across all three:** MCQ is the default generated type, and an MCQ has one outcome — so it carries no per-component breakdown and no diagnosis, and most attempts in practice still produce neither. S11's behavioural trigger exists precisely because of that. | || 2026-09-12 | Eighth pass, branch `feat/s15-s16-s17` (off merged `main`, after PR #23): S15 (`b8ed124`), S16 (`5cf5ce0`) and S17 (`1cad57d`) — the rest of the S08 spine bar calibration. `uv run poe check` green (1160 passed, 4 skipped); `npm run lint` and `npm run build` green. Migrations `0037` (conversational scaffold count) and `0038` (onboarding session ownership). All three are marked *partially* implemented and each says what it left. **S15's recorded gap was again the smaller half.** Conversational answers did not update mastery, as recorded — but every subject-scoped tutor turn already resolved a *fresh* practice item, handed it to the client as a widget, never mentioned it to the tutor, and discarded it next turn. The tutor's own prompt tells it to check understanding with questions, so it asked one question in prose while the client displayed another, and neither was graded; the conversation's phase said `chatting` throughout. The fix is a check that is posed once and stays open, an intent gate whose every failure mode resolves to “record nothing”, and grading through the existing `answer_item` path. S09 and S10 were built last pass and consumed by nothing; the failure kind now selects the teaching move, and `none`/`incomplete` select none at all. **S17's blast radius was written down before it was needed.** The turn lock and the onboarding registry were each documented as deliberately exactly as strong as the in-memory checkpointer, and that was right — but the reverse is not symmetric: a durable checkpointer with an in-process lock is *worse* than what came before, because any worker can then resume the same paused practice and write two mastery observations for one answer. All three moved together. **A tooling defect invalidated results and was caught by a control.** The mutation harness reverted files with `mv`, which can restore a timestamp matching the `.pyc` written during the mutated run whenever a mutation preserves file size — so Python kept using the mutated bytecode afterwards. It produced a run of false kills including a docstring-only control, and could as easily have produced false survivals; the harness now clears `__pycache__` on both sides and treats a test-selection error as a failure rather than a survival. Every S17 mutation was re-run on the fixed harness and S15/S16 were spot-checked on it. Also worth recording: making the turn lock durable exposed that it had been reaching for the process-wide engine, which tests never use — the lock is now injected, because a lock taken on a different engine is a lock on a different backend, which is no lock at all. | || 2026-09-12 | Ninth pass, branch `feat/s21-s58-s60` (stacked on the eighth, PR #24 still open): S21 (`a0e29a4`), S58 (`110e21c`) and S60 (`7d9cfd7`). `uv run poe check` green (1244 passed, 4 skipped); `npm run lint`, `npm run test` and `npm run build` green; the new `poe api-contract` gate green. Migration `0039`. S21 and S60 are marked *partially* implemented and S58 remains partial; each says what it left. **S21's design-time call was email + password, not an OAuth provider** — the suite is documented as fully offline and deterministic, a hosted provider cannot be exercised in CI without live secrets, and the resolver seam means an OIDC login that mints the same session row is additive later. The claim the MASTERPLAN made for threading `learner_id` from day one held exactly: 74 uses of `CurrentLearner` across fourteen routers needed no edits. **All 13 cross-learner boundary tests passed on their first run**, which is a null result worth stating plainly — the id was genuinely scoping, not merely being carried. **S58's new fixture found a defect on its first run, in code whose docstring described the fix.** `answer_item` documents that a concurrent duplicate "loses at commit and replays the winner's grade instead of raising", and has an `except IntegrityError` around the commit — but the tracer *flushes* the observation, so the unique index fires one line above the `try`, and the loser of a genuine double-submission got a 500 instead of their grade. The data was never wrong; the response was, and the sequential test that has covered S34 since it was written passes either way, because a read-then-write retry never reaches the flush. Three more things worth recording. **A frontend test passed for the wrong reason**: `openapi-fetch` captures `globalThis.fetch` when the client is built, so `vi.stubGlobal` after import never applied, the test reached the real network, and `ECONNREFUSED` produced a query error indistinguishable from a 401 — the signed-out assertion would have passed with the gate deleted. **A mutation reported as a survivor without having been applied** (a `sed` pattern that did not match), which is the same lesson as the eighth pass's bytecode defect arriving in a different place: checking that a mutation applied is part of the result. And seven of the thirteen boundary tests failed on their first run with wrong enum members and wrong embedding dimensions — none an application bug, but a cross-learner test that errors in setup looks exactly like one that passes if you only read the summary line. |
 
 ## Remaining architecture autopsy — source pass
 
@@ -2097,7 +2202,8 @@ and wiring it through `run_cell`. Prompt-version identity is not yet recorded.
 
 ### S58 — Expand CI to cover the delivered product and actual failure boundaries
 
-**Status:** Partially implemented (`36c16e5`, branch `fix/tracker-s54-s38`) · **Priority:** Before release
+**Status:** Partially implemented (`36c16e5`, branch `fix/tracker-s54-s38`; extended on branch
+`feat/s21-s58-s60`) · **Priority:** Before release
 
 **Implemented:** Three gates that were missing entirely.
 
@@ -2128,10 +2234,68 @@ It also produced two order-dependent failures that had nothing to do with the co
 They now require `GURU_LIVE_MODEL_TESTS=1` (`tests/live_models.py`), which also de-duplicates the
 model probe that was copied across three files. Full suite: 667 passed, 4 skipped, **23s**.
 
-**Still open:** browser/e2e journeys, API-contract gates between frontend and backend,
-separate-session concurrency tests (the fixture still shares one savepoint-joined session, so it
-cannot exercise real cross-connection commits), queue integration, fault injection, and migration
-tests against representative *existing* data rather than only a fresh database.
+**Implemented (second pass, branch `feat/s21-s58-s60`) — the contract between the two halves
+is now a gate.** `frontend/src/api/schema.d.ts` is generated from the API's OpenAPI document,
+and `npm run gen:api` pointed at a *running dev server* — so the committed types were only ever
+as current as the last time somebody remembered to start one and re-run it. A backend change
+that removed a field or renamed a route could merge, and the frontend would keep compiling
+against the shape that used to be there: a type-checker approving code that cannot work.
+`poe openapi` dumps the document from the app object — no server, no database, no network —
+which is what lets `poe api-contract` regenerate the types and fail on any difference. It is a
+third CI job, and it was checked by mutation: adding a field to a response model makes it exit
+non-zero. Generation is deterministic (sorted keys), so the check cannot fail on ordering.
+
+**Implemented — a fixture that can lose a race.** Every other API test shares one session
+inside one transaction that is rolled back. That is the right default, and it cannot express
+the failures that matter here: two "concurrent" requests on one savepoint-joined session are
+not concurrent and never commit, so a unique constraint cannot be violated, a lease cannot be
+lost to somebody else, and an idempotency key is checked against writes the other request has
+not made. `live_client` drives the app with its own session factory — each request its own
+connection, each commit real — and cleans up by deleting the learner and letting the cascade
+run. Five tests, one per boundary where losing the race corrupts something rather than merely
+failing: one attempt submitted twice at once, one address registered twice at once, one source
+claimed by two workers, one session used and revoked across connections.
+
+**It found a defect on the first run, and the defect was in code whose docstring described the
+fix.** `answer_item` documents that "a concurrent duplicate loses at commit and replays the
+winner's grade instead of raising", and it has an `except IntegrityError` around
+`session.commit()` that does exactly that. But the tracer *flushes* the observation, so under a
+real race the unique index fires inside `DEFAULT_TRACER.update(...)` — which sat one line
+*above* the `try`. The loser of a genuine double-submission got a 500 instead of their grade.
+The data was never wrong (the constraint did its job); the response was. The sequential test
+that has covered S34 since it was written passes either way, because a read-then-write retry
+never reaches the flush. Moved inside the guard, and mutation-checked.
+
+**Implemented — migrations against data that was already there.** CI migrates a fresh database
+and round-trips every revision, which proves a revision *executes*. The risk a production
+upgrade carries is different: that existing rows survive it, keep their meaning, and satisfy
+whatever constraint it adds. `tests/migration_harness.py` gives a test a scratch database at a
+chosen revision, a plain connection to seed it, and then the upgrade under test. Two rules make
+the result mean anything, and both are in the module docstring: seed with SQL and never with
+the ORM (the models describe `head`, so seeding through them writes data no real deployment
+could have held), and use a scratch database rather than downgrading the suite's own underneath
+every other test. Three cases: that 0039 leaves pre-auth learners with no invented address and
+a constraint that accepts them, that several credential-less learners do not collide on the
+unique index, and that a conversation predating 0037 comes through with `0` rather than `NULL`
+— the `server_default` trap, verified by removing the server default and watching the test fail.
+
+**Measured.** 8 tests (5 cross-connection, 3 migration-with-data). Four mutations, all killed:
+moving the tracer's flush back outside the idempotency guard, removing `0037`'s
+`server_default`, adding a field to a response model without regenerating the types, and — as
+a control on the harness itself — not migrating the scratch database at all, which must fail
+every case that claims to seed an older revision. The `server_default` mutation is worth a
+note: the *first* attempt at it silently did not apply (a `sed` pattern that did not match),
+and reported as a survivor. Checking that a mutation applied is part of the result.
+
+**Still open:** browser/e2e journeys — the upload→curriculum→chat→practice→notes path in a real
+browser is still unwritten, and it is now the largest single gap here. Queue *integration*: the
+worker's tasks are tested, delivery through a real Redis broker is not, and no CI job runs one.
+Fault injection: nothing exercises a blob store or a provider failing mid-operation on purpose.
+The migration harness covers two revisions rather than being applied to every future one, and
+nothing requires a new migration to come with a data case. `guru_migration_test` is a fixed
+name, so the harness assumes the suite is not run in parallel against one server. And the
+cross-connection tests share the process-wide engine, disposing it on the way out — correct,
+but it means they cannot run concurrently with each other either.
 
 **Evidence:** CI builds/tests the backend and applies migrations, but has no frontend install/build/lint or browser workflow. Backend fixtures use one transactional session with savepoints, and many workflow tests use canned model responses; these do not establish separate-worker or real-commit behavior.
 
@@ -2155,7 +2319,8 @@ tests against representative *existing* data rather than only a fresh database.
 
 ### S60 — Provide an operational release and recovery path
 
-**Status:** Partially implemented (branch `fix/tracker-s53-s60`) · **Priority:** Before production
+**Status:** Partially implemented (branch `fix/tracker-s53-s60`; extended on branch
+`feat/s21-s58-s60`) · **Priority:** Before production
 
 **Implemented — there is now something to deploy.** A `Dockerfile` builds the API and the worker
 as one image with two commands (building them separately is how a worker ends up running a job
@@ -2205,16 +2370,68 @@ and confirmed `/health` 200, `/api/v1/ready` 200 with both dependencies passing,
 what it exists for. All 35 migrations round-trip to base and back. `backup-drill` dumped 81KB
 and matched 27 tables; corrupting the restored copy makes it fail and name the table.
 
-**Not done.** Nothing has been rehearsed against real infrastructure — managed Postgres, real
-S3, TLS, secret delivery and network policy are all untested. There is no alerting: the signals
-exist and are worth polling, but nothing polls them, and there is no paging or dashboard. Cost
-is recorded per call and capped per learner, but nothing watches the total. No blue/green or
-canary — the documented rollout is a rolling restart. Restore is not automated past proving a
-dump restores; promoting a restored database is a manual DSN change. Migrations are still only
-tested against a fresh database, not representative existing data (S58). And the object store is
-not covered by the database backup — blobs are shared by content hash (S77), so a restored
-database with an empty bucket has sources that cannot be re-ingested; the runbook says so and
-points at `mc mirror`, but nothing runs it.
+**Implemented (second pass, branch `feat/s21-s58-s60`) — the signals are evaluated, not just
+exposed.** The honest note above was that readiness, queue age and lease health "exist and are
+worth polling, but nothing polls them". A signal nobody evaluates is documentation rather than
+monitoring: it moves both the thresholds and the remembering onto a person who is, by
+definition, busy with something else at the moment it matters. `/api/v1/ops/alerts` is the
+predicate — every threshold in the runbook, checked in one place, each firing condition
+carrying the value that tripped it and the action for it. Anything that can poll HTTP and read
+a JSON field can alert on it, so nothing about *which* alerting system gets used had to be
+decided in order for the thresholds to live somewhere testable. It answers 200 whether or not
+anything is firing: readiness is the endpoint that 503s, and taking an instance out of rotation
+because its bill is high would be the wrong response to the right signal. `checked` lists what
+was evaluated, so a silent report is distinguishable from checks that never ran.
+
+**Implemented — something watches the total.** Cost has been recorded per call since Phase 1
+and capped per learner since S47; nothing looked at the sum, so the first signal was the bill.
+`/api/v1/ops/spend` totals a window and splits it the two ways an operator acts on — which role
+and which model — against an optional budget. The number that is not what it looks like is the
+total: `cost_usd` is nullable and NULL means *no known price*, deliberately distinct from 0.0,
+which means a local model that genuinely cost nothing (S48). Summing NULLs as zero would report
+a deployment running entirely on unpriced models as spending nothing at all, which is the most
+expensive way to be wrong, so unpriced calls are counted and reported alongside and the alert
+says so in its own text when the figure is a floor.
+
+**Implemented — a restore can now be shown to be valid.** The dump does not contain the
+uploaded bytes, and blobs are shared by content hash (S77), so a database restored beside an
+empty bucket is worse than an obvious failure: every `Source` row is present, the library looks
+intact, and nothing can re-derive the bytes because de-duplication means no other copy exists.
+`poe blob-check` walks every referenced key and asks the store whether it is there, exiting
+non-zero with the affected sources named so it works as a deployment gate rather than something
+somebody reads. `backup-drill` now ends by running it — a drill that stopped at the row counts
+would have reported exactly that failure as a success. This needed one addition to the storage
+seam, `exists()`, a metadata lookup rather than a read: answering by `get` would download the
+corpus to learn that it is still there. The S3 implementation was verified against the running
+MinIO, since the in-memory store cannot exercise `head_object` or its error path.
+
+The *reverse* direction is deliberately absent. Objects nothing references are a cleanup
+question rather than a correctness one, and deleting them safely is the orphan reconciliation
+S61 owns.
+
+**Measured.** 21 tests, and the S3 `exists()` path executed against the running MinIO rather
+than only the in-memory store. 13 mutations: 11 killed, and two equivalent that are equivalent
+*to each other* — the query's `blob_key IS NOT NULL` filter and the loop's `if not key:
+continue` each cover what the other does, so removing either alone changes nothing. That is
+defence in depth rather than a gap, and it is recorded rather than counted as a kill. One inert
+control survived as it should. Two survivors were real test weaknesses and were fixed: the
+"stalled supersedes ageing" assertion used a backlog too young for the ageing threshold to fire
+either way, so it proved nothing; and nothing asserted that the per-role and per-model
+breakdown respects the same window as the total, which are separate queries and can disagree.
+
+**Not done.** Still nothing rehearsed against real infrastructure — managed Postgres, real S3,
+TLS, secret delivery and network policy are all untested, and this pass changed nothing about
+that. **Nothing polls the alerts**: the predicate exists, the delivery does not — no scheduler,
+no notification channel, no history, no dashboard, and therefore no way to see that a condition
+was firing and stopped. The thresholds themselves are chosen rather than derived: a fifteen
+minute pending age is a guess in the same spirit as S18's placement mappings, and no incident
+has yet suggested a number. There is no object-store *backup mechanism* — `blob-check` verifies
+a restore, while replication or a mirror schedule remains an infrastructure task this
+repository neither performs nor checks that you have performed. Spend has no per-window
+history, so "is this month worse than last?" cannot be asked; nothing attributes cost to a
+feature rather than a model role; and the budget is a report rather than a brake, since nothing
+refuses work when it is exceeded. No blue/green or canary. Promoting a restored database is
+still a manual DSN change.
 
 **Evidence:** Compose explicitly provides local dependencies, not a deployable API/frontend/worker release. /health is liveness only. The reviewed repo has no demonstrated backup/restore, deployment rollback, readiness, worker-lag alerts, or production configuration validation.
 

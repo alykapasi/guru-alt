@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { API_BASE_URL } from "./client";
+import { apiFetch } from "./client";
 
 // ============================================================================
 // Types
@@ -69,7 +69,7 @@ export interface CreatedSubject {
  * value it had never issued and could not attribute to anyone.
  */
 export async function createGoalSession(): Promise<string> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/onboarding/goal-sessions`, {
+  const res = await apiFetch(`/api/v1/onboarding/goal-sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
   });
@@ -86,7 +86,7 @@ export async function* streamGoalTurn(
   body: GoalTurnBody,
   signal?: AbortSignal,
 ): AsyncGenerator<OnboardingTurnEvent> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/onboarding/goal-turns`, {
+  const res = await apiFetch(`/api/v1/onboarding/goal-turns`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -200,7 +200,7 @@ export function useGenerateCurriculum() {
       goal: string;
       sourceIds: string[] | null;
     }): Promise<CurriculumProposal> => {
-      const res = await fetch(`${API_BASE_URL}/api/v1/onboarding/curriculum`, {
+      const res = await apiFetch(`/api/v1/onboarding/curriculum`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ goal, source_ids: sourceIds }),
@@ -221,7 +221,7 @@ export function useCommitSubject() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (payload: SubjectCommitPayload): Promise<CreatedSubject> => {
-      const res = await fetch(`${API_BASE_URL}/api/v1/subjects/commit`, {
+      const res = await apiFetch(`/api/v1/subjects/commit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),

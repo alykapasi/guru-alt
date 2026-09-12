@@ -72,6 +72,22 @@ def production_problems(settings: Settings) -> list[str]:
     if not settings.openrouter_api_key and not settings.anthropic_api_key:
         problems.append("no model provider key is set (GURU_OPENROUTER_API_KEY/ANTHROPIC_API_KEY)")
 
+    # Auth (S21). The development sign-in seam issues a session for the dev learner with no
+    # credential at all, so leaving it on in production is not a weak password — it is no
+    # password, for anybody who finds the endpoint.
+    if settings.dev_auto_login:
+        problems.append(
+            "GURU_DEV_AUTO_LOGIN is on — /auth/dev-login issues a session with no credential"
+        )
+    # A session cookie without Secure is sent over plain HTTP, where anything on the path can
+    # read it and replay it. The dev default is off because the dev server has no TLS.
+    if not settings.session_cookie_secure:
+        problems.append("GURU_SESSION_COOKIE_SECURE is off — the session cookie would cross HTTP")
+    # SameSite=None removes the browser's own cross-site protection, so it is only ever correct
+    # alongside Secure and a deliberate cross-site deployment.
+    if settings.session_cookie_samesite == "none" and not settings.session_cookie_secure:
+        problems.append("GURU_SESSION_COOKIE_SAMESITE=none requires GURU_SESSION_COOKIE_SECURE")
+
     return problems
 
 

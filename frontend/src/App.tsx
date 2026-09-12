@@ -1,8 +1,10 @@
 import { BrowserRouter, Navigate, Route, Routes, useParams } from "react-router-dom";
 import { PageShell } from "./components/PageShell";
+import { RequireLearner } from "./components/RequireLearner";
 import { ChatShell } from "./components/chat/ChatShell";
 import { SessionShell } from "./components/lessons/SessionShell";
 import { Landing } from "./pages/Landing";
+import { SignIn } from "./pages/SignIn";
 import { Chat } from "./pages/Chat";
 import { ChatIndex } from "./pages/ChatIndex";
 import { Lessons } from "./pages/Lessons";
@@ -32,21 +34,26 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<Landing />} />
-        <Route path="/app/chat" element={<ChatShell />}>
-          <Route index element={<ChatIndex />} />
-          <Route path=":conversationId" element={<ChatRoute />} />
-        </Route>
-        <Route path="/app/lessons/session" element={<SessionShell />}>
-          <Route path=":conversationId" element={<SessionRoute />} />
-        </Route>
-        <Route path="/app" element={<PageShell />}>
-          <Route index element={<Navigate to="chat" replace />} />
-          <Route path="lessons" element={<Lessons />} />
-          <Route path="dashboard" element={<Dashboard />} />
-          <Route path="uploads" element={<Uploads />} />
-          <Route path="notes" element={<Notes />} />
-          <Route path="notes/:topicId" element={<NoteView />} />
-          <Route path="subjects/new" element={<SubjectWizard />} />
+        <Route path="/signin" element={<SignIn />} />
+        {/* Everything under /app needs a learner. The API refuses an unauthenticated request
+            regardless; this is what keeps a signed-out browser off a shell of failed calls. */}
+        <Route element={<RequireLearner />}>
+          <Route path="/app/chat" element={<ChatShell />}>
+            <Route index element={<ChatIndex />} />
+            <Route path=":conversationId" element={<ChatRoute />} />
+          </Route>
+          <Route path="/app/lessons/session" element={<SessionShell />}>
+            <Route path=":conversationId" element={<SessionRoute />} />
+          </Route>
+          <Route path="/app" element={<PageShell />}>
+            <Route index element={<Navigate to="chat" replace />} />
+            <Route path="lessons" element={<Lessons />} />
+            <Route path="dashboard" element={<Dashboard />} />
+            <Route path="uploads" element={<Uploads />} />
+            <Route path="notes" element={<Notes />} />
+            <Route path="notes/:topicId" element={<NoteView />} />
+            <Route path="subjects/new" element={<SubjectWizard />} />
+          </Route>
         </Route>
       </Routes>
     </BrowserRouter>

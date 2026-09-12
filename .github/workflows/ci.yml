@@ -79,6 +79,35 @@ jobs:
       - name: Test
         run: uv run poe test
 
+  # The frontend's typed client is generated from the backend's OpenAPI document, so the two
+  # are a contract with two sides and, until now, no gate: a backend change that removed a
+  # field or renamed a route could merge while the frontend kept compiling against the shape
+  # that used to be there. This regenerates the types and fails on any difference (S58).
+  contract:
+    name: api contract
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # No database and no server: the document comes from the app object, which is what lets
+      # this be a check rather than something somebody has to remember to run.
+      - name: Frontend types match the API
+        run: uv run poe api-contract
+
   frontend:
     name: frontend lint · test · build
     runs-on: ubuntu-latest

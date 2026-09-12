@@ -4,10 +4,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from httpx import AsyncClient
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import DEV_LEARNER_HANDLE
 from app.learning.activity import momentum_trend, streak_days
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
@@ -237,14 +235,10 @@ async def test_mastery_endpoint_round_trip(
 
 
 async def test_activity_endpoint_reflects_seeded_events(
-    api_client: AsyncClient, db_session: AsyncSession
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
 ) -> None:
-    # Trigger the dev learner's get-or-create seam, then attach events to that same learner.
-    await api_client.get(f"{API}/profile")
-    learner_id = await db_session.scalar(
-        select(Learner.id).where(Learner.handle == DEV_LEARNER_HANDLE)
-    )
-    db_session.add(LearningEvent(learner_id=learner_id, event_type="observation", payload={}))
+    # Events attached to the learner the client is signed in as, so the endpoint sees them.
+    db_session.add(LearningEvent(learner_id=api_learner.id, event_type="observation", payload={}))
     await db_session.flush()
 
     r = await api_client.get(f"{API}/activity")

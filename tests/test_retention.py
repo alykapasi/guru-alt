@@ -13,7 +13,6 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_learner
 from app.core.config import get_settings
 from app.core.db import Base
 from app.llm.registry import fake_llm_client
@@ -81,9 +80,9 @@ async def test_the_policy_is_published_not_just_documented(api_client: AsyncClie
 
 
 async def test_an_export_contains_the_learners_own_content(
-    api_client: AsyncClient, db_session: AsyncSession
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
 ) -> None:
-    learner = await get_current_learner(db_session)
+    learner = api_learner
     conversation = Conversation(learner_id=learner.id)
     db_session.add(conversation)
     await db_session.flush()
@@ -103,10 +102,10 @@ async def test_an_export_contains_the_learners_own_content(
 
 
 async def test_an_export_leaves_out_embeddings(
-    api_client: AsyncClient, db_session: AsyncSession
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
 ) -> None:
     """Thousands of floats per row, meaningless outside the space that produced them (S50)."""
-    learner = await get_current_learner(db_session)
+    learner = api_learner
     db_session.add(
         Memory(
             learner_id=learner.id,

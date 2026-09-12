@@ -15,13 +15,12 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import DEV_LEARNER_HANDLE, get_llm_client
+from app.api.deps import get_llm_client
 from app.api.v1.chat import TurnFlow, _phase_after
 from app.llm.providers.fake import FakeTurn
 from app.llm.registry import fake_llm_client
 from app.main import app
 from app.models.chat import Conversation, ConversationPhase
-from app.models.learner import Learner
 
 API = "/api/v1"
 
@@ -34,13 +33,8 @@ def fake_llm() -> Iterator[None]:
     app.dependency_overrides.pop(get_llm_client, None)
 
 
-async def _dev_conversation(session: AsyncSession, api_client: AsyncClient) -> str:
-    learner = await session.scalar(
-        Learner.__table__.select().where(Learner.handle == DEV_LEARNER_HANDLE)
-    )
-    if learner is None:
-        session.add(Learner(handle=DEV_LEARNER_HANDLE))
-        await session.commit()
+async def _dev_conversation(api_client: AsyncClient) -> str:
+    """A conversation owned by whoever `api_client` is signed in as (S21)."""
     r = await api_client.post(f"{API}/conversations", json={})
     return r.json()["id"]
 
@@ -95,7 +89,7 @@ def test_a_tutor_or_agentic_turn_never_proposes_a_goal() -> None:
 async def test_a_gate_turn_records_a_pending_proposal(
     api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
 ) -> None:
-    conversation_id = await _dev_conversation(db_session, api_client)
+    conversation_id = await _dev_conversation(api_client)
 
     await api_client.post(
         f"{API}/conversations/{conversation_id}/messages",
@@ -112,7 +106,7 @@ async def test_an_agentic_turn_on_a_goalless_conversation_is_not_a_proposal(
     api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
 ) -> None:
     """The defect, end to end: no goal, assistant spoke last, and still not a proposal."""
-    conversation_id = await _dev_conversation(db_session, api_client)
+    conversation_id = await _dev_conversation(api_client)
 
     await api_client.post(
         f"{API}/conversations/{conversation_id}/messages",
@@ -129,7 +123,7 @@ async def test_an_agentic_turn_on_a_goalless_conversation_is_not_a_proposal(
 async def test_the_phase_is_exposed_so_a_reload_can_read_it(
     api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
 ) -> None:
-    conversation_id = await _dev_conversation(db_session, api_client)
+    conversation_id = await _dev_conversation(api_client)
     await api_client.post(
         f"{API}/conversations/{conversation_id}/messages",
         json={"content": "search my notes", "mode": "agentic"},
@@ -145,7 +139,7 @@ async def test_the_phase_is_exposed_so_a_reload_can_read_it(
 async def test_a_new_conversation_starts_with_nothing_pending(
     api_client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    conversation_id = await _dev_conversation(db_session, api_client)
+    conversation_id = await _dev_conversation(api_client)
 
     listed = (await api_client.get(f"{API}/conversations")).json()
     row = next(c for c in listed if c["id"] == conversation_id)

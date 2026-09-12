@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { API_BASE_URL } from "./client";
+import { apiFetch } from "./client";
 
 // ============================================================================
 // Types (mirror app/schemas/note.py)
@@ -47,7 +47,7 @@ export interface NoteRevisionSource {
  * so callers (e.g. NoteView's edit-conflict banner) can surface the backend's own user-facing
  * message instead of a generic "request failed". */
 async function jfetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}/api/v1${path}`, {
+  const res = await apiFetch(`/api/v1${path}`, {
     headers: { "Content-Type": "application/json" },
     ...init,
   });

@@ -41,6 +41,15 @@ class BlobStore(Protocol):
         """Remove ``key`` (idempotent — missing keys are not an error)."""
         ...
 
+    async def exists(self, key: str) -> bool:
+        """Whether anything is stored at ``key``.
+
+        A metadata lookup, not a read: the caller asking this (S60's integrity check) walks
+        every referenced key, and answering with ``get`` would download the corpus to learn
+        that it is still there.
+        """
+        ...
+
     async def presigned_url(self, key: str, *, expires_in: int = 3600) -> str:
         """A time-limited URL to fetch ``key`` directly (for citations / client download)."""
         ...

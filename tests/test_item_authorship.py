@@ -12,7 +12,6 @@ import uuid
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_learner
 from app.models.assessment import Item, ItemKC, ItemOrigin, ItemType
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
@@ -63,7 +62,7 @@ async def _item(
 
 
 async def test_an_item_a_learner_writes_is_theirs_not_the_banks(
-    api_client: AsyncClient, db_session: AsyncSession
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
 ) -> None:
     kc = await _kc(db_session)
     await db_session.commit()
@@ -82,7 +81,7 @@ async def test_an_item_a_learner_writes_is_theirs_not_the_banks(
     assert r.json()["origin"] == ItemOrigin.LEARNER
     item = await db_session.get(Item, uuid.UUID(r.json()["id"]))
     assert item is not None
-    learner = await get_current_learner(db_session)
+    learner = api_learner
     assert item.author_learner_id == learner.id
 
 

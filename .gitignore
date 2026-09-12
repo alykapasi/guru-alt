@@ -1,5 +1,10 @@
 # Python-generated files
 __pycache__/
+
+# Mutation-testing scratch: the harness writes <file>.bak beside the file it mutates and
+# moves it back afterwards. A run interrupted between the two leaves one behind, and one was
+# committed by a `git add -A` before this line existed.
+*.bak
 *.py[cod]
 *$py.class
 *.so
