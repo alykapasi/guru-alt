@@ -1,8 +1,9 @@
 import { useEffect, useRef } from "react";
 import { MessageBlock } from "./MessageBlock";
 import { ToolCallChip } from "./ToolCallChip";
+import { CheckResultCard } from "./CheckResultCard";
 import type { components } from "../../api/schema";
-import type { Citation } from "../../api/sse";
+import type { CheckResult, Citation } from "../../api/sse";
 import type { PendingTurn } from "../../hooks/useChatConversation";
 
 type Message = components["schemas"]["MessageRead"];
@@ -36,13 +37,18 @@ export function MessageList({
         </p>
       )}
       {messages.map((m) => (
-        <MessageBlock
-          key={m.id}
-          role={m.role}
-          content={m.content}
-          citations={m.citations as unknown as Citation[]}
-          onCitationClick={onCitationClick}
-        />
+        <div key={m.id} className="flex flex-col gap-3">
+          <MessageBlock
+            role={m.role}
+            content={m.content}
+            citations={m.citations as unknown as Citation[]}
+            onCitationClick={onCitationClick}
+          />
+          {/* Rendered from the transcript rather than from the stream, so it survives a
+              reload and scrolls back with the conversation it belongs to. The turn that
+              reported it is the turn it sits under. */}
+          {m.check_result && <CheckResultCard result={m.check_result as unknown as CheckResult} />}
+        </div>
       ))}
       {pending && (
         <>

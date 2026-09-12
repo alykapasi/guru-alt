@@ -38,6 +38,9 @@ export function useChatConversation(conversationId: string | undefined) {
   const [liveItem, setLiveItem] = useState<ItemEvent | null>(null);
   const [sessionDetail, setSessionDetail] = useState<string | null>(null);
   const [liveAwaitingReply, setLiveAwaitingReply] = useState(false);
+  // What the turn that just ended did to the learner's mastery, if it graded an answer (S15).
+  // Transient by design: it belongs to the turn, not to the transcript, and the next turn
+  // clears it rather than leaving a stale verdict beside a newer question.
 
   // Abort the in-flight turn when this hook goes away. Without it the fetch outlived the
   // component that started it: tokens kept arriving for a conversation nobody was looking at,

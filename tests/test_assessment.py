@@ -313,9 +313,35 @@ async def test_due_reviews_endpoint(
     assert "answer_key" not in due[0]["item"]
 
 
-async def test_due_reviews_endpoint_reuses_an_existing_flashcard(
+async def test_due_reviews_endpoint_reuses_a_flashcard_the_learner_has_not_seen(
     api_client: AsyncClient, db_session: AsyncSession, fake_flashcard_llm: None
 ) -> None:
+    """Reuse is still free where it is honest: an unanswered bank item costs no model call."""
+    (kc,) = await _seed_kcs(db_session)
+    mcq_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
+    body = {"item_type": "flashcard", "stem": "Capital of France?", "kcs": [{"kc_id": str(kc.id)}]}
+    flashcard_id = (await api_client.post(f"{API}/items", json=body)).json()["id"]
+    # The review is due because they answered the MCQ, so the flashcard is still unseen.
+    await api_client.post(f"{API}/items/{mcq_id}/answer", json={"response": {"choice": 1}})
+    state = await db_session.scalar(select(LearnerKCState).where(LearnerKCState.kc_id == kc.id))
+    assert state is not None
+    state.due_at = datetime(2000, 1, 1, tzinfo=UTC)
+    await db_session.commit()
+
+    due = (await api_client.get(f"{API}/reviews/due")).json()
+    assert due[0]["item"]["id"] == flashcard_id
+
+    calls = (await db_session.scalars(select(LLMCall))).all()
+    assert len(calls) == 0
+
+
+async def test_a_review_does_not_re_ask_the_question_it_already_asked(
+    api_client: AsyncClient, db_session: AsyncSession, fake_flashcard_llm: None
+) -> None:
+    """The failure the exposure ordering existed to stop, one bank size later (S14). With a
+    single item the ordering had nothing to choose between, so the delayed check re-asked the
+    exact question the learner had just been told the answer to — and still moved the estimate
+    up. Exhaustion now triggers generation rather than repetition."""
     (kc,) = await _seed_kcs(db_session)
     body = {"item_type": "flashcard", "stem": "Capital of France?", "kcs": [{"kc_id": str(kc.id)}]}
     item_id = (await api_client.post(f"{API}/items", json=body)).json()["id"]
@@ -326,10 +352,12 @@ async def test_due_reviews_endpoint_reuses_an_existing_flashcard(
     await db_session.commit()
 
     due = (await api_client.get(f"{API}/reviews/due")).json()
-    assert due[0]["item"]["id"] == item_id
+    assert due[0]["item"] is not None
+    assert due[0]["item"]["id"] != item_id
 
+    # And it cost exactly one generation, not a repeat of one already paid for.
     calls = (await db_session.scalars(select(LLMCall))).all()
-    assert len(calls) == 0
+    assert len(calls) == 1
 
 
 async def test_due_review_items_caps_item_resolution_at_the_limit(

@@ -14,6 +14,40 @@ export interface ItemEvent {
   kcs: { kc_id: string; weight: number }[];
 }
 
+/** What happened to an answer the learner gave in conversation (S15) — mirrors
+ * app/schemas/chat.py's CheckResultRead.
+ *
+ * Every optional field is optional because the evidence may genuinely not exist, not because
+ * it was inconvenient to fill in: `score` is null where the grader could not tell the
+ * components apart (an MCQ has one outcome, S10), and `failure_kind` is null where nothing
+ * diagnosed it (S09). Rendering has to keep that difference — "we could not tell" and "it was
+ * fine" are not the same thing to show somebody. */
+export interface CheckComponent {
+  kc_id: string;
+  kc_name: string;
+  score: number | null;
+  /** Logit-scale ability before and after this answer — both, so the movement can be shown
+   * as a movement rather than a number with no baseline. See lib/mastery.ts. */
+  prior_ability: number;
+  ability: number;
+  uncertainty: number;
+  failure_kind: string | null;
+  /** The grader's own sentence. Confidence is deliberately not carried: a model's
+   * self-reported confidence is not calibrated, and a number implies it is. */
+  failure_detail: string | null;
+  /** How many *earlier* attempts on this component failed the same way (S09). Null when
+   * nothing was diagnosed, 0 when this is the first time. A count of independent observations
+   * is the one signal here that does not rest on the model being calibrated. */
+  recurrence: number | null;
+}
+
+export interface CheckResult {
+  item_id: string;
+  score: number;
+  correct: boolean;
+  components: CheckComponent[];
+}
+
 /** The literal [N] marker in a message's content, mapped to the chunk it cites — see
  * app/services/turn_common.py's format_grounding/extract_citations. */
 export interface Citation {
@@ -36,6 +70,8 @@ export type TurnEvent =
       item: ItemEvent | null;
       detail: string;
       citations: Citation[];
+      /** Present only on a turn that graded an answer the learner gave in conversation. */
+      check_result: CheckResult | null;
     }
   | {
       type: "awaiting_reply";
@@ -43,6 +79,9 @@ export type TurnEvent =
       detail: string;
       item: ItemEvent | null;
       citations: Citation[];
+      /** Guided practice reports the attempt it just graded here, mid-round — the learner is
+       * about to answer the same question again, which is when it matters most. */
+      check_result: CheckResult | null;
     }
   | { type: "committed"; goal: string; detail: string }
   | { type: "tool_call"; detail: string };

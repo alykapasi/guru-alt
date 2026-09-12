@@ -12,6 +12,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_llm_client
+from app.learning import feedback
+from app.learning.diagnosis import Diagnosis, FailureKind
+from app.learning.grading import GradeResult
 from app.llm.providers import FakeProvider
 from app.llm.providers.fake import FakeTurn
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
@@ -21,10 +24,12 @@ from app.models.assessment import ItemType
 from app.models.chat import Conversation, ConversationPhase, LLMCall, Message
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
+from app.models.learning import LearnerKCState
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.schemas.assessment import ItemCreate, ItemKCRef
 from app.services import assessment as assessment_svc
 from app.services import lesson_plan as lesson_plan_svc
+from app.services.lesson_plan import MASTERY_ABILITY_THRESHOLD, MASTERY_UNCERTAINTY_THRESHOLD
 from app.services.turn_common import TurnEvent
 from app.services.workflow import is_awaiting_reply, run_workflow_turn
 from tests.embedding import FAKE_SPACE
@@ -378,3 +383,150 @@ async def test_a_paused_session_records_the_item_it_is_waiting_on(
     row = next(c for c in listed if c["id"] == conversation_id)
     assert row["phase"] == ConversationPhase.CHATTING
     assert row["active_item_id"] is None
+
+
+# --- what guided practice does with the diagnosis (S09, S10, S15) -------------------------------
+
+
+async def test_the_graded_note_carries_the_repair_the_failure_kind_calls_for() -> None:
+    """Guided practice is where most attempts happen, and it was told only a number — so the
+    surface the learner spends most of their time on made the least of the evidence."""
+    kc_id = uuid.uuid4()
+    note = feedback.teaching_note(
+        GradeResult(
+            score=0.3,
+            correct=False,
+            detail={},
+            diagnoses={kc_id: Diagnosis(kind=FailureKind.CONCEPTUAL, confidence=0.8)},
+        ),
+        {kc_id: "Velocity"},
+        opening="The learner has just attempted that practice question.",
+        closing="",
+    )
+    assert "Re-teach the idea itself" in note
+    assert "do not offer more practice yet" in note
+
+
+async def test_both_flows_describe_one_mistake_the_same_way() -> None:
+    """Plain chat and guided practice reaching different conclusions about one learner's one
+    mistake is the same defect S16 fixed for learner context, in a different place."""
+    kc_id = uuid.uuid4()
+    result = GradeResult(
+        score=0.4,
+        correct=False,
+        detail={},
+        component_scores={kc_id: 0.4},
+        diagnoses={kc_id: Diagnosis(kind=FailureKind.PROCEDURAL, confidence=0.7)},
+    )
+    names = {kc_id: "Velocity"}
+    chat_note = feedback.teaching_note(result, names, opening="X", closing="")
+    practice_note = feedback.teaching_note(result, names, opening="Y", closing="")
+
+    body = feedback.diagnosis_notes(result, names)
+    assert body  # the shared part is non-empty
+    for sentence in body:
+        assert sentence in chat_note
+        assert sentence in practice_note
+    split = feedback.component_split(result, names)
+    assert split is not None and split in chat_note
+
+
+async def test_a_grade_with_nothing_diagnosed_adds_no_repair() -> None:
+    """An MCQ knows an answer was wrong and nothing about why."""
+    note = feedback.teaching_note(
+        GradeResult(score=0.0, correct=False, detail={}),
+        {},
+        opening="The learner has just attempted that practice question.",
+        closing="",
+    )
+    assert "0.00" in note and "not correct" in note
+    for kind in FailureKind:
+        assert kind.value not in note
+
+
+async def test_guided_practice_leaves_the_report_in_the_transcript(
+    db_session: AsyncSession,
+) -> None:
+    """The report has to survive the stream on this flow too (S15). Guided practice is where
+    most attempts happen, so a report that only exists while the socket is open is missing
+    from the place a learner spends most of their time."""
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=RIGHT_GRADE), FakeTurn(text=RESPOND_2)]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice")
+    await _drain(db_session, llm, conv, user_content="sunlight -> sugars", resume=True)
+
+    messages = (
+        await db_session.scalars(
+            select(Message).where(Message.conversation_id == conv.id).order_by(Message.created_at)
+        )
+    ).all()
+    reported = [m for m in messages if m.check_result is not None]
+    assert len(reported) == 1, "exactly the reply that graded the answer carries it"
+    assert reported[0].role == "assistant"
+    assert reported[0].check_result is not None
+    assert reported[0].check_result["correct"] is True
+    assert reported[0].check_result["components"]
+
+
+async def test_the_opening_round_grades_nothing_and_reports_nothing(
+    db_session: AsyncSession,
+) -> None:
+    """The first turn presents a question and has marked no answer, so there is nothing
+    truthful to attach to it."""
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(script=[FakeTurn(text=PRESENT)])
+    await _drain(db_session, llm, conv, user_content="let's practice")
+
+    messages = (
+        await db_session.scalars(select(Message).where(Message.conversation_id == conv.id))
+    ).all()
+    assert messages, "the opening round should have produced a transcript"
+    assert all(m.check_result is None for m in messages)
+
+
+async def test_a_paused_question_the_learner_has_since_outgrown_is_not_resumed(
+    db_session: AsyncSession,
+) -> None:
+    """The failure S17's durability created. A volatile checkpoint could not outlive much, so
+    a paused question was never very stale; a durable one outlives the mastery the learner
+    picked up somewhere else, and resuming then grades an answer to a question the system
+    itself no longer thinks they should be asked."""
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(script=[FakeTurn(text=PRESENT)])
+    await _drain(db_session, llm, conv, user_content="let's practice")
+    assert await is_awaiting_reply(llm, db_session, conv.id, learner_id=conv.learner_id)
+
+    kc = await db_session.scalar(select(KC).where(KC.slug == "photosynthesis"))
+    assert kc is not None
+    db_session.add(
+        LearnerKCState(
+            learner_id=conv.learner_id,
+            kc_id=kc.id,
+            ability=MASTERY_ABILITY_THRESHOLD + 0.5,
+            uncertainty=MASTERY_UNCERTAINTY_THRESHOLD - 0.1,
+        )
+    )
+    await db_session.flush()
+
+    assert not await is_awaiting_reply(llm, db_session, conv.id, learner_id=conv.learner_id)
+    # Discarded rather than re-evaluated on every later turn — and the turn that follows goes
+    # to ordinary chat, the same degradation the gate uses for state that is genuinely gone.
+    assert not await is_awaiting_reply(llm, db_session, conv.id, learner_id=conv.learner_id)
+
+
+async def test_a_paused_question_that_is_still_current_resumes_normally(
+    db_session: AsyncSession,
+) -> None:
+    """The other side of the boundary: revalidation must not become a way to lose a paused
+    exercise somebody is in the middle of."""
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=WRONG_GRADE), FakeTurn(text=RESPOND_1)]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice")
+
+    assert await is_awaiting_reply(llm, db_session, conv.id, learner_id=conv.learner_id)
+    events = await _drain(db_session, llm, conv, user_content="a guess", resume=True)
+    assert any(e.type == "awaiting_reply" for e in events)

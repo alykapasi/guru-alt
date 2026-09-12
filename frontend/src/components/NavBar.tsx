@@ -1,6 +1,7 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   BookOpen,
+  Brain,
   LayoutDashboard,
   LogOut,
   MessageSquare,
@@ -17,6 +18,7 @@ const LINKS = [
   { to: "/app/notes", label: "Notes", icon: BookOpen },
   { to: "/app/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/app/uploads", label: "Uploads", icon: Upload },
+  { to: "/app/memory", label: "Memory", icon: Brain },
 ];
 
 export function NavBar() {

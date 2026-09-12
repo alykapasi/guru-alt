@@ -220,6 +220,79 @@ async def list_memories(
     return result.all()
 
 
+async def correct_memory(
+    session: AsyncSession,
+    llm: LLMClient,
+    learner_id: uuid.UUID,
+    memory_id: uuid.UUID,
+    *,
+    content: str,
+) -> Memory | None:
+    """Replace what is remembered about a learner with what they say is true (S16).
+
+    Erasure was the only correction available, and it is the wrong tool for the common case:
+    most of what goes wrong with an extracted memory is that it is *nearly* right — the right
+    subject, the wrong detail. Deleting it loses the true part, and leaves the extractor free
+    to derive the same wrong thing again from the same history, because a tombstone only
+    suppresses a fact, it does not assert the correction.
+
+    So a correction supersedes rather than overwrites, exactly as an extracted contradiction
+    already does: the old row keeps its text and its embedding and gains a pointer to the new
+    one. Three things follow from that, and each is the reason not to do the simpler thing:
+
+    * The old embedding still recognises the old claim, so a later write-back over the same
+      conversation finds the superseded row's *replacement* to compare against rather than
+      re-creating the mistake.
+    * The correction is visible as a correction. Overwriting ``content`` in place would make
+      the system's belief look like it had always been what the learner just typed, which is
+      the one thing a record of what somebody was told must never do.
+    * A learner asking "why does it think that?" can be answered, because the chain is intact.
+
+    The new text is embedded rather than inheriting the old vector. A corrected memory with its
+    predecessor's embedding is retrieved for the wrong questions and missed for the right ones,
+    which is a subtle version of not having corrected it at all.
+
+    Returns the new memory, or ``None`` when the id is not this learner's, is already deleted,
+    or the text is unchanged.
+    """
+    memory = await session.get(Memory, memory_id)
+    if memory is None or memory.learner_id != learner_id:
+        return None
+    if memory.status != MemoryStatus.CURRENT:
+        return None  # a deleted or already-superseded row is not the one they are looking at
+    corrected = content.strip()
+    if not corrected or corrected == memory.content.strip():
+        return None
+
+    settings = get_settings()
+    space = current_space(llm, dim=settings.embed_dim)
+    embedded = await llm.embed(ModelRole.EMBED, [corrected])
+    if embedded.usage.total_tokens:
+        await log_llm_call(
+            learner_id=learner_id,
+            role=str(ModelRole.EMBED),
+            spec=llm.spec(ModelRole.EMBED),
+            usage=embedded.usage,
+        )
+    replacement = Memory(
+        learner_id=learner_id,
+        # Provenance follows the correction: this came from the learner saying so, not from
+        # the conversation the original was extracted from.
+        conversation_id=None,
+        kind=memory.kind,
+        content=corrected,
+        embedding=embedded.vectors[0],
+        embedding_space=space,
+    )
+    session.add(replacement)
+    await session.flush()
+    memory.status = MemoryStatus.SUPERSEDED
+    memory.superseded_by_id = replacement.id
+    await session.commit()
+    await session.refresh(replacement)
+    return replacement
+
+
 async def delete_memory(session: AsyncSession, learner_id: uuid.UUID, memory_id: uuid.UUID) -> bool:
     """Forget one memory the learner owns. ``False`` (no-op) if missing or not theirs.
 

@@ -114,6 +114,7 @@ async def find_item_for_kc(
     learner_id: uuid.UUID,
     item_type: ItemType | None = None,
     target_difficulty: float | None = None,
+    unseen_only: bool = False,
 ) -> Item | None:
     """The freshest bank item assessing ``kc_id``, if any — reuse before generating a new one.
 
@@ -136,6 +137,14 @@ async def find_item_for_kc(
     Until generation started recording a difficulty this changed nothing — every item in the
     bank sat at the 0.0 default, so every candidate was equidistant from any target and the
     ``created_at`` tiebreak carried the order exactly as before.
+
+    ``unseen_only`` (S14) restricts the search to items this learner has never answered, and
+    returns ``None`` rather than the least-recently-seen one when there are none left. The
+    ordering above makes a revisit a different question *while the bank holds one*; past that
+    it silently goes back to repeating, and repetition is exactly what a delayed check must
+    not be — an answer recalled from the last time it was given measures memory of that
+    exchange, not retention of the component. A caller that asks for unseen can generate
+    instead, which is the only thing that makes exhaustion recoverable.
 
     Scoped to what ``learner_id`` may be assessed with (S33): reuse used to pick up anything
     tagged to the KC, so a question and answer key another learner had written became this
@@ -160,6 +169,8 @@ async def find_item_for_kc(
     )
     if item_type is not None:
         stmt = stmt.where(Item.item_type == item_type)
+    if unseen_only:
+        stmt = stmt.where(last_answered.is_(None))
     order = [last_answered.asc().nullsfirst()]
     if target_difficulty is not None:
         order.append(func.abs(Item.difficulty - target_difficulty))

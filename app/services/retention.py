@@ -62,6 +62,12 @@ RETENTION: tuple[StoreRetention, ...] = (
         "authenticating as it at once — a session that outlived its owner would be a live "
         "credential for an account that no longer exists.",
     ),
+    StoreRetention(
+        "password_reset_tokens",
+        "deleted",
+        "Cascades from the learner (S21). A reset token is a bearer credential for an account: "
+        "one that outlived the account would be a way to claim an address nobody owns any more.",
+    ),
     StoreRetention("conversations", "deleted", "Cascades from the learner; messages with it."),
     StoreRetention("messages", "deleted", "Cascades from the conversation."),
     StoreRetention("turns", "deleted", "Cascades from the conversation."),

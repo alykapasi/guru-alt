@@ -4,7 +4,7 @@ Checkpoint-serializable by construction — only Pydantic/primitive fields, neve
 AsyncSession, ORM row, or LLMClient.
 """
 
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from pydantic import BaseModel
 
@@ -63,6 +63,16 @@ class WorkflowState(TypedDict):
     last_message: str  # this round's full presented/feedback text (present's or respond's)
     score: float  # filled by grade
     correct: bool  # filled by grade
+    # The learner-facing report for the attempt `grade` just marked, as a plain JSON dict
+    # (``CheckResultRead.model_dump(mode="json")``) — the same checkpoint-serializable-
+    # primitives rule as ``item_id``. NotRequired rather than defaulted: it is genuinely
+    # absent on the opening round, which presents a question and has graded nothing, and on
+    # any checkpoint written before this field existed (S17 made those durable).
+    check_result: NotRequired[dict[str, Any]]
+    # The graded note handed to ``respond`` — the per-component split plus the repair the
+    # failure kind calls for (``app.learning.feedback``). Absent on a checkpoint written
+    # before this field existed, which is why ``respond`` reads it with ``.get``.
+    diagnosis_note: NotRequired[str]
     usage: Usage  # this call's LLM usage (present's or respond's — grade's own call self-logs)
     rounds: int  # graded attempts completed so far
     max_rounds: int

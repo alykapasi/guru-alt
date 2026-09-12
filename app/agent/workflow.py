@@ -28,10 +28,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import checkpointing
 from app.agent.state import WorkflowState
+from app.learning import feedback, mastery
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.schemas.assessment import AnswerSubmit
 from app.services import assessment as assessment_svc
+from app.services import knowledge as knowledge_svc
+from app.services.turn_common import build_check_result
 
 __all__ = ["WorkflowState", "build_workflow_graph", "workflow_config"]
 
@@ -73,7 +76,13 @@ def build_workflow_graph(
         item = await assessment_svc.get_item(session, uuid.UUID(state["item_id"]))
         if item is None:
             return {"score": 0.0, "correct": False, "rounds": state["rounds"] + 1}
-        result, _states = await assessment_svc.answer_item(
+        kc_ids = [link.kc_id for link in item.kc_links]
+        # Read before grading: a posterior on its own gives the learner no baseline, and the
+        # report they see is a movement (S15).
+        priors = await mastery.estimate_kcs(session, learner_id, kc_ids)
+        # Counted before the attempt is recorded, so the number means "times before this one".
+        prior_kinds = await mastery.prior_failure_kinds(session, learner_id, kc_ids)
+        result, states = await assessment_svc.answer_item(
             session,
             learner_id,
             item,
@@ -83,11 +92,43 @@ def build_workflow_graph(
             AnswerSubmit(response={"text": state["response_text"]}, hints_used=state["rounds"]),
             llm=llm,
         )
-        return {"score": result.score, "correct": result.correct, "rounds": state["rounds"] + 1}
+        kcs = await knowledge_svc.get_kcs(session, kc_ids)
+        return {
+            "score": result.score,
+            "correct": result.correct,
+            # Dumped to plain JSON: this rides the checkpointer (S17), same
+            # serializable-primitives rule as ``item_id``.
+            "check_result": build_check_result(
+                item_id=item.id,
+                result=result,
+                priors=priors,
+                states=states,
+                kcs=kcs,
+                prior_kinds=prior_kinds,
+            ).model_dump(mode="json"),
+            # The diagnosis picks the teaching move here exactly as it does in plain chat,
+            # through the same module (S09). Guided practice is where most attempts happen, and
+            # it was told only a number — so the surface the learner spends most of their time
+            # on made the least of the evidence the grader produced.
+            "diagnosis_note": feedback.teaching_note(
+                result,
+                {kc.id: kc.name for kc in kcs},
+                opening="The learner has just attempted that practice question.",
+                closing="",
+                prior_kinds=prior_kinds,
+            ).strip(),
+            "rounds": state["rounds"] + 1,
+        }
 
     async def respond(state: WorkflowState) -> dict[str, Any]:
         outcome = "correct" if state["correct"] else "incorrect"
-        note = f"The learner's last attempt scored {state['score']:.2f} ({outcome})."
+        # The graded note now carries the per-component split and the repair the failure kind
+        # calls for, built by the same module plain chat uses. The bare-score line remains the
+        # fallback for a round that graded nothing (a deleted item) and for checkpoints
+        # written before this field existed.
+        note = state.get("diagnosis_note") or (
+            f"The learner's last attempt scored {state['score']:.2f} ({outcome})."
+        )
         continuing = not (state["correct"] or state["rounds"] >= state["max_rounds"])
         instruction = (
             "Give brief, encouraging feedback on the attempt above, referencing what they got "

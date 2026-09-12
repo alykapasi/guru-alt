@@ -44,6 +44,51 @@ class ConversationRead(BaseModel):
     created_at: datetime
 
 
+class CheckComponentRead(BaseModel):
+    """One knowledge component of a graded conversational answer, as the learner sees it.
+
+    Every optional field is optional because the evidence genuinely may not exist, not because
+    it was inconvenient to fill in. ``score`` is null when the grader could not tell the
+    components apart — an MCQ has one outcome (S10) — and ``failure_kind`` is null when nothing
+    diagnosed it, which is every deterministic path (S09). Rendering must keep that difference:
+    "we could not tell" and "it was fine" are not the same thing to say to a learner.
+    """
+
+    kc_id: uuid.UUID
+    kc_name: str
+    score: float | None = None
+    # Ability on the logit scale, before and after this answer. Both, because a posterior on
+    # its own gives the learner no baseline to read it against.
+    prior_ability: float
+    ability: float
+    uncertainty: float
+    failure_kind: str | None = None
+    # The grader's own sentence about what went wrong. Shown as written rather than
+    # paraphrased; confidence is deliberately not exposed, because a language model's
+    # self-reported confidence is not calibrated and a number implies it is (S09).
+    failure_detail: str | None = None
+    # How many *earlier* attempts on this component failed the same way. Null when nothing was
+    # diagnosed or nothing matches; 0 when this is the first time. It is here rather than only
+    # in the tutor's instruction because a learner is owed the same distinction the teaching
+    # makes: a slip and a settled wrong idea look identical on one attempt, and knowing which
+    # one this is changes what they should do about it.
+    recurrence: int | None = None
+
+
+class CheckResultRead(BaseModel):
+    """What happened to an answer the learner gave in conversation (S15).
+
+    Until this existed, a conversational answer was graded, updated mastery, rescheduled the
+    card and revised the plan — and the learner was told none of it. The tutor's reply was the
+    only evidence anything had happened, and a reply is not a record.
+    """
+
+    item_id: uuid.UUID
+    score: float
+    correct: bool
+    components: list[CheckComponentRead]
+
+
 class MessageRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -53,6 +98,11 @@ class MessageRead(BaseModel):
     model: str | None
     # Each entry: {"marker": int, "chunk_id": str, "source_id": str} — see Message.citations.
     citations: list[dict]
+    # The grade this reply reported, for the turns that marked an answer (S15). Null on every
+    # other message, and on every message written before this was stored — an older transcript
+    # legitimately has no report, and inventing one from the event log would be reconstructing
+    # a statement rather than recalling it.
+    check_result: CheckResultRead | None = None
     created_at: datetime
 
 

@@ -6,17 +6,23 @@ modules importing each other.
 
 import re
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.untrusted import as_untrusted
+from app.learning.diagnosis import FailureKind
+from app.learning.grading import GradeResult
+from app.learning.mastery import Estimate
 from app.llm.types import ChatMessage, ChatRole, Usage
 from app.models.chat import Message
+from app.models.knowledge import KC
+from app.models.learning import LearnerKCState
 from app.rag.retrieval import RetrievalHit
 from app.schemas.assessment import ItemRead
+from app.schemas.chat import CheckComponentRead, CheckResultRead
 
 _CITATION_MARKER = re.compile(r"\[(\d+)\]")
 
@@ -34,6 +40,7 @@ async def add_message(
     content: str,
     model: str | None = None,
     citations: list[dict] | None = None,
+    check_result: CheckResultRead | None = None,
 ) -> Message:
     message = Message(
         conversation_id=conversation_id,
@@ -41,6 +48,9 @@ async def add_message(
         content=content,
         model=model,
         citations=citations or [],
+        # Dumped here rather than by each caller, so the two flows cannot store the same
+        # report in two shapes.
+        check_result=check_result.model_dump(mode="json") if check_result is not None else None,
     )
     session.add(message)
     await session.flush()
@@ -107,3 +117,65 @@ class TurnEvent:
     # Citations grounding this turn's reply, if any — set on "done" for subject-scoped
     # conversations only. See extract_citations above.
     citations: list[dict] = field(default_factory=list)
+    # What happened to an answer the learner gave in conversation, when this turn graded one
+    # (S15). Set on "done". The tutor's reply already reflects the grade; this is the part the
+    # learner can check it against, because a reply is not a record.
+    check_result: CheckResultRead | None = None
+
+
+def build_check_result(
+    *,
+    item_id: uuid.UUID,
+    result: GradeResult,
+    priors: Mapping[uuid.UUID, Estimate],
+    states: Sequence[LearnerKCState],
+    kcs: Sequence[KC],
+    prior_kinds: Mapping[uuid.UUID, Mapping[FailureKind, int]] | None = None,
+) -> CheckResultRead:
+    """The grade, in the form the learner can read (S15).
+
+    Shared by every flow that grades an answer, for the same reason the teaching instruction is
+    (``app.learning.feedback``): one mistake must not be described two ways depending on which
+    button the learner pressed.
+
+    A component the grader could not score separately carries ``None`` rather than the item's
+    aggregate — copying the aggregate down would present one verdict as several measurements,
+    which is the exact error S10 exists to stop. ``none`` and ``incomplete`` carry no diagnosis,
+    because "we could not tell" and "it was fine" are different things to say to somebody about
+    their own work (S09), and the grader's confidence is not carried at all: a language model's
+    self-reported confidence is not calibrated, and a number implies it is.
+    """
+    posterior = {state.kc_id: state for state in states}
+    components: list[CheckComponentRead] = []
+    for kc in kcs:
+        prior = priors.get(kc.id)
+        state = posterior.get(kc.id)
+        diagnosis = result.diagnoses.get(kc.id)
+        actionable = diagnosis is not None and diagnosis.actionable
+        components.append(
+            CheckComponentRead(
+                kc_id=kc.id,
+                kc_name=kc.name,
+                score=result.component_scores.get(kc.id),
+                prior_ability=prior.ability if prior is not None else 0.0,
+                ability=state.ability if state is not None else 0.0,
+                uncertainty=state.uncertainty if state is not None else 1.0,
+                failure_kind=diagnosis.kind.value if actionable and diagnosis else None,
+                failure_detail=(
+                    diagnosis.evidence if actionable and diagnosis and diagnosis.evidence else None
+                ),
+                # Counted *before* this attempt was recorded, so it reads as "times before
+                # this one" — the same number the teaching instruction branched on.
+                recurrence=(
+                    (prior_kinds or {}).get(kc.id, {}).get(diagnosis.kind, 0)
+                    if actionable and diagnosis
+                    else None
+                ),
+            )
+        )
+    return CheckResultRead(
+        item_id=item_id,
+        score=result.score,
+        correct=result.correct,
+        components=components,
+    )

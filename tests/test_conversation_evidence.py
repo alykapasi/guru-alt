@@ -16,9 +16,11 @@ import uuid
 from collections.abc import AsyncIterator, Sequence
 
 import pytest
+from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_llm_client
 from app.api.v1.chat import TurnFlow, _open_check_id, _phase_after
 from app.learning import conversation_evidence, item_generation
 from app.learning.conversation_evidence import TurnIntent, classify_intent, parse_intent
@@ -27,6 +29,7 @@ from app.learning.grading import GradeResult
 from app.llm.providers import FakeProvider
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
 from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ModelRole, ToolDef, Usage
+from app.main import app
 from app.models.assessment import Item, ItemType
 from app.models.chat import Conversation, ConversationPhase
 from app.models.knowledge import KC, Subject, Topic
@@ -34,6 +37,7 @@ from app.models.learner import Learner
 from app.models.learning import LearningEvent
 from app.schemas.assessment import ItemRead
 from app.services import chat as chat_svc
+from app.services import knowledge as knowledge_svc
 from app.services import lesson_plan as lesson_plan_svc
 from app.services.chat import CheckOutcome, _check_note, _feedback_note
 from app.services.turn_common import TurnEvent
@@ -618,6 +622,16 @@ def test_the_tutor_is_told_the_question_that_is_actually_on_the_table() -> None:
     assert "do not swap in a different question" in note
 
 
+def _outcome(item: Item, result: GradeResult) -> CheckOutcome:
+    """A graded check with no mastery movement attached.
+
+    Every test here is about the *prompt* the grade produces, and the prior and posterior
+    states only feed the learner-facing report (S15). Empty rather than fabricated: a made-up
+    movement in a fixture is the kind of thing that later reads as a fact about the estimator.
+    """
+    return CheckOutcome(item=item, result=result, priors={}, states=[], prior_kinds={})
+
+
 def test_a_diagnosis_becomes_an_instruction_about_what_to_teach() -> None:
     """S09 defined the vocabulary so code could branch on it. This is the branch: the same
     score produces different teaching depending on why the answer fell short."""
@@ -625,9 +639,9 @@ def test_a_diagnosis_becomes_an_instruction_about_what_to_teach() -> None:
     item = Item(item_type=ItemType.SHORT, stem="q")
 
     conceptual = _feedback_note(
-        CheckOutcome(
-            item=item,
-            result=GradeResult(
+        _outcome(
+            item,
+            GradeResult(
                 score=0.3,
                 correct=False,
                 detail={},
@@ -637,9 +651,9 @@ def test_a_diagnosis_becomes_an_instruction_about_what_to_teach() -> None:
         {kc_id: "Velocity"},
     )
     procedural = _feedback_note(
-        CheckOutcome(
-            item=item,
-            result=GradeResult(
+        _outcome(
+            item,
+            GradeResult(
                 score=0.3,
                 correct=False,
                 detail={},
@@ -660,7 +674,7 @@ def test_a_grade_with_nothing_diagnosed_asserts_no_reason() -> None:
     way — inventing a reason would have the tutor repair a misconception nobody diagnosed."""
     item = Item(item_type=ItemType.MCQ, stem="q")
     note = _feedback_note(
-        CheckOutcome(item=item, result=GradeResult(score=0.0, correct=False, detail={})),
+        _outcome(item, GradeResult(score=0.0, correct=False, detail={})),
         {},
     )
     assert "0.00" in note and "not correct" in note
@@ -678,9 +692,9 @@ def test_a_diagnosis_with_nothing_to_repair_produces_no_teaching_instruction(
     the strength of a learner having written nothing (S09)."""
     kc_id = uuid.uuid4()
     note = _feedback_note(
-        CheckOutcome(
-            item=Item(item_type=ItemType.SHORT, stem="q"),
-            result=GradeResult(
+        _outcome(
+            Item(item_type=ItemType.SHORT, stem="q"),
+            GradeResult(
                 score=0.0,
                 correct=False,
                 detail={},
@@ -702,9 +716,9 @@ def test_an_unverified_quote_is_not_put_in_the_learners_mouth() -> None:
 
     def note(verbatim: bool) -> str:
         return _feedback_note(
-            CheckOutcome(
-                item=item,
-                result=GradeResult(
+            _outcome(
+                item,
+                GradeResult(
                     score=0.2,
                     correct=False,
                     detail={},
@@ -770,3 +784,359 @@ def test_a_turn_that_leaves_a_question_says_it_is_waiting_for_an_answer() -> Non
 def test_the_gate_runs_on_the_cheap_tier() -> None:
     """Classification gates a SMART grading call, so it must not cost one."""
     assert conversation_evidence.CHECK_ROLE is ModelRole.FAST
+
+
+# --- what the learner is told (S15) ------------------------------------------------------------
+
+
+async def test_a_graded_answer_is_reported_back_with_the_mastery_it_moved(
+    db_session: AsyncSession,
+) -> None:
+    """Before this, a conversational answer was graded, updated mastery, rescheduled the card
+    and revised the plan — and the learner was told none of it. The tutor's reply was the only
+    evidence anything had happened, and a reply is not a record."""
+    learner, conversation, item = await _open_check(db_session)
+    client, _ = _role_client(fast='{"intent": "attempt"}', smart=GRADE_REPLY)
+
+    _open, outcome = await chat_svc._resolve_check(
+        db_session,
+        client,
+        learner_id=learner.id,
+        conversation=conversation,
+        user_content="Velocity is speed with a direction.",
+    )
+    assert outcome is not None
+    kcs = await knowledge_svc.get_kcs(db_session, [link.kc_id for link in outcome.item.kc_links])
+    result = chat_svc._check_result(outcome, kcs)
+
+    assert result.item_id == item.id
+    assert result.score == pytest.approx(0.9)
+    assert result.correct is True
+    assert len(result.components) == len(item.kc_links)
+    component = result.components[0]
+    assert component.kc_name
+    # The movement, not just the destination: a posterior on its own gives the learner no
+    # baseline to read it against.
+    assert component.prior_ability == pytest.approx(0.0)
+    assert component.ability > component.prior_ability
+
+
+def test_a_component_the_grader_could_not_score_separately_reports_no_score() -> None:
+    """Copying the item's aggregate down would present one verdict as several measurements,
+    which is the exact error S10 exists to stop."""
+    kc = KC(id=uuid.uuid4(), topic_id=uuid.uuid4(), slug="v", name="Velocity")
+    outcome = _outcome(
+        Item(id=uuid.uuid4(), item_type=ItemType.MCQ, stem="q"),
+        GradeResult(score=0.0, correct=False, detail={}),
+    )
+    result = chat_svc._check_result(outcome, [kc])
+
+    assert result.components[0].score is None
+    assert result.components[0].failure_kind is None
+
+
+def test_a_component_the_grader_did_score_reports_its_own_number() -> None:
+    kc_a = KC(id=uuid.uuid4(), topic_id=uuid.uuid4(), slug="a", name="Projection")
+    kc_b = KC(id=uuid.uuid4(), topic_id=uuid.uuid4(), slug="b", name="Least squares")
+    outcome = _outcome(
+        Item(id=uuid.uuid4(), item_type=ItemType.SHORT, stem="q"),
+        GradeResult(
+            score=0.5,
+            correct=False,
+            detail={},
+            component_scores={kc_a.id: 1.0, kc_b.id: 0.0},
+        ),
+    )
+    result = chat_svc._check_result(outcome, [kc_a, kc_b])
+
+    assert {c.kc_name: c.score for c in result.components} == {
+        "Projection": pytest.approx(1.0),
+        "Least squares": pytest.approx(0.0),
+    }
+
+
+@pytest.mark.parametrize("kind", [FailureKind.NONE, FailureKind.INCOMPLETE])
+def test_a_kind_that_names_no_failure_is_reported_as_no_diagnosis(kind: FailureKind) -> None:
+    """ "We could not tell" and "it was fine" are both wrong things to render as a diagnosis —
+    one because nothing was shown, the other because there is nothing to fix."""
+    kc = KC(id=uuid.uuid4(), topic_id=uuid.uuid4(), slug="v", name="Velocity")
+    outcome = _outcome(
+        Item(id=uuid.uuid4(), item_type=ItemType.SHORT, stem="q"),
+        GradeResult(
+            score=0.0,
+            correct=False,
+            detail={},
+            diagnoses={kc.id: Diagnosis(kind=kind, confidence=0.7, evidence="something")},
+        ),
+    )
+    assert chat_svc._check_result(outcome, [kc]).components[0].failure_kind is None
+
+
+def test_a_real_diagnosis_reaches_the_learner_without_its_confidence() -> None:
+    """A language model's self-reported confidence is not calibrated, and putting a number on
+    it tells the learner it is (S09)."""
+    kc = KC(id=uuid.uuid4(), topic_id=uuid.uuid4(), slug="v", name="Velocity")
+    outcome = _outcome(
+        Item(id=uuid.uuid4(), item_type=ItemType.SHORT, stem="q"),
+        GradeResult(
+            score=0.2,
+            correct=False,
+            detail={},
+            diagnoses={
+                kc.id: Diagnosis(
+                    kind=FailureKind.PROCEDURAL,
+                    confidence=0.81,
+                    evidence="The method was right; a sign was dropped.",
+                )
+            },
+        ),
+    )
+    component = chat_svc._check_result(outcome, [kc]).components[0]
+
+    assert component.failure_kind == "procedural"
+    assert component.failure_detail == "The method was right; a sign was dropped."
+    assert "0.81" not in component.model_dump_json()
+
+
+def _frames(text: str) -> list[dict]:
+    return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: ")]
+
+
+async def test_the_graded_result_reaches_the_client_on_the_stream(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """End to end: the report is only worth building if it leaves the server."""
+    kc = await _kc(db_session)
+    item, _ = await item_generation.generate_short_item(
+        db_session, fake_llm_client(SHORT_REPLY), kc
+    )
+    assert item is not None
+    conversation = Conversation(
+        learner_id=api_learner.id,
+        # A committed goal is what routes the turn to the tutor rather than the refinement
+        # gate — the check only exists on that flow.
+        goal="Understand velocity",
+        phase=ConversationPhase.AWAITING_ANSWER,
+        active_item_id=item.id,
+    )
+    db_session.add(conversation)
+    await db_session.commit()
+
+    client, _ = _role_client(fast='{"intent": "attempt"}', smart=GRADE_REPLY)
+    app.dependency_overrides[get_llm_client] = lambda: client
+    try:
+        r = await api_client.post(
+            f"/api/v1/conversations/{conversation.id}/messages",
+            json={"content": "Velocity is speed with a direction."},
+        )
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+
+    assert r.status_code == 200, r.text
+    frames = _frames(r.text)
+    done = [f for f in frames if f["type"] == "done"]
+    assert done, f"no done frame: {frames}"
+    assert done[0]["check_result"] is not None
+    assert done[0]["check_result"]["item_id"] == str(item.id)
+    assert done[0]["check_result"]["correct"] is True
+
+
+async def test_a_turn_that_grades_nothing_carries_no_result(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """Null on every turn that did not grade an answer, which is most of them."""
+    conversation = Conversation(learner_id=api_learner.id, goal="Understand velocity")
+    db_session.add(conversation)
+    await db_session.commit()
+
+    client, _ = _role_client(fast="", smart="")
+    app.dependency_overrides[get_llm_client] = lambda: client
+    try:
+        r = await api_client.post(
+            f"/api/v1/conversations/{conversation.id}/messages", json={"content": "hello"}
+        )
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+
+    frames = _frames(r.text)
+    done = [f for f in frames if f["type"] == "done"]
+    assert done, f"no done frame: {frames}"
+    assert done[0]["check_result"] is None
+
+
+# --- the report outlives the turn that produced it (S15) ------------------------------------
+
+
+async def test_the_report_is_still_there_after_the_stream_is_gone(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """A reload used to lose it. The grade itself was never at risk — ``learning_events`` has
+    held it since Phase 3 — but the account of it was, and a learner who wants to disagree with
+    a mark they were given yesterday needs the account rather than the row."""
+    kc = await _kc(db_session)
+    item, _ = await item_generation.generate_short_item(
+        db_session, fake_llm_client(SHORT_REPLY), kc
+    )
+    assert item is not None
+    conversation = Conversation(
+        learner_id=api_learner.id,
+        goal="Understand velocity",
+        phase=ConversationPhase.AWAITING_ANSWER,
+        active_item_id=item.id,
+    )
+    db_session.add(conversation)
+    await db_session.commit()
+
+    client, _ = _role_client(fast='{"intent": "attempt"}', smart=GRADE_REPLY)
+    app.dependency_overrides[get_llm_client] = lambda: client
+    try:
+        await api_client.post(
+            f"/api/v1/conversations/{conversation.id}/messages",
+            json={"content": "Velocity is speed with a direction."},
+        )
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+
+    # A fresh read of the transcript: no stream, no in-flight state — what a reload sees.
+    r = await api_client.get(f"/api/v1/conversations/{conversation.id}/messages")
+    assert r.status_code == 200, r.text
+    reported = [m for m in r.json() if m["check_result"] is not None]
+    assert len(reported) == 1
+    assert reported[0]["role"] == "assistant"
+    assert reported[0]["check_result"]["item_id"] == str(item.id)
+    assert reported[0]["check_result"]["components"], "the component split must survive too"
+
+
+async def test_only_the_reply_that_graded_it_carries_the_report(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """It belongs to a turn, not to the conversation: attaching it to every message would make
+    an old verdict sit beside a newer question as though it were about that one."""
+    conversation = Conversation(learner_id=api_learner.id, goal="Understand velocity")
+    db_session.add(conversation)
+    await db_session.commit()
+
+    client, _ = _role_client(fast="", smart="")
+    app.dependency_overrides[get_llm_client] = lambda: client
+    try:
+        await api_client.post(
+            f"/api/v1/conversations/{conversation.id}/messages", json={"content": "hello"}
+        )
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+
+    r = await api_client.get(f"/api/v1/conversations/{conversation.id}/messages")
+    assert r.status_code == 200, r.text
+    assert r.json(), "the turn should have produced a transcript"
+    assert all(m["check_result"] is None for m in r.json())
+
+
+# --- a check the conversation asked for, not the plan (S15) ----------------------------------
+
+
+async def test_a_tutor_declared_question_becomes_the_open_check(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """End to end: the tutor asks about something it noticed, and the answer becomes evidence
+    rather than disappearing into prose."""
+    kc = await _kc(db_session)
+    topic = await db_session.get(Topic, kc.topic_id)
+    assert topic is not None
+    conversation = Conversation(
+        learner_id=api_learner.id, goal="Understand motion", subject_id=topic.subject_id
+    )
+    db_session.add(conversation)
+    await db_session.commit()
+
+    reply = "Velocity has a direction.\n[[CHECK: Velocity :: Why is velocity a vector?]]"
+    client, _ = _role_client(fast="", smart=reply)
+    app.dependency_overrides[get_llm_client] = lambda: client
+    try:
+        r = await api_client.post(
+            f"/api/v1/conversations/{conversation.id}/messages",
+            json={"content": "tell me about velocity"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+
+    assert r.status_code == 200, r.text
+    done = [f for f in _frames(r.text) if f["type"] == "done"]
+    assert done, f"no done frame: {_frames(r.text)}"
+    assert done[0]["detail"] == "check"
+    assert done[0]["item"] is not None
+    assert done[0]["item"]["stem"] == "Why is velocity a vector?"
+
+    await db_session.refresh(conversation)
+    assert conversation.active_item_id is not None
+
+
+async def test_the_declaration_is_not_left_in_the_transcript(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    kc = await _kc(db_session)
+    topic = await db_session.get(Topic, kc.topic_id)
+    assert topic is not None
+    conversation = Conversation(
+        learner_id=api_learner.id, goal="Understand motion", subject_id=topic.subject_id
+    )
+    db_session.add(conversation)
+    await db_session.commit()
+
+    client, _ = _role_client(
+        fast="", smart="Velocity has a direction.\n[[CHECK: Velocity :: Why a vector?]]"
+    )
+    app.dependency_overrides[get_llm_client] = lambda: client
+    try:
+        await api_client.post(
+            f"/api/v1/conversations/{conversation.id}/messages",
+            json={"content": "tell me about velocity"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+
+    stored = await api_client.get(f"/api/v1/conversations/{conversation.id}/messages")
+    assistant = [m for m in stored.json() if m["role"] == "assistant"]
+    assert assistant, "the turn should have produced a reply"
+    assert all("CHECK" not in m["content"] for m in assistant)
+
+
+async def test_a_declaration_does_not_displace_a_check_already_open(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """The open check stays open until it is answered or declined. Letting a new declaration
+    replace it would let the tutor quietly withdraw a question the learner is working on — and
+    the scaffold count, which decides how much the eventual answer is worth, belongs to the
+    question that was actually asked."""
+    kc = await _kc(db_session)
+    topic = await db_session.get(Topic, kc.topic_id)
+    assert topic is not None
+    item, _ = await item_generation.generate_short_item(
+        db_session, fake_llm_client(SHORT_REPLY), kc
+    )
+    assert item is not None
+    conversation = Conversation(
+        learner_id=api_learner.id,
+        goal="Understand motion",
+        subject_id=topic.subject_id,
+        phase=ConversationPhase.AWAITING_ANSWER,
+        active_item_id=item.id,
+    )
+    db_session.add(conversation)
+    await db_session.commit()
+
+    client, _ = _role_client(
+        fast='{"intent": "deferral"}',
+        smart="Sure, some background.\n[[CHECK: Velocity :: A different question?]]",
+    )
+    app.dependency_overrides[get_llm_client] = lambda: client
+    try:
+        r = await api_client.post(
+            f"/api/v1/conversations/{conversation.id}/messages",
+            json={"content": "can you explain that first?"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+
+    done = [f for f in _frames(r.text) if f["type"] == "done"]
+    assert done and done[0]["item"] is not None
+    assert done[0]["item"]["id"] == str(item.id), "the question already in play must stand"

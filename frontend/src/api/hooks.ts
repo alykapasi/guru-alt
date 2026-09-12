@@ -379,3 +379,65 @@ export function useReviewsDue() {
     },
   });
 }
+
+// --- Memory: what the system believes about the learner (S16) ---------------
+
+/** What is remembered about the learner — current entries only; superseded and deleted rows
+ * exist to keep extraction well-behaved, not to be shown back. */
+export function useMemories() {
+  return useQuery({
+    queryKey: ["memories"],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/memory");
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+/** Say what is actually true. The server supersedes rather than overwrites, so the corrected
+ * entry comes back with a new id — refetch rather than patching the cache in place. */
+export function useCorrectMemory() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, content }: { id: string; content: string }) => {
+      const { data, error } = await api.PATCH("/api/v1/memory/{memory_id}", {
+        params: { path: { memory_id: id } },
+        body: { content },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memories"] });
+    },
+  });
+}
+
+export function useForgetMemory() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await api.DELETE("/api/v1/memory/{memory_id}", {
+        params: { path: { memory_id: id } },
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memories"] });
+    },
+  });
+}
+
+export function useForgetAllMemory() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const { error } = await api.DELETE("/api/v1/memory");
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memories"] });
+    },
+  });
+}
