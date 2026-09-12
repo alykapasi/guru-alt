@@ -153,6 +153,15 @@ class Settings(BaseSettings):
 
     # How often the worker deletes sessions that can no longer authenticate anybody. An auth
     # table nobody prunes grows for the life of the deployment; 0 turns the sweep off.
+    # How long a conversation may sit untouched before its paused graph state is discarded
+    # (S17). Durability was only half a lifecycle: nothing ever ended a checkpoint, so the
+    # table only grew and a practice abandoned in March stayed resumable in September. Weeks
+    # rather than days because the cost of being wrong is asymmetric — a pruned checkpoint
+    # costs a learner their place in one paused exercise, and a kept one costs a row.
+    checkpoint_retention_days: int = 30
+    # 0 disables the sweep, like every other interval here.
+    checkpoint_purge_interval_seconds: int = 6 * 3600
+
     session_purge_interval_seconds: int = 3600
 
     # The development sign-in seam: a single endpoint that issues a session for the dev learner

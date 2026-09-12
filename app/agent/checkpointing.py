@@ -116,6 +116,28 @@ def checkpointer() -> BaseCheckpointSaver:
     return _saver or _VOLATILE
 
 
+async def discard_thread(thread_id: str) -> bool:
+    """Delete every checkpoint for one thread. Returns whether the saver accepted the call.
+
+    S17 made paused conversations durable and gave nothing the job of ending them, so the
+    table only ever grew: a practice somebody abandoned in March is still resumable state in
+    September, and a learner who never came back is carrying a row that will outlive their
+    account. Deletion goes through the saver rather than through SQL because the schema is
+    LangGraph's — it owns the table layout and migrates it on ``setup()``, and a hand-written
+    DELETE against tables we do not own is a join waiting to be broken by an upgrade.
+
+    Best-effort by design, and the same argument as the fallback above: failing to *tidy* is
+    not a reason to fail the request that prompted it.
+    """
+    saver = checkpointer()
+    try:
+        await saver.adelete_thread(thread_id)
+    except Exception as exc:
+        log.warning("checkpointer.discard_failed", thread_id=thread_id, error=str(exc))
+        return False
+    return True
+
+
 def is_durable() -> bool:
     """Whether a paused conversation would survive a restart of this process."""
     return _saver is not None and _saver is not _VOLATILE

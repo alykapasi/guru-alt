@@ -63,9 +63,16 @@ async def _get_plan(
     )
 
 
-async def _mastered_kc_ids(
+async def mastered_kc_ids(
     session: AsyncSession, learner_id: uuid.UUID, kc_ids: Iterable[uuid.UUID]
 ) -> set[uuid.UUID]:
+    """Which of ``kc_ids`` the learner has demonstrably mastered.
+
+    Public because it is the system's one definition of "mastered", and a second caller
+    (``app.services.checkpoints``, deciding whether a paused question is still worth asking)
+    re-implementing the two-threshold comparison would give the planner and the resumer the
+    power to disagree about whether a learner had finished something.
+    """
     mastered: set[uuid.UUID] = set()
     for kc_id in kc_ids:
         estimate = await mastery.estimate_kc(session, learner_id, kc_id)
@@ -162,7 +169,7 @@ async def generate_lesson_plan(
     kc_order = objective[: get_settings().lesson_plan_max_steps]
     bare_steps = engine.build_initial_steps(kc_order)
 
-    mastered = await _mastered_kc_ids(session, learner_id, kc_order)
+    mastered = await mastered_kc_ids(session, learner_id, kc_order)
     due_reviews = await _due_review_kc_ids(session, learner_id, all_kc_ids)
     scaffolding = await _scaffolding(session, learner_id)
     steps = engine.revise_steps(
@@ -204,7 +211,7 @@ async def revise_plan(
 
     new_kc_ids = {uuid.UUID(step["kc_id"]) for step in plan.steps if step["step_type"] == "new"}
     all_kc_ids = {kc.id for kc in await knowledge_svc.list_kcs_for_subject(session, subject_id)}
-    mastered = await _mastered_kc_ids(session, learner_id, new_kc_ids)
+    mastered = await mastered_kc_ids(session, learner_id, new_kc_ids)
     due_reviews = await _due_review_kc_ids(session, learner_id, all_kc_ids)
     scaffolding = await _scaffolding(session, learner_id)
 
@@ -232,7 +239,7 @@ async def revise_plan(
         extension_ids = [uuid.UUID(kc_id) for kc_id in extension]
         # A KC arriving from the deferred tail may already be mastered (placement, or work in
         # another plan), so it gets the same status derivation as anything else.
-        mastered |= await _mastered_kc_ids(session, learner_id, extension_ids)
+        mastered |= await mastered_kc_ids(session, learner_id, extension_ids)
         revised = engine.revise_steps(
             [*revised, *engine.build_initial_steps(extension_ids)],
             mastered_kc_ids=mastered,
@@ -326,7 +333,7 @@ async def _prerequisite_detour(
         blocked_kc_id=blocked_id,
         prerequisites=prereq_ids,
         prerequisite_names=names,
-        mastered=await _mastered_kc_ids(session, learner_id, prereq_ids),
+        mastered=await mastered_kc_ids(session, learner_id, prereq_ids),
         diagnosed_name=struggle.diagnosed_prerequisite,
         consecutive_failures=struggle.consecutive_failures,
         min_failures=settings.detour_min_failures,

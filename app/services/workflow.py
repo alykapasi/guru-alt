@@ -13,6 +13,7 @@ import structlog
 from langgraph.types import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent import checkpointing
 from app.agent.workflow import WorkflowState, build_workflow_graph, workflow_config
 from app.core.config import get_settings
 from app.llm.registry import LLMClient
@@ -22,7 +23,7 @@ from app.models.knowledge import KC
 from app.rag.retrieval import RetrievalHit, retrieve
 from app.schemas.chat import CheckResultRead
 from app.services import assessment as assessment_svc
-from app.services import learner_context
+from app.services import checkpoints, learner_context
 from app.services.assessment import item_to_read
 from app.services.llm_log import log_llm_call
 from app.services.session_runner import short_answer_item_for_kc
@@ -46,15 +47,33 @@ WORKFLOW_SYSTEM_PROMPT = (
 async def is_awaiting_reply(
     llm: LLMClient, session: AsyncSession, conversation_id: uuid.UUID, *, learner_id: uuid.UUID
 ) -> bool:
-    """Whether the workflow is paused mid-practice for this conversation.
+    """Whether the workflow is paused mid-practice *and* the question is still worth asking.
 
-    Only reflects state held by the process-local checkpointer — see the limitation noted in
-    ``app/agent/workflow.py``. ``aget_state`` never executes node bodies, so the real
-    ``session``/``learner_id`` closed into ``build_workflow_graph`` here cost nothing extra.
+    ``aget_state`` never executes node bodies, so the real ``session``/``learner_id`` closed
+    into ``build_workflow_graph`` here cost nothing extra.
+
+    The second half of that sentence is what S17's durability made necessary. A volatile
+    checkpoint could not outlive much, so a paused question was never very stale; a durable one
+    outlives the plan revision that changed what the learner should be doing and the mastery
+    they picked up somewhere else. Resuming then puts a question in front of them that the
+    system itself no longer thinks they should be answering — and grades the answer.
+
+    A checkpoint that fails the check is discarded rather than left to be re-evaluated on every
+    subsequent turn, and the caller sees "not paused": the turn goes to ordinary chat, which is
+    the same degradation the gate already uses for state that is genuinely gone.
     """
     graph = build_workflow_graph(llm, session, learner_id=learner_id)
-    snapshot = await graph.aget_state(workflow_config(str(conversation_id)))
-    return bool(snapshot.next)
+    config = workflow_config(str(conversation_id))
+    snapshot = await graph.aget_state(config)
+    if not snapshot.next:
+        return False
+    if await checkpoints.paused_practice_is_current(
+        session, learner_id=learner_id, item_id=snapshot.values.get("item_id")
+    ):
+        return True
+    log.info("workflow.paused_state_stale", conversation_id=str(conversation_id))
+    await checkpointing.discard_thread(str(conversation_id))
+    return False
 
 
 async def run_workflow_turn(

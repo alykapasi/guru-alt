@@ -280,6 +280,59 @@ ends or a learner is. And a paused conversation now survives long enough to rais
 old behaviour never had to answer: a practice item posed against a lesson plan that has since
 been revised is resumable, and nothing checks that resuming it still makes sense.
 
+**Implemented (third pass, branch `feat/residue-pass`) — the state now ends, two different
+ways.** Durability was half a lifecycle: nothing ever *ended* a checkpoint, so the table only
+grew, and there was no moment at which the system decided a paused question was no longer worth
+asking. Those are two separate jobs and the paragraph above ran them together.
+
+*Pruning* is about rows nobody will come back for. A conversation with no activity for
+`checkpoint_retention_days` is not paused, it is abandoned, and its checkpoint is storage with
+no reader. A worker sweep discards those, on the same timer pattern as the ingestion reconciler
+and the session purge. The cutoff is the last **message**, not the conversation's own
+`updated_at`, which a phase write or a title change can touch without anybody having spoken.
+Deletion goes through the saver's own `adelete_thread` rather than through SQL, because the
+schema is LangGraph's, and a hand-written DELETE against tables we do not own is a join waiting
+to be broken by an upgrade.
+
+*Revalidation* is about rows somebody **does** come back for, which is the case durability
+created. A volatile checkpoint could not outlive much, so a paused question was never very
+stale; a durable one outlives the plan revision that changed what the learner should be doing
+and the mastery they picked up on another path. Resuming then puts a question in front of them
+that the system no longer thinks they should be answering — and grades the answer.
+`is_awaiting_reply` now means "paused *and* still worth asking": the item must still exist and
+still be one this learner may be assessed with (S33 — an item can change hands while a question
+waits), and they must not already have mastered the component. A checkpoint that fails is
+discarded rather than re-evaluated on every later turn, and the caller sees "not paused", which
+is the same degradation the gate already uses for state that is genuinely gone.
+
+The bar for "mastered" is the planner's own, reached by making `mastered_kc_ids` public rather
+than re-implementing the two-threshold comparison. A resumer and a planner that can disagree
+about whether a learner has finished something is the defect; the duplication is only how it
+would have got in.
+
+Deliberately *not* a trigger: whether the item is still the plan's active step. Plans are
+revised after every graded answer, and a question can be worth finishing after the plan has
+moved past it — the learner is mid-thought. Mastery is the line, because that is where asking
+stops being informative rather than merely untidy.
+
+**Measured (third pass).** 13 tests, 5 mutations, all killed. One survived first time: the
+wiring from the resume path into the revalidation, with the predicate itself well covered. That
+is the third time in this pass a mutation has found a shared function tested directly and its
+call site not tested at all.
+
+**Found, not fixed.** Both graphs key their thread on the bare conversation id, so the
+refinement gate and the practice loop share one thread and one state slot. It is currently
+unreachable in a damaging way — the dispatcher checks the workflow first, and refinement is
+only consulted while no goal is committed — but it is a collision waiting for a fourth flow,
+and the fix (namespacing the thread ids) would orphan every checkpoint in flight, which is
+exactly what S17 existed to stop. Recorded rather than done.
+
+**Still not done.** The checkpointer's tables remain outside Alembic, so a LangGraph upgrade
+still migrates on first start rather than on deploy. Onboarding session rows are still never
+expired. The fallback to volatile state is still reported without an alert. And revalidation
+answers "is this still worth asking", never "was resuming it a good idea" — nothing measures
+whether discarded checkpoints were ones learners would have come back to.
+
 ### S16 — One learner, whichever mode is running
 
 **Status:** Partially implemented (branch `feat/s15-s16-s17`) · **Priority:** High
