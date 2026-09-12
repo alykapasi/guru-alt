@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
 
 /** Newest-first, per the backend's ordering (app/services/chat.py::list_conversations). */
@@ -270,17 +270,32 @@ export function useSubmitPlacement(subjectId: string | undefined) {
 }
 
 /** Chronological, per the backend's ordering (app/services/chat.py::list_messages). */
+/** One conversation's transcript, newest page first, paging backwards on demand (S62).
+ *
+ * Infinite rather than a single read because the endpoint is now bounded: asking for a bigger
+ * `limit` each time someone wants older messages would re-read everything already on screen,
+ * which is most of the cost this bound exists to remove. Each page is a cursor step instead.
+ *
+ * Pages arrive newest-block-first and are each internally oldest-first, so a consumer wanting
+ * chronological order reverses the page list before flattening. */
 export function useMessages(conversationId: string | undefined) {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: ["messages", conversationId],
     enabled: conversationId !== undefined,
-    queryFn: async () => {
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ pageParam }) => {
       const { data, error } = await api.GET("/api/v1/conversations/{conversation_id}/messages", {
-        params: { path: { conversation_id: conversationId! } },
+        params: {
+          path: { conversation_id: conversationId! },
+          query: pageParam ? { before: pageParam } : {},
+        },
       });
       if (error) throw error;
       return data;
     },
+    // The oldest message on the oldest page we hold is the next cursor. `has_more` is the
+    // server's answer, so an empty page can never loop.
+    getNextPageParam: (lastPage) => (lastPage.has_more ? lastPage.messages[0]?.id : undefined),
   });
 }
 

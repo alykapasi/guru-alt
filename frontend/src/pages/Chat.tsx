@@ -12,6 +12,9 @@ export function Chat() {
     conversation,
     messages,
     isLoadingMessages,
+    hasEarlierMessages,
+    isLoadingEarlier,
+    loadEarlierMessages,
     pending,
     error,
     canRetry,
@@ -44,6 +47,9 @@ export function Chat() {
               send("Sounds good, let's get started.", { mode: "chat", satisfied: true })
             }
             onCitationClick={setCitation}
+            hasEarlier={hasEarlierMessages}
+            isLoadingEarlier={isLoadingEarlier}
+            onLoadEarlier={loadEarlierMessages}
           />
         )}
         {error && (

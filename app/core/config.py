@@ -228,6 +228,11 @@ class Settings(BaseSettings):
     # bound until the provider refused it. Durable facts survive truncation through
     # app/memory/, which is the product's existing answer to long-conversation continuity.
     chat_history_max_messages: int = 40
+    # How much transcript one read of a conversation returns (S62). Distinct from
+    # chat_history_max_messages, which bounds what a *turn* forwards to a model: this bounds
+    # what the client renders, and the two answer to different costs.
+    chat_transcript_page_size: int = 100
+    chat_transcript_page_max: int = 500
 
     # Rolling 24h per-learner ceilings, checked before a turn starts. Both are enforced
     # because neither covers the other: cost is unknown for a model with no price entry (see

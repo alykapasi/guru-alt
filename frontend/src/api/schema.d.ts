@@ -384,7 +384,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Messages */
+        /**
+         * List Messages
+         * @description A page of this conversation, newest page by default; ``before`` walks backwards.
+         *
+         *     The page is bounded rather than optional. An unbounded transcript read is a query whose
+         *     cost grows with how much the learner has said, and the conversation big enough to break it
+         *     is the one they care most about.
+         */
         get: operations["list_messages_api_v1_conversations__conversation_id__messages_get"];
         put?: never;
         /**
@@ -2229,6 +2236,16 @@ export interface components {
             /** Kind */
             kind: string;
         };
+        /**
+         * MessagePage
+         * @description One page of a transcript, oldest first, plus whether older messages exist (S62).
+         */
+        MessagePage: {
+            /** Has More */
+            has_more: boolean;
+            /** Messages */
+            messages: components["schemas"]["MessageRead"][];
+        };
         /** MessageRead */
         MessageRead: {
             check_result?: components["schemas"]["CheckResultRead"] | null;
@@ -3429,7 +3446,10 @@ export interface operations {
     };
     list_messages_api_v1_conversations__conversation_id__messages_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number | null;
+                before?: string | null;
+            };
             header?: never;
             path: {
                 conversation_id: string;
@@ -3444,7 +3464,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MessageRead"][];
+                    "application/json": components["schemas"]["MessagePage"];
                 };
             };
             /** @description Validation Error */

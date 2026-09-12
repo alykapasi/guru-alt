@@ -15,6 +15,9 @@ export function MessageList({
   awaitingGoalAccept,
   onAcceptGoal,
   onCitationClick,
+  hasEarlier = false,
+  isLoadingEarlier = false,
+  onLoadEarlier,
 }: {
   messages: Message[];
   pending: PendingTurn | null;
@@ -22,12 +25,19 @@ export function MessageList({
   awaitingGoalAccept: boolean;
   onAcceptGoal: () => void;
   onCitationClick: (citation: Citation) => void;
+  hasEarlier?: boolean;
+  isLoadingEarlier?: boolean;
+  onLoadEarlier?: () => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // Keyed on the *newest* message, not on how many there are (S62). Loading earlier messages
+  // grows the list from the top, and a length-keyed effect read that as new activity and threw
+  // the reader back to the bottom — away from the thing they had just asked to see.
+  const newestId = messages.length ? messages[messages.length - 1].id : null;
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [messages.length, pending?.assistantText, pending?.toolCalls.length]);
+  }, [newestId, pending?.assistantText, pending?.toolCalls.length]);
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 overflow-y-auto px-6 py-8">
@@ -35,6 +45,16 @@ export function MessageList({
         <p className="text-caption text-base-content/50 border-base-300 -mt-2 border-b pb-4">
           Goal: {goal}
         </p>
+      )}
+      {hasEarlier && (
+        <button
+          type="button"
+          onClick={onLoadEarlier}
+          disabled={isLoadingEarlier}
+          className="text-caption text-base-content/60 hover:bg-base-200 hover:text-base-content rounded-field mx-auto px-3 py-2 transition-colors disabled:opacity-50"
+        >
+          {isLoadingEarlier ? "Loading…" : "Load earlier messages"}
+        </button>
       )}
       {messages.map((m) => (
         <div key={m.id} className="flex flex-col gap-3">

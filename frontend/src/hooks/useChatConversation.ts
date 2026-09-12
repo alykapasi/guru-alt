@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useConversations, useItem, useMessages } from "../api/hooks";
 import { isTerminal, streamTurn, type ItemEvent, type SendMessageBody } from "../api/sse";
@@ -50,7 +50,16 @@ export function useChatConversation(conversationId: string | undefined) {
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const conversation = conversationsQuery.data?.find((c) => c.id === conversationId);
-  const messages = messagesQuery.data ?? [];
+  // Pages come newest-block-first; the transcript reads oldest-first. Reverse the page list,
+  // not the messages inside each page — each page is already chronological.
+  const messages = useMemo(
+    () =>
+      (messagesQuery.data?.pages ?? [])
+        .slice()
+        .reverse()
+        .flatMap((page) => page.messages),
+    [messagesQuery.data],
+  );
   // The backend records what the conversation is waiting for at the end of every turn
   // (app/api/v1/chat.py::_phase_after), so both of these survive a reload and neither has to
   // be guessed from the transcript's shape. The previous guess — "no goal committed and the
@@ -150,6 +159,10 @@ export function useChatConversation(conversationId: string | undefined) {
     conversation,
     messages,
     isLoadingMessages: messagesQuery.isLoading,
+    // Older transcript exists and can be fetched — the "load earlier" control's whole state.
+    hasEarlierMessages: messagesQuery.hasNextPage,
+    isLoadingEarlier: messagesQuery.isFetchingNextPage,
+    loadEarlierMessages: messagesQuery.fetchNextPage,
     pending,
     error,
     canRetry: failed !== null && !pending,
