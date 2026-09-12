@@ -432,6 +432,30 @@ labelled with S46's language, since sigmoid(ability) is expected score on a ques
 difficulty rather than the share of a topic understood. A change below a tenth of a point is
 shown as unchanged rather than given a direction the estimate does not really have.
 
+**Implemented (third pass, branch `feat/residue-pass`) — the report outlives the turn that
+made it.** It belonged to the turn and nothing else: the SSE frame carried it, the page
+rendered it, a reload lost it. The grade itself was never at risk — `learning_events` has held
+it since Phase 3 — but the *account* of it was, and a learner who wants to disagree with a mark
+they were given yesterday needs the account, not the row. It is now a column on the message
+that reported it, so it scrolls back with the conversation it belongs to.
+
+Denormalised deliberately. What the event log cannot say is *which reply* reported what, and
+rebuilding the report from events would mean re-deriving the prior ability, the component split
+and the recurrence count as they stood at the time — reconstructing a past statement rather
+than recalling one. A transcript entry is a record of what the learner was told.
+
+Nullable with no backfill, for the same reason: a message written before the column existed
+reported no readable grade, and that is the true thing to say about it.
+
+The client now has **one** path rather than two. The transient copy held in the chat hook has
+gone, along with the side panel's duplicate of it, and both surfaces render from the
+transcript — which is also what stopped the report appearing twice the moment the transcript
+refetched.
+
+**Measured (third pass).** 5 tests, 4 mutations, all killed. One survived first time: nothing
+covered guided practice's half of the persistence, which is the flow most attempts happen in —
+the same asymmetry this item keeps producing, found again by mutation rather than by reading.
+
 **Not done.** The check is posed from the plan's active step, so a conversation about something
 the plan is not currently on gets no check — the tutor's own comprehension questions in prose
 are still invisible to the tracer, and making *those* evidence would need the tutor to declare a

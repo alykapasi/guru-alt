@@ -962,3 +962,70 @@ async def test_a_turn_that_grades_nothing_carries_no_result(
     done = [f for f in frames if f["type"] == "done"]
     assert done, f"no done frame: {frames}"
     assert done[0]["check_result"] is None
+
+
+# --- the report outlives the turn that produced it (S15) ------------------------------------
+
+
+async def test_the_report_is_still_there_after_the_stream_is_gone(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """A reload used to lose it. The grade itself was never at risk — ``learning_events`` has
+    held it since Phase 3 — but the account of it was, and a learner who wants to disagree with
+    a mark they were given yesterday needs the account rather than the row."""
+    kc = await _kc(db_session)
+    item, _ = await item_generation.generate_short_item(
+        db_session, fake_llm_client(SHORT_REPLY), kc
+    )
+    assert item is not None
+    conversation = Conversation(
+        learner_id=api_learner.id,
+        goal="Understand velocity",
+        phase=ConversationPhase.AWAITING_ANSWER,
+        active_item_id=item.id,
+    )
+    db_session.add(conversation)
+    await db_session.commit()
+
+    client, _ = _role_client(fast='{"intent": "attempt"}', smart=GRADE_REPLY)
+    app.dependency_overrides[get_llm_client] = lambda: client
+    try:
+        await api_client.post(
+            f"/api/v1/conversations/{conversation.id}/messages",
+            json={"content": "Velocity is speed with a direction."},
+        )
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+
+    # A fresh read of the transcript: no stream, no in-flight state — what a reload sees.
+    r = await api_client.get(f"/api/v1/conversations/{conversation.id}/messages")
+    assert r.status_code == 200, r.text
+    reported = [m for m in r.json() if m["check_result"] is not None]
+    assert len(reported) == 1
+    assert reported[0]["role"] == "assistant"
+    assert reported[0]["check_result"]["item_id"] == str(item.id)
+    assert reported[0]["check_result"]["components"], "the component split must survive too"
+
+
+async def test_only_the_reply_that_graded_it_carries_the_report(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """It belongs to a turn, not to the conversation: attaching it to every message would make
+    an old verdict sit beside a newer question as though it were about that one."""
+    conversation = Conversation(learner_id=api_learner.id, goal="Understand velocity")
+    db_session.add(conversation)
+    await db_session.commit()
+
+    client, _ = _role_client(fast="", smart="")
+    app.dependency_overrides[get_llm_client] = lambda: client
+    try:
+        await api_client.post(
+            f"/api/v1/conversations/{conversation.id}/messages", json={"content": "hello"}
+        )
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+
+    r = await api_client.get(f"/api/v1/conversations/{conversation.id}/messages")
+    assert r.status_code == 200, r.text
+    assert r.json(), "the turn should have produced a transcript"
+    assert all(m["check_result"] is None for m in r.json())

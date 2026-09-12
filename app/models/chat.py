@@ -180,6 +180,19 @@ class Message(UUIDPrimaryKeyMixin, Base):
     # as it appears in `content`, mapped to the chunk it cites. Mirrors ContentBlock.citations'
     # shape (thin references, not the chunk text inline — see app/services/turn_common.py).
     citations: Mapped[list[dict]] = mapped_column(JSONB, default=list)
+    # The learner-facing grade for an answer this turn marked, if it marked one (S15) — a
+    # ``CheckResultRead`` dumped to JSON. It lives on the message rather than only in the
+    # stream because the stream is gone the moment the page reloads: the grade moved the
+    # ability estimate, rescheduled the card and revised the plan, and the learner had one
+    # chance to read the account of it before it disappeared. Somebody wanting to disagree
+    # with a mark they were given yesterday needs it to still be there.
+    #
+    # Denormalised on purpose. ``learning_events`` holds the authoritative record and always
+    # did; what it cannot do is say *which reply* reported what, and reassembling the report
+    # from events would have to re-derive the prior ability, the component split and the
+    # recurrence count as they stood at the time — reconstructing a past statement rather
+    # than storing it. A transcript entry is a record of what the learner was told.
+    check_result: Mapped[dict | None] = mapped_column(JSONB, default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)
 
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")

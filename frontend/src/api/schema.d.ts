@@ -1373,6 +1373,60 @@ export interface components {
             satisfied: boolean;
         };
         /**
+         * CheckComponentRead
+         * @description One knowledge component of a graded conversational answer, as the learner sees it.
+         *
+         *     Every optional field is optional because the evidence genuinely may not exist, not because
+         *     it was inconvenient to fill in. ``score`` is null when the grader could not tell the
+         *     components apart — an MCQ has one outcome (S10) — and ``failure_kind`` is null when nothing
+         *     diagnosed it, which is every deterministic path (S09). Rendering must keep that difference:
+         *     "we could not tell" and "it was fine" are not the same thing to say to a learner.
+         */
+        CheckComponentRead: {
+            /** Ability */
+            ability: number;
+            /** Failure Detail */
+            failure_detail?: string | null;
+            /** Failure Kind */
+            failure_kind?: string | null;
+            /**
+             * Kc Id
+             * Format: uuid
+             */
+            kc_id: string;
+            /** Kc Name */
+            kc_name: string;
+            /** Prior Ability */
+            prior_ability: number;
+            /** Recurrence */
+            recurrence?: number | null;
+            /** Score */
+            score?: number | null;
+            /** Uncertainty */
+            uncertainty: number;
+        };
+        /**
+         * CheckResultRead
+         * @description What happened to an answer the learner gave in conversation (S15).
+         *
+         *     Until this existed, a conversational answer was graded, updated mastery, rescheduled the
+         *     card and revised the plan — and the learner was told none of it. The tutor's reply was the
+         *     only evidence anything had happened, and a reply is not a record.
+         */
+        CheckResultRead: {
+            /** Components */
+            components: components["schemas"]["CheckComponentRead"][];
+            /** Correct */
+            correct: boolean;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Score */
+            score: number;
+        };
+        /**
          * ChunkRead
          * @description A stored chunk as exposed for debugging — text + provenance, not the raw vector.
          */
@@ -2027,6 +2081,7 @@ export interface components {
         };
         /** MessageRead */
         MessageRead: {
+            check_result?: components["schemas"]["CheckResultRead"] | null;
             /** Citations */
             citations: {
                 [key: string]: unknown;

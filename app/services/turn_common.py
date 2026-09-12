@@ -40,6 +40,7 @@ async def add_message(
     content: str,
     model: str | None = None,
     citations: list[dict] | None = None,
+    check_result: CheckResultRead | None = None,
 ) -> Message:
     message = Message(
         conversation_id=conversation_id,
@@ -47,6 +48,9 @@ async def add_message(
         content=content,
         model=model,
         citations=citations or [],
+        # Dumped here rather than by each caller, so the two flows cannot store the same
+        # report in two shapes.
+        check_result=check_result.model_dump(mode="json") if check_result is not None else None,
     )
     session.add(message)
     await session.flush()

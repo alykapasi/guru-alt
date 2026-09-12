@@ -469,6 +469,7 @@ async def run_tutor_turn(
         reply,
         model=spec.model,
         citations=citations,
+        check_result=check_result,
     )
     cost = await log_llm_call(
         learner_id=learner_id,

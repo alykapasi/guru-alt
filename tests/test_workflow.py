@@ -440,3 +440,45 @@ async def test_a_grade_with_nothing_diagnosed_adds_no_repair() -> None:
     assert "0.00" in note and "not correct" in note
     for kind in FailureKind:
         assert kind.value not in note
+
+
+async def test_guided_practice_leaves_the_report_in_the_transcript(
+    db_session: AsyncSession,
+) -> None:
+    """The report has to survive the stream on this flow too (S15). Guided practice is where
+    most attempts happen, so a report that only exists while the socket is open is missing
+    from the place a learner spends most of their time."""
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=RIGHT_GRADE), FakeTurn(text=RESPOND_2)]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice")
+    await _drain(db_session, llm, conv, user_content="sunlight -> sugars", resume=True)
+
+    messages = (
+        await db_session.scalars(
+            select(Message).where(Message.conversation_id == conv.id).order_by(Message.created_at)
+        )
+    ).all()
+    reported = [m for m in messages if m.check_result is not None]
+    assert len(reported) == 1, "exactly the reply that graded the answer carries it"
+    assert reported[0].role == "assistant"
+    assert reported[0].check_result is not None
+    assert reported[0].check_result["correct"] is True
+    assert reported[0].check_result["components"]
+
+
+async def test_the_opening_round_grades_nothing_and_reports_nothing(
+    db_session: AsyncSession,
+) -> None:
+    """The first turn presents a question and has marked no answer, so there is nothing
+    truthful to attach to it."""
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(script=[FakeTurn(text=PRESENT)])
+    await _drain(db_session, llm, conv, user_content="let's practice")
+
+    messages = (
+        await db_session.scalars(select(Message).where(Message.conversation_id == conv.id))
+    ).all()
+    assert messages, "the opening round should have produced a transcript"
+    assert all(m.check_result is None for m in messages)
