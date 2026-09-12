@@ -284,23 +284,6 @@ export function useMessages(conversationId: string | undefined) {
   });
 }
 
-/** This conversation's recent turns, newest first (S51). Reading it is also what reaps a turn
- * abandoned by a disconnect or a restart, so a stranded `pending` is reported as `cancelled`
- * instead of as work still running. */
-export function useTurns(conversationId: string | undefined) {
-  return useQuery({
-    queryKey: ["turns", conversationId],
-    enabled: conversationId !== undefined,
-    queryFn: async () => {
-      const { data, error } = await api.GET("/api/v1/conversations/{conversation_id}/turns", {
-        params: { path: { conversation_id: conversationId! } },
-      });
-      if (error) throw error;
-      return data;
-    },
-  });
-}
-
 // --- Dashboard: mastery, activity, profile, reviews-due --------------------
 
 export function useSubjectMastery(subjectId: string | undefined) {
