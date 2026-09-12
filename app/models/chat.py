@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import ForeignKey, Text, UniqueConstraint, func
+from sqlalchemy import ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -209,3 +209,27 @@ class LLMCall(UUIDPrimaryKeyMixin, Base):
     # cost nothing" — collapsing the two reported unpriced spend as zero.
     cost_usd: Mapped[float | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)
+
+
+class OnboardingSession(Base, TimestampMixin):
+    """Who owns a goal-refinement negotiation (S33, made durable by S17).
+
+    The id used to be invented by the client and used verbatim as the checkpointer's thread
+    key, so anyone who guessed another learner's id could resume their onboarding. It is issued
+    by the server now and recorded here against the learner who asked for it.
+
+    This table exists because the checkpointer became durable. While the graph's state lived in
+    one process's heap, an in-process registry was exactly as strong as the thing it guarded and
+    a durable one would have promised more than the state behind it could keep. Now the state
+    outlives the process, so the record of who owns it has to as well — otherwise a restart
+    leaves a resumable negotiation that nothing can prove the ownership of, and the only safe
+    answer becomes "no", which discards it just as surely as losing it did.
+    """
+
+    __tablename__ = "onboarding_sessions"
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    learner_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("learners.id", ondelete="CASCADE"), index=True
+    )
+    purpose: Mapped[str] = mapped_column(String(64))

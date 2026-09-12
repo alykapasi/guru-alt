@@ -64,7 +64,7 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | S14 | Select fresh assessment items with awareness of prior exposure, and check delayed retention and transfer. | Bank selection returns the oldest matching item without considering the learner's exposure. [R2] | Establish that the learner can solve a different problem without help and retain that capability. | First | Implemented (see below) |
 | S15 | Connect exploratory conversation to structured learning evidence through a deliberate assessment mechanism. | Plain chat can ask questions, but its conversational answers do not directly update mastery. [R9] | Make the initial learner-led experience contribute trustworthy evidence without treating all conversation as proof of mastery. | High | Implemented (see below) |
 | S16 | Share appropriate learner context and learning-state access across chat, agentic, and guided modes. | Plain chat injects memory and plan hints; agentic service does not inject those same contexts. [R9–R10] | Switching modes retains relevant understanding of the learner and their goal. | High | Implemented (see below) |
-| S17 | Persist resumable guided-practice state durably. | Workflow uses an in-memory checkpointer. [R7] | A restart does not lose the paused practice state needed to continue correctly. | Before reliable external use | Accepted |
+| S17 | Persist resumable guided-practice state durably. | Workflow uses an in-memory checkpointer. [R7] | A restart does not lose the paused practice state needed to continue correctly. | Before reliable external use | Implemented (see below) |
 | S18 | Calibrate mastery, placement, and scaffolding heuristics against real evidence. | Placement mappings, completion thresholds, and profile-to-scaffolding thresholds are explicitly described as arbitrary or uncalibrated. [R1, R5, R11] | Progress estimates and teaching choices correspond to demonstrated capability. | High; requires data | Accepted |
 | S19 | Retain the useful existing foundations while improving the teaching loop. | Pure estimation logic, persistent per-component state, event logging, prerequisite planning, and provider abstraction already exist. | Improve the behavior incrementally using existing boundaries. | Ongoing | Accepted |
 | S20 | Synchronize documentation with implementation and the clarified mission. | README describes the frontend as future work; roadmap labels the experiment suite not started despite tooling being present. Audience guidance also needs the nuance agreed here. | Future reviews and implementation plans start from an accurate description. | Supporting | Accepted |
@@ -141,6 +141,83 @@ the kind of question S59 exists for, and this deliberately does not answer it. T
 does not render a detour differently from any other step, so the explanation the two new fields
 exist to carry does not yet reach the learner. And a diagnosed prerequisite outside the KC's
 direct prerequisites is dropped rather than treated as evidence the *graph* is wrong.
+
+### S17 — A paused conversation that outlives the process that paused it
+
+**Status:** Partially implemented (branch `feat/s15-s16-s17`) · **Priority:** Before reliable
+external use
+
+**Implemented — the state itself.** Two graphs pause mid-conversation and wait for the learner:
+the goal-refinement gate, and the guided-practice loop. Both compiled against LangGraph's
+`InMemorySaver`, so everything between the interrupt and its resume lived in one process's heap.
+A deploy, a crash, or an autoscaler moving the pod silently discarded every paused conversation
+in flight — the learner saw a practice question they could no longer answer, and the gate's
+dispatcher degraded that to "start plain chat instead", which is a reasonable thing to do with
+state that is genuinely gone and a terrible thing to need. The saver is Postgres-backed now, and
+the test that matters pauses a graph through one saver and resumes it through a *different* one
+on a different pool, which is what a restart looks like from the state's point of view.
+
+**Implemented — the two things that had to move with it, and why not moving them would have
+been worse than doing nothing.** The turn lock and the onboarding-session registry were both
+in-process, and both were documented as *deliberately* exactly as strong as the checkpointer
+behind them. That was right: a durable claim in front of volatile state promises more than the
+state can keep. Reversing it is not symmetric. A durable checkpointer with an in-process lock is
+strictly worse than what came before, because any worker can now reach any paused practice and
+two of them can resume the same one, grade one answer twice, and write two mastery observations
+for one piece of work. And a negotiation whose ownership record died with the process can only
+ever be refused, which discards it exactly as surely as losing the state did. So all three
+moved.
+
+**Implemented — an advisory lock, not a lease.** A lease needs a duration, and a turn's duration
+is whatever the model and the learner take: any timeout is either long enough to strand a
+conversation after a crash, or short enough to hand a live turn to a second claimant. A
+session-level Postgres advisory lock held on a dedicated connection needs no timeout at all —
+Postgres releases it when the connection ends, and a crashed process's connections end. The cost
+is one connection per turn in flight, bounded by the same thing that already bounds the SSE
+responses, and it is held in `AUTOCOMMIT` so it does not pin a snapshot for the length of a
+stream.
+
+**Implemented — the checkpointer gets its own pool, and the reason is not laziness.** It is
+LangGraph's schema, migrated by LangGraph's own `setup()`, and it speaks psycopg3 while the
+application speaks asyncpg through SQLAlchemy. Writing its tables into Alembic would fork a
+schema the library owns and upgrades. Only the `+driver` suffix is stripped from the configured
+URL, so the checkpointer cannot end up pointed at a different database from the rest of the app
+— which would look exactly like durability until a restart.
+
+**Implemented — degradation is loud.** If the pool cannot open, the graphs fall back to
+`InMemorySaver` rather than the process refusing to serve chat at all, and `/ready` reports
+`durable_checkpoints: false`. That flag deliberately does not make the instance unready: chat,
+grading and planning are unaffected, so withholding traffic would turn a partial degradation
+into an outage. It is worth an alert and is not worth a 503.
+
+**Measured.** 23 tests; 13 mutations, 11 killed, one equivalent (the `InvalidResponse`-style
+split between a release that was already released and one that fails — both keep the claim
+released, differing only in a log line), two controls that survived as designed. One survivor
+was a real gap: nothing asserted that `/ready` reported the *actual* durability rather than a
+constant.
+
+**A tooling defect found on the way, worth recording because it invalidated results silently.**
+The mutation harness reverted files with `mv`, which can restore a timestamp that matches the
+`.pyc` written during the mutated run when the mutation preserves the file's size. Python then
+reuses the *mutated* bytecode afterwards. This produced a run of false kills — including a
+control mutation that only changed a docstring — and, worse, could have produced false
+survivals. It was caught because the control was checked rather than assumed. The harness now
+clears `__pycache__` on both sides of every run and treats a test-selection error as a failed
+run rather than a survival; every S17 mutation above was re-run on the fixed harness.
+
+**Not done.** Durability is proved across savers and pools, not across an actual process
+restart, and not under two workers racing the same thread — the lock is what makes that safe and
+the lock is tested directly, but the combination is not. The advisory key is the low 32 bits of
+the conversation UUID, so two conversations can collide; the cost is one refused turn that the
+client already knows how to retry, but it is a real (if remote) collision and nothing detects it.
+The checkpointer's own tables are outside Alembic by design, so `poe check`'s migration gate says
+nothing about them and a LangGraph upgrade that changes its schema will migrate on first start
+rather than on deploy. Nothing prunes committed or abandoned checkpoints, so the table grows
+without bound. The fallback to volatile state is reported but not alerted on, and no runbook says
+what to do about it. Onboarding session rows are never expired, only deleted when a negotiation
+ends or a learner is. And a paused conversation now survives long enough to raise a question the
+old behaviour never had to answer: a practice item posed against a lesson plan that has since
+been revised is resumable, and nothing checks that resuming it still makes sense.
 
 ### S16 — One learner, whichever mode is running
 

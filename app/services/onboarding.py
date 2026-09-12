@@ -62,9 +62,10 @@ async def run_goal_refinement_turn(
 
     run_input: RefinementState | Command
     if resume:
-        # The checkpointer is in-memory, so a thread can genuinely be gone: the process
-        # restarted, or this learner is presenting an id that was never theirs. Either way the
-        # graph would fail deep inside with a bare KeyError; say what happened instead.
+        # A thread can still genuinely be gone — this learner may be presenting an id that
+        # was never theirs, or one whose negotiation was already committed — and a restart is
+        # no longer one of the ways (S17). Either way the graph would fail deep inside with a
+        # bare KeyError; say what happened instead.
         if not (await graph.aget_state(config)).values:
             yield TurnEvent(type="error", detail="this goal session has expired; start a new one")
             return

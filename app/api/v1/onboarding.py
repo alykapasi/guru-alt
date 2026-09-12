@@ -45,13 +45,14 @@ class CurriculumResponse(BaseModel):
 
 
 @router.post("/onboarding/goal-sessions", response_model=GoalSessionResponse)
-async def start_goal_session(learner: CurrentLearner) -> GoalSessionResponse:
+async def start_goal_session(session: SessionDep, learner: CurrentLearner) -> GoalSessionResponse:
     """Mint the session id a goal-refinement negotiation runs under.
 
     The client used to invent this id, and the server keyed the negotiation's state on it with
     no learner attached — so knowing someone's id was enough to resume their onboarding.
     """
-    return GoalSessionResponse(session_id=onboarding_sessions.issue(learner.id).session_id)
+    record = await onboarding_sessions.issue(session, learner.id)
+    return GoalSessionResponse(session_id=record.session_id)
 
 
 @router.post("/onboarding/goal-turns")
@@ -67,7 +68,7 @@ async def goal_refinement_turn(
     """
 
     try:
-        onboarding_sessions.require(request.session_id, learner.id)
+        await onboarding_sessions.require(session, request.session_id, learner.id)
     except onboarding_sessions.NotYourSession as exc:
         # The same answer whether it belongs to someone else or never existed, so this cannot
         # be used to find out which ids are real.

@@ -25,7 +25,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
+from app.api.deps import CurrentLearner, EngineDep, LLMClientDep, SessionDep
 from app.core.config import get_settings
 from app.llm import LLMClient
 from app.models.chat import Conversation, ConversationPhase, Message, TurnStatus
@@ -324,6 +324,7 @@ async def send_message(
     session: SessionDep,
     learner: CurrentLearner,
     llm: LLMClientDep,
+    db_engine: EngineDep,
 ) -> StreamingResponse:
     """Persist the user turn, then stream the tutor's reply as Server-Sent Events.
 
@@ -349,7 +350,8 @@ async def send_message(
     # would make this conversation's abandoned turns look alive.
     await turn_svc.reap_stale(session, conversation_id)
 
-    if not turn_lock.claim(conversation_id):
+    claim = await turn_lock.claim(db_engine, conversation_id)
+    if claim is None:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "a turn is already in progress for this conversation"
         )
@@ -392,12 +394,12 @@ async def send_message(
             history=history,
         )
     except turn_svc.TurnAlreadyCompleted as exc:
-        turn_lock.release(conversation_id)
+        await claim.release()
         raise HTTPException(
             status.HTTP_409_CONFLICT, "this turn has already been answered"
         ) from exc
     except Exception:
-        turn_lock.release(conversation_id)
+        await claim.release()
         raise
 
     async def event_stream() -> AsyncIterator[str]:
@@ -484,6 +486,6 @@ async def send_message(
             async for chunk in event_stream():
                 yield chunk
         finally:
-            turn_lock.release(conversation_id)
+            await claim.release()
 
     return StreamingResponse(guarded_stream(), media_type="text/event-stream")

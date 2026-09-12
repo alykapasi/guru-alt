@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     # ``ingest_max_attempts`` stops a source that kills its worker every time from cycling
     # forever. ``ingest_max_concurrent_jobs`` is a *soft* cap — see claim_source.
     ingest_job_timeout_seconds: int = 3600
+    # The checkpointer's own pool (S17). Small on purpose: it is used only when a graph pauses
+    # or resumes, which is a fraction of requests, and it is a second pool against the same
+    # database as the application's own.
+    checkpointer_pool_min_size: int = 1
+    checkpointer_pool_max_size: int = 4
+    checkpointer_connect_timeout_seconds: float = 10.0
     ingest_lease_grace_seconds: int = 120
     ingest_max_attempts: int = 3
     ingest_max_concurrent_jobs: int = 4

@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent import checkpointing
 from app.storage.base import BlobNotFound, BlobStore
 
 log = structlog.get_logger(__name__)
@@ -43,6 +44,15 @@ class DependencyStatus(BaseModel):
 class ReadinessReport(BaseModel):
     ready: bool
     dependencies: list[DependencyStatus]
+    durable_checkpoints: bool = True
+    """Whether a paused conversation on this instance would survive a restart (S17).
+
+    Reported, not probed, and deliberately not part of ``ready``. A volatile checkpointer does
+    not stop this instance answering requests — chat, grading and planning are all unaffected —
+    so taking it out of rotation would turn a partial degradation into a total outage. What it
+    does mean is that a learner mid-practice loses their question on the next deploy, which is
+    worth an alert and is not worth a 503.
+    """
 
 
 async def _probe(name: str, check: Callable[[], Awaitable[None]]) -> DependencyStatus:
@@ -93,7 +103,13 @@ async def readiness(session: AsyncSession, store: BlobStore) -> ReadinessReport:
     period waiting on probes it had already learned the answer to.
     """
     dependencies = list(await asyncio.gather(check_database(session), check_blob_store(store)))
-    report = ReadinessReport(ready=all(d.ok for d in dependencies), dependencies=dependencies)
+    report = ReadinessReport(
+        ready=all(d.ok for d in dependencies),
+        dependencies=dependencies,
+        durable_checkpoints=checkpointing.is_durable(),
+    )
     if not report.ready:
         log.warning("readiness.not_ready", failing=[d.name for d in dependencies if not d.ok])
+    if not report.durable_checkpoints:
+        log.warning("readiness.checkpoints_volatile")
     return report

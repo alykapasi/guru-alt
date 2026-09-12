@@ -6,29 +6,26 @@ feedback) -> conditional: satisfied or out of rounds -> ``commit``, else back to
 
 Unlike the plain tutor graph, this one is compiled **with a checkpointer** — the pause/resume
 across HTTP requests requires LangGraph to persist state between the interrupt and its resume.
-``_CHECKPOINTER`` is a process-wide ``InMemorySaver``: state does not survive a process restart
-and is not shared across workers. Acceptable for single-process Phase 5; revisit with a durable
-(e.g. Postgres) checkpointer before horizontal scaling (Phase 8). The dispatcher that calls this
-graph (``app/services/refinement.py``) is written to degrade gracefully if state is lost, rather
-than assume it's always present.
+That saver is now Postgres-backed, so a paused negotiation survives a restart and is visible to
+every worker (S17); see ``app/agent/checkpointing.py``, including what happens when its pool
+cannot open. The dispatcher (``app/services/refinement.py``) still degrades gracefully if state
+is missing rather than assuming it is present — durability makes that path rare, not impossible.
 """
 
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
+from app.agent import checkpointing
 from app.agent.state import RefinementState
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 
 __all__ = ["RefinementState", "build_refinement_graph", "refinement_config"]
-
-_CHECKPOINTER = InMemorySaver()
 
 
 def refinement_config(thread_id: str) -> RunnableConfig:
@@ -88,4 +85,4 @@ def build_refinement_graph(llm: LLMClient) -> CompiledStateGraph[Any, Any, Any, 
         "ask_learner", route_after_ask, {"propose": "propose", "commit": "commit"}
     )
     graph.add_edge("commit", END)
-    return graph.compile(checkpointer=_CHECKPOINTER)
+    return graph.compile(checkpointer=checkpointing.checkpointer())

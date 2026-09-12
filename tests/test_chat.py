@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.api.deps import get_llm_client
 from app.api.v1 import chat as chat_router
@@ -897,18 +897,19 @@ async def _goal_set_conversation(api_client: AsyncClient, db_session: AsyncSessi
 
 
 async def test_a_second_turn_while_one_is_running_is_refused(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, engine: AsyncEngine
 ) -> None:
     """Overlapping turns interleave messages and can resume the same paused graph twice."""
     conversation_id = await _goal_set_conversation(api_client, db_session)
-    assert turn_lock.claim(uuid.UUID(conversation_id))
+    claim = await turn_lock.claim(engine, uuid.UUID(conversation_id))
+    assert claim is not None
     try:
         r = await api_client.post(
             f"{API}/conversations/{conversation_id}/messages", json={"content": "and again?"}
         )
         assert r.status_code == 409
     finally:
-        turn_lock.release(uuid.UUID(conversation_id))
+        await claim.release()
 
     # Nothing was written for the refused turn.
     messages = (
@@ -928,7 +929,7 @@ async def test_a_finished_turn_frees_the_conversation(
             f"{API}/conversations/{conversation_id}/messages", json={"content": "hello"}
         )
         assert r.status_code == 200
-    assert turn_lock.is_active(uuid.UUID(conversation_id)) is False
+    assert await turn_lock.is_active(db_session, uuid.UUID(conversation_id)) is False
 
 
 async def test_a_turn_that_fails_to_start_frees_the_conversation(
@@ -948,20 +949,21 @@ async def test_a_turn_that_fails_to_start_frees_the_conversation(
         await api_client.post(
             f"{API}/conversations/{conversation_id}/messages", json={"content": "hello"}
         )
-    assert turn_lock.is_active(uuid.UUID(conversation_id)) is False
+    assert await turn_lock.is_active(db_session, uuid.UUID(conversation_id)) is False
 
 
 async def test_a_different_conversation_is_unaffected(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, engine: AsyncEngine
 ) -> None:
     """The claim is per conversation, not a global chat lock."""
     busy = await _goal_set_conversation(api_client, db_session)
     other = await _goal_set_conversation(api_client, db_session)
-    assert turn_lock.claim(uuid.UUID(busy))
+    claim = await turn_lock.claim(engine, uuid.UUID(busy))
+    assert claim is not None
     try:
         r = await api_client.post(
             f"{API}/conversations/{other}/messages", json={"content": "hello"}
         )
         assert r.status_code == 200
     finally:
-        turn_lock.release(uuid.UUID(busy))
+        await claim.release()

@@ -55,7 +55,7 @@ async def reap_stale(session: AsyncSession, conversation_id: uuid.UUID) -> int:
     Called on the read and send paths rather than by a sweeper: a stranded turn only matters
     when someone looks at the conversation, and the check is one indexed update.
     """
-    if turn_lock.is_active(conversation_id):
+    if await turn_lock.is_active(session, conversation_id):
         return 0
     result = await session.execute(
         update(Turn)

@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Iterator
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.api.deps import get_llm_client
 from app.llm.registry import fake_llm_client
@@ -171,7 +171,7 @@ async def test_a_turn_abandoned_by_a_disconnect_is_reported_as_cancelled(
 
 
 async def test_a_live_turn_is_not_reaped_out_from_under_itself(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, engine: AsyncEngine
 ) -> None:
     """The claim is the liveness signal: while it is held, ``pending`` means running."""
     conversation_id = await _goal_conversation(api_client, db_session)
@@ -181,11 +181,12 @@ async def test_a_live_turn_is_not_reaped_out_from_under_itself(
         flow="tutor",
         content="What is a limit?",
     )
-    assert turn_lock.claim(uuid.UUID(conversation_id))
+    claim = await turn_lock.claim(engine, uuid.UUID(conversation_id))
+    assert claim is not None
     try:
         r = await api_client.get(f"{API}/conversations/{conversation_id}/turns")
     finally:
-        turn_lock.release(uuid.UUID(conversation_id))
+        await claim.release()
 
     assert [t["status"] for t in r.json()] == ["pending"]
 

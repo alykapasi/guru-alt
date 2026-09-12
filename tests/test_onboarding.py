@@ -390,9 +390,12 @@ async def test_a_turn_on_an_unissued_session_is_refused(api_client) -> None:
 
 
 async def test_another_learners_session_is_refused_and_indistinguishable_from_a_missing_one(
-    api_client,
+    api_client, db_session: AsyncSession
 ) -> None:
-    someone_else = onboarding_sessions.issue(uuid.uuid4())
+    other = Learner(handle=f"other-{uuid.uuid4().hex[:8]}")
+    db_session.add(other)
+    await db_session.flush()
+    someone_else = await onboarding_sessions.issue(db_session, other.id)
 
     stolen = await api_client.post(
         f"{API}/onboarding/goal-turns",
@@ -407,7 +410,7 @@ async def test_another_learners_session_is_refused_and_indistinguishable_from_a_
 
 
 async def test_the_same_session_id_under_two_learners_is_two_negotiations() -> None:
-    """The check that survives an empty registry: the key is namespaced by learner."""
+    """The check that survives a missing record: the key is namespaced by learner."""
     shared = uuid.uuid4().hex
     a, b = uuid.UUID(int=7), uuid.UUID(int=8)
     assert onboarding_sessions.thread_key(shared, a) != onboarding_sessions.thread_key(shared, b)

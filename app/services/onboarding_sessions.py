@@ -1,6 +1,6 @@
-"""Who owns an onboarding negotiation.
+"""Who owns an onboarding negotiation (S33), durably (S17).
 
-The goal-refinement gate is keyed by a session id that the *client* invented and the server
+The goal-refinement gate was keyed by a session id that the *client* invented and the server
 used verbatim as the checkpointer's thread key, with no learner attached. Anyone who knew or
 guessed another learner's id could resume their onboarding — read the proposal, feed it
 different feedback, or commit a goal on their behalf. Ordinary conversations already check
@@ -12,59 +12,61 @@ Two independent things fix that, and both are here because either alone leaves a
   resume can be checked rather than assumed.
 - The checkpointer's thread key is **derived from the learner and the id**, so even an
   unrecorded id cannot address another learner's state. A leaked id is then worth nothing on
-  its own.
+  its own, and this half holds even when the record is missing.
 
-Registry state is in-process, exactly as strong as the guarantee the graph already relies on:
-``app/agent/refinement.py`` compiles with ``InMemorySaver``, so a paused negotiation can only
-be resumed by the process that paused it. A durable registry in front of a volatile
-checkpointer would only promise more than the state behind it can keep — the same reasoning
-as ``app/services/turn_lock.py``. When those checkpointers become durable, both move together.
+The record used to be a dict, deliberately exactly as strong as the ``InMemorySaver`` behind it:
+a durable registry in front of volatile state would only have promised more than the state could
+keep. The checkpointer is durable now, so this is a table. The two move together in the other
+direction too — a durable negotiation whose ownership record died with the process is one that
+cannot be safely resumed, which discards it just as surely as losing the state did.
 """
 
 import uuid
-from dataclasses import dataclass
-from datetime import UTC, datetime
+
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.chat import OnboardingSession
 
 PURPOSE_GOAL_REFINEMENT = "goal_refinement"
-
-
-@dataclass(frozen=True)
-class OnboardingSession:
-    session_id: str
-    learner_id: uuid.UUID
-    purpose: str
-    created_at: datetime
 
 
 class NotYourSession(LookupError):
     """The caller does not own this onboarding session, or it no longer exists."""
 
 
-_sessions: dict[str, OnboardingSession] = {}
-
-
-def issue(learner_id: uuid.UUID, *, purpose: str = PURPOSE_GOAL_REFINEMENT) -> OnboardingSession:
+async def issue(
+    session: AsyncSession, learner_id: uuid.UUID, *, purpose: str = PURPOSE_GOAL_REFINEMENT
+) -> OnboardingSession:
     """Mint a server-owned session id for ``learner_id``."""
-    record = OnboardingSession(
-        session_id=uuid.uuid4().hex,
-        learner_id=learner_id,
-        purpose=purpose,
-        created_at=datetime.now(UTC),
-    )
-    _sessions[record.session_id] = record
+    record = OnboardingSession(session_id=uuid.uuid4().hex, learner_id=learner_id, purpose=purpose)
+    session.add(record)
+    await session.commit()
     return record
 
 
-def require(
-    session_id: str, learner_id: uuid.UUID, *, purpose: str = PURPOSE_GOAL_REFINEMENT
+async def require(
+    session: AsyncSession,
+    session_id: str,
+    learner_id: uuid.UUID,
+    *,
+    purpose: str = PURPOSE_GOAL_REFINEMENT,
 ) -> OnboardingSession:
     """The session, if this learner owns it and it is for this purpose.
 
     Raises :class:`NotYourSession` otherwise — the same answer for "someone else's" and "never
-    existed", so the endpoint cannot be used to discover which ids are real.
+    existed", so the endpoint cannot be used to discover which ids are real. The query asks for
+    all three at once rather than fetching by id and comparing, so a row that exists but belongs
+    to someone else never enters the process at all.
     """
-    record = _sessions.get(session_id)
-    if record is None or record.learner_id != learner_id or record.purpose != purpose:
+    record = await session.scalar(
+        select(OnboardingSession).where(
+            OnboardingSession.session_id == session_id,
+            OnboardingSession.learner_id == learner_id,
+            OnboardingSession.purpose == purpose,
+        )
+    )
+    if record is None:
         raise NotYourSession(session_id)
     return record
 
@@ -72,12 +74,16 @@ def require(
 def thread_key(session_id: str, learner_id: uuid.UUID) -> str:
     """The checkpointer thread key for this learner's session.
 
-    Namespacing by learner is the part that holds even if the registry is empty — after a
-    restart, say — because two learners presenting the same id still address different threads.
+    Namespacing by learner is the part that holds even if the record is gone — after a restore
+    from a backup taken before the id was issued, say — because two learners presenting the same
+    id still address different threads.
     """
     return f"{learner_id}:{session_id}"
 
 
-def forget(session_id: str) -> None:
+async def forget(session: AsyncSession, session_id: str) -> None:
     """Drop a session (its negotiation is over). Safe for an id that was never issued."""
-    _sessions.pop(session_id, None)
+    await session.execute(
+        delete(OnboardingSession).where(OnboardingSession.session_id == session_id)
+    )
+    await session.commit()

@@ -6,6 +6,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agent import checkpointing
 from app.api.deps import get_llm_client
 from app.api.v1 import api_router
 from app.core.config import get_settings
@@ -21,7 +22,8 @@ log = structlog.get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Startup/shutdown: validate config and the model registry, log lifecycle, dispose engine."""
+    """Startup/shutdown: validate config and the model registry, open the checkpointer's pool,
+    log lifecycle, then close both."""
     # Development defaults that are wrong in production fail here rather than at the first
     # request that depends on them — a misconfigured instance must not reach a readiness
     # probe and start taking traffic (S60).
@@ -29,8 +31,13 @@ async def lifespan(_: FastAPI):
     # Building the registry validates the role→provider map (see llm.registry). Doing it here
     # turns a typo in GURU_MODEL_* into a refusal to start, not a 500 mid-conversation.
     get_llm_client()
-    log.info("app.startup", env=str(settings.env))
+    # Opens the checkpointer's pool and migrates its schema, so the first learner to pause a
+    # practice does not pay for it — and so a database that cannot host durable state is
+    # reported at startup rather than discovered by a conversation that fails to resume.
+    await checkpointing.start(settings)
+    log.info("app.startup", env=str(settings.env), durable_checkpoints=checkpointing.is_durable())
     yield
+    await checkpointing.stop()
     await engine.dispose()
     log.info("app.shutdown")
 
