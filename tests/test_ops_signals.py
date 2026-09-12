@@ -73,6 +73,19 @@ async def test_calls_outside_the_window_are_not_counted(db_session: AsyncSession
     assert report.cost_usd == pytest.approx(1.0)
 
 
+async def test_the_breakdown_respects_the_window_as_well_as_the_total(
+    db_session: AsyncSession,
+) -> None:
+    """The totals and the buckets are separate queries, so they can disagree about "when"."""
+    await _call(db_session, cost=5.0, role="genius", model="opus", age_h=48)
+    await _call(db_session, cost=1.0, role="smart", model="sonnet", age_h=1)
+
+    report = await window(db_session, settings=Settings(), hours=24)
+    assert [b.name for b in report.by_role] == ["smart"]
+    assert [b.name for b in report.by_model] == ["sonnet"]
+    assert sum(b.cost_usd for b in report.by_role) == pytest.approx(report.cost_usd)
+
+
 async def test_an_unpriced_call_is_reported_rather_than_summed_as_zero(
     db_session: AsyncSession,
 ) -> None:
@@ -194,9 +207,11 @@ def test_losing_durable_checkpoints_is_critical() -> None:
 def test_work_waiting_with_nothing_in_flight_is_a_dead_consumer() -> None:
     report = evaluate(
         readiness=_ready(),
-        backlog=_backlog(pending=4, processing=0, oldest_pending_age_seconds=30.0),
+        # Old enough that the ageing threshold would also fire, which is the point: a dead
+        # worker's queue is always ageing too.
+        backlog=_backlog(pending=4, processing=0, oldest_pending_age_seconds=3600.0),
         spend=_spend(),
-        settings=Settings(),
+        settings=Settings(alert_pending_age_seconds=900.0),
     )
     names = [a.name for a in report.firing]
     assert "ingestion_stalled" in names

@@ -809,6 +809,11 @@ note, plan, mastery and export, by id. **All 13 passed on the first run** — th
 threading was genuinely being used to scope, not merely being carried. That is worth stating
 plainly as a null result rather than dressed up as a fix.
 
+**Mutated.** 13 behaviour mutations against the resolver, the credential check and the
+production guards: 12 killed and one equivalent — removing the duplicate-address pre-check
+changes nothing, because the unique constraint is what actually decides, which is what the
+function's own docstring says. Plus one inert control, which survived as it should.
+
 **Two things worth recording.** Seven of those boundary tests failed on their first run and
 none of them was an application bug — wrong enum member, wrong embedding dimension, a column
 that does not exist. Worth noting because a cross-learner test that errors in setup looks
@@ -2274,6 +2279,14 @@ a constraint that accepts them, that several credential-less learners do not col
 unique index, and that a conversation predating 0037 comes through with `0` rather than `NULL`
 — the `server_default` trap, verified by removing the server default and watching the test fail.
 
+**Measured.** 8 tests (5 cross-connection, 3 migration-with-data). Four mutations, all killed:
+moving the tracer's flush back outside the idempotency guard, removing `0037`'s
+`server_default`, adding a field to a response model without regenerating the types, and — as
+a control on the harness itself — not migrating the scratch database at all, which must fail
+every case that claims to seed an older revision. The `server_default` mutation is worth a
+note: the *first* attempt at it silently did not apply (a `sed` pattern that did not match),
+and reported as a survivor. Checking that a mutation applied is part of the result.
+
 **Still open:** browser/e2e journeys — the upload→curriculum→chat→practice→notes path in a real
 browser is still unwritten, and it is now the largest single gap here. Queue *integration*: the
 worker's tasks are tested, delivery through a real Redis broker is not, and no CI job runs one.
@@ -2395,6 +2408,16 @@ MinIO, since the in-memory store cannot exercise `head_object` or its error path
 The *reverse* direction is deliberately absent. Objects nothing references are a cleanup
 question rather than a correctness one, and deleting them safely is the orphan reconciliation
 S61 owns.
+
+**Measured.** 21 tests, and the S3 `exists()` path executed against the running MinIO rather
+than only the in-memory store. 13 mutations: 11 killed, and two equivalent that are equivalent
+*to each other* — the query's `blob_key IS NOT NULL` filter and the loop's `if not key:
+continue` each cover what the other does, so removing either alone changes nothing. That is
+defence in depth rather than a gap, and it is recorded rather than counted as a kill. One inert
+control survived as it should. Two survivors were real test weaknesses and were fixed: the
+"stalled supersedes ageing" assertion used a backlog too young for the ageing threshold to fire
+either way, so it proved nothing; and nothing asserted that the per-role and per-model
+breakdown respects the same window as the total, which are separate queries and can disagree.
 
 **Not done.** Still nothing rehearsed against real infrastructure — managed Postgres, real S3,
 TLS, secret delivery and network policy are all untested, and this pass changed nothing about
