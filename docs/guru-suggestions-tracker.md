@@ -190,9 +190,9 @@ URL, so the checkpointer cannot end up pointed at a different database from the 
 grading and planning are unaffected, so withholding traffic would turn a partial degradation
 into an outage. It is worth an alert and is not worth a 503.
 
-**Measured.** 23 tests; 13 mutations, 11 killed, one equivalent (the `InvalidResponse`-style
+**Measured.** 23 tests; 12 mutations, 11 killed, one equivalent (the `InvalidResponse`-style
 split between a release that was already released and one that fails — both keep the claim
-released, differing only in a log line), two controls that survived as designed. One survivor
+released, differing only in a log line), plus two inert controls that survived as designed. One survivor
 was a real gap: nothing asserted that `/ready` reported the *actual* durability rather than a
 constant.
 
