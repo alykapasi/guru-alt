@@ -25,7 +25,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
+from app.api.deps import CurrentLearner, EngineDep, LLMClientDep, SessionDep
 from app.core.config import get_settings
 from app.llm import LLMClient
 from app.models.chat import Conversation, ConversationPhase, Message, TurnStatus
@@ -45,6 +45,7 @@ from app.services import knowledge as knowledge_svc
 from app.services import refinement as refinement_svc
 from app.services import turn as turn_svc
 from app.services import workflow as workflow_svc
+from app.services.turn_common import TurnEvent
 
 log = structlog.get_logger(__name__)
 
@@ -146,16 +147,34 @@ class FlowChoice:
     resume: bool  # only meaningful for the workflow and refinement graphs
 
 
+def _open_check_id(event: TurnEvent) -> uuid.UUID | None:
+    """The item a ``done`` event leaves awaiting an answer, if any.
+
+    Only a tutor turn's own check qualifies, and it says so by marking the item ``check``
+    (S15). Every other item on a done event is informational rather than pending: the
+    guided-practice workflow reports the item it has just *finished* grading, so recording
+    that one as active would leave the conversation waiting for an answer to a question the
+    learner already answered — and hand their next message to the grader for it.
+    """
+    if event.detail != "check" or event.item is None:
+        return None
+    return event.item.id
+
+
 def _phase_after(
-    flow: TurnFlow, *, awaiting_reply: bool, workflow_paused: bool
+    flow: TurnFlow, *, awaiting_reply: bool, workflow_paused: bool, check_open: bool
 ) -> ConversationPhase:
     """What the conversation is waiting for now the turn has ended.
 
-    Two signals, and both are needed. ``awaiting_reply`` says the turn ended by asking the
-    learner for something rather than answering them — but the gate and the workflow both emit
-    it, for entirely different things, so the flow says *what* is being asked for. A tutor or
-    agentic reply asks for nothing, which is exactly the case the frontend's old inference got
-    wrong: it read "no goal, assistant spoke last" as a goal proposal.
+    Three signals, and all three are needed. ``awaiting_reply`` says the turn ended by asking
+    the learner for something rather than answering them — but the gate and the workflow both
+    emit it, for entirely different things, so the flow says *what* is being asked for. A tutor
+    or agentic reply asks for nothing, which is exactly the case the frontend's old inference
+    got wrong: it read "no goal, assistant spoke last" as a goal proposal.
+
+    ``check_open`` is the tutor flow's version of the same claim (S15): a plain-chat turn that
+    left a practice question with the learner *is* waiting on an answer, and saying so is what
+    makes the next message reach the grader instead of being read as more conversation.
 
     A committing gate turn emits ``committed`` and never ``awaiting_reply`` (see
     ``app/services/refinement.py``), so commitment needs no separate flag here.
@@ -172,6 +191,8 @@ def _phase_after(
         if flow is TurnFlow.REFINEMENT:
             return ConversationPhase.GOAL_PROPOSED
     if workflow_paused and flow is not TurnFlow.WORKFLOW:
+        return ConversationPhase.AWAITING_ANSWER
+    if check_open:
         return ConversationPhase.AWAITING_ANSWER
     return ConversationPhase.CHATTING
 
@@ -235,11 +256,10 @@ def _build_stream(
             session,
             llm,
             learner_id=learner_id,
-            conversation_id=conversation.id,
+            conversation=conversation,
             history=history,
             user_content=data.content,
             max_tokens=settings.chat_max_tokens,
-            subject_id=conversation.subject_id,
             source_ids=conversation.source_ids,
             persist_user=False,
         )
@@ -273,12 +293,10 @@ def _build_stream(
         session,
         llm,
         learner_id=learner_id,
-        conversation_id=conversation.id,
+        conversation=conversation,
         history=history,
         user_content=data.content,
         max_tokens=settings.chat_max_tokens,
-        goal=conversation.goal,
-        subject_id=conversation.subject_id,
         source_ids=conversation.source_ids,
         persist_user=False,
     )
@@ -306,6 +324,7 @@ async def send_message(
     session: SessionDep,
     learner: CurrentLearner,
     llm: LLMClientDep,
+    db_engine: EngineDep,
 ) -> StreamingResponse:
     """Persist the user turn, then stream the tutor's reply as Server-Sent Events.
 
@@ -331,7 +350,8 @@ async def send_message(
     # would make this conversation's abandoned turns look alive.
     await turn_svc.reap_stale(session, conversation_id)
 
-    if not turn_lock.claim(conversation_id):
+    claim = await turn_lock.claim(db_engine, conversation_id)
+    if claim is None:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "a turn is already in progress for this conversation"
         )
@@ -374,16 +394,17 @@ async def send_message(
             history=history,
         )
     except turn_svc.TurnAlreadyCompleted as exc:
-        turn_lock.release(conversation_id)
+        await claim.release()
         raise HTTPException(
             status.HTTP_409_CONFLICT, "this turn has already been answered"
         ) from exc
     except Exception:
-        turn_lock.release(conversation_id)
+        await claim.release()
         raise
 
     async def event_stream() -> AsyncIterator[str]:
         awaiting_reply = False
+        check_open = False
         active_item: uuid.UUID | None = None
         # None until a terminal event arrives. A stream that ends without one did not finish —
         # the client's old reading of EOF as success is exactly what this records against.
@@ -399,6 +420,9 @@ async def send_message(
             elif ev.type == "done":
                 outcome = TurnStatus.COMPLETED
                 assistant_message_id = uuid.UUID(ev.message_id) if ev.message_id else None
+                posed = _open_check_id(ev)
+                if posed is not None:
+                    check_open, active_item = True, posed
                 yield _sse(
                     {
                         "type": "done",
@@ -441,6 +465,7 @@ async def send_message(
                 choice.flow,
                 awaiting_reply=awaiting_reply,
                 workflow_paused=choice.workflow_paused,
+                check_open=check_open,
             ),
             active_item_id=active_item,
         )
@@ -461,6 +486,6 @@ async def send_message(
             async for chunk in event_stream():
                 yield chunk
         finally:
-            turn_lock.release(conversation_id)
+            await claim.release()
 
     return StreamingResponse(guarded_stream(), media_type="text/event-stream")

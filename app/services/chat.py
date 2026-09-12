@@ -5,7 +5,8 @@ and ``run_tutor_turn`` own their own commit boundaries around streaming.
 """
 
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import dataclass
 
 import structlog
 from sqlalchemy import select
@@ -13,18 +14,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agent.tutor import TutorState, build_tutor_graph
-from app.agent.untrusted import as_untrusted
 from app.core.config import get_settings
-from app.learning import difficulty
+from app.learning import conversation_evidence
+from app.learning.conversation_evidence import TurnIntent
+from app.learning.diagnosis import FailureKind
+from app.learning.grading import GradeResult, InvalidResponse
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
-from app.memory import retrieval as memory_retrieval
-from app.memory.retrieval import MemoryHit
+from app.models.assessment import Item
 from app.models.chat import Conversation, ConversationPhase, ConversationSource, Message
+from app.models.knowledge import KC
 from app.rag.retrieval import retrieve
+from app.schemas.assessment import AnswerSubmit
+from app.services import assessment as assessment_svc
+from app.services import knowledge as knowledge_svc
+from app.services import learner_context
 from app.services import session_runner as session_runner_svc
 from app.services.assessment import item_to_read
-from app.services.lesson_plan import PlanGroundingContext, get_active_step_context
+from app.services.lesson_plan import PlanGroundingContext
 from app.services.llm_log import log_llm_call
 from app.services.turn_common import (
     TurnEvent,
@@ -43,31 +50,89 @@ TUTOR_SYSTEM_PROMPT = (
 )
 
 
-def _plan_grounding_note(context: PlanGroundingContext) -> str:
-    parts = [
-        f"The learner's current lesson-plan focus in {context.subject_name}: {context.kc_name}."
-    ]
-    if context.target_difficulty is not None:
-        # A band, not the number. This used to interpolate the raw logit, which meant the
-        # tutor's system prompt carried the sentence "Target difficulty: 0.00." — and since
-        # nothing had ever written a difficulty to an item, 0.00 was the only value it could
-        # take. An instruction a model cannot act on is not a neutral one; it still steers.
-        parts.append(f"Aim at a {difficulty.band(context.target_difficulty)} level.")
-    if context.hint_density is not None:
-        parts.append(f"Hint density: {context.hint_density}.")
-    if context.preferred_item_type is not None:
-        parts.append(f"Preferred item type: {context.preferred_item_type}.")
-    return " ".join(parts)
+@dataclass(frozen=True)
+class CheckOutcome:
+    """A conversational attempt that was graded — what the tutor is told before it replies."""
+
+    item: Item
+    result: GradeResult
 
 
-def _memory_note(hits: Sequence[MemoryHit]) -> str:
-    facts = "; ".join(f"[{h.kind}] {h.content}" for h in hits)
-    # Fenced as data (S31): a memory is extracted from conversation text, so a hostile passage
-    # that reached one turn can be quoted back into every later one as remembered fact.
+_REPAIR: dict[FailureKind, str] = {
+    # One teaching move per failure kind, taken from what each kind means in
+    # ``app.learning.diagnosis``. This is the join the diagnosis vocabulary was built for: it
+    # was defined so code could branch on it, and until now nothing did — the label was stored,
+    # returned to the client, and never allowed to change what the learner was told next.
+    FailureKind.NOTATION: (
+        "Name the convention they missed and move on — the underlying idea was there, so do "
+        "not re-teach it."
+    ),
+    FailureKind.PROCEDURAL: (
+        "Walk through the step they carried out wrongly. Do not re-explain the idea; they "
+        "have it, and hearing it again will not fix the execution."
+    ),
+    FailureKind.CONCEPTUAL: (
+        "Re-teach the idea itself from a different angle, and do not offer more practice yet "
+        "— repetition on a wrong idea entrenches it."
+    ),
+    FailureKind.PREREQUISITE: (
+        "The gap is upstream of what you asked. Say so plainly, and address that earlier idea "
+        "before returning to this question."
+    ),
+}
+
+
+def _check_note(item: Item) -> str:
+    """Tell the tutor which question is actually on the table.
+
+    Until now the tutor never knew. The practice item was resolved, handed to the client as a
+    widget, and left out of the prompt entirely — so the tutor's prose routinely asked
+    something else, and the learner saw two different questions at once with only one of them
+    graded.
+    """
     return (
-        "What you remember about this learner from past conversations:\n"
-        f"{as_untrusted('LEARNER MEMORY', facts)}"
+        "You have already put this practice question to the learner and they have not answered "
+        "it yet. Keep it in play: restate it in your own words if that helps, but do not swap "
+        "in a different question, because their next answer is graded against this one.\n"
+        f"Practice question: {item.stem}"
     )
+
+
+def _feedback_note(outcome: CheckOutcome, kc_names: Mapping[uuid.UUID, str]) -> str:
+    """Turn a grade into an instruction about what to teach next.
+
+    Reports the per-component split and the diagnosis only where the grader actually produced
+    them (S09, S10). An MCQ knows an answer was wrong and nothing about why, and this must read
+    the same way — a prompt that asserts a reason the evidence does not carry would have the
+    tutor confidently repair a misconception nobody diagnosed.
+    """
+    verdict = "correct" if outcome.result.correct else "not correct"
+    parts = [
+        f"The learner has just attempted that question. It graded {outcome.result.score:.2f} "
+        f"({verdict})."
+    ]
+    if outcome.result.component_scores:
+        split = "; ".join(
+            f"{kc_names.get(kc_id, 'one component')}: {score:.2f}"
+            for kc_id, score in outcome.result.component_scores.items()
+        )
+        parts.append(f"Part by part — {split}.")
+    for kc_id, diagnosis in outcome.result.diagnoses.items():
+        repair = _REPAIR.get(diagnosis.kind)
+        if repair is None:  # NONE and INCOMPLETE: nothing diagnosed to repair
+            continue
+        name = kc_names.get(kc_id, "that part")
+        parts.append(f"On {name}, what went wrong was {diagnosis.kind.value}. {repair}")
+        if diagnosis.evidence and diagnosis.evidence_verbatim:
+            # Only a span actually found in the response is quoted back. An unverified quote
+            # is still usable as a diagnosis, but showing a learner words they never wrote as
+            # though they wrote them is its own failure (S09).
+            parts.append(f'They wrote: "{diagnosis.evidence}".')
+    parts.append(
+        "Respond to what they actually wrote, then follow the guidance above. Do not pose "
+        "another practice question this turn."
+    )
+    return " ".join(parts)
 
 
 async def create_conversation(
@@ -169,59 +234,185 @@ async def recent_messages(
     return list(reversed(result.all()))
 
 
+async def _resolve_check(
+    session: AsyncSession,
+    llm: LLMClient,
+    *,
+    learner_id: uuid.UUID,
+    conversation: Conversation,
+    user_content: str,
+) -> tuple[Item | None, CheckOutcome | None]:
+    """What this message does about the check that is open: returns (still open, graded).
+
+    Mastery used to be reachable from exactly one place — the guided-practice workflow calling
+    ``answer_item`` — so a learner who answered a question in conversation had demonstrated
+    nothing the system recorded. This is the second door, and it is deliberately narrow: only a
+    message that an intent gate reads as a real attempt at a question the system itself posed
+    becomes an observation (S15, :mod:`app.learning.conversation_evidence`).
+
+    Every failure here leaves the check standing and records nothing. A grading call that
+    errors must not consume the learner's answer, and must not be resolved by guessing a score.
+    """
+    if (
+        conversation.phase != ConversationPhase.AWAITING_ANSWER
+        or conversation.active_item_id is None
+    ):
+        return None, None
+    item = await assessment_svc.get_item(session, conversation.active_item_id)
+    if item is None:
+        # Belt and braces: ``active_item_id`` is ON DELETE SET NULL, so a deleted item clears
+        # the pointer and the check above already caught it. This covers the read losing a race
+        # with that delete — and grading is not the place to find out.
+        return None, None
+
+    intent, usage = await conversation_evidence.classify_intent(
+        llm, question=item.stem, message=user_content
+    )
+    if usage.input_tokens or usage.output_tokens:
+        await log_llm_call(
+            learner_id=learner_id,
+            conversation_id=conversation.id,
+            role=conversation_evidence.CHECK_ROLE.value,
+            spec=llm.spec(conversation_evidence.CHECK_ROLE),
+            usage=usage,
+        )
+
+    if intent is TurnIntent.WITHDRAWAL:
+        # Declining a question is not failing it. The check is dropped and nothing reaches the
+        # tracer — a learner who would rather move on must be able to, without the refusal
+        # itself being recorded as evidence they could not do it.
+        log.info("chat.check_withdrawn", conversation_id=str(conversation.id))
+        return None, None
+    if intent is TurnIntent.DEFERRAL:
+        # They engaged without answering, so the question stands — and the reply they are about
+        # to get is help they will have had before attempting it.
+        conversation.active_item_scaffolds += 1
+        return item, None
+
+    try:
+        result, _states = await assessment_svc.answer_item(
+            session,
+            learner_id,
+            item,
+            AnswerSubmit(
+                response={"text": user_content},
+                # Server-counted, like every other assistance signal: it is the conversation's
+                # own history that decides whether this was an independent demonstration.
+                hints_used=conversation.active_item_scaffolds,
+            ),
+            llm=llm,
+        )
+    except InvalidResponse:
+        # The response does not fit the item type at all. Only SHORT items are ever posed as
+        # conversational checks (see below), so this means the conversation is holding an item
+        # from elsewhere — leave it open rather than scoring an answer nobody could give.
+        log.warning("chat.check_not_answerable", item_id=str(item.id))
+        return item, None
+    except Exception as exc:
+        log.error("chat.check_grading_failed", item_id=str(item.id), error=str(exc))
+        return item, None
+    return None, CheckOutcome(item=item, result=result)
+
+
+async def _pose_check(
+    session: AsyncSession,
+    llm: LLMClient,
+    *,
+    learner_id: uuid.UUID,
+    plan_context: PlanGroundingContext,
+) -> Item | None:
+    """A question to leave with the learner for the plan's active step, or ``None``.
+
+    SHORT only, and that is a correctness constraint rather than a preference: a conversational
+    answer arrives as prose, and grading prose against an MCQ reads ``response["choice"]``,
+    finds nothing, and scores every answer wrong (see ``short_answer_item_for_kc``). Structured
+    item types stay on the session surface, where the client sends a structured answer.
+    """
+    kc = await session.get(KC, plan_context.kc_id)
+    if kc is None:
+        return None
+    return await session_runner_svc.short_answer_item_for_kc(
+        session, llm, learner_id=learner_id, kc=kc
+    )
+
+
 async def run_tutor_turn(
     session: AsyncSession,
     llm: LLMClient,
     *,
     learner_id: uuid.UUID,
-    conversation_id: uuid.UUID,
+    conversation: Conversation,
     history: Sequence[Message],
     user_content: str,
     max_tokens: int,
-    goal: str | None = None,
-    subject_id: uuid.UUID | None = None,
     source_ids: Sequence[uuid.UUID] = (),
     persist_user: bool = True,
 ) -> AsyncIterator[TurnEvent]:
     """Persist the user turn, stream the tutor's reply through the graph, then persist it.
 
-    ``goal`` is the conversation's committed goal from the refinement gate (if any) —
-    folded into the system prompt so generation stays grounded in it. The learner's active
-    lesson-plan step (if any) is folded in the same way, so the plan actually drives the
-    conversation rather than sitting beside it — see ``lesson_plan.get_active_step_context``.
+    The conversation's committed goal from the refinement gate (if any) is folded into the
+    system prompt so generation stays grounded in it. The learner's active lesson-plan step (if
+    any) is folded in the same way, so the plan actually drives the conversation rather than
+    sitting beside it — see ``lesson_plan.get_active_step_context``.
 
-    ``subject_id`` (the conversation's, if scoped to one) makes that lookup exact instead of
-    the cross-subject heuristic, and additionally resolves a practice item for the active step
-    (see ``session_runner.next_item``) attached to the "done" event — the session runner
-    following the plan, not just talking about it. The same ``subject_id`` (plus ``source_ids``,
-    the conversation's explicit narrowing if any) scopes retrieval-grounded citations (Phase 7) —
-    a "general" (subject-less) conversation retrieves nothing and cites nothing, unchanged from
-    before this existed.
+    ``conversation.subject_id`` makes that lookup exact instead of the cross-subject heuristic,
+    and scopes retrieval-grounded citations (Phase 7) together with ``source_ids``, the
+    conversation's explicit narrowing if any — a "general" (subject-less) conversation retrieves
+    nothing, cites nothing, and poses no check.
 
     Learner-global memory (facts/preferences/summaries from past conversations — see
-    ``app.memory.retrieval``) is folded in on every turn, not gated behind ``subject_id``; this
-    is what "wires memory into sessions" — write-back is a separate, on-demand step (see
+    ``app.memory.retrieval``) is folded in on every turn, not gated behind a subject; this is
+    what "wires memory into sessions" — write-back is a separate, on-demand step (see
     ``app.services.memory.write_back``). System-prompt order is pinned: base prompt -> goal ->
-    plan-grounding -> retrieval-grounding -> memory-note.
+    plan-grounding -> check or feedback -> retrieval-grounding -> memory-note.
+
+    **The check (S15).** A subject-scoped conversation leaves one practice question with the
+    learner and keeps it there until they answer it, decline it, or the item disappears. While
+    it stands, the tutor is told what it is, so its prose and the client's widget ask the same
+    thing. When the learner attempts it, the attempt is graded through the same
+    ``answer_item`` path guided practice uses — tracer, per-component evidence, diagnosis, plan
+    revision — and the grade comes back into this turn's prompt as instructions about what to
+    teach. A turn that resolves a check does not pose the next one: the feedback is the turn.
 
     ``persist_user`` is False when the caller has already written the learner's message
     and linked it to a durable turn record (S51); the content is still carried into this
     turn's model context, it is simply not appended to the transcript a second time.
     """
+    conversation_id = conversation.id
+    subject_id = conversation.subject_id
     messages = to_chat_messages(history)
     messages.append(ChatMessage(role=ChatRole.USER, content=user_content))
     if persist_user:
         await add_message(session, conversation_id, ChatRole.USER.value, user_content)
         await session.commit()
 
-    system = TUTOR_SYSTEM_PROMPT
-    if goal:
-        system = f"{TUTOR_SYSTEM_PROMPT}\n\nThe learner's stated goal for this conversation: {goal}"
-    plan_context = await get_active_step_context(session, learner_id, subject_id=subject_id)
-    if plan_context is not None:
-        system = f"{system}\n\n{_plan_grounding_note(plan_context)}"
+    context = await learner_context.gather(
+        session, llm, learner_id=learner_id, conversation=conversation, query=user_content
+    )
+
+    open_check, outcome = await _resolve_check(
+        session, llm, learner_id=learner_id, conversation=conversation, user_content=user_content
+    )
+    notes: list[str] = []
+    if outcome is not None:
+        kcs = await knowledge_svc.get_kcs(session, [link.kc_id for link in outcome.item.kc_links])
+        notes.append(_feedback_note(outcome, {kc.id: kc.name for kc in kcs}))
+    elif open_check is None and context.plan is not None and subject_id is not None:
+        # Subject-scoped only, and the asymmetry with plan *grounding* is deliberate. A
+        # subject-less conversation still gets grounding from whichever plan the learner was
+        # last on, because a soft hint aimed at the wrong subject costs a slightly odd
+        # paragraph. A check is not a hint: answering it writes a mastery observation, and
+        # writing one against a KC picked by a cross-subject heuristic is evidence about a
+        # skill the conversation may have had nothing to do with.
+        open_check = await _pose_check(
+            session, llm, learner_id=learner_id, plan_context=context.plan
+        )
+        conversation.active_item_scaffolds = 0
+    if open_check is not None:
+        notes.append(_check_note(open_check))
 
     hits = []
+    grounding = None
     if subject_id is not None:
         hits = await retrieve(
             session,
@@ -233,24 +424,16 @@ async def run_tutor_turn(
             limit=get_settings().chat_grounding_limit,
         )
         grounding = format_grounding(hits)
-        if grounding is not None:
-            system = f"{system}\n\n{grounding}"
 
-    memory_hits = await memory_retrieval.retrieve(
-        session,
-        llm,
-        user_content,
-        learner_id=learner_id,
-        limit=get_settings().memory_retrieval_limit,
+    system = learner_context.compose(
+        TUTOR_SYSTEM_PROMPT,
+        context,
+        extra=notes,
+        grounding=grounding,
+        # An open check is a fixed task: the tutor is told not to swap the question, so it must
+        # not also be told what level to aim a new one at.
+        task_fixed=open_check is not None,
     )
-    if memory_hits:
-        system = f"{system}\n\n{_memory_note(memory_hits)}"
-
-    practice_item = None
-    if subject_id is not None:
-        practice_item = await session_runner_svc.next_item(
-            session, llm, learner_id=learner_id, subject_id=subject_id
-        )
 
     spec = llm.spec(ModelRole.SMART)
     initial: TutorState = {
@@ -294,13 +477,15 @@ async def run_tutor_turn(
         usage=usage,
     )
     await session.commit()
-    item_read = item_to_read(practice_item) if practice_item is not None else None
     yield TurnEvent(
         type="done",
         message_id=str(assistant.id),
         usage=usage,
         cost_usd=cost,
-        item=item_read,
+        item=item_to_read(open_check) if open_check is not None else None,
+        # "check" is what tells the router this item is a question still awaiting an answer,
+        # rather than one the turn merely mentioned — see ``_phase_after``.
+        detail="check" if open_check is not None else "",
         citations=citations,
     )
 

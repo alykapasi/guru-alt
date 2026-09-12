@@ -8,8 +8,8 @@ back to ``await_response``.
 
 Unlike the plain tutor graph, this one is compiled **with a checkpointer** — the pause/resume
 across HTTP requests requires LangGraph to persist state between the interrupt and its resume
-(same mechanism as ``app/agent/refinement.py``, whose module docstring documents the
-in-memory-checkpointer limitations this graph shares). Unlike refinement, ``grade`` also writes
+(same mechanism and the same Postgres-backed saver as ``app/agent/refinement.py`` — see
+``app/agent/checkpointing.py``). Unlike refinement, ``grade`` also writes
 to the DB mid-graph — it closes over ``session``/``learner_id`` (passed into
 ``build_workflow_graph``, never stored in state, which must stay checkpoint-serializable). The
 dispatcher (``app/services/workflow.py``) rebuilds the graph fresh each request with that
@@ -20,13 +20,13 @@ import uuid
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent import checkpointing
 from app.agent.state import WorkflowState
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
@@ -34,8 +34,6 @@ from app.schemas.assessment import AnswerSubmit
 from app.services import assessment as assessment_svc
 
 __all__ = ["WorkflowState", "build_workflow_graph", "workflow_config"]
-
-_CHECKPOINTER = InMemorySaver()
 
 
 def workflow_config(thread_id: str) -> RunnableConfig:
@@ -122,4 +120,4 @@ def build_workflow_graph(
     graph.add_conditional_edges(
         "respond", route_after_respond, {"end": END, "await_response": "await_response"}
     )
-    return graph.compile(checkpointer=_CHECKPOINTER)
+    return graph.compile(checkpointer=checkpointing.checkpointer())

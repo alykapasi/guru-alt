@@ -29,7 +29,7 @@ from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState
 from app.services import assessment as assessment_svc
-from app.services import chat as chat_svc
+from app.services import learner_context
 from app.services import lesson_plan as lesson_plan_svc
 from app.services import placement as placement_svc
 from app.services import session_runner as runner_svc
@@ -514,7 +514,7 @@ def test_the_tutor_is_told_a_level_not_a_float() -> None:
     """This prompt used to carry "Target difficulty: 0.00." — and 0.00 was the only value it
     could ever take, because nothing had written a difficulty to an item. An instruction a
     model cannot act on is not inert; it still steers the turn."""
-    note = chat_svc._plan_grounding_note(
+    note = learner_context.plan_note(
         PlanGroundingContext(
             subject_name="Linear Algebra",
             kc_id=uuid.uuid4(),
@@ -525,12 +525,13 @@ def test_the_tutor_is_told_a_level_not_a_float() -> None:
             preferred_item_type=None,
         )
     )
+    assert note is not None
     assert "demanding" in note
     assert "1.7" not in note
 
 
 def test_a_plan_with_no_target_says_nothing_about_level() -> None:
-    note = chat_svc._plan_grounding_note(
+    note = learner_context.plan_note(
         PlanGroundingContext(
             subject_name="Linear Algebra",
             kc_id=uuid.uuid4(),
@@ -541,4 +542,4 @@ def test_a_plan_with_no_target_says_nothing_about_level() -> None:
             preferred_item_type=None,
         )
     )
-    assert "level" not in note
+    assert note is not None and "level" not in note

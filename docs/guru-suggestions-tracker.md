@@ -62,9 +62,9 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | S12 | Apply difficulty targeting to question selection/generation. | The session runner explicitly documents target difficulty as unapplied. [R6] | The learner's estimated capability affects the actual task they receive. | High | Implemented (see below) |
 | S13 | Distinguish assisted retries from independent demonstrations in mastery evidence. | Guided practice hints and retries the same question; every attempt updates mastery. Hint context is omitted by that workflow and is not used by the estimator even when recorded elsewhere. [R7–R8] | Prevent assistance and repeated exposure from producing unjustified mastery confidence. | First | Implemented (see below) |
 | S14 | Select fresh assessment items with awareness of prior exposure, and check delayed retention and transfer. | Bank selection returns the oldest matching item without considering the learner's exposure. [R2] | Establish that the learner can solve a different problem without help and retain that capability. | First | Implemented (see below) |
-| S15 | Connect exploratory conversation to structured learning evidence through a deliberate assessment mechanism. | Plain chat can ask questions, but its conversational answers do not directly update mastery. [R9] | Make the initial learner-led experience contribute trustworthy evidence without treating all conversation as proof of mastery. | High | Accepted |
-| S16 | Share appropriate learner context and learning-state access across chat, agentic, and guided modes. | Plain chat injects memory and plan hints; agentic service does not inject those same contexts. [R9–R10] | Switching modes retains relevant understanding of the learner and their goal. | High | Accepted |
-| S17 | Persist resumable guided-practice state durably. | Workflow uses an in-memory checkpointer. [R7] | A restart does not lose the paused practice state needed to continue correctly. | Before reliable external use | Accepted |
+| S15 | Connect exploratory conversation to structured learning evidence through a deliberate assessment mechanism. | Plain chat can ask questions, but its conversational answers do not directly update mastery. [R9] | Make the initial learner-led experience contribute trustworthy evidence without treating all conversation as proof of mastery. | High | Implemented (see below) |
+| S16 | Share appropriate learner context and learning-state access across chat, agentic, and guided modes. | Plain chat injects memory and plan hints; agentic service does not inject those same contexts. [R9–R10] | Switching modes retains relevant understanding of the learner and their goal. | High | Implemented (see below) |
+| S17 | Persist resumable guided-practice state durably. | Workflow uses an in-memory checkpointer. [R7] | A restart does not lose the paused practice state needed to continue correctly. | Before reliable external use | Implemented (see below) |
 | S18 | Calibrate mastery, placement, and scaffolding heuristics against real evidence. | Placement mappings, completion thresholds, and profile-to-scaffolding thresholds are explicitly described as arbitrary or uncalibrated. [R1, R5, R11] | Progress estimates and teaching choices correspond to demonstrated capability. | High; requires data | Accepted |
 | S19 | Retain the useful existing foundations while improving the teaching loop. | Pure estimation logic, persistent per-component state, event logging, prerequisite planning, and provider abstraction already exist. | Improve the behavior incrementally using existing boundaries. | Ongoing | Accepted |
 | S20 | Synchronize documentation with implementation and the clarified mission. | README describes the frontend as future work; roadmap labels the experiment suite not started despite tooling being present. Audience guidance also needs the nuance agreed here. | Future reviews and implementation plans start from an accurate description. | Supporting | Accepted |
@@ -141,6 +141,219 @@ the kind of question S59 exists for, and this deliberately does not answer it. T
 does not render a detour differently from any other step, so the explanation the two new fields
 exist to carry does not yet reach the learner. And a diagnosed prerequisite outside the KC's
 direct prerequisites is dropped rather than treated as evidence the *graph* is wrong.
+
+### S17 — A paused conversation that outlives the process that paused it
+
+**Status:** Partially implemented (branch `feat/s15-s16-s17`) · **Priority:** Before reliable
+external use
+
+**Implemented — the state itself.** Two graphs pause mid-conversation and wait for the learner:
+the goal-refinement gate, and the guided-practice loop. Both compiled against LangGraph's
+`InMemorySaver`, so everything between the interrupt and its resume lived in one process's heap.
+A deploy, a crash, or an autoscaler moving the pod silently discarded every paused conversation
+in flight — the learner saw a practice question they could no longer answer, and the gate's
+dispatcher degraded that to "start plain chat instead", which is a reasonable thing to do with
+state that is genuinely gone and a terrible thing to need. The saver is Postgres-backed now, and
+the test that matters pauses a graph through one saver and resumes it through a *different* one
+on a different pool, which is what a restart looks like from the state's point of view.
+
+**Implemented — the two things that had to move with it, and why not moving them would have
+been worse than doing nothing.** The turn lock and the onboarding-session registry were both
+in-process, and both were documented as *deliberately* exactly as strong as the checkpointer
+behind them. That was right: a durable claim in front of volatile state promises more than the
+state can keep. Reversing it is not symmetric. A durable checkpointer with an in-process lock is
+strictly worse than what came before, because any worker can now reach any paused practice and
+two of them can resume the same one, grade one answer twice, and write two mastery observations
+for one piece of work. And a negotiation whose ownership record died with the process can only
+ever be refused, which discards it exactly as surely as losing the state did. So all three
+moved.
+
+**Implemented — an advisory lock, not a lease.** A lease needs a duration, and a turn's duration
+is whatever the model and the learner take: any timeout is either long enough to strand a
+conversation after a crash, or short enough to hand a live turn to a second claimant. A
+session-level Postgres advisory lock held on a dedicated connection needs no timeout at all —
+Postgres releases it when the connection ends, and a crashed process's connections end. The cost
+is one connection per turn in flight, bounded by the same thing that already bounds the SSE
+responses, and it is held in `AUTOCOMMIT` so it does not pin a snapshot for the length of a
+stream.
+
+**Implemented — the checkpointer gets its own pool, and the reason is not laziness.** It is
+LangGraph's schema, migrated by LangGraph's own `setup()`, and it speaks psycopg3 while the
+application speaks asyncpg through SQLAlchemy. Writing its tables into Alembic would fork a
+schema the library owns and upgrades. Only the `+driver` suffix is stripped from the configured
+URL, so the checkpointer cannot end up pointed at a different database from the rest of the app
+— which would look exactly like durability until a restart.
+
+**Implemented — degradation is loud.** If the pool cannot open, the graphs fall back to
+`InMemorySaver` rather than the process refusing to serve chat at all, and `/ready` reports
+`durable_checkpoints: false`. That flag deliberately does not make the instance unready: chat,
+grading and planning are unaffected, so withholding traffic would turn a partial degradation
+into an outage. It is worth an alert and is not worth a 503.
+
+**Measured.** 23 tests; 12 mutations, 11 killed, one equivalent (the `InvalidResponse`-style
+split between a release that was already released and one that fails — both keep the claim
+released, differing only in a log line), plus two inert controls that survived as designed. One survivor
+was a real gap: nothing asserted that `/ready` reported the *actual* durability rather than a
+constant.
+
+**A tooling defect found on the way, worth recording because it invalidated results silently.**
+The mutation harness reverted files with `mv`, which can restore a timestamp that matches the
+`.pyc` written during the mutated run when the mutation preserves the file's size. Python then
+reuses the *mutated* bytecode afterwards. This produced a run of false kills — including a
+control mutation that only changed a docstring — and, worse, could have produced false
+survivals. It was caught because the control was checked rather than assumed. The harness now
+clears `__pycache__` on both sides of every run and treats a test-selection error as a failed
+run rather than a survival; every S17 mutation above was re-run on the fixed harness.
+
+**Not done.** Durability is proved across savers and pools, not across an actual process
+restart, and not under two workers racing the same thread — the lock is what makes that safe and
+the lock is tested directly, but the combination is not. The advisory key is the low 32 bits of
+the conversation UUID, so two conversations can collide; the cost is one refused turn that the
+client already knows how to retry, but it is a real (if remote) collision and nothing detects it.
+The checkpointer's own tables are outside Alembic by design, so `poe check`'s migration gate says
+nothing about them and a LangGraph upgrade that changes its schema will migrate on first start
+rather than on deploy. Nothing prunes committed or abandoned checkpoints, so the table grows
+without bound. The fallback to volatile state is reported but not alerted on, and no runbook says
+what to do about it. Onboarding session rows are never expired, only deleted when a negotiation
+ends or a learner is. And a paused conversation now survives long enough to raise a question the
+old behaviour never had to answer: a practice item posed against a lesson plan that has since
+been revised is resumable, and nothing checks that resuming it still makes sense.
+
+### S16 — One learner, whichever mode is running
+
+**Status:** Partially implemented (branch `feat/s15-s16-s17`) · **Priority:** High
+
+**Implemented — one assembler, one order.** Plain chat folded three things into its system
+prompt: the conversation's committed goal, the lesson plan's active step, and the facts
+remembered about this learner. The agentic path folded in none of them. Guided practice folded
+in only the step it was already practising — not the goal, not the memory. `learner_context`
+now assembles all three and composes them in one pinned order (base → goal → plan focus →
+flow-specific notes → retrieval grounding → memory), and all three flows go through it.
+
+**Implemented — the framing that makes this a defect rather than three designs.** The client
+offers the modes as a toggle on a single conversation. So this was never three products with
+three levels of knowledge; it was one conversation forgetting who it was talking to whenever
+the learner pressed a different button, and remembering again when they pressed back. A learner
+who had spent ten turns establishing that they think in pictures and are working towards a
+specific exam got a tool-using answer that knew neither.
+
+**Implemented — the one thing deliberately not shared.** The agentic flow still does no upfront
+retrieval. It has a `search_materials` tool, so retrieving into the prompt as well would pay for
+the same passages twice and pre-empt the decision the tool exists to let the model make. That is
+the single documented exception, and there is a test that it stays one.
+
+**Implemented — item-selection hints are withheld once a task is fixed.** `hint_density` and the
+plan's focus describe *how to teach* and go everywhere. The difficulty band and preferred item
+type describe *what task to set*. Guided practice is told in the same breath to pose one exact
+problem and not to invent a different one; adding "aim at a challenging level" to that prompt is
+an instruction to do the thing it was just forbidden to do. The same now applies to a plain-chat
+turn holding an open check (S15). One rule, stated once: when a specific item is in play, the
+selection hints are not sent.
+
+**Implemented — a check is not grounding.** Merging the three flows exposed an asymmetry worth
+keeping. `get_active_step_context` falls back to a cross-subject heuristic for a subject-less
+conversation, so a "general" conversation gets plan grounding from whichever plan the learner
+was last on. It does *not* get a check: grounding aimed at the wrong subject costs a slightly
+odd paragraph, while answering a check writes a mastery observation, and one recorded against a
+KC picked by a heuristic is evidence about a skill the conversation may never have touched.
+
+**Measured.** 9 tests; 11 mutations, all killed, plus an inert control that survived. Two
+survivors found real gaps. The memory-fencing test asserted only that the label appeared, which
+a prompt that merely mentions the words would also satisfy — it now asserts the nonce-delimited
+block and the instruction that prefaces it. And nothing pinned that guided practice withholds
+the difficulty band, so the rule above existed only in a comment.
+
+**Not done.** "Appropriate" context is still one set for every mode; nothing decides that a
+bounded tool action needs less of the learner's history than a teaching turn does, and the
+agentic prompt is now measurably longer on every turn for context it may not use. Memory
+retrieval is an embedding call per turn, so extending it to the agentic and workflow flows
+extended that cost to them; nothing caches it within a conversation, and guided practice avoids
+the repeat only incidentally, because a resumed round reuses the prompt held in the checkpoint.
+The refinement gate is the fourth flow and is deliberately left out — it runs before a goal
+exists, which is most of what this shares. Nothing tests that a *future* flow goes through the
+assembler, so the property this fixes can still decay by addition rather than by edit. And the
+learner cannot see or correct what the system believes it remembers about them, which is the
+part of "shared context" that matters most once the memory is wrong.
+
+### S15 — Make a conversation produce evidence, without making all of it evidence
+
+**Status:** Partially implemented (branch `feat/s15-s16-s17`) · **Priority:** High
+
+**Implemented — the second door to the tracer.** Mastery was reachable from exactly one place:
+`answer_item`, called by the guided-practice workflow and by the `POST /items/{id}/answer`
+endpoint. A learner who explained an idea correctly in chat had demonstrated nothing the system
+recorded. A subject-scoped tutor turn now leaves one practice question with the learner, keeps
+it there until they answer it or decline it, and grades a genuine attempt through that same
+`answer_item` path — so the tracer, per-component evidence, diagnosis and plan revision all
+apply to a conversational answer exactly as they do to a submitted one.
+
+**Implemented — the recorded gap was again the smaller half.** The tracker row says
+conversational answers do not update mastery. What the code actually did was worse than
+inert: every subject-scoped turn resolved a *fresh* practice item, handed it to the client as a
+widget, never mentioned it to the tutor, and discarded it on the next turn. The tutor's own
+system prompt is instructed to "check the learner's understanding with questions", so it asked
+one question in prose while the client displayed a different one — and neither was graded. The
+conversation's phase said `chatting` throughout. There was no question to answer, no record of
+which question it was, and nothing that would have read an answer as an answer.
+
+**Implemented — the gate, and why its default is not neutral.** A message arriving against an
+open check is classified FAST as `attempt` / `deferral` / `withdrawal` before anything is
+graded. Every unparseable reply, every empty message and every provider failure resolves to
+`deferral`. The two errors are not symmetric: recording nothing leaves the question open and
+the learner able to answer it, while recording an invented attempt moves the ability estimate,
+reschedules the FSRS card and revises the lesson plan before anyone notices. So the default is
+the one that is recoverable, and eleven of the 39 tests exist to hold it there.
+
+**Implemented — declining is not failing.** A learner who changes the subject drops the check
+with no evidence recorded. A refusal to answer must not itself become a mark against them.
+
+**Implemented — help before the attempt is counted.** Each tutor reply given while the question
+still stands increments `Conversation.active_item_scaffolds`, which reaches `answer_item` as
+`hints_used` and discounts the observation exactly as a guided-practice hint does
+(`app.learning.assistance`). Asking "what does that even mean?" and answering after the
+explanation is not an independent demonstration, and now does not claim to be. The counter is
+stored rather than derived from message timestamps because `created_at` is transaction time:
+the reply that poses a check and the row that records it are written in different transactions.
+
+**Implemented — S09 and S10 finally change what the learner is told.** Both were built last
+pass and neither was consumed for teaching: the diagnosis was stored and returned to the client,
+and nothing branched on it. It now does. `notation` names the convention and moves on;
+`procedural` walks the step without re-explaining the idea; `conceptual` re-teaches from a
+different angle and explicitly withholds more practice, because repetition on a wrong idea
+entrenches it; `prerequisite` is S11's territory and says so. `none` and `incomplete` produce no
+instruction at all — a blank answer is not a diagnosed misconception. An evidence quote is shown
+back to the learner only when `evidence_verbatim` says the span was really found in what they
+wrote, which is the limit S09 stated and this is the first code that had to honour it.
+
+**Implemented — only SHORT items are posed as checks.** A conversational answer arrives as
+prose, and MCQ grading rejects a prose submission outright (`InvalidResponse`), so an MCQ posed
+in chat would produce an ungradable attempt rather than a wrong one — the learner's answer
+simply lost. Structured item types stay on the session surface, where the client sends a
+structured answer.
+
+**Measured.** 39 tests; 21 mutations, 19 killed, one equivalent (the `InvalidResponse` branch
+differs from the general handler only in log severity — both keep the check open), one inert
+control that survived as designed. Four survivors found real gaps: `none`/`incomplete`
+diagnoses were never exercised, so a repair instruction could have been attached to a blank
+answer; nothing stopped a fresh check being posed on top of an unanswered one; nothing pinned
+that the tutor is actually told the question in play; and nothing reset the scaffold count
+between checks, so help given for one question would have discounted every later answer, with
+the count never falling.
+
+**Not done.** The check is posed from the plan's active step, so a conversation about something
+the plan is not currently on gets no check — the tutor's own comprehension questions in prose
+are still invisible to the tracer, and making *those* evidence would need the tutor to declare a
+check, which is a larger change than this. The intent gate is one FAST classification with no
+calibration behind it: how often it reads a hedged attempt as a deferral is unmeasured, and that
+error is silent by construction. `answer_item` commits the observation before the call returns,
+so a failure in the narrow window after that commit leaves the check open and a re-answer would
+record a second observation; the HTTP endpoint solves this with a client-supplied `attempt_id`
+and chat has none. The frontend renders the item but never submits an answer to it — the
+learner's answer reaches the grader only by being typed as an ordinary message, which is the
+intended path, but it means the item widget is still display-only. Nothing surfaces to the
+learner that an answer was graded or that their mastery moved. And whether a conversational
+attempt is *worth* as much as a submitted one is assumed, not measured: the scaffold discount is
+S18's arbitrary-threshold problem in a new place.
 
 ### S09 — Say why an answer failed, not just how far
 
@@ -586,7 +799,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-09 | Third implementation pass, branch `fix/tracker-s51-s31` (stacked on the second): S51 (`4809fae`), S44 (`4a55279`), S33 (`f80f0f6`), S61 (`4836971`), S31 (`cabd2a0`) and S62 (`67c1226`). `uv run poe check` green (856 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0030`–`0032`. All six are marked *partially* implemented and each says what it left; the largest gaps are an explicit presentation preference to replace the reading-level inference (S44), any path for a learner's item to become shared at all (S33), orphaned-blob reconciliation and a retention *schedule* (S61), adversarial evaluation against a real model (S31), and latency as opposed to query-count budgets (S62). Two things worth recording. S62 began by *measuring*: the subject-mastery page cost 15 queries on a 2x2 subject and 147 on an 8x8, and the fixes are verified by a counter rather than asserted. And two of my own S31 tests initially passed for the wrong reason — a base64 exfiltration test that an unreachable host would also have satisfied, and a nonce-uniqueness test comparing body text rather than delimiters — both caught by mutating the code they were meant to cover. S61's completeness test ("every table with a `learner_id` has a stated disposition") caught a table misnamed in the retention map on its first run. |
 | 2026-09-10 | S77 added and implemented, branch `feat/source-dedup` (stacked on the third pass): content-addressed shared blobs (`b44ad51`), within-learner exact dedup (`1d49309`), canonical-text dedup (`9b437fe`), and near-duplicate suggestions (`ef04f40`). Not a review finding — a user request to hash uploads against duplicates, "ideally strong enough to catch similar files". `uv run poe check` green (885 passed, 4 skipped); `npm run build` and `npm run lint` green. Migrations `0033`–`0035`. The request needed correcting before it could be built: a cryptographic hash is designed *not* to do this, so it became three mechanisms — byte equality, canonical-text equality, and a locality-sensitive distance. The third was measured before being trusted (`poe simhash-separation`), and the measurement changed the design: a badly scanned copy of a book and a document half of which is a different book sit at the same distance, so no cut-off separates them and the near-duplicate check reports rather than decides. Also re-opened S61: sharing a blob key across learners means "delete this account's bytes" now has to mean "unless somebody else references them". |
 | 2026-09-11 | Fourth implementation pass, branch `fix/tracker-s53-s60` (off merged `main`, after PRs #17–#19): S53 (`e49000b`), S56 (`978a549`) and S60 (`f07bc8f`) — the last three items that were still *Proposed* and technical. `uv run poe check` green (914 passed, 4 skipped); `npm run lint`, `npm run test` and `npm run build` green. No migrations. All three are marked *partially* implemented and each says what it left. Three things worth recording. **S53's defects were found by looking at the rendered page, not the code**: the type scale lived in `@layer components`, which Tailwind cannot compose into a variant, so every `[&_h2]:text-h3` in the notes renderer had been generating no CSS and headings rendered at body size; `$$x$$` on one line came out inline; and `\(x\)` rendered as literal backslashes. None was visible in review. The frontend also had **no test framework at all**, so "renders correctly" was not a claim anything could check — vitest is now in CI. **S56 found the same class of bug twice**: ordering a learner's history by `created_at` is ordering it by the transaction clock, which ties for anything committed together, so both the step order and a seed-ordering guard were unreliable; steps are now ordered by the timestamp the update itself used. **S60 surfaced a packaging defect** — `alembic` was a dev-group dependency, so a production image could not run the first step of its own deployment. Everything S60 claims was executed against a running containerised stack, including stopping MinIO to confirm readiness 503s while liveness stays 200. Also worth recording: a `docker build ... | tail` reported success while the build had failed, because the pipe's exit status is `tail`'s — the first "the image builds" claim was wrong and was caught by rechecking the exit code explicitly. |
-| 2026-09-11 | Fifth pass, branch `feat/s22-s14` — the first items taken from the *register* rather than the autopsy, both marked **First**: S22 (`bfcc78c`) and S14 (`6eb56cc`). `uv run poe check` green (952 passed, 4 skipped); `npm run lint` and `npm run build` green. Migration `0036`. Both are marked *partially* implemented and each says what it left. Two defects here were of the kind that look correct in review and only show up in behaviour. **Selection was `ORDER BY created_at`** — stable, so practising a component twice served the same question twice, while every attempt still updated mastery: the estimate rose on the learner re-answering what they had just been told. **Generated curricula had no prerequisite edges at all**, so the planner — whose entire job is ordering by prerequisites — was ordering a flat list. Three things worth recording. S22's edges were being dropped at a place no test looked: `/onboarding/curriculum` rebuilt each KC as `{name, description}`, so the round trip through the learner's review discarded them; two mutations survived the first round because of it. S14's span measurement reported a nine-day gap as **zero** on its first run, which is the `created_at`-is-the-transaction-clock finding from S56 arriving in a second place — it now uses the `observed_at` that item recorded. And prerequisites are resolved from names to stable keys at *parse* time specifically so the learner renaming a KC in the review step cannot silently break an edge. || 2026-09-11 | Sixth pass, branch `feat/s12-s23` (off merged `main`, after PR #21): S12 (`943642d`) and S23 (`37d3a25`). `uv run poe check` green (1024 passed, 4 skipped). No migrations. S12 is marked *partially* implemented; S23 is complete. **S12's recorded gap was the smaller half of it.** The session runner documented target difficulty as unapplied, which was true — but no generator had ever written `Item.difficulty`, and generation is how items come to exist, so the entire scale was the column default of 0.0. Applying a target to a bank of zeros would have been a no-op dressed as a feature, and a stored 0.0 was not a missing value: the tracer scored every question as if pitched at the population average, and the `optimal_challenge` profile dimension was the mean of a column of zeros. The target now comes from the tracer's per-KC ability rather than that dimension, because difficulty already shares the logit scale with ability — and practice and assessment deliberately target opposite ends of it, since `E * (1 - E)` peaks at a 50% expectation. **S23's own change created a defect that testing caught.** Dropping a cycle-closing edge depends on the order edges are read in, and the plan path fed `acyclic` an unordered scan, so the query planner decided which prerequisite to sacrifice and two regenerations could honour different ones; a three-node cycle test passed and failed by luck until the query was ordered. The generic rewrite also silently lost runtime type enforcement — beartype declines to decorate PEP 695 generic functions and only *warns*, so two functions stopped being checked while everything still passed. Also worth recording: one S12 test asserted a placement target of 0.0, which is also the old default, so it would have passed with the feature removed entirely — rewritten before the mutation round, not after. || 2026-09-12 | Seventh pass, branch `feat/s09-s10-s11` (off merged `main`, after PR #22): S10 (`530643c`), S09 (`8eeec92`) and S11 (`8aa314a`) — the S08 spine, built in dependency order, since diagnosis needs per-component evidence and detours need diagnosis. `uv run poe check` green (1087 passed, 4 skipped); `npm run lint` and `npm run build` green. No migrations. All three are marked *partially* implemented and each says what it left. **S10's second half was larger than recorded.** The tracker said generated short questions have no explicit rubric; in fact *nothing in the system had ever written a `Rubric` row* — the table existed, `Item.rubric_id` was always null, and every open answer in the product's history was graded against the "(no explicit rubric; grade on correctness and completeness)" fallback. Its first half was exactly as recorded: one score landed on every tagged KC, varying only the weight, and weight scales how far an estimate moves rather than which way — so the tracker's own least-squares example was literal. **Three defects surfaced in testing rather than review, two of them from one root.** Making `payload["score"]` mean the per-KC score broke the idempotent-retry path, which read that key to rebuild the grade and would have reported one component's mark as the whole answer's; and rebuilding the breakdown from the event fan-out gave a *single*-component grade a `component_scores` map its first response never had — resolution invented after the fact. The payload now records `component_scored` so a replay can tell the difference. The third: `list_prerequisites` had no `ORDER BY`, so which prerequisite a stuck learner was detoured to was decided by the query planner, and could be decided differently on the next revision — the same defect S23 found in subject-wide edges, arriving in a place where the consequence is what the learner is taught next. **The honest limit across all three:** MCQ is the default generated type, and an MCQ has one outcome — so it carries no per-component breakdown and no diagnosis, and most attempts in practice still produce neither. S11's behavioural trigger exists precisely because of that. |
+| 2026-09-11 | Fifth pass, branch `feat/s22-s14` — the first items taken from the *register* rather than the autopsy, both marked **First**: S22 (`bfcc78c`) and S14 (`6eb56cc`). `uv run poe check` green (952 passed, 4 skipped); `npm run lint` and `npm run build` green. Migration `0036`. Both are marked *partially* implemented and each says what it left. Two defects here were of the kind that look correct in review and only show up in behaviour. **Selection was `ORDER BY created_at`** — stable, so practising a component twice served the same question twice, while every attempt still updated mastery: the estimate rose on the learner re-answering what they had just been told. **Generated curricula had no prerequisite edges at all**, so the planner — whose entire job is ordering by prerequisites — was ordering a flat list. Three things worth recording. S22's edges were being dropped at a place no test looked: `/onboarding/curriculum` rebuilt each KC as `{name, description}`, so the round trip through the learner's review discarded them; two mutations survived the first round because of it. S14's span measurement reported a nine-day gap as **zero** on its first run, which is the `created_at`-is-the-transaction-clock finding from S56 arriving in a second place — it now uses the `observed_at` that item recorded. And prerequisites are resolved from names to stable keys at *parse* time specifically so the learner renaming a KC in the review step cannot silently break an edge. || 2026-09-11 | Sixth pass, branch `feat/s12-s23` (off merged `main`, after PR #21): S12 (`943642d`) and S23 (`37d3a25`). `uv run poe check` green (1024 passed, 4 skipped). No migrations. S12 is marked *partially* implemented; S23 is complete. **S12's recorded gap was the smaller half of it.** The session runner documented target difficulty as unapplied, which was true — but no generator had ever written `Item.difficulty`, and generation is how items come to exist, so the entire scale was the column default of 0.0. Applying a target to a bank of zeros would have been a no-op dressed as a feature, and a stored 0.0 was not a missing value: the tracer scored every question as if pitched at the population average, and the `optimal_challenge` profile dimension was the mean of a column of zeros. The target now comes from the tracer's per-KC ability rather than that dimension, because difficulty already shares the logit scale with ability — and practice and assessment deliberately target opposite ends of it, since `E * (1 - E)` peaks at a 50% expectation. **S23's own change created a defect that testing caught.** Dropping a cycle-closing edge depends on the order edges are read in, and the plan path fed `acyclic` an unordered scan, so the query planner decided which prerequisite to sacrifice and two regenerations could honour different ones; a three-node cycle test passed and failed by luck until the query was ordered. The generic rewrite also silently lost runtime type enforcement — beartype declines to decorate PEP 695 generic functions and only *warns*, so two functions stopped being checked while everything still passed. Also worth recording: one S12 test asserted a placement target of 0.0, which is also the old default, so it would have passed with the feature removed entirely — rewritten before the mutation round, not after. || 2026-09-12 | Seventh pass, branch `feat/s09-s10-s11` (off merged `main`, after PR #22): S10 (`530643c`), S09 (`8eeec92`) and S11 (`8aa314a`) — the S08 spine, built in dependency order, since diagnosis needs per-component evidence and detours need diagnosis. `uv run poe check` green (1087 passed, 4 skipped); `npm run lint` and `npm run build` green. No migrations. All three are marked *partially* implemented and each says what it left. **S10's second half was larger than recorded.** The tracker said generated short questions have no explicit rubric; in fact *nothing in the system had ever written a `Rubric` row* — the table existed, `Item.rubric_id` was always null, and every open answer in the product's history was graded against the "(no explicit rubric; grade on correctness and completeness)" fallback. Its first half was exactly as recorded: one score landed on every tagged KC, varying only the weight, and weight scales how far an estimate moves rather than which way — so the tracker's own least-squares example was literal. **Three defects surfaced in testing rather than review, two of them from one root.** Making `payload["score"]` mean the per-KC score broke the idempotent-retry path, which read that key to rebuild the grade and would have reported one component's mark as the whole answer's; and rebuilding the breakdown from the event fan-out gave a *single*-component grade a `component_scores` map its first response never had — resolution invented after the fact. The payload now records `component_scored` so a replay can tell the difference. The third: `list_prerequisites` had no `ORDER BY`, so which prerequisite a stuck learner was detoured to was decided by the query planner, and could be decided differently on the next revision — the same defect S23 found in subject-wide edges, arriving in a place where the consequence is what the learner is taught next. **The honest limit across all three:** MCQ is the default generated type, and an MCQ has one outcome — so it carries no per-component breakdown and no diagnosis, and most attempts in practice still produce neither. S11's behavioural trigger exists precisely because of that. | || 2026-09-12 | Eighth pass, branch `feat/s15-s16-s17` (off merged `main`, after PR #23): S15 (`b8ed124`), S16 (`5cf5ce0`) and S17 (`1cad57d`) — the rest of the S08 spine bar calibration. `uv run poe check` green (1160 passed, 4 skipped); `npm run lint` and `npm run build` green. Migrations `0037` (conversational scaffold count) and `0038` (onboarding session ownership). All three are marked *partially* implemented and each says what it left. **S15's recorded gap was again the smaller half.** Conversational answers did not update mastery, as recorded — but every subject-scoped tutor turn already resolved a *fresh* practice item, handed it to the client as a widget, never mentioned it to the tutor, and discarded it next turn. The tutor's own prompt tells it to check understanding with questions, so it asked one question in prose while the client displayed another, and neither was graded; the conversation's phase said `chatting` throughout. The fix is a check that is posed once and stays open, an intent gate whose every failure mode resolves to “record nothing”, and grading through the existing `answer_item` path. S09 and S10 were built last pass and consumed by nothing; the failure kind now selects the teaching move, and `none`/`incomplete` select none at all. **S17's blast radius was written down before it was needed.** The turn lock and the onboarding registry were each documented as deliberately exactly as strong as the in-memory checkpointer, and that was right — but the reverse is not symmetric: a durable checkpointer with an in-process lock is *worse* than what came before, because any worker can then resume the same paused practice and write two mastery observations for one answer. All three moved together. **A tooling defect invalidated results and was caught by a control.** The mutation harness reverted files with `mv`, which can restore a timestamp matching the `.pyc` written during the mutated run whenever a mutation preserves file size — so Python kept using the mutated bytecode afterwards. It produced a run of false kills including a docstring-only control, and could as easily have produced false survivals; the harness now clears `__pycache__` on both sides and treats a test-selection error as a failure rather than a survival. Every S17 mutation was re-run on the fixed harness and S15/S16 were spot-checked on it. Also worth recording: making the turn lock durable exposed that it had been reaching for the process-wide engine, which tests never use — the lock is now injected, because a lock taken on a different engine is a lock on a different backend, which is no lock at all. |
 
 ## Remaining architecture autopsy — source pass
 

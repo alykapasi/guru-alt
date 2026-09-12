@@ -12,10 +12,10 @@ from typing import Annotated
 
 from fastapi import Depends
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.core.db import get_session
+from app.core.db import engine, get_session
 from app.llm import LLMClient, build_llm_client
 from app.models.learner import Learner
 from app.storage import BlobStore, build_blob_store
@@ -23,6 +23,22 @@ from app.storage import BlobStore, build_blob_store
 DEV_LEARNER_HANDLE = "dev"
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+
+
+def get_engine() -> AsyncEngine:
+    """The engine a request may open its *own* connection on.
+
+    Almost everything should use ``SessionDep`` and stay inside the request's transaction.
+    The exception is the turn lock (S17), which holds a Postgres advisory lock on a connection
+    of its own for the length of a streamed turn — it cannot share the request session, whose
+    connection is returned to the pool at every commit. Injected rather than imported so a test
+    can point it at the same engine the test itself is using; an advisory lock taken on a
+    different engine is a lock on a different backend, which is no lock at all.
+    """
+    return engine
+
+
+EngineDep = Annotated[AsyncEngine, Depends(get_engine)]
 
 
 def get_app_settings() -> Settings:

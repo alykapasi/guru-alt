@@ -26,6 +26,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import NullPool
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, create_async_engine
 
+from app.api.deps import get_engine
 from app.core.config import get_settings
 from app.core.db import get_session
 from app.main import app
@@ -108,11 +109,15 @@ async def _accounting_on(connection: AsyncConnection) -> AsyncIterator[None]:
 
 
 @pytest_asyncio.fixture
-async def api_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
+async def api_client(db_session: AsyncSession, engine: AsyncEngine) -> AsyncIterator[AsyncClient]:
     async def _override_get_session() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     app.dependency_overrides[get_session] = _override_get_session
+    # The turn lock opens its own connection for an advisory lock (S17). Pointed at this
+    # test's engine: a lock taken on the process-wide engine is a lock on a different
+    # backend, and its connections are bound to whichever event loop first used them.
+    app.dependency_overrides[get_engine] = lambda: engine
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client

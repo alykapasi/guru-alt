@@ -59,6 +59,13 @@ RETENTION: tuple[StoreRetention, ...] = (
     StoreRetention("messages", "deleted", "Cascades from the conversation."),
     StoreRetention("turns", "deleted", "Cascades from the conversation."),
     StoreRetention(
+        "onboarding_sessions",
+        "deleted",
+        "Cascades from the learner. The row is only a record of who owns a paused goal "
+        "negotiation; without it the checkpoint it names can never be resumed by anyone, "
+        "because the thread key is derived from the learner id too.",
+    ),
+    StoreRetention(
         "memories",
         "deleted",
         "Cascades from the learner. Note the asymmetry this resolves: deleting one "

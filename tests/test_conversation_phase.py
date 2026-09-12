@@ -54,7 +54,9 @@ def _parse_sse(text: str) -> list[dict]:
 
 def test_a_gate_turn_that_asked_something_leaves_a_proposal() -> None:
     assert (
-        _phase_after(TurnFlow.REFINEMENT, awaiting_reply=True, workflow_paused=False)
+        _phase_after(
+            TurnFlow.REFINEMENT, awaiting_reply=True, workflow_paused=False, check_open=False
+        )
         is ConversationPhase.GOAL_PROPOSED
     )
 
@@ -62,7 +64,7 @@ def test_a_gate_turn_that_asked_something_leaves_a_proposal() -> None:
 def test_the_same_signal_from_the_workflow_means_a_practice_item() -> None:
     """`awaiting_reply` is emitted by both flows, for entirely different things."""
     assert (
-        _phase_after(TurnFlow.WORKFLOW, awaiting_reply=True, workflow_paused=True)
+        _phase_after(TurnFlow.WORKFLOW, awaiting_reply=True, workflow_paused=True, check_open=False)
         is ConversationPhase.AWAITING_ANSWER
     )
 
@@ -71,18 +73,18 @@ def test_a_reply_that_asked_nothing_leaves_nothing_pending() -> None:
     """The exact case the frontend's old inference called a goal proposal."""
     for flow in TurnFlow:
         assert (
-            _phase_after(flow, awaiting_reply=False, workflow_paused=False)
+            _phase_after(flow, awaiting_reply=False, workflow_paused=False, check_open=False)
             is ConversationPhase.CHATTING
         )
 
 
 def test_a_tutor_or_agentic_turn_never_proposes_a_goal() -> None:
     assert (
-        _phase_after(TurnFlow.AGENTIC, awaiting_reply=True, workflow_paused=False)
+        _phase_after(TurnFlow.AGENTIC, awaiting_reply=True, workflow_paused=False, check_open=False)
         is ConversationPhase.CHATTING
     )
     assert (
-        _phase_after(TurnFlow.TUTOR, awaiting_reply=True, workflow_paused=False)
+        _phase_after(TurnFlow.TUTOR, awaiting_reply=True, workflow_paused=False, check_open=False)
         is ConversationPhase.CHATTING
     )
 
@@ -155,6 +157,6 @@ def test_an_agentic_interjection_does_not_unpause_a_practice_item() -> None:
     """`mode="agentic"` is checked before a paused workflow, so it steps around the item
     rather than answering it — and the very next message resumes that item."""
     assert (
-        _phase_after(TurnFlow.AGENTIC, awaiting_reply=False, workflow_paused=True)
+        _phase_after(TurnFlow.AGENTIC, awaiting_reply=False, workflow_paused=True, check_open=False)
         is ConversationPhase.AWAITING_ANSWER
     )
