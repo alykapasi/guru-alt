@@ -121,6 +121,12 @@ class CheckComponentRead(BaseModel):
     # paraphrased; confidence is deliberately not exposed, because a language model's
     # self-reported confidence is not calibrated and a number implies it is (S09).
     failure_detail: str | None = None
+    # How many *earlier* attempts on this component failed the same way. Null when nothing was
+    # diagnosed or nothing matches; 0 when this is the first time. It is here rather than only
+    # in the tutor's instruction because a learner is owed the same distinction the teaching
+    # makes: a slip and a settled wrong idea look identical on one attempt, and knowing which
+    # one this is changes what they should do about it.
+    recurrence: int | None = None
 
 
 class CheckResultRead(BaseModel):

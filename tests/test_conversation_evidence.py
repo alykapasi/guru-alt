@@ -629,7 +629,7 @@ def _outcome(item: Item, result: GradeResult) -> CheckOutcome:
     states only feed the learner-facing report (S15). Empty rather than fabricated: a made-up
     movement in a fixture is the kind of thing that later reads as a fact about the estimator.
     """
-    return CheckOutcome(item=item, result=result, priors={}, states=[])
+    return CheckOutcome(item=item, result=result, priors={}, states=[], prior_kinds={})
 
 
 def test_a_diagnosis_becomes_an_instruction_about_what_to_teach() -> None:

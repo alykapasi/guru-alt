@@ -13,6 +13,7 @@ from typing import Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.untrusted import as_untrusted
+from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult
 from app.learning.mastery import Estimate
 from app.llm.types import ChatMessage, ChatRole, Usage
@@ -125,6 +126,7 @@ def build_check_result(
     priors: Mapping[uuid.UUID, Estimate],
     states: Sequence[LearnerKCState],
     kcs: Sequence[KC],
+    prior_kinds: Mapping[uuid.UUID, Mapping[FailureKind, int]] | None = None,
 ) -> CheckResultRead:
     """The grade, in the form the learner can read (S15).
 
@@ -157,6 +159,13 @@ def build_check_result(
                 failure_kind=diagnosis.kind.value if actionable and diagnosis else None,
                 failure_detail=(
                     diagnosis.evidence if actionable and diagnosis and diagnosis.evidence else None
+                ),
+                # Counted *before* this attempt was recorded, so it reads as "times before
+                # this one" — the same number the teaching instruction branched on.
+                recurrence=(
+                    (prior_kinds or {}).get(kc.id, {}).get(diagnosis.kind, 0)
+                    if actionable and diagnosis
+                    else None
                 ),
             )
         )

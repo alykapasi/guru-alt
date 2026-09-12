@@ -17,6 +17,7 @@ from app.agent.tutor import TutorState, build_tutor_graph
 from app.core.config import get_settings
 from app.learning import conversation_evidence, feedback, mastery
 from app.learning.conversation_evidence import TurnIntent
+from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult, InvalidResponse
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
@@ -66,6 +67,10 @@ class CheckOutcome:
     result: GradeResult
     priors: Mapping[uuid.UUID, mastery.Estimate]
     states: Sequence[LearnerKCState]
+    # How often each failure kind has already come up per component, read before this attempt
+    # was recorded (S09). A slip and a settled wrong idea are the same shape on one attempt,
+    # and the response they need is opposite.
+    prior_kinds: Mapping[uuid.UUID, Mapping[FailureKind, int]]
 
 
 def _check_note(item: Item) -> str:
@@ -97,6 +102,7 @@ def _check_result(outcome: CheckOutcome, kcs: Sequence[KC]) -> CheckResultRead:
         priors=outcome.priors,
         states=outcome.states,
         kcs=kcs,
+        prior_kinds=outcome.prior_kinds,
     )
 
 
@@ -110,6 +116,7 @@ def _feedback_note(outcome: CheckOutcome, kc_names: Mapping[uuid.UUID, str]) -> 
     return feedback.teaching_note(
         outcome.result,
         kc_names,
+        prior_kinds=outcome.prior_kinds,
         opening="The learner has just attempted that question.",
         closing=(
             "Respond to what they actually wrote, then follow the guidance above. Do not pose "
@@ -274,7 +281,11 @@ async def _resolve_check(
 
     # Read before grading: `answer_item` returns the posterior, and a posterior with nothing
     # to compare it against is not something a learner can act on.
-    priors = await mastery.estimate_kcs(session, learner_id, [link.kc_id for link in item.kc_links])
+    kc_ids = [link.kc_id for link in item.kc_links]
+    priors = await mastery.estimate_kcs(session, learner_id, kc_ids)
+    # Read here too, and for the same reason: once this attempt is recorded the count would
+    # include it, and "this is the third time" has to mean three counting this one.
+    prior_kinds = await mastery.prior_failure_kinds(session, learner_id, kc_ids)
     try:
         result, states = await assessment_svc.answer_item(
             session,
@@ -297,7 +308,9 @@ async def _resolve_check(
     except Exception as exc:
         log.error("chat.check_grading_failed", item_id=str(item.id), error=str(exc))
         return item, None
-    return None, CheckOutcome(item=item, result=result, priors=priors, states=states)
+    return None, CheckOutcome(
+        item=item, result=result, priors=priors, states=states, prior_kinds=prior_kinds
+    )
 
 
 async def _pose_check(

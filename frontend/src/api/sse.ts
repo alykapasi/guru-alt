@@ -35,6 +35,10 @@ export interface CheckComponent {
   /** The grader's own sentence. Confidence is deliberately not carried: a model's
    * self-reported confidence is not calibrated, and a number implies it is. */
   failure_detail: string | null;
+  /** How many *earlier* attempts on this component failed the same way (S09). Null when
+   * nothing was diagnosed, 0 when this is the first time. A count of independent observations
+   * is the one signal here that does not rest on the model being calibrated. */
+  recurrence: number | null;
 }
 
 export interface CheckResult {

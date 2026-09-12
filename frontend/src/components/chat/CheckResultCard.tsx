@@ -25,6 +25,28 @@ const FAILURE_COPY: Record<string, string> = {
   prerequisite: "Something earlier is getting in the way",
 };
 
+/** Prior occurrences before the same mistake stops reading as a slip — matches
+ * RECURRENCE_MIN in app/learning/feedback.py, which is what changes the teaching. Showing it
+ * at a different point from where the teaching changes would tell the learner one thing while
+ * the tutor did another. */
+const RECURRENCE_MIN = 2;
+
+/** 3 -> "3rd". Teens are the case the naive version gets wrong; the count is bounded by the
+ * server's lookback, not by anything that keeps it under ten. */
+function ordinal(n: number): string {
+  if (n % 100 >= 11 && n % 100 <= 13) return `${n}th`;
+  return `${n}${{ 1: "st", 2: "nd", 3: "rd" }[n % 10] ?? "th"}`;
+}
+
+/** Said plainly, because the learner is owed the same distinction the teaching makes: one
+ * attempt cannot tell a slip from a settled wrong idea, and a run of them can. */
+function Recurrence({ times }: { times: number }) {
+  if (times < RECURRENCE_MIN) return null;
+  return (
+    <span className="text-warning text-caption">{ordinal(times + 1)} time this has come up</span>
+  );
+}
+
 function Movement({ component }: { component: CheckComponent }) {
   const before = expectedScorePercent(component.prior_ability);
   const after = expectedScorePercent(component.ability);
@@ -85,9 +107,12 @@ export function CheckResultCard({ result }: { result: CheckResult }) {
               </span>
             </div>
             {component.failure_kind && (
-              <p className="text-caption text-base-content/60">
-                {FAILURE_COPY[component.failure_kind] ?? "Worth another look"}
-                {component.failure_detail ? ` — ${component.failure_detail}` : ""}
+              <p className="text-caption text-base-content/60 flex flex-wrap items-baseline gap-x-2">
+                <span>
+                  {FAILURE_COPY[component.failure_kind] ?? "Worth another look"}
+                  {component.failure_detail ? ` — ${component.failure_detail}` : ""}
+                </span>
+                {component.recurrence !== null && <Recurrence times={component.recurrence} />}
               </p>
             )}
           </li>

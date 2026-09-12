@@ -80,6 +80,8 @@ def build_workflow_graph(
         # Read before grading: a posterior on its own gives the learner no baseline, and the
         # report they see is a movement (S15).
         priors = await mastery.estimate_kcs(session, learner_id, kc_ids)
+        # Counted before the attempt is recorded, so the number means "times before this one".
+        prior_kinds = await mastery.prior_failure_kinds(session, learner_id, kc_ids)
         result, states = await assessment_svc.answer_item(
             session,
             learner_id,
@@ -97,7 +99,12 @@ def build_workflow_graph(
             # Dumped to plain JSON: this rides the checkpointer (S17), same
             # serializable-primitives rule as ``item_id``.
             "check_result": build_check_result(
-                item_id=item.id, result=result, priors=priors, states=states, kcs=kcs
+                item_id=item.id,
+                result=result,
+                priors=priors,
+                states=states,
+                kcs=kcs,
+                prior_kinds=prior_kinds,
             ).model_dump(mode="json"),
             # The diagnosis picks the teaching move here exactly as it does in plain chat,
             # through the same module (S09). Guided practice is where most attempts happen, and
@@ -108,6 +115,7 @@ def build_workflow_graph(
                 {kc.id: kc.name for kc in kcs},
                 opening="The learner has just attempted that practice question.",
                 closing="",
+                prior_kinds=prior_kinds,
             ).strip(),
             "rounds": state["rounds"] + 1,
         }

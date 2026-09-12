@@ -787,8 +787,9 @@ export interface paths {
         /**
          * Due Reviews
          * @description KCs whose FSRS-scheduled review has come due, soonest first, each paired with an
-         *     answerable flashcard where one was eagerly resolved (see ``session_runner.due_review_items``
-         *     and the ``reviews_due_item_limit`` cost bound).
+         *     answerable item where one was eagerly resolved — a flashcard normally, an open question
+         *     where the component keeps failing (see ``session_runner.due_review_items`` and the
+         *     ``reviews_due_item_limit`` cost bound).
          */
         get: operations["due_reviews_api_v1_reviews_due_get"];
         put?: never;
@@ -2269,8 +2270,10 @@ export interface components {
          * ReviewItemRead
          * @description A KC whose FSRS review is due (the review-queue projection).
          *
-         *     ``item`` is an answerable practice item resolved for the KC (typically a flashcard —
-         *     see ``session_runner.due_review_items``), or ``None`` past the request's item-resolution
+         *     ``item`` is an answerable practice item resolved for the KC — a flashcard normally, an
+         *     open question where the component has been failing its reviews and a self-rating would
+         *     record the fall without the reason (see ``session_runner.review_item_type``) — or ``None``
+         *     past the request's item-resolution
          *     cap (``reviews_due_item_limit``) — the due list itself is bounded separately (much more
          *     generously, see ``mastery.due_reviews``'s ``due_reviews_limit``), only item resolution
          *     beyond ``reviews_due_item_limit`` is skipped.

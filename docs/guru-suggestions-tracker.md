@@ -517,6 +517,33 @@ Placement still infers rough levels with no diagnosis attached. Nothing aggregat
 across attempts, so a misconception recurring five times reads as five unrelated events rather
 than one persistent belief.
 
+**Implemented (third pass, branch `feat/residue-pass`) — a mistake that keeps coming back is
+described as a pattern, not as a fresh slip.** A diagnosis was a property of one attempt and
+nothing joined them up, so one persistent wrong belief and five unrelated bad moments produced
+*identical* instructions — and they call for opposite responses. `prior_failure_kinds` counts
+how often each kind has already come up per component, read before the attempt is recorded so
+the number means "times before this one". Past `RECURRENCE_MIN` the teaching note changes: the
+recurrence **replaces** the one-off repair rather than being appended to it, because "re-teach
+the idea from a different angle" is precisely the advice that has already failed twice.
+
+The choice worth stating is what this branches on. The per-diagnosis `confidence` is the
+model's own, is not calibrated, and this entry has said from the start that nothing may gate on
+it — so nothing does. A count of the same label arising independently across separate attempts,
+on separate items, in separate grading calls is evidence of a different kind: it costs one
+indexed read, and it never asks the model to be right about how sure it is.
+
+The learner sees the count too, not only the tutor. A slip and a settled wrong idea are
+indistinguishable on a single attempt, and which one this is changes what the learner should do
+about it, so withholding it would keep the more useful half of the finding on the server.
+
+**Measured (third pass).** 10 backend tests and 4 frontend ones. 6 mutations, all killed —
+including one that appends the escalation instead of replacing the repair, which is the version
+that reads fine and teaches the wrong thing. The contract gate also earned its keep: the
+previous commit in this pass changed a response docstring without regenerating
+`schema.d.ts`, and `poe api-contract` failed on it. Worth recording that `recurrence` does
+**not** appear in that generated file — the SSE frames are not in the OpenAPI document at all,
+so the chat channel's types stay hand-maintained and ungated.
+
 **Correction (third pass, branch `feat/residue-pass`) — "MCQ is the default generated type, so
 most attempts produce no diagnosis" was wrong, and worth saying plainly.** The claim was
 written from the code's shape rather than its call graph. Counting the call sites: there are

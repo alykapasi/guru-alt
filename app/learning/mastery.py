@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.learning import scheduler
 from app.learning.assistance import evidence_credit
-from app.learning.diagnosis import FailureKind
+from app.learning.diagnosis import ACTIONABLE, FailureKind
 from app.learning.tracer import Estimate, GlickoEstimator, MasteryEstimator, aggregate
 from app.models.knowledge import KC, Topic
 from app.models.learning import LearnerKCState, LearningEvent
@@ -506,6 +506,64 @@ async def recent_struggle(
             if named:
                 break
     return Struggle(consecutive_failures=failures, diagnosed_prerequisite=named)
+
+
+async def prior_failure_kinds(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    kc_ids: Sequence[uuid.UUID],
+    *,
+    limit: int = 20,
+) -> dict[uuid.UUID, dict[FailureKind, int]]:
+    """How often each failure kind has already come up per component (S09).
+
+    A diagnosis was a property of one attempt and nothing joined them up, so a misconception
+    recurring five times was indistinguishable from five unrelated slips — and those want
+    opposite responses. The fifth repetition of one wrong idea means the explanation is not
+    working and the approach has to change; five different slips mean the learner is basically
+    fine and having a bad run.
+
+    This is deliberately a **count, not a confidence**. The per-diagnosis ``confidence`` is the
+    model's own and is not calibrated, so nothing may gate on it (``app.learning.diagnosis``).
+    Recurrence is evidence of a different kind: the same label arising independently across
+    separate attempts, on separate items, graded in separate calls. It costs nothing to compute
+    and it does not ask the model to be right about how sure it is.
+
+    Ordered by ``observed_at`` for the reason S56 recorded — ``created_at`` is the transaction
+    clock — and capped per component, so a learner with years of history pays a bounded read.
+    """
+    if not kc_ids:
+        return {}
+    when = func.coalesce(
+        LearningEvent.payload["observed_at"].astext.cast(DateTime), LearningEvent.created_at
+    )
+    counts: dict[uuid.UUID, dict[FailureKind, int]] = {}
+    for kc_id in kc_ids:
+        rows = (
+            await session.execute(
+                select(LearningEvent.payload["diagnosis"])
+                .where(
+                    LearningEvent.learner_id == learner_id,
+                    LearningEvent.kc_id == kc_id,
+                    LearningEvent.event_type == "observation",
+                )
+                .order_by(when.desc(), LearningEvent.id.desc())
+                .limit(limit)
+            )
+        ).all()
+        per_kc: dict[FailureKind, int] = {}
+        for (raw,) in rows:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                kind = FailureKind(str(raw.get("kind")))
+            except ValueError:
+                continue  # a vocabulary that has since changed is not a reason to fail
+            if kind in ACTIONABLE:
+                per_kc[kind] = per_kc.get(kind, 0) + 1
+        if per_kc:
+            counts[kc_id] = per_kc
+    return counts
 
 
 DETOUR_EVENT = "detour"
