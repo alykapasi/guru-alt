@@ -10,7 +10,7 @@ the only thing that moves mastery.
 Item selection is type-aware: the active step's ``preferred_item_type`` (profile-driven, from
 ``format_effectiveness``) is tried first, falling back to a flashcard default for ``"review"``
 steps (spaced-repetition surfacing) when there's no explicit preference, and finally to
-any-type reuse then MCQ generation — see ``item_for_kc``.
+any-type reuse then generation of ``DEFAULT_GENERATED_TYPE`` — see ``item_for_kc``.
 
 It is also difficulty-aware (S12): every path through here resolves a *practice* target from
 the learner's own ability for that KC — the difficulty at which they would succeed
@@ -47,6 +47,23 @@ from app.services import lesson_plan as lesson_plan_svc
 from app.services.lesson_plan import PlanGroundingContext
 from app.services.llm_log import log_llm_call
 
+DEFAULT_GENERATED_TYPE = ItemType.SHORT
+"""What gets generated when nothing has asked for a particular type (S09/S10).
+
+This was MCQ, on the reasoning that a deterministic key is the safe thing to invent when you
+have no instruction. That is true about *grading* and false about *teaching*: a multiple-choice
+question has one outcome, so it yields no failure kind and no per-component split, and both of
+those are now load-bearing — the teaching move, the repair, the learner-facing report and the
+component breakdown all read fields an MCQ cannot populate. An open question is the only
+generatable type that fills them, so it is what an unspecified default should produce.
+
+It is not free, and that is the trade being made deliberately rather than by inheritance: a
+SHORT answer costs a SMART-role rubric call to grade, where an MCQ costs nothing. Placement
+still generates MCQs on purpose (``app.services.placement``) — a light test wants breadth per
+token and is not trying to teach anything — and that call names the generator directly rather
+than relying on this.
+"""
+
 
 def practice_target(estimate: Estimate) -> float:
     """The difficulty to ask for when the point is to teach, given what we believe about the
@@ -69,12 +86,16 @@ async def item_for_kc(
     kc: KC,
     preferred_type: ItemType | None,
     target_difficulty: float | None = None,
+    default_type: ItemType = DEFAULT_GENERATED_TYPE,
 ) -> Item | None:
     """Resolve something answerable for ``kc``, preferring ``preferred_type`` if given.
 
     Order: reuse a bank item of ``preferred_type`` (a free win even for types we can't
     generate) → generate one of ``preferred_type`` (only if a generator exists) → reuse any
-    bank item for the KC → generate an MCQ (the safe default).
+    bank item for the KC → generate a ``default_type`` item.
+
+    ``default_type`` is a parameter rather than a constant so the choice is made by whoever
+    knows what the item is for; see ``DEFAULT_GENERATED_TYPE`` for why the default is open.
     """
     if preferred_type is not None:
         item = await assessment_svc.find_item_for_kc(
@@ -104,12 +125,15 @@ async def item_for_kc(
     )
     if item is not None:
         return item
+    generator = item_generation.GENERATORS.get(default_type)
+    if generator is None:
+        return None  # a type nothing can generate is not a default anything can fall back to
     return await _generate_and_log(
         session,
         llm,
         kc,
         learner_id=learner_id,
-        generator=item_generation.generate_mcq_item,
+        generator=generator,
         target_difficulty=target_difficulty,
     )
 
@@ -206,12 +230,45 @@ async def next_item(
     )
 
 
+async def review_item_type(
+    session: AsyncSession, *, learner_id: uuid.UUID, kc_id: uuid.UUID
+) -> ItemType:
+    """Whether this due review is still worth self-rating, or needs diagnosing (S09/S10).
+
+    A flashcard is graded by the learner's own rating. That is the right instrument for
+    ordinary spaced repetition — it is fast, it costs nothing, and recall is the thing being
+    rehearsed. It is the wrong instrument for a component the learner keeps getting wrong,
+    because a run of low self-ratings drives the ability estimate down while recording nothing
+    at all about *why*, and "why" is what decides whether the answer is a notation slip, a
+    missing prerequisite, or a genuine misconception.
+
+    So a component that has failed its last few reviews is served an open question instead: the
+    same review, in the one format the grader can diagnose and split by component. The learner
+    is asked to produce the answer rather than rate their own recall of it, which is also the
+    stronger retention measure (S14).
+
+    Reads the same run of attempts the detour rule reads (``mastery.recent_struggle``) and the
+    same definition of "failed", deliberately — see ``review_diagnose_min_failures``.
+    """
+    settings = get_settings()
+    struggle = await mastery.recent_struggle(
+        session, learner_id, kc_id, threshold=settings.detour_failure_threshold
+    )
+    if struggle.consecutive_failures >= settings.review_diagnose_min_failures:
+        return ItemType.SHORT
+    return ItemType.FLASHCARD
+
+
 async def due_review_items(
     session: AsyncSession, llm: LLMClient, *, learner_id: uuid.UUID, item_limit: int
 ) -> list[tuple[ReviewItem, Item | None]]:
-    """Every due review, paired with a resolved flashcard for the first ``item_limit`` (the
+    """Every due review, paired with a resolved item for the first ``item_limit`` (the
     due list is soonest-due-first, so this caps the *nearest* reviews, not an arbitrary slice).
     Entries past the cap carry ``None`` — still due, just not eagerly resolved this call.
+
+    Usually a flashcard; an open question where the component has been failing (see
+    ``review_item_type``). The struggle read is per resolved review, so it is bounded by
+    ``item_limit`` along with everything else this loop does.
     """
     reviews = await mastery.DEFAULT_TRACER.due_reviews(session, learner_id)
     results: list[tuple[ReviewItem, Item | None]] = []
@@ -230,7 +287,9 @@ async def due_review_items(
                     llm,
                     learner_id=learner_id,
                     kc=kc,
-                    preferred_type=ItemType.FLASHCARD,
+                    preferred_type=await review_item_type(
+                        session, learner_id=learner_id, kc_id=kc.id
+                    ),
                     target_difficulty=practice_target(
                         Estimate(ability=review.ability, uncertainty=review.uncertainty)
                     ),

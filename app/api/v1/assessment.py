@@ -89,8 +89,9 @@ async def answer_item(
 @router.get("/reviews/due", response_model=list[ReviewItemRead])
 async def due_reviews(session: SessionDep, learner: CurrentLearner, llm: LLMClientDep):
     """KCs whose FSRS-scheduled review has come due, soonest first, each paired with an
-    answerable flashcard where one was eagerly resolved (see ``session_runner.due_review_items``
-    and the ``reviews_due_item_limit`` cost bound)."""
+    answerable item where one was eagerly resolved — a flashcard normally, an open question
+    where the component keeps failing (see ``session_runner.due_review_items`` and the
+    ``reviews_due_item_limit`` cost bound)."""
     pairs = await session_runner_svc.due_review_items(
         session, llm, learner_id=learner.id, item_limit=get_settings().reviews_due_item_limit
     )

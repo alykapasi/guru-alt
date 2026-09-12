@@ -7,9 +7,10 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.learning import item_generation
+from app.learning import item_generation, mastery
+from app.learning.mastery import Observation
 from app.llm.registry import fake_llm_client
-from app.models.assessment import ItemType
+from app.models.assessment import RUBRIC_GRADABLE, ItemType
 from app.models.chat import LLMCall
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
@@ -98,14 +99,24 @@ async def test_next_item_generates_when_bank_is_empty(db_session: AsyncSession) 
     )
 
     item = await svc.next_item(
-        db_session, fake_llm_client(MCQ_REPLY), learner_id=learner.id, subject_id=subject.id
+        db_session, fake_llm_client(SHORT_REPLY), learner_id=learner.id, subject_id=subject.id
     )
     assert item is not None
     assert [link.kc_id for link in item.kc_links] == [root.id]
+    # The type is asserted, not just that something came back: the MCQ-shaped reply this test
+    # used to send also parses as a SHORT item (only ``stem`` is required), so without this
+    # line the test passed identically whichever type the fallback generated.
+    assert item.item_type == ItemType.SHORT
 
     calls = (await db_session.scalars(select(LLMCall))).all()
     assert len(calls) == 1
     assert calls[0].role == "fast"
+
+
+def test_the_generated_default_is_a_type_that_can_be_diagnosed() -> None:
+    """An MCQ carries no failure kind and no per-component split, and four passes of work now
+    read both. A default nothing asked for should produce the type that can fill them."""
+    assert svc.DEFAULT_GENERATED_TYPE in RUBRIC_GRADABLE
 
 
 async def test_next_item_serves_a_due_review_step_as_a_flashcard(db_session: AsyncSession) -> None:
@@ -297,3 +308,94 @@ async def test_short_answer_item_for_kc_no_mcq_fallback_on_generation_failure(
         db_session, fake_llm_client("not json"), learner_id=learner.id, kc=root
     )
     assert item is None
+
+
+# --- a review that keeps failing stops being self-rated (S09/S10) ------------------------
+
+
+async def _review_due(session: AsyncSession, learner: Learner, kc: KC) -> None:
+    """Put ``kc`` on the review queue, due now.
+
+    Updates the state row rather than inserting one: recording an observation has already
+    created it, and a second insert collides on the learner/KC unique constraint.
+    """
+    state = await session.scalar(
+        select(LearnerKCState).where(
+            LearnerKCState.learner_id == learner.id, LearnerKCState.kc_id == kc.id
+        )
+    )
+    if state is None:
+        state = LearnerKCState(learner_id=learner.id, kc_id=kc.id, ability=0.0)
+        session.add(state)
+    state.due_at = datetime.now(UTC) - timedelta(days=1)
+    await session.flush()
+
+
+async def _fail_review(session: AsyncSession, learner: Learner, kc: KC, score: float) -> None:
+    await mastery.record_observation(
+        session, Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=score)
+    )
+    await session.flush()
+
+
+async def test_an_ordinary_due_review_is_still_a_flashcard(db_session: AsyncSession) -> None:
+    learner, _subject, root, _dependent = await _graph(db_session)
+    chosen = await svc.review_item_type(db_session, learner_id=learner.id, kc_id=root.id)
+    assert chosen is ItemType.FLASHCARD
+
+
+async def test_a_review_that_keeps_failing_is_served_as_an_open_question(
+    db_session: AsyncSession,
+) -> None:
+    """A run of low self-ratings drives the estimate down and records nothing about why. The
+    format changes at exactly the point the reason starts mattering more than the speed."""
+    learner, _subject, root, _dependent = await _graph(db_session)
+    await _fail_review(db_session, learner, root, 0.1)
+    await _fail_review(db_session, learner, root, 0.2)
+
+    chosen = await svc.review_item_type(db_session, learner_id=learner.id, kc_id=root.id)
+    assert chosen is ItemType.SHORT
+
+
+async def test_one_bad_review_is_not_enough_to_change_the_format(
+    db_session: AsyncSession,
+) -> None:
+    """The same "not just a bad day" rule the detour trigger uses — one miss is noise."""
+    learner, _subject, root, _dependent = await _graph(db_session)
+    await _fail_review(db_session, learner, root, 0.1)
+
+    chosen = await svc.review_item_type(db_session, learner_id=learner.id, kc_id=root.id)
+    assert chosen is ItemType.FLASHCARD
+
+
+async def test_a_recovered_component_goes_back_to_being_a_flashcard(
+    db_session: AsyncSession,
+) -> None:
+    """Escalation follows the *current* run, not a lifetime tally: a learner who has since
+    answered well is not still stuck, and should not keep paying for rubric grading."""
+    learner, _subject, root, _dependent = await _graph(db_session)
+    await _fail_review(db_session, learner, root, 0.1)
+    await _fail_review(db_session, learner, root, 0.2)
+    await _fail_review(db_session, learner, root, 1.0)
+
+    chosen = await svc.review_item_type(db_session, learner_id=learner.id, kc_id=root.id)
+    assert chosen is ItemType.FLASHCARD
+
+
+async def test_the_due_review_queue_serves_the_escalated_format(
+    db_session: AsyncSession,
+) -> None:
+    """End to end through the endpoint's own service, not just the predicate."""
+    learner, _subject, root, _dependent = await _graph(db_session)
+    await _fail_review(db_session, learner, root, 0.1)
+    await _fail_review(db_session, learner, root, 0.2)
+    # After the observations, not before: recording one reschedules the component, so a due
+    # date set first is overwritten and the review never appears on the queue at all.
+    await _review_due(db_session, learner, root)
+
+    pairs = await svc.due_review_items(
+        db_session, fake_llm_client(SHORT_REPLY), learner_id=learner.id, item_limit=5
+    )
+    resolved = [item for _review, item in pairs if item is not None]
+    assert len(resolved) == 1
+    assert resolved[0].item_type == ItemType.SHORT

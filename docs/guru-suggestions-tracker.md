@@ -467,12 +467,52 @@ grader's vocabulary, because "procedural" is jargon at the exact moment somebody
 
 **Not done — the rest.** Objective items carry no diagnosis and cannot: an MCQ knows the answer
 was wrong and nothing about why, and manufacturing a reason from that would commit the exact
-error this item exists to fix. Since MCQ is the default generated type, most attempts still
-produce no diagnosis at all. Scaffolding still does not change with the kind — the teaching
+error this item exists to fix. Scaffolding still does not change with the kind — the teaching
 move does, the hint density does not — and only `prerequisite` reaches the planner, by S11.
 Placement still infers rough levels with no diagnosis attached. Nothing aggregates diagnoses
 across attempts, so a misconception recurring five times reads as five unrelated events rather
 than one persistent belief.
+
+**Correction (third pass, branch `feat/residue-pass`) — "MCQ is the default generated type, so
+most attempts produce no diagnosis" was wrong, and worth saying plainly.** The claim was
+written from the code's shape rather than its call graph. Counting the call sites: there are
+exactly three, and neither of the two flows a learner actually practises in was one of the MCQ
+ones. Guided practice and the conversational check both resolve through
+`short_answer_item_for_kc`, which generates an open, rubric-graded item and has no MCQ
+fallback by design. `item_for_kc`'s MCQ default was reachable in production only if flashcard
+generation failed mid-review, and the one function that would have reached it more often,
+`next_item`, **has no caller outside its own tests** — it has been dead since Phase 5.
+
+So the diagnosis-free attempts were never mostly MCQs. They are **self-rated flashcards on the
+review queue**, and placement. That is a different problem with a different fix, and fixing the
+one that was written down would have moved almost nothing.
+
+**Implemented (third pass) — a review that keeps failing stops being self-rated.** A flashcard
+is graded by the learner's own rating, which is the right instrument for ordinary spaced
+repetition and the wrong one for a component they keep getting wrong: a run of low self-ratings
+drives the ability estimate down while recording nothing about *why*, and "why" is the whole
+difference between a notation slip, a missing prerequisite and a real misconception.
+`review_item_type` serves the review as an open question once the component has failed
+`review_diagnose_min_failures` times in a row — the same run of attempts the detour rule reads,
+and deliberately the same definition of "failed", because two thresholds that can disagree
+about that would let one attempt be a failure to one part of the system and not another. A
+learner who recovers goes back to flashcards, so nobody pays for rubric grading on a component
+they have stopped failing.
+
+**Implemented (third pass) — the unspecified default is now a type that can be diagnosed.**
+`item_for_kc` generated an MCQ when nothing asked for a type, on the reasoning that a
+deterministic key is the safe thing to invent with no instruction. That is true about grading
+and false about teaching, and four passes have now built on top of the two fields an MCQ cannot
+populate. The default is `DEFAULT_GENERATED_TYPE` (open), the cost is stated where it is paid —
+an open answer costs a SMART-role rubric call and an MCQ costs nothing — and placement still
+generates MCQs by naming the generator directly, because a light test wants breadth per token
+and is not trying to teach anything.
+
+**Measured (third pass).** 6 tests. The existing test for the fallback is part of the result:
+it asserted an item came back and never which *kind*, and the MCQ-shaped reply it sent also
+parses as an open item, so it passed identically whichever type was generated — the behaviour
+under test was invisible to it. Four mutations, all killed (default back to MCQ, escalation
+removed, off-by-one on the threshold, queue ignoring the escalation), plus an inert control.
 
 ### S10 — Preserve component-specific evidence, and grade open questions to a stated standard
 
@@ -526,9 +566,11 @@ And rebuilding the breakdown from the fan-out gave a *single*-component grade a
 is worse than none. The payload records `component_scored` so a replay can tell the difference.
 
 **Not done.** Objective items are unchanged and cannot be otherwise: an MCQ has one outcome, so
-a multi-KC MCQ still applies one verdict to every tagged component. Since MCQ is the default
-generated type, most items in practice still carry no per-component resolution — this buys
-precision on open questions specifically. Nothing checks that the model's per-component marks
+a multi-KC MCQ still applies one verdict to every tagged component — this buys precision on
+open questions specifically. The "most items in practice" half of this sentence was wrong and
+is corrected under S09: the practice flows already resolved open items, and what actually
+carries no per-component resolution is the self-rated flashcard on the review queue, which a
+run of failures now escalates out of. Nothing checks that the model's per-component marks
 are *right*; they are one model's judgement, ungated and uncalibrated (S18, S59), and the
 components it is asked about are whatever `kc_tagging` attached. Evidence apportioning still
 divides one unit across components by weight, which arguably understates a genuine

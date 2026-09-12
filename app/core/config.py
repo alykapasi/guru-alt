@@ -243,6 +243,16 @@ class Settings(BaseSettings):
     detour_failure_threshold: float = 0.5
     detour_min_failures: int = 2
 
+    # When a due review stops being worth self-rating (S09/S10). A flashcard is graded by the
+    # learner's own rating, so a component failed repeatedly on review produces a falling
+    # ability and no account of *why* — the one situation where the cheap format is the wrong
+    # one. At this many consecutive failures the review is served as an open question instead,
+    # which the grader can diagnose and split by component. Uncalibrated in the same spirit as
+    # the detour triggers (S18); it deliberately shares detour_failure_threshold's definition
+    # of "failed", because two thresholds that can disagree about that would let the same
+    # attempt be a failure to one part of the system and not to another.
+    review_diagnose_min_failures: int = 2
+
     # Cap on how many KCs a generated lesson plan targets at once — cost/UX bound on a
     # runaway subject graph. Review steps (due retention) are added on top, uncapped.
     lesson_plan_max_steps: int = 20
