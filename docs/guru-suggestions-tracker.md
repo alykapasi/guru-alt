@@ -547,7 +547,44 @@ refetched.
 covered guided practice's half of the persistence, which is the flow most attempts happen in —
 the same asymmetry this item keeps producing, found again by mutation rather than by reading.
 
-**Not done.** The check is posed from the plan's active step, so a conversation about something
+**Implemented (third pass, branch `feat/residue-pass`) — the tutor can say "this question
+counts".** A check was posed only from the lesson plan's active step, which covers the case the
+plan anticipated and misses the one that makes conversation worth having: the tutor notices
+something, asks about it, the learner answers, and none of it reaches the tracer because
+nothing in the exchange was ever an item. The evidence a tutor gathers *by teaching* was the
+evidence the system could not see.
+
+The obstacle was attribution, not detection. A question in prose carries no component and no
+stated standard, so an answer to it cannot be scored against anything or credited to anything,
+and inferring either from the text would be inventing evidence — worse than missing it. So the
+tutor declares: prose as usual, then one marker naming the component and the question, and the
+marker rather than the prose becomes the item. The learner is shown the question as a widget
+exactly as a plan-driven check already is, which is what stops the thing asked and the thing
+graded drifting apart — there is only one of them. The marker is stripped before the reply is
+stored, because it is addressed to the system and somebody reading their own transcript should
+not find machinery in it.
+
+Three bounds, each of them a way it could have gone wrong. A named component is resolved
+against *this subject's* graph and dropped if it resolves to nothing — the tutor sees the
+conversation, not the graph, so it can name something true and irrelevant, the same rule the
+detour applies to a diagnosed prerequisite. The item is authored to the learner (S33) rather
+than joining the shared bank: a question improvised for one conversation has no reviewed
+rubric, no difficulty target and no provenance beyond one exchange, so other learners must not
+be assessed against it. And a declaration never displaces a check already open, because letting
+it would let the tutor quietly withdraw a question the learner is working on — and the scaffold
+count that decides what the eventual answer is worth belongs to the question actually asked.
+
+**Measured (third pass).** 14 tests, 6 mutations, all killed.
+
+**Still not done.** A declared item has no rubric, so it is graded by `grade_open`'s stated
+fallback — the alternative is a second model call to invent criteria for a question that may
+never be answered, and that trade is made rather than hidden. The declaration is not
+*difficulty-targeted*: the tutor picks the question, so S12's pitching does not apply to it.
+How often a tutor declares, and whether the questions it chooses are good ones, is unmeasured
+and is S59's work. And a marker that arrives malformed produces no check and says nothing to
+anybody — a silent nothing, which is the right failure and still a blind spot.
+
+**Superseded in part by the third pass above.** The check is posed from the plan's active step, so a conversation about something
 the plan is not currently on gets no check — the tutor's own comprehension questions in prose
 are still invisible to the tracer, and making *those* evidence would need the tutor to declare a
 check, which is a larger change than this. The intent gate is one FAST classification with no
