@@ -1,6 +1,7 @@
 import { useSubjectMastery } from "../../api/hooks";
 import type { components } from "../../api/schema";
 import { coverageLabel, expectedScorePercent, masteryQualifier } from "../../lib/mastery";
+import { MasteryEvidence } from "./MasteryEvidence";
 import { MasteryRing } from "./MasteryRing";
 
 type TopicMastery = components["schemas"]["TopicMasteryRead"];
@@ -26,13 +27,18 @@ function TopicMasteryRow({ topic }: { topic: TopicMastery }) {
       </p>
       <div className="flex flex-col gap-1 pl-4">
         {topic.kcs.map((kc) => (
-          <div key={kc.kc_id} className="flex items-center justify-between">
-            <span className="text-caption text-base-content/70">{kc.kc_name}</span>
-            <span className="text-caption text-base-content/50">
-              {kc.assessed
-                ? `${Math.round(expectedScorePercent(kc.ability))}%${kc.mastered ? " · mastered" : ""}`
-                : "not assessed"}
-            </span>
+          <div key={kc.kc_id} className="flex flex-col gap-0.5">
+            <div className="flex items-center justify-between">
+              <span className="text-caption text-base-content/70">{kc.kc_name}</span>
+              <span className="text-caption text-base-content/50">
+                {kc.assessed
+                  ? `${Math.round(expectedScorePercent(kc.ability))}%${kc.mastered ? " · mastered" : ""}`
+                  : "not assessed"}
+              </span>
+            </div>
+            {/* What the number rests on. "Mastered" is doing the most work exactly where the
+                evidence is thinnest, so the evidence goes next to it (S14). */}
+            <MasteryEvidence kc={kc} />
           </div>
         ))}
       </div>

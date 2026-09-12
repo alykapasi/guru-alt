@@ -692,7 +692,8 @@ only items are.
 
 ### S14 — Select fresh items with awareness of exposure, and check retention and transfer
 
-**Status:** Partially implemented (branch `feat/s22-s14`) · **Priority:** First
+**Status:** Partially implemented (branch `feat/s22-s14`; extended on branch
+`feat/finish-partials-1`) · **Priority:** First
 
 **Implemented — a second visit is a different question.** Bank selection was `ORDER BY
 created_at`, which is *stable*: a learner practising a component twice got the same question
@@ -740,7 +741,15 @@ ones. `retention_min_days` is a floor (1.0) chosen to separate "later that week"
 calibrating it needs the delayed-outcome study S59 covers. Transfer is counted as "a different
 item", which is not the same as a *different kind of problem*: two near-identical generated
 MCQs count as two. Nothing gates mastery on either signal; they are reported, not enforced.
-And the frontend does not render them yet — the fields reach the API and stop there.
+
+**Implemented (second pass, branch `feat/finish-partials-1`) — the estimate shows what it
+rests on.** The counts have travelled with the estimate since this item was built and were
+displayed nowhere, so the dashboard showed "62% · mastered" and left the reader to assume the
+strongest reading available. The same number can come from four different problems solved
+unaided over weeks or from one question answered four times in ten minutes, and the row now
+says which. Absence is *stated* rather than omitted — "no delayed check yet" and silence look
+identical on screen and only one of them is true — which matters most on a component marked
+mastered, where the label is doing the most work exactly where the evidence is thinnest.
 
 ### S22 — Generate, validate, and persist prerequisite relationships during curriculum creation
 
