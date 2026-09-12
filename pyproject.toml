@@ -10,10 +10,12 @@ dependencies = [
     # image built with --no-dev could not run it while this sat in the dev group.
     "alembic>=1.18.5",
     "anthropic>=0.113.0",
+    "argon2-cffi>=25.1.0",
     "asyncpg>=0.31.0",
     "beartype>=0.22.9",
     "dspy>=3.3.1",
     "ebooklib>=0.20",
+    "email-validator>=2.2.0",
     "fastapi>=0.138.2",
     "fsrs>=6.3.1",
     "greenlet>=3.5.3",

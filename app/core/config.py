@@ -7,6 +7,7 @@ this module can be imported).
 
 from enum import StrEnum
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -124,6 +125,30 @@ class Settings(BaseSettings):
     # CORS (Phase 7): origins allowed to call the API from a browser. Dev default is the Vite
     # dev server; prod overrides via GURU_CORS_ORIGINS (JSON array, e.g. '["https://app.example"]').
     cors_origins: list[str] = ["http://localhost:5173"]
+
+    # Auth (S21). The session cookie is the browser's credential; the same token is also
+    # accepted as a bearer header, for tests, curl, and anything that is not a browser.
+    session_cookie_name: str = "guru_session"
+    session_ttl_hours: int = 24 * 14
+    # Kept for a week after revocation so "your session ended" stays distinguishable from a
+    # token that never existed; after that the row is purged (``auth.purge_expired``).
+    session_revoked_retention_hours: int = 24 * 7
+    # Off by default because the dev server is plain HTTP and a Secure cookie would simply
+    # never be sent. Production must set it, and ``app.core.release`` refuses to start without.
+    session_cookie_secure: bool = False
+    session_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
+    # None = host-only, which is right unless the API and the app are on sibling subdomains.
+    session_cookie_domain: str | None = None
+
+    # How often the worker deletes sessions that can no longer authenticate anybody. An auth
+    # table nobody prunes grows for the life of the deployment; 0 turns the sweep off.
+    session_purge_interval_seconds: int = 3600
+
+    # The development sign-in seam: a single endpoint that issues a session for the dev learner
+    # with no credential, so `poe dev` and the frontend work without anybody registering first.
+    # It is the one piece of the old stub that survives, it is visible in the OpenAPI schema
+    # rather than hidden in the resolver, and production refuses to start with it on.
+    dev_auto_login: bool = True
 
     # LLM — code references *roles*; each role maps to "provider:model" per env.
     # Providers: ollama (local), openrouter (cloud), anthropic. Dev defaults to

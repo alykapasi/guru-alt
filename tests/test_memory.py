@@ -9,7 +9,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import DEV_LEARNER_HANDLE, get_memory_write_back_enqueuer
+from app.api.deps import get_memory_write_back_enqueuer
 from app.llm.registry import fake_llm_client
 from app.main import app
 from app.models.chat import Conversation, LLMCall, Message
@@ -285,11 +285,9 @@ async def test_write_back_endpoint_404s_on_missing_conversation(
 
 
 async def test_get_memory_omits_the_embedding(
-    api_client: AsyncClient, db_session: AsyncSession
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
 ) -> None:
-    learner = Learner(handle=DEV_LEARNER_HANDLE, display_name="Dev")
-    db_session.add(learner)
-    await db_session.flush()
+    learner = api_learner
     db_session.add(
         Memory(
             embedding_space=FAKE_SPACE,
@@ -309,10 +307,10 @@ async def test_get_memory_omits_the_embedding(
     assert "embedding" not in body[0]
 
 
-async def test_delete_memory_endpoint(api_client: AsyncClient, db_session: AsyncSession) -> None:
-    learner = Learner(handle=DEV_LEARNER_HANDLE, display_name="Dev")
-    db_session.add(learner)
-    await db_session.flush()
+async def test_delete_memory_endpoint(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    learner = api_learner
     memory = Memory(
         embedding_space=FAKE_SPACE,
         learner_id=learner.id,
@@ -350,11 +348,9 @@ async def test_delete_memory_endpoint_404s_on_foreign_row(
 
 
 async def test_bulk_delete_memory_endpoint(
-    api_client: AsyncClient, db_session: AsyncSession
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
 ) -> None:
-    learner = Learner(handle=DEV_LEARNER_HANDLE, display_name="Dev")
-    db_session.add(learner)
-    await db_session.flush()
+    learner = api_learner
     db_session.add_all(
         [
             Memory(

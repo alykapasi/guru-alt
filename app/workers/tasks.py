@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import logging
 import uuid
+from datetime import timedelta
 
 from taskiq import TaskiqEvents, TaskiqState
 
@@ -19,6 +20,7 @@ from app.models.source import Source
 from app.rag import pipeline
 from app.rag.demux import build_demuxer
 from app.rag.transcription import build_transcriber
+from app.services import auth as auth_svc
 from app.services import ingestion
 from app.services import memory as memory_svc
 from app.storage import build_blob_store
@@ -91,6 +93,28 @@ async def _reconcile_loop(interval: int) -> None:
             logger.exception("ingestion reconciliation sweep failed; will retry")
 
 
+async def _purge_sessions_once() -> None:
+    """Delete sessions that can no longer authenticate anybody (S21)."""
+    settings = get_settings()
+    async with SessionFactory() as session:
+        removed = await auth_svc.purge_expired(
+            session,
+            keep_revoked_for=timedelta(hours=settings.session_revoked_retention_hours),
+        )
+    if removed:
+        logger.info("purged %d dead session(s)", removed)
+
+
+async def _purge_sessions_loop(interval: int) -> None:
+    """Sweep dead sessions forever, surviving its own failures like the reconciler above."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await _purge_sessions_once()
+        except Exception:
+            logger.exception("session purge sweep failed; will retry")
+
+
 async def _start_reconciler(state: TaskiqState) -> None:
     interval = get_settings().ingest_reconcile_interval_seconds
     if interval <= 0:
@@ -99,7 +123,21 @@ async def _start_reconciler(state: TaskiqState) -> None:
 
 
 async def _stop_reconciler(state: TaskiqState) -> None:
-    task = getattr(state, "reconciler", None)
+    await _cancel(getattr(state, "reconciler", None))
+
+
+async def _start_session_purge(state: TaskiqState) -> None:
+    interval = get_settings().session_purge_interval_seconds
+    if interval <= 0:
+        return
+    state.session_purge = asyncio.create_task(_purge_sessions_loop(interval))
+
+
+async def _stop_session_purge(state: TaskiqState) -> None:
+    await _cancel(getattr(state, "session_purge", None))
+
+
+async def _cancel(task: asyncio.Task | None) -> None:
     if task is None:
         return
     task.cancel()
@@ -125,3 +163,5 @@ memory_write_back_task = broker.task(_memory_write_back_task)
 # `@broker.on_event` decorator, so beartype's claw hook never sees them in a decorator stack.
 broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_reconciler)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_reconciler)
+broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_session_purge)
+broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_session_purge)

@@ -13,7 +13,6 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import DEV_LEARNER_HANDLE
 from app.llm.registry import fake_llm_client
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
@@ -39,8 +38,8 @@ async def _graph(session: AsyncSession, slug_prefix: str) -> tuple[Subject, Topi
     return subject, topic, kc
 
 
-async def _learner(session: AsyncSession, *, dev: bool = False) -> Learner:
-    handle = DEV_LEARNER_HANDLE if dev else f"l-{uuid.uuid4().hex[:8]}"
+async def _learner(session: AsyncSession, *, handle: str | None = None) -> Learner:
+    handle = handle or f"l-{uuid.uuid4().hex[:8]}"
     existing = await session.scalar(select(Learner).where(Learner.handle == handle))
     if existing is not None:
         return existing

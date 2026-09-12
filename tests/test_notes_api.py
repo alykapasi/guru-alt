@@ -6,10 +6,9 @@ from collections.abc import Iterator
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import DEV_LEARNER_HANDLE, get_llm_client
+from app.api.deps import get_llm_client
 from app.llm.providers.fake import FakeTurn
 from app.llm.registry import fake_llm_client
 from app.main import app
@@ -85,10 +84,8 @@ async def _subject_topic_kc(api_client: AsyncClient) -> tuple[str, str, str]:
     return subject_id, topic_id, r.json()["id"]
 
 
-async def _make_stale(db_session: AsyncSession, kc_id: str) -> None:
-    """Insert an observation for the request-scoped dev learner (created by the first request)."""
-    learner = await db_session.scalar(select(Learner).where(Learner.handle == DEV_LEARNER_HANDLE))
-    assert learner is not None
+async def _make_stale(db_session: AsyncSession, kc_id: str, learner: Learner) -> None:
+    """Insert an observation for the learner the API client is signed in as (S21)."""
     db_session.add(
         LearningEvent(
             learner_id=learner.id,
@@ -110,10 +107,10 @@ async def test_get_note_empty_not_stale(api_client: AsyncClient) -> None:
 
 
 async def test_refresh_distills_and_renders(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None, api_learner: Learner
 ) -> None:
     subject_id, topic_id, kc_id = await _subject_topic_kc(api_client)
-    await _make_stale(db_session, kc_id)
+    await _make_stale(db_session, kc_id, api_learner)
 
     r = await api_client.get(f"{API}/topics/{topic_id}/note")
     assert r.json()["stale"] is True
@@ -156,11 +153,11 @@ async def test_restore_unknown_revision_404(api_client: AsyncClient) -> None:
 
 
 async def test_format_patch_success_sets_and_renders(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None, api_learner: Learner
 ) -> None:
     """A note with a current revision: switching format renders (and caches) the new format."""
     _, topic_id, kc_id = await _subject_topic_kc(api_client)
-    await _make_stale(db_session, kc_id)
+    await _make_stale(db_session, kc_id, api_learner)
     r = await api_client.post(f"{API}/topics/{topic_id}/note/refresh")
     assert r.status_code == 200
 
@@ -174,10 +171,10 @@ async def test_format_patch_success_sets_and_renders(
 
 
 async def test_edit_note_success_creates_learner_edit_revision(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None, api_learner: Learner
 ) -> None:
     _, topic_id, kc_id = await _subject_topic_kc(api_client)
-    await _make_stale(db_session, kc_id)
+    await _make_stale(db_session, kc_id, api_learner)
     r = await api_client.post(f"{API}/topics/{topic_id}/note/refresh")
     assert r.status_code == 200
 
@@ -193,10 +190,10 @@ async def test_edit_note_success_creates_learner_edit_revision(
 
 
 async def test_restore_revision_success_creates_new_revision(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None, api_learner: Learner
 ) -> None:
     _, topic_id, kc_id = await _subject_topic_kc(api_client)
-    await _make_stale(db_session, kc_id)
+    await _make_stale(db_session, kc_id, api_learner)
     r = await api_client.post(f"{API}/topics/{topic_id}/note/refresh")
     assert r.status_code == 200
 
@@ -214,10 +211,10 @@ async def test_restore_revision_success_creates_new_revision(
 
 
 async def test_revision_source_success_and_404(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None, api_learner: Learner
 ) -> None:
     _, topic_id, kc_id = await _subject_topic_kc(api_client)
-    await _make_stale(db_session, kc_id)
+    await _make_stale(db_session, kc_id, api_learner)
     r = await api_client.post(f"{API}/topics/{topic_id}/note/refresh")
     assert r.status_code == 200
 
@@ -235,10 +232,10 @@ async def test_revision_source_success_and_404(
 
 
 async def test_editing_a_stale_revision_is_a_conflict_not_a_silent_overwrite(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None, api_learner: Learner
 ) -> None:
     _, topic_id, kc_id = await _subject_topic_kc(api_client)
-    await _make_stale(db_session, kc_id)
+    await _make_stale(db_session, kc_id, api_learner)
     r = await api_client.post(f"{API}/topics/{topic_id}/note/refresh")
     assert r.json()["revision_ordinal"] == 1
 
@@ -256,10 +253,10 @@ async def test_editing_a_stale_revision_is_a_conflict_not_a_silent_overwrite(
 
 
 async def test_an_edit_against_the_current_revision_is_accepted(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None, api_learner: Learner
 ) -> None:
     _, topic_id, kc_id = await _subject_topic_kc(api_client)
-    await _make_stale(db_session, kc_id)
+    await _make_stale(db_session, kc_id, api_learner)
     await api_client.post(f"{API}/topics/{topic_id}/note/refresh")
 
     _override_llm([FakeTurn(text=EDITED_ATOMS_REPLY), FakeTurn(text=EDITED_RENDERED)])
@@ -272,11 +269,11 @@ async def test_an_edit_against_the_current_revision_is_accepted(
 
 
 async def test_the_words_the_learner_typed_are_recoverable(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None, api_learner: Learner
 ) -> None:
     """Absorb reinterprets an edit, so the submitted text is stored beside the result."""
     _, topic_id, kc_id = await _subject_topic_kc(api_client)
-    await _make_stale(db_session, kc_id)
+    await _make_stale(db_session, kc_id, api_learner)
     await api_client.post(f"{API}/topics/{topic_id}/note/refresh")
 
     typed = "SOH-CAH-TOA is how I remember it."

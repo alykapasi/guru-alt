@@ -1,4 +1,4 @@
-import { API_BASE_URL } from "./client";
+import { apiFetch } from "./client";
 
 export interface UsageEvent {
   input_tokens: number;
@@ -76,7 +76,7 @@ export async function* streamTurn(
   body: SendMessageBody,
   signal?: AbortSignal,
 ): AsyncGenerator<TurnEvent> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/conversations/${conversationId}/messages`, {
+  const res = await apiFetch(`/api/v1/conversations/${conversationId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

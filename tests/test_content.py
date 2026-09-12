@@ -14,7 +14,7 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import DEV_LEARNER_HANDLE, get_llm_client
+from app.api.deps import get_llm_client
 from app.llm import ModelRole
 from app.llm.registry import fake_llm_client
 from app.main import app
@@ -183,9 +183,9 @@ async def test_list_blocks_scoped_to_learner(db_session: AsyncSession) -> None:
 
 
 async def test_generate_endpoint_with_type(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, api_learner: Learner
 ) -> None:
-    learner = await _learner(db_session, handle=DEV_LEARNER_HANDLE)
+    learner = api_learner
     kc = await _kc(db_session)
     await _seed_grounding(db_session, learner)
 
@@ -200,9 +200,9 @@ async def test_generate_endpoint_with_type(
 
 
 async def test_generate_endpoint_assembles_without_type(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, api_learner: Learner
 ) -> None:
-    learner = await _learner(db_session, handle=DEV_LEARNER_HANDLE)
+    learner = api_learner
     kc = await _kc(db_session)
     await _seed_grounding(db_session, learner)
 
@@ -212,9 +212,9 @@ async def test_generate_endpoint_assembles_without_type(
 
 
 async def test_get_kc_content_reads_cache(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, api_learner: Learner
 ) -> None:
-    learner = await _learner(db_session, handle=DEV_LEARNER_HANDLE)
+    learner = api_learner
     kc = await _kc(db_session)
     await _seed_grounding(db_session, learner)
     await api_client.post(f"{API}/content/generate", json={"kc_id": str(kc.id), "type": "lesson"})

@@ -1,8 +1,10 @@
 """Shared FastAPI dependencies.
 
-``get_current_learner`` is the **stub auth seam**: it resolves (and lazily creates) a
-single dev learner. Real auth (Phase 8) swaps only this function — every route already
-receives a ``Learner`` / ``learner_id``.
+``get_current_learner`` is the auth seam (S21). It used to resolve — and lazily *create* — a
+single dev learner, which meant every route had a learner whether or not the caller had
+proved anything. It now resolves a session token to the learner who owns it, and refuses the
+request when there is none. Nothing above it changed: every route already receives a
+``Learner`` / ``learner_id``, which is what made this a swap rather than a rewire.
 """
 
 import uuid
@@ -10,17 +12,15 @@ from collections.abc import Awaitable, Callable
 from functools import lru_cache
 from typing import Annotated
 
-from fastapi import Depends
-from sqlalchemy import select
+from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.db import engine, get_session
 from app.llm import LLMClient, build_llm_client
 from app.models.learner import Learner
+from app.services import auth
 from app.storage import BlobStore, build_blob_store
-
-DEV_LEARNER_HANDLE = "dev"
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
@@ -125,14 +125,41 @@ MemoryWriteBackEnqueuerDep = Annotated[
 ]
 
 
-async def get_current_learner(session: SessionDep) -> Learner:
-    """Resolve the current learner (stub: the dev learner, created on first use)."""
-    learner = await session.scalar(select(Learner).where(Learner.handle == DEV_LEARNER_HANDLE))
+_BEARER_PREFIX = "bearer "
+
+
+def session_token_from(request: Request, settings: Settings) -> str | None:
+    """The session token this request carries, from either accepted place.
+
+    An explicit ``Authorization: Bearer`` header wins over the cookie when both are present,
+    because sending it is a deliberate act by a non-browser client, while the cookie is
+    attached by the browser to whatever it is pointed at.
+    """
+    header = request.headers.get("authorization", "")
+    if header[: len(_BEARER_PREFIX)].lower() == _BEARER_PREFIX:
+        token = header[len(_BEARER_PREFIX) :].strip()
+        if token:
+            return token
+    return request.cookies.get(settings.session_cookie_name) or None
+
+
+async def get_current_learner(
+    request: Request, session: SessionDep, settings: SettingsDep
+) -> Learner:
+    """The learner this request is authenticated as, or 401.
+
+    Every reason for failing — no token, an unknown one, an expired one, a revoked one, one
+    belonging to a deleted account — produces the same response, because the caller can do the
+    same one thing about all of them, and telling them apart is free reconnaissance.
+    """
+    token = session_token_from(request, settings)
+    learner = await auth.resolve(session, token) if token else None
     if learner is None:
-        learner = Learner(handle=DEV_LEARNER_HANDLE, display_name="Dev Learner")
-        session.add(learner)
-        await session.commit()
-        await session.refresh(learner)
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return learner
 
 

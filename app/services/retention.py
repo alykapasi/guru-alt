@@ -55,6 +55,13 @@ class StoreRetention:
 
 RETENTION: tuple[StoreRetention, ...] = (
     StoreRetention("learners", "deleted", "The account itself."),
+    StoreRetention(
+        "learner_sessions",
+        "deleted",
+        "Cascades from the learner (S21). Deleting the account has to stop every session "
+        "authenticating as it at once — a session that outlived its owner would be a live "
+        "credential for an account that no longer exists.",
+    ),
     StoreRetention("conversations", "deleted", "Cascades from the learner; messages with it."),
     StoreRetention("messages", "deleted", "Cascades from the conversation."),
     StoreRetention("turns", "deleted", "Cascades from the conversation."),

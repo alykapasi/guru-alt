@@ -5,6 +5,7 @@ autogenerate and by the app). Add new model modules to the imports below.
 """
 
 from app.models.assessment import Item, ItemKC, ItemOrigin, Rubric
+from app.models.auth import LearnerSession
 from app.models.chat import Conversation, LLMCall, Message
 from app.models.content import ContentBlock, ContentType
 from app.models.knowledge import KC, KCEdge, Subject, Topic
@@ -31,6 +32,7 @@ __all__ = [
     "Learner",
     "LearnerKCState",
     "LearnerProfile",
+    "LearnerSession",
     "LearningEvent",
     "LessonPlan",
     "Memory",

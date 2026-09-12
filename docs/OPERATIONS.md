@@ -34,8 +34,9 @@ curl -fsS localhost:8000/api/v1/ready    # readiness, per dependency
 Every setting is `GURU_<FIELD>`; the full list is `app/core/config.py`, and `.env.example` is
 the annotated version. Starting with `GURU_ENV=prod` **refuses to boot** while any development
 default is still in place — the localhost database, the MinIO credentials, a wildcard CORS
-origin, debug output, or no model provider key (`app/core/release.py`). The process reports all
-of them at once, so a bad deploy costs one restart rather than one per discovered problem.
+origin, debug output, no model provider key, the development sign-in seam, or a session cookie
+that would cross plain HTTP (`app/core/release.py`). The process reports all of them at once,
+so a bad deploy costs one restart rather than one per discovered problem.
 
 Secrets that must be set explicitly in production:
 
@@ -45,6 +46,25 @@ Secrets that must be set explicitly in production:
 | `GURU_BLOB_ACCESS_KEY` / `GURU_BLOB_SECRET_KEY` | Object store credentials |
 | `GURU_ANTHROPIC_API_KEY` and/or `GURU_OPENROUTER_API_KEY` | Model access; at least one |
 | `GURU_CORS_ORIGINS` | The real frontend origin, not `*` |
+| `GURU_SESSION_COOKIE_SECURE=true` | Without it the session cookie is sent over plain HTTP, where anything on the path can read and replay it |
+| `GURU_DEV_AUTO_LOGIN=false` | `POST /auth/dev-login` issues a session with **no credential** — it is not a weak password, it is no password |
+
+### Identity (S21)
+
+Learners sign in with an email address and a password (Argon2id), and hold an opaque session
+token in an httpOnly cookie; the same token is accepted as `Authorization: Bearer` for
+non-browser clients. Sessions are rows in `learner_sessions`, checked on every request, so
+revocation is immediate — `POST /auth/logout-all` ends every session a learner has, and
+deleting an account cascades theirs away.
+
+The worker prunes sessions that can no longer authenticate anybody every
+`GURU_SESSION_PURGE_INTERVAL_SECONDS` (default hourly; `0` turns it off). A revoked row is kept
+for `GURU_SESSION_REVOKED_RETENTION_HOURS` first, so "your session was ended" stays
+distinguishable from a token that never existed.
+
+Set `GURU_SESSION_COOKIE_SAMESITE=none` **only** alongside `GURU_SESSION_COOKIE_SECURE=true`,
+and only when the app and API are genuinely cross-site; `lax` is correct when they share a
+registrable domain, and it is the browser's own CSRF protection.
 
 ## Health, readiness, and what to alert on
 

@@ -13,9 +13,9 @@ import inspect
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_learner
 from app.learning import note_distill
 from app.learning.profile_estimators import DIMENSION_SPECS, describe
+from app.models.learner import Learner
 from app.models.profile import LearnerProfile, ProfileDimension
 
 API = "/api/v1"
@@ -57,10 +57,10 @@ def test_generated_notes_are_not_written_to_the_learners_message_complexity() ->
 
 
 async def test_the_profile_endpoint_describes_each_dimension(
-    api_client: AsyncClient, db_session: AsyncSession
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
 ) -> None:
-    # The endpoint reads the stub auth seam's dev learner, so seed that one.
-    learner = await get_current_learner(db_session)
+    # Seeded on the learner the API client is signed in as, so the endpoint sees it (S21).
+    learner = api_learner
     db_session.add(LearnerProfile(learner_id=learner.id))
     db_session.add(
         ProfileDimension(

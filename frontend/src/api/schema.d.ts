@@ -4,6 +4,206 @@
  */
 
 export interface paths {
+    "/api/v1/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ready
+         * @description Whether this instance should be given traffic.
+         *
+         *     503 when a dependency a request needs is not answering, so an orchestrator takes the
+         *     instance out of rotation instead of routing to one that will fail every call. `/health`
+         *     stays separate and stays trivial: a dependency blip must not get a healthy process killed
+         *     and restarted into the same blip.
+         */
+        get: operations["ready_api_v1_ready_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ops/ingestion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ingestion Backlog
+         * @description Queue depth, the age of the oldest waiting source, and lease health.
+         *
+         *     The thing to alert on is `oldest_pending_age_seconds`: it rises the moment the queue stops
+         *     draining and keeps rising, where a count can hold steady while nothing is processed at all.
+         *     A `stalled` queue — work waiting, nothing in flight — is the shape of a dead consumer, and
+         *     is what learners experience as an upload that never becomes a lesson.
+         */
+        get: operations["ingestion_backlog_api_v1_ops_ingestion_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register
+         * @description Create an account and sign in as it.
+         */
+        post: operations["register_api_v1_auth_register_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Login
+         * @description Exchange credentials for a session.
+         */
+        post: operations["login_api_v1_auth_login_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Logout
+         * @description End the session this request is using.
+         *
+         *     Deliberately not requiring a valid session: signing out with a token that has already
+         *     expired must not be an error, or the client is left with a cookie it cannot clear.
+         */
+        post: operations["logout_api_v1_auth_logout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Logout All
+         * @description End every session for this learner, on every device.
+         */
+        post: operations["logout_all_api_v1_auth_logout_all_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Me
+         * @description The learner this request is authenticated as.
+         */
+        get: operations["me_api_v1_auth_me_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sessions
+         * @description Live sessions for this learner, so a forgotten one can be found and ended.
+         */
+        get: operations["sessions_api_v1_auth_sessions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/dev-login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dev Login
+         * @description Sign in as the development learner, with no credential (S21).
+         *
+         *     The last surviving piece of the stub seam, kept so `poe dev` and the frontend still work
+         *     with an empty database and nobody registered. It is an endpoint rather than a fallback
+         *     inside the resolver on purpose: a fallback is invisible, appears in no schema, and is the
+         *     exact shape of an auth boundary that looks present and is not. This one is listed in the
+         *     OpenAPI document, refuses to exist unless ``GURU_DEV_AUTO_LOGIN`` is on, and production
+         *     refuses to *start* while it is (``app.core.release``).
+         */
+        post: operations["dev_login_api_v1_auth_dev_login_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/subjects": {
         parameters: {
             query?: never;
@@ -1015,7 +1215,11 @@ export interface paths {
         };
         /**
          * Health Check
-         * @description Liveness check.
+         * @description Liveness only — deliberately touches nothing.
+         *
+         *     A supervisor restarts the process when this fails, so it must answer for the process and
+         *     nothing else. Readiness, which does talk to dependencies, is `/api/v1/ready`: conflating
+         *     the two means a database blip gets every healthy instance killed at once.
          */
         get: operations["health_check_health_get"];
         put?: never;
@@ -1225,6 +1429,46 @@ export interface components {
             /** Complete */
             complete: boolean;
         };
+        /** DependencyStatus */
+        DependencyStatus: {
+            /** Name */
+            name: string;
+            /** Ok */
+            ok: boolean;
+            /** Latency Ms */
+            latency_ms: number;
+            /** Detail */
+            detail?: string | null;
+        };
+        /**
+         * Diagnosis
+         * @description One component's diagnosis. Every field beyond ``kind`` is advisory — see the module
+         *     docstring on what ``confidence`` and ``evidence`` are and are not worth.
+         */
+        Diagnosis: {
+            /** @default none */
+            kind: components["schemas"]["FailureKind"];
+            /**
+             * Confidence
+             * @default 0
+             */
+            confidence: number;
+            /**
+             * Evidence
+             * @default
+             */
+            evidence: string;
+            /**
+             * Evidence Verbatim
+             * @default false
+             */
+            evidence_verbatim: boolean;
+            /**
+             * Prerequisite
+             * @default
+             */
+            prerequisite: string;
+        };
         /** DimensionRead */
         DimensionRead: {
             /** Key */
@@ -1253,6 +1497,12 @@ export interface components {
              */
             observation: string;
         };
+        /**
+         * FailureKind
+         * @description What went wrong, in the terms that change what should happen next.
+         * @enum {string}
+         */
+        FailureKind: "none" | "notation" | "procedural" | "conceptual" | "prerequisite" | "incomplete";
         /**
          * GenerateRequest
          * @description Generate content for a KC. With ``type`` omitted, the default block set is assembled.
@@ -1294,6 +1544,10 @@ export interface components {
         /**
          * GradeRead
          * @description The grade plus the per-KC mastery the answer produced.
+         *
+         *     ``component_scores`` is how each knowledge component did, where the grader could tell them
+         *     apart (S10) — empty for an MCQ and for anything else with one outcome, because inventing a
+         *     breakdown from a single verdict would be presenting a guess as a measurement.
          */
         GradeRead: {
             /** Score */
@@ -1306,11 +1560,41 @@ export interface components {
             };
             /** Estimates */
             estimates: components["schemas"]["KCEstimateRead"][];
+            /** Component Scores */
+            component_scores?: {
+                [key: string]: number;
+            };
+            /** Diagnoses */
+            diagnoses?: {
+                [key: string]: components["schemas"]["Diagnosis"];
+            };
         };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * IngestionBacklog
+         * @description What the ingestion queue looks like right now (S60).
+         *
+         *     The signal an operator needs is not "is the worker process running" — a worker can be up,
+         *     connected, and consuming nothing. It is *whether work is moving*: a growing pile of pending
+         *     sources and a rising oldest-pending age say it is not, whatever the process table says.
+         */
+        IngestionBacklog: {
+            /** Pending */
+            pending: number;
+            /** Processing */
+            processing: number;
+            /** Failed */
+            failed: number;
+            /** Oldest Pending Age Seconds */
+            oldest_pending_age_seconds: number | null;
+            /** Expired Leases */
+            expired_leases: number;
+            /** Max Concurrent Jobs */
+            max_concurrent_jobs: number;
         };
         /** ItemCreate */
         ItemCreate: {
@@ -1482,6 +1766,26 @@ export interface components {
             mastered: boolean;
             /** Assessed */
             assessed: boolean;
+            /**
+             * Distinct Items
+             * @default 0
+             */
+            distinct_items: number;
+            /**
+             * Unassisted Items
+             * @default 0
+             */
+            unassisted_items: number;
+            /**
+             * Transfer Shown
+             * @default false
+             */
+            transfer_shown: boolean;
+            /**
+             * Retention Shown
+             * @default false
+             */
+            retention_shown: boolean;
         };
         /** KCRead */
         KCRead: {
@@ -1501,6 +1805,23 @@ export interface components {
             name: string;
             /** Description */
             description: string | null;
+        };
+        /**
+         * LearnerRead
+         * @description The learner a session belongs to.
+         */
+        LearnerRead: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Handle */
+            handle: string;
+            /** Display Name */
+            display_name: string | null;
+            /** Email */
+            email: string | null;
         };
         /**
          * LessonPlanRead
@@ -1570,6 +1891,10 @@ export interface components {
             hint_density: string | null;
             /** Preferred Item Type */
             preferred_item_type: string | null;
+            /** Detour For */
+            detour_for?: string | null;
+            /** Detour Reason */
+            detour_reason?: string | null;
         };
         /**
          * LinkCreate
@@ -1585,6 +1910,19 @@ export interface components {
             subject_id?: string | null;
             /** Topic Id */
             topic_id?: string | null;
+        };
+        /**
+         * LoginRequest
+         * @description Exchange credentials for a session.
+         */
+        LoginRequest: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Password */
+            password: string;
         };
         /**
          * MemoryRead
@@ -1774,6 +2112,33 @@ export interface components {
             /** Dimensions */
             dimensions: components["schemas"]["DimensionRead"][];
         };
+        /** ReadinessReport */
+        ReadinessReport: {
+            /** Ready */
+            ready: boolean;
+            /** Dependencies */
+            dependencies: components["schemas"]["DependencyStatus"][];
+            /**
+             * Durable Checkpoints
+             * @default true
+             */
+            durable_checkpoints: boolean;
+        };
+        /**
+         * RegisterRequest
+         * @description Create an account.
+         */
+        RegisterRequest: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Password */
+            password: string;
+            /** Display Name */
+            display_name?: string | null;
+        };
         /** RetentionPolicyRead */
         RetentionPolicyRead: {
             /** Stores */
@@ -1848,6 +2213,45 @@ export interface components {
             /** Uncertainty */
             uncertainty: number;
             item?: components["schemas"]["ItemRead"] | null;
+        };
+        /**
+         * SessionListRead
+         * @description Every live session for the current learner.
+         */
+        SessionListRead: {
+            /** Sessions */
+            sessions: components["schemas"]["SessionRead"][];
+        };
+        /**
+         * SessionRead
+         * @description One live session, as its owner sees it.
+         */
+        SessionRead: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Last Used At
+             * Format: date-time
+             */
+            last_used_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Current
+             * @default false
+             */
+            current: boolean;
         };
         /**
          * SimilarSourceRead
@@ -2084,6 +2488,208 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    ready_api_v1_ready_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadinessReport"];
+                };
+            };
+        };
+    };
+    ingestion_backlog_api_v1_ops_ingestion_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IngestionBacklog"];
+                };
+            };
+        };
+    };
+    register_api_v1_auth_register_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LearnerRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    login_api_v1_auth_login_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LearnerRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    logout_api_v1_auth_logout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    logout_all_api_v1_auth_logout_all_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    me_api_v1_auth_me_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LearnerRead"];
+                };
+            };
+        };
+    };
+    sessions_api_v1_auth_sessions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionListRead"];
+                };
+            };
+        };
+    };
+    dev_login_api_v1_auth_dev_login_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LearnerRead"];
+                };
+            };
+        };
+    };
     list_subjects_api_v1_subjects_get: {
         parameters: {
             query?: never;

@@ -12,7 +12,6 @@ from datetime import UTC, datetime, timedelta
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import DEV_LEARNER_HANDLE
 from app.core.config import Settings
 from app.llm.registry import fake_llm_client
 from app.models.learner import Learner
@@ -41,13 +40,19 @@ class _RecordingQueue:
 
 
 async def _source(
-    session: AsyncSession, store: InMemoryBlobStore, *, data: bytes = TEXT, dev: bool = False
+    session: AsyncSession,
+    store: InMemoryBlobStore,
+    *,
+    data: bytes = TEXT,
+    owner: Learner | None = None,
 ) -> Source:
-    """``dev=True`` owns the source by the learner the stubbed auth resolves to, so an API
-    call in the same test can actually see it."""
-    learner = Learner(handle=DEV_LEARNER_HANDLE if dev else f"l-{uuid.uuid4().hex[:8]}")
-    session.add(learner)
-    await session.flush()
+    """Pass ``owner`` (the ``api_learner`` fixture) so an API call in the same test can
+    actually see it (S21); leave it out for a source belonging to somebody the caller is not."""
+    learner = owner
+    if learner is None:
+        learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+        session.add(learner)
+        await session.flush()
     return await ingestion.create_source(
         session,
         store,
@@ -343,10 +348,10 @@ async def test_a_failed_commit_does_not_leave_the_blob_behind(db_session: AsyncS
 
 
 async def test_retry_endpoint_requeues_a_finished_source(
-    api_client: AsyncClient, db_session: AsyncSession
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
 ) -> None:
     store = InMemoryBlobStore()
-    source = await _source(db_session, store, dev=True)
+    source = await _source(db_session, store, owner=api_learner)
     await ingestion.ingest_source(db_session, store, fake_llm_client(), source.id)
 
     response = await api_client.post(f"/api/v1/sources/{source.id}/retry")
@@ -356,10 +361,10 @@ async def test_retry_endpoint_requeues_a_finished_source(
 
 
 async def test_retry_refuses_while_a_job_holds_the_claim(
-    api_client: AsyncClient, db_session: AsyncSession
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
 ) -> None:
     store = InMemoryBlobStore()
-    source = await _source(db_session, store, dev=True)
+    source = await _source(db_session, store, owner=api_learner)
     await ingestion.claim_source(db_session, source.id, settings=Settings())
 
     response = await api_client.post(f"/api/v1/sources/{source.id}/retry")

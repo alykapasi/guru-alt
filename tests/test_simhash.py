@@ -129,11 +129,10 @@ async def test_another_learners_sources_are_never_candidates(db_session: AsyncSe
 
 
 async def test_the_endpoint_reports_and_changes_nothing(
-    api_client: AsyncClient, db_session: AsyncSession
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
 ) -> None:
-    from app.api.deps import get_current_learner
 
-    learner = await get_current_learner(db_session)
+    learner = api_learner
     subject = await _source(db_session, learner, BOOK, "book.pdf")
     scan = await _source(db_session, learner, SCANNED, "scan.pdf")
     await db_session.commit()

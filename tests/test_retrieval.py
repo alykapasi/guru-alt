@@ -13,7 +13,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import DEV_LEARNER_HANDLE, get_llm_client
+from app.api.deps import get_llm_client
 from app.llm import ModelRole
 from app.llm.registry import fake_llm_client
 from app.main import app
@@ -189,12 +189,9 @@ async def test_retrieval_scoped_to_source_ids(db_session: AsyncSession) -> None:
 
 
 async def test_retrieve_endpoint(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, api_learner: Learner
 ) -> None:
-    learner = Learner(handle=DEV_LEARNER_HANDLE, display_name="Dev")
-    db_session.add(learner)
-    await db_session.flush()
-    source = await _source(db_session, learner)
+    source = await _source(db_session, api_learner)
     await _chunk(db_session, source, "mitochondria powerhouse cell biology")
 
     r = await api_client.post(f"{API}/retrieve", json={"query": "mitochondria"})

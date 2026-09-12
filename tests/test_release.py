@@ -38,6 +38,8 @@ def _prod(**overrides: object) -> Settings:
         blob_secret_key="realsecret",
         cors_origins=["https://app.guru.example"],
         anthropic_api_key="sk-ant-real",
+        dev_auto_login=False,
+        session_cookie_secure=True,
     )
     return base.model_copy(update=overrides) if overrides else base
 
@@ -64,6 +66,13 @@ def test_a_correct_production_config_starts() -> None:
         ({"cors_origins": ["*"]}, "every origin"),
         ({"cors_origins": ["http://localhost:5173"]}, "localhost dev server"),
         ({"anthropic_api_key": "", "openrouter_api_key": ""}, "no model provider key"),
+        # S21: a session issued with no credential, for anybody who finds the endpoint.
+        ({"dev_auto_login": True}, "GURU_DEV_AUTO_LOGIN"),
+        ({"session_cookie_secure": False}, "GURU_SESSION_COOKIE_SECURE"),
+        (
+            {"session_cookie_samesite": "none", "session_cookie_secure": False},
+            "GURU_SESSION_COOKIE_SAMESITE=none",
+        ),
     ],
 )
 def test_each_development_default_refuses_production(overrides: dict, expected: str) -> None:

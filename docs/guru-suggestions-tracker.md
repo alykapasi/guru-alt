@@ -68,7 +68,7 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | S18 | Calibrate mastery, placement, and scaffolding heuristics against real evidence. | Placement mappings, completion thresholds, and profile-to-scaffolding thresholds are explicitly described as arbitrary or uncalibrated. [R1, R5, R11] | Progress estimates and teaching choices correspond to demonstrated capability. | High; requires data | Accepted |
 | S19 | Retain the useful existing foundations while improving the teaching loop. | Pure estimation logic, persistent per-component state, event logging, prerequisite planning, and provider abstraction already exist. | Improve the behavior incrementally using existing boundaries. | Ongoing | Accepted |
 | S20 | Synchronize documentation with implementation and the clarified mission. | README describes the frontend as future work; roadmap labels the experiment suite not started despite tooling being present. Audience guidance also needs the nuance agreed here. | Future reviews and implementation plans start from an accurate description. | Supporting | Accepted |
-| S21 | Replace the development identity stub before real multi-user access; review production readiness separately. | The inspected auth dependency resolves a single dev learner. [R12] | Real learner identity and tested authorization boundaries before independent user access. | Before external multi-user use | Accepted |
+| S21 | Replace the development identity stub before real multi-user access; review production readiness separately. | The inspected auth dependency resolves a single dev learner. [R12] | Real learner identity and tested authorization boundaries before independent user access. | Before external multi-user use | Implemented (see below) |
 
 ### Knowledge graph and content pipeline — second review
 
@@ -732,6 +732,106 @@ existing subject's graph rather than trusting it. A dropped edge is logged and n
 curriculum whose ordering was quietly weakened looks identical to one the model got right. And
 nothing measures whether the generated orderings are *pedagogically* correct — only that they
 are acyclic and resolvable.
+
+### S21 — Replace the development identity stub
+
+**Status:** Partially implemented (branch `feat/s21-s58-s60`) · **Priority:** Before external
+multi-user use
+
+**Implemented — the seam was one function, and it is now a real one.** `get_current_learner`
+resolved a learner with handle `dev`, and *created* it if absent. So every route received a
+`Learner` whether or not the caller had proved anything, and the first request any stranger
+made would manufacture the account it then acted as. It now reads a session token, resolves it
+to the learner who owns it, and raises 401 when there is none. Nothing above it changed —
+which is the claim the MASTERPLAN made for threading `learner_id` everywhere from day one, and
+it held: 74 uses of `CurrentLearner` across fourteen routers needed no edits at all.
+
+**Implemented — a credential, and a session that can be withdrawn.** `learners` gains `email`
+and `password_hash`; `learner_sessions` holds one row per live session. Two hashes, for two
+threat models: Argon2id for the password, because it is low-entropy and chosen by a person, and
+SHA-256 for the session token, because it is 256 bits of CSPRNG output with no candidates to
+enumerate — and putting a deliberately slow hash on the path of *every authenticated request*
+would be a denial-of-service mechanism, not a defence. The token is stored only as a
+fingerprint, so a dump, a backup (S60) or a log line cannot be replayed as a login.
+
+The session is a row rather than a signed token on purpose. A self-contained signed claim
+cannot be withdrawn before it expires, which makes "log out everywhere", "revoke the session
+on the laptop I lost" and account deletion into promises the server cannot keep. The cost is
+one indexed read per request; the benefit is that revocation is immediate and tested as such.
+
+**Implemented — both credential columns are nullable, and that is the honest shape.** No
+existing learner is given a fabricated address. A learner with neither is one with no way to
+sign in, which is the truth about every row that predates this migration; an address with no
+hash is what an externally-authenticated learner would look like, so adding a second way in
+does not need the table to change. The one nonsensical combination — a password with no
+address, which can neither be used nor recovered — is refused by a check constraint rather
+than documented.
+
+**Implemented — the development seam is an endpoint, not a fallback.** `POST /auth/dev-login`
+issues a session for the `dev` learner with no credential, so `poe dev` and the frontend still
+work against an empty database. It is deliberately *not* a branch inside the resolver: a
+fallback is invisible, appears in no schema, and is exactly the shape of an auth boundary that
+looks present and is not. This one is in the OpenAPI document, returns 404 unless
+`GURU_DEV_AUTO_LOGIN` is on, and production refuses to **start** while it is — alongside a new
+refusal for a session cookie that would cross plain HTTP (`app/core/release.py`).
+
+**Implemented — the suite tests the real resolver, not an override of it.** The obvious way to
+keep 600 API tests passing was to leave the dev fallback on under `GURU_ENV=test`, and it would
+have been worthless: every test would have run through the bypass and the boundary would have
+been exercised nowhere. Instead `api_client` is genuinely authenticated — it holds a session
+cookie minted through `app.services.auth` for the new `api_learner` fixture — so every API test
+in the suite now goes through the same resolver production uses. Ten test files had reached for
+the magic `DEV_LEARNER_HANDLE` constant to seed "the learner the API acts as"; they take the
+fixture instead, and the constant is gone from the test suite entirely.
+
+**Implemented — a sweep, because an auth table nobody prunes grows forever.** The worker deletes
+sessions that can no longer authenticate anybody, on the same timer pattern as the ingestion
+reconciler. A revoked row is kept for a week first: while it exists, presenting that token is
+distinguishable from presenting one that never existed, which is the difference between "your
+session was ended" and a failure nobody can diagnose. This is deliberately not a repeat of
+S17's unbounded checkpoint table.
+
+**Implemented — the client sends the credential.** Six raw `fetch` calls and the typed client
+now go through one credentialed path (`apiFetch` / `credentials: "include"`). Without it the
+browser holds a perfectly valid session and every request is still a 401, which reads as a
+broken login rather than a missing option. `/app/*` is behind a gate that redirects a
+signed-out browser to a sign-in page and remembers where they were going; the gate is not the
+security boundary and says so — the API refuses the request whatever the client renders.
+
+**Measured.** 52 new backend tests and 3 frontend ones. 39 cover identity itself: that an
+unknown address and a wrong password are indistinguishable in both status and message, that a
+learner with no password hash is not a way in, that an expired, revoked, or deleted-owner
+session stops working *at use time* rather than at issue time, that the token never appears in
+a response body or in the database, that the cookie is httpOnly, and that eleven learner routes
+answer 401 with no session while the three operational endpoints stay open. 13 more are the
+cross-learner boundary: B holds a live session and asks for A's conversation, source, memory,
+note, plan, mastery and export, by id. **All 13 passed on the first run** — the `learner_id`
+threading was genuinely being used to scope, not merely being carried. That is worth stating
+plainly as a null result rather than dressed up as a fix.
+
+**Two things worth recording.** Seven of those boundary tests failed on their first run and
+none of them was an application bug — wrong enum member, wrong embedding dimension, a column
+that does not exist. Worth noting because a cross-learner test that errors in setup looks
+exactly like one that passes if you only read the summary line. And the frontend guard test
+**passed for the wrong reason**: `openapi-fetch` captures `globalThis.fetch` when the client is
+built, so `vi.stubGlobal` after import never applied, the test reached the real network,
+`ECONNREFUSED` produced a query error, and a query error is indistinguishable from a 401 to the
+gate. The signed-out assertion would have passed with the gate deleted. The client now resolves
+`fetch` per call, and the test was re-checked by mutation afterwards.
+
+**Not done.** There is no admin role and no authorization *tier* — every authenticated learner
+can still create global subjects, topics, KCs and edges, which is S25's ownership model and is
+untouched here; the boundary this tests is "not yours" for learner-owned rows, not "not yours
+to publish". No password reset, no email verification, and therefore no recovery: a forgotten
+password is currently an operator's problem. No rate limiting on sign-in — Argon2 makes each
+attempt expensive for the server as well as the attacker, which is a denial-of-service shape
+the login path does not yet defend against, and Phase 11 owns it. No second factor. Sessions
+do not rotate their token on privilege change, and there is no absolute lifetime independent of
+the sliding TTL. The learner cannot change their own email or password through the API. CSRF
+rests on `SameSite=lax` plus an explicit CORS allowlist rather than a token, which is adequate
+for a same-site deployment and is exactly the assumption to revisit if the app is ever served
+cross-site. And the admin portal and audited impersonation that P10 pairs with this are not
+started.
 
 ## Open decisions
 

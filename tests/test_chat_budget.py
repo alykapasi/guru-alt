@@ -14,7 +14,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import DEV_LEARNER_HANDLE, get_app_settings, get_llm_client
+from app.api.deps import get_app_settings, get_llm_client
 from app.core.config import Settings, get_settings
 from app.llm.registry import fake_llm_client
 from app.main import app
@@ -56,9 +56,9 @@ async def _conversation(session: AsyncSession, learner: Learner, *, messages: in
     return conversation
 
 
-async def _learner(session: AsyncSession, *, dev: bool = False) -> Learner:
-    """A learner. ``dev=True`` for the one the stub auth seam resolves, so an API call owns it."""
-    learner = Learner(handle=DEV_LEARNER_HANDLE if dev else f"b-{uuid.uuid4().hex[:8]}")
+async def _learner(session: AsyncSession) -> Learner:
+    """A learner who is not the one the API client is signed in as."""
+    learner = Learner(handle=f"b-{uuid.uuid4().hex[:8]}")
     session.add(learner)
     await session.flush()
     return learner
@@ -74,9 +74,9 @@ def test_the_schema_bound_matches_the_configured_one() -> None:
 
 
 async def test_an_oversized_message_is_refused_before_anything_is_paid_for(
-    db_session: AsyncSession, api_client: AsyncClient, fake_llm: None
+    db_session: AsyncSession, api_client: AsyncClient, fake_llm: None, api_learner: Learner
 ) -> None:
-    learner = await _learner(db_session, dev=True)
+    learner = api_learner
     conversation = await _conversation(db_session, learner)
     await db_session.commit()
 
@@ -168,9 +168,9 @@ async def test_spend_outside_the_window_does_not_count(db_session: AsyncSession)
 
 
 async def test_a_learner_over_the_ceiling_is_refused_the_turn(
-    db_session: AsyncSession, api_client: AsyncClient, fake_llm: None
+    db_session: AsyncSession, api_client: AsyncClient, fake_llm: None, api_learner: Learner
 ) -> None:
-    learner = await _learner(db_session, dev=True)
+    learner = api_learner
     conversation = await _conversation(db_session, learner)
     await _record(db_session, learner, cost=99.0, tokens=10)
     await db_session.commit()
@@ -188,9 +188,9 @@ async def test_a_learner_over_the_ceiling_is_refused_the_turn(
 
 
 async def test_a_learner_under_the_ceiling_is_allowed_through(
-    db_session: AsyncSession, api_client: AsyncClient, fake_llm: None
+    db_session: AsyncSession, api_client: AsyncClient, fake_llm: None, api_learner: Learner
 ) -> None:
-    learner = await _learner(db_session, dev=True)
+    learner = api_learner
     conversation = await _conversation(db_session, learner)
     await _record(db_session, learner, cost=0.01, tokens=10)
     await db_session.commit()

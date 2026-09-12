@@ -290,9 +290,9 @@ async def _learner_source(
 
 
 async def test_create_conversation_with_narrowed_sources_round_trips(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, api_learner: Learner
 ) -> None:
-    learner = await _get_dev_learner(api_client, db_session)
+    learner = api_learner
     subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Chemistry")
     db_session.add(subject)
     await db_session.flush()
@@ -322,9 +322,9 @@ async def test_create_conversation_with_unknown_source_404(
 
 
 async def test_create_conversation_source_from_wrong_subject_400(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, api_learner: Learner
 ) -> None:
-    learner = await _get_dev_learner(api_client, db_session)
+    learner = api_learner
     subject_a = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Chemistry")
     subject_b = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Biology")
     db_session.add_all([subject_a, subject_b])
@@ -340,9 +340,9 @@ async def test_create_conversation_source_from_wrong_subject_400(
 
 
 async def test_create_conversation_source_ids_without_subject_400(
-    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, api_learner: Learner
 ) -> None:
-    learner = await _get_dev_learner(api_client, db_session)
+    learner = api_learner
     source = await _learner_source(db_session, learner.id)
     await db_session.commit()
 
@@ -354,7 +354,10 @@ async def test_create_conversation_source_ids_without_subject_400(
 
 
 async def test_tutor_turn_is_grounded_by_the_active_lesson_plan_step(
-    api_client: AsyncClient, db_session: AsyncSession, recording_llm: list[str | None]
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    recording_llm: list[str | None],
+    api_learner: Learner,
 ) -> None:
     r = await api_client.post(f"{API}/conversations", json={"title": "Chem help"})
     conversation_id = r.json()["id"]
@@ -363,10 +366,9 @@ async def test_tutor_turn_is_grounded_by_the_active_lesson_plan_step(
     conversation.goal = "Understand acids"
     await db_session.commit()
 
-    # The conversation endpoint lazily creates the stub "dev" learner — reuse it so the plan
-    # generated directly below is grounding the *same* learner's tutor turn.
-    learner = await db_session.scalar(select(Learner).where(Learner.handle == "dev"))
-    assert learner is not None
+    # The plan generated below has to belong to the learner this client is signed in as, or
+    # it is not the one grounding their tutor turn (S21).
+    learner = api_learner
     subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Chemistry")
     db_session.add(subject)
     await db_session.flush()
@@ -435,21 +437,13 @@ async def _seeded_subject(
     return subject, kc
 
 
-async def _get_dev_learner(api_client: AsyncClient, db_session: AsyncSession) -> Learner:
-    learner = await db_session.scalar(select(Learner).where(Learner.handle == "dev"))
-    if learner is None:
-        # The conversation endpoint lazily creates it; force that once, then reuse.
-        r = await api_client.post(f"{API}/conversations", json={"title": "bootstrap"})
-        assert r.status_code == 201
-        learner = await db_session.scalar(select(Learner).where(Learner.handle == "dev"))
-    assert learner is not None
-    return learner
-
-
 async def test_subject_scoped_turn_grounds_and_serves_an_item_for_its_own_subject(
-    api_client: AsyncClient, db_session: AsyncSession, recording_llm: list[str | None]
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    recording_llm: list[str | None],
+    api_learner: Learner,
 ) -> None:
-    learner = await _get_dev_learner(api_client, db_session)
+    learner = api_learner
 
     subject_a, kc_a = await _seeded_subject(db_session, learner.id, "Physics", "Kinematics")
     # Pre-seed the bank so the check reuses this item rather than generating one through the
@@ -488,9 +482,12 @@ async def test_subject_scoped_turn_grounds_and_serves_an_item_for_its_own_subjec
 
 
 async def test_subject_scoped_turn_with_no_plan_yet_gets_no_grounding_or_item(
-    api_client: AsyncClient, db_session: AsyncSession, recording_llm: list[str | None]
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    recording_llm: list[str | None],
+    api_learner: Learner,
 ) -> None:
-    learner = await _get_dev_learner(api_client, db_session)
+    learner = api_learner
 
     # The learner has a plan for subject A, but the conversation is scoped to subject B, which
     # has no plan — must not fall back to A's.
@@ -522,9 +519,12 @@ async def test_subject_scoped_turn_with_no_plan_yet_gets_no_grounding_or_item(
 
 
 async def test_subject_scoped_turn_with_a_fully_done_plan_gets_no_item(
-    api_client: AsyncClient, db_session: AsyncSession, recording_llm: list[str | None]
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    recording_llm: list[str | None],
+    api_learner: Learner,
 ) -> None:
-    learner = await _get_dev_learner(api_client, db_session)
+    learner = api_learner
     subject, kc = await _seeded_subject(db_session, learner.id, "Physics", "Kinematics")
     db_session.add(LearnerKCState(learner_id=learner.id, kc_id=kc.id, ability=1.5, uncertainty=0.3))
     await db_session.commit()
@@ -548,13 +548,16 @@ async def test_subject_scoped_turn_with_a_fully_done_plan_gets_no_item(
 
 
 async def test_answering_a_served_item_through_the_real_endpoint_advances_the_next_turn(
-    api_client: AsyncClient, db_session: AsyncSession, recording_llm: list[str | None]
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    recording_llm: list[str | None],
+    api_learner: Learner,
 ) -> None:
     """The literal "session runner follows/updates the plan" DoD, end-to-end through the real
     HTTP endpoints (not direct service calls): a due review surfaces as a served item on one
     turn; answering it via ``POST /items/{id}/answer`` auto-revises the plan (assessment.py's
     existing, unchanged trigger); the very next turn serves something different."""
-    learner = await _get_dev_learner(api_client, db_session)
+    learner = api_learner
     subject, kc = await _seeded_subject(db_session, learner.id, "Physics", "Kinematics")
     # Pre-seed the bank so the check reuses this item rather than generating one through the
     # recording provider (whose canned reply isn't valid short-item JSON).
@@ -633,9 +636,12 @@ async def test_answering_a_served_item_through_the_real_endpoint_advances_the_ne
 
 
 async def test_tutor_turn_reflects_a_previously_written_memory(
-    api_client: AsyncClient, db_session: AsyncSession, recording_llm: list[str | None]
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    recording_llm: list[str | None],
+    api_learner: Learner,
 ) -> None:
-    learner = await _get_dev_learner(api_client, db_session)
+    learner = api_learner
     content = "Studying for the MCAT, mornings only."
     embedding = (await fake_llm_client().embed(ModelRole.EMBED, [content])).vectors[0]
     db_session.add(
@@ -667,10 +673,13 @@ async def test_tutor_turn_reflects_a_previously_written_memory(
 
 
 async def test_write_back_then_a_fresh_turn_reflects_the_written_memory(
-    api_client: AsyncClient, db_session: AsyncSession, recording_llm: list[str | None]
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    recording_llm: list[str | None],
+    api_learner: Learner,
 ) -> None:
     """The Phase 5 DoD check: write memory in one conversation, see it shape a later one."""
-    learner = await _get_dev_learner(api_client, db_session)
+    learner = api_learner
 
     r = await api_client.post(f"{API}/conversations", json={"title": "First chat"})
     conv_a_id = uuid.UUID(r.json()["id"])
@@ -742,9 +751,9 @@ async def test_agentic_mode_bypasses_the_refinement_gate_and_streams_a_tool_call
 
 
 async def test_tutor_turn_cites_retrieved_materials(
-    api_client: AsyncClient, db_session: AsyncSession
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
 ) -> None:
-    learner = await _get_dev_learner(api_client, db_session)
+    learner = api_learner
     subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Biology")
     db_session.add(subject)
     await db_session.flush()
@@ -796,11 +805,11 @@ async def test_tutor_turn_cites_retrieved_materials(
 
 
 async def test_general_conversation_has_no_citations(
-    api_client: AsyncClient, db_session: AsyncSession
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
 ) -> None:
     """A subject-less ("general") conversation never retrieves — no citations, no grounding —
     even when matching materials exist elsewhere for this learner."""
-    learner = await _get_dev_learner(api_client, db_session)
+    learner = api_learner
     subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Biology")
     db_session.add(subject)
     await db_session.flush()
@@ -841,9 +850,9 @@ async def test_general_conversation_has_no_citations(
 
 
 async def test_agentic_mode_cites_search_materials_results(
-    api_client: AsyncClient, db_session: AsyncSession
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
 ) -> None:
-    learner = await _get_dev_learner(api_client, db_session)
+    learner = api_learner
     source = await _learner_source(db_session, learner.id)
     chunk = Chunk(
         embedding_space=FAKE_SPACE,
