@@ -37,6 +37,20 @@ async def _learner(session: AsyncSession) -> Learner:
     return learner
 
 
+async def _memory(session: AsyncSession, learner: Learner, content: str) -> Memory:
+    """One stored memory, embedded with a distinctive constant so a re-embedding is visible."""
+    memory = Memory(
+        embedding_space=FAKE_SPACE,
+        learner_id=learner.id,
+        kind=MemoryKind.FACT,
+        content=content,
+        embedding=[0.5] * 768,
+    )
+    session.add(memory)
+    await session.flush()
+    return memory
+
+
 async def _conversation_with_messages(session: AsyncSession, learner: Learner) -> Conversation:
     conversation = Conversation(learner_id=learner.id)
     session.add(conversation)
@@ -400,3 +414,112 @@ async def test_a_memory_from_another_embedding_model_is_not_retrieved_or_deduped
     second = await svc.write_back(db_session, llm, conversation_id=conversation.id)
     assert len(second) == 2
     assert all(m.embedding_space == FAKE_SPACE for m in second)
+
+
+# --- the learner can say what is actually true (S16) -----------------------------------------
+
+
+async def test_a_correction_supersedes_rather_than_overwrites(db_session: AsyncSession) -> None:
+    """Overwriting in place would make the system's belief look like it had always been what
+    the learner just typed, which is the one thing a record of what somebody was told must not
+    do — and it would throw away the embedding that recognises the old claim."""
+    learner = await _learner(db_session)
+    original = await _memory(db_session, learner, "Studies best in the morning")
+
+    corrected = await svc.correct_memory(
+        db_session, fake_llm_client(), learner.id, original.id, content="Studies best late at night"
+    )
+
+    assert corrected is not None
+    assert corrected.id != original.id
+    assert corrected.content == "Studies best late at night"
+    assert corrected.status == MemoryStatus.CURRENT
+    await db_session.refresh(original)
+    assert original.status == MemoryStatus.SUPERSEDED
+    assert original.superseded_by_id == corrected.id
+    assert original.content == "Studies best in the morning", "the old claim keeps its text"
+
+
+async def test_only_the_correction_is_shown_back(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    original = await _memory(db_session, learner, "Studies best in the morning")
+    await svc.correct_memory(
+        db_session, fake_llm_client(), learner.id, original.id, content="Studies best late at night"
+    )
+
+    listed = await svc.list_memories(db_session, learner.id)
+    assert [m.content for m in listed] == ["Studies best late at night"]
+
+
+async def test_a_correction_is_embedded_rather_than_inheriting_the_old_vector(
+    db_session: AsyncSession,
+) -> None:
+    """A corrected memory carrying its predecessor's embedding is retrieved for the wrong
+    questions and missed for the right ones — a subtle way of not having corrected it."""
+    learner = await _learner(db_session)
+    original = await _memory(db_session, learner, "Studies best in the morning")
+    before = list(original.embedding)
+
+    corrected = await svc.correct_memory(
+        db_session,
+        fake_llm_client(),
+        learner.id,
+        original.id,
+        content="Something entirely different",
+    )
+
+    assert corrected is not None
+    assert list(corrected.embedding) != before
+
+
+async def test_correcting_someone_elses_memory_does_nothing(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    other = await _learner(db_session)
+    theirs = await _memory(db_session, other, "Studies best in the morning")
+
+    assert (
+        await svc.correct_memory(
+            db_session, fake_llm_client(), learner.id, theirs.id, content="Nonsense"
+        )
+        is None
+    )
+    await db_session.refresh(theirs)
+    assert theirs.status == MemoryStatus.CURRENT
+
+
+async def test_correcting_a_forgotten_memory_does_not_bring_it_back(
+    db_session: AsyncSession,
+) -> None:
+    """A deleted row is a tombstone that stops the fact being re-extracted. Correcting one
+    would resurrect it under a new id and defeat the thing the tombstone is for."""
+    learner = await _learner(db_session)
+    original = await _memory(db_session, learner, "Studies best in the morning")
+    assert await svc.delete_memory(db_session, learner.id, original.id)
+
+    assert (
+        await svc.correct_memory(
+            db_session, fake_llm_client(), learner.id, original.id, content="Studies best at night"
+        )
+        is None
+    )
+    assert await svc.list_memories(db_session, learner.id) == []
+
+
+async def test_an_unchanged_correction_writes_nothing(db_session: AsyncSession) -> None:
+    """Otherwise pressing save without editing would supersede a memory with itself and leave
+    a chain of identical rows behind."""
+    learner = await _learner(db_session)
+    original = await _memory(db_session, learner, "Studies best in the morning")
+
+    assert (
+        await svc.correct_memory(
+            db_session,
+            fake_llm_client(),
+            learner.id,
+            original.id,
+            content="  Studies best in the morning ",
+        )
+        is None
+    )
+    await db_session.refresh(original)
+    assert original.status == MemoryStatus.CURRENT

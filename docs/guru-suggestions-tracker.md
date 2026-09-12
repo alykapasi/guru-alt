@@ -389,6 +389,44 @@ assembler, so the property this fixes can still decay by addition rather than by
 learner cannot see or correct what the system believes it remembers about them, which is the
 part of "shared context" that matters most once the memory is wrong.
 
+**Implemented (third pass, branch `feat/residue-pass`) — the learner can read the picture, and
+disagree with it.** All three modes have shared one picture of the learner since this item
+landed, and the learner could see none of it. That matters most at exactly the point the
+picture is wrong: a mistaken fact about somebody is carried silently into every conversation
+they have, and the only remedy on offer was erasure.
+
+Erasure is the wrong tool for the common case. Most of what goes wrong with an extracted memory
+is that it is *nearly* right — the right subject, the wrong detail — and deleting it throws away
+the true part while leaving the extractor free to derive the same mistake again from the same
+history, because a tombstone suppresses a fact without asserting a correction.
+
+So a correction **supersedes** rather than overwrites, reusing the chain an extracted
+contradiction already uses. Three consequences, each the reason not to do the simpler thing:
+the old embedding still recognises the old claim, so a later write-back over the same
+conversation compares against the *replacement* instead of re-creating the mistake; the
+correction stays visible as a correction, where overwriting `content` in place would make the
+system's belief look as though it had always been what the learner just typed; and "why does it
+think that?" stays answerable, because the chain is intact. The new text is embedded rather
+than inheriting the old vector — a corrected memory carrying its predecessor's embedding is
+retrieved for the wrong questions and missed for the right ones, which is a quiet way of not
+having corrected it.
+
+The page is the other half. `GET /memory` and both deletes have existed since Phase 4 and
+nothing in the product ever called them, so "the learner cannot see it" was literally true
+while the endpoint returned it. Correcting is offered ahead of forgetting, and forgetting
+everything asks first.
+
+**Measured (third pass).** 6 backend tests and 5 frontend ones. 5 mutations, all killed —
+including a correction that tombstones instead of superseding, which passes every test about
+the *visible* list and destroys the thing the chain is for.
+
+**Still not done.** Memory is only part of the picture: the behavioural profile dimensions
+(S44) and the mastery estimates are equally things the system believes about a learner, and
+neither is correctable here. Nothing shows *which* conversation a memory came from in terms a
+learner would recognise — the provenance is an id. A correction cannot be undone from the page.
+And nothing tells a learner when a memory is created, so the first they know of a wrong one is
+finding it on this page.
+
 ### S15 — Make a conversation produce evidence, without making all of it evidence
 
 **Status:** Partially implemented (branch `feat/s15-s16-s17`; extended on branch

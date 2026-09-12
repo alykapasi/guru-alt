@@ -529,7 +529,14 @@ export interface paths {
         delete: operations["delete_memory_api_v1_memory__memory_id__delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Correct Memory
+         * @description Say what is actually true, rather than only being able to erase what is not (S16).
+         *
+         *     Returns the *new* memory: a correction supersedes rather than overwrites, so the id
+         *     changes and a client holding the old one is holding a superseded row (see the service).
+         */
+        patch: operations["correct_memory_api_v1_memory__memory_id__patch"];
         trace?: never;
     };
     "/api/v1/onboarding/curriculum": {
@@ -2058,6 +2065,19 @@ export interface components {
             password: string;
         };
         /**
+         * MemoryCorrection
+         * @description What the learner says is actually true (S16).
+         *
+         *     Only the text. The kind stays as extracted, and the provenance of the *correction* is the
+         *     learner rather than a conversation — letting a client restate either would be letting it
+         *     describe where a belief came from, which is the part that has to be the system's own
+         *     record.
+         */
+        MemoryCorrection: {
+            /** Content */
+            content: string;
+        };
+        /**
          * MemoryRead
          * @description A stored memory as exposed to the learner — not the raw embedding.
          */
@@ -3492,6 +3512,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    correct_memory_api_v1_memory__memory_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryCorrection"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryRead"];
+                };
             };
             /** @description Validation Error */
             422: {
