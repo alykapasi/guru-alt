@@ -508,6 +508,78 @@ async def recent_struggle(
     return Struggle(consecutive_failures=failures, diagnosed_prerequisite=named)
 
 
+DETOUR_EVENT = "detour"
+"""``LearningEvent.event_type`` for a prerequisite detour being taken (S11).
+
+Tagged to the **blocked** component rather than the prerequisite the learner is sent to,
+because the question this record exists to answer is "did detouring help *this* component" —
+the prerequisite is where they went, not what was stuck. Every other reader of the event log
+filters on ``"observation"`` explicitly, so this adds a row type without changing what any of
+them see.
+"""
+
+
+def record_detour(
+    session: AsyncSession,
+    *,
+    learner_id: uuid.UUID,
+    blocked_kc_id: uuid.UUID,
+    prereq_kc_id: uuid.UUID,
+    reason: str,
+    consecutive_failures: int,
+) -> None:
+    """Record that a learner was sent to ``prereq_kc_id`` before ``blocked_kc_id``.
+
+    Detours were a plan mutation and nothing else: the step appeared, the step closed, and no
+    trace survived that a decision had been made. "Does detouring help?" is precisely the kind
+    of question S59 exists to ask, and it could not be asked of the data at all — there was no
+    data. Added to the session, not committed: it belongs to the same transaction as the plan
+    revision that caused it, so a rolled-back revision does not leave a detour on the record
+    that never happened.
+    """
+    session.add(
+        LearningEvent(
+            learner_id=learner_id,
+            kc_id=blocked_kc_id,
+            event_type=DETOUR_EVENT,
+            payload={
+                "prereq_kc_id": str(prereq_kc_id),
+                "reason": reason,
+                "consecutive_failures": consecutive_failures,
+            },
+        )
+    )
+
+
+async def detour_attempts(
+    session: AsyncSession, learner_id: uuid.UUID, blocked_kc_id: uuid.UUID
+) -> dict[uuid.UUID, int]:
+    """How many times this learner has been detoured to each prerequisite of one component.
+
+    What the cap is read from: a prerequisite the learner has already been sent to twice, and
+    is still failing the blocked component after, is not the blocker — or detouring to it is
+    not the remedy. Either way a third trip is not the answer, and without this count nothing
+    stopped the same detour firing on every failed attempt forever.
+    """
+    rows = (
+        await session.execute(
+            select(LearningEvent.payload["prereq_kc_id"].astext).where(
+                LearningEvent.learner_id == learner_id,
+                LearningEvent.kc_id == blocked_kc_id,
+                LearningEvent.event_type == DETOUR_EVENT,
+            )
+        )
+    ).all()
+    counts: dict[uuid.UUID, int] = {}
+    for (raw,) in rows:
+        try:
+            kc_id = uuid.UUID(str(raw))
+        except (TypeError, ValueError):
+            continue  # a payload written by hand or by a future shape; not a reason to fail
+        counts[kc_id] = counts.get(kc_id, 0) + 1
+    return counts
+
+
 async def rollup_topic(
     session: AsyncSession,
     learner_id: uuid.UUID,

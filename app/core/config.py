@@ -243,6 +243,14 @@ class Settings(BaseSettings):
     detour_failure_threshold: float = 0.5
     detour_min_failures: int = 2
 
+    # How many times one prerequisite may be tried for one blocked component before the
+    # planner stops offering it (S11). Nothing bounded this: the rule fires on the *current*
+    # run of failures, so a learner stuck on a component whose prerequisite is not actually
+    # the problem was sent back to the same prerequisite after every failed attempt, forever.
+    # Two trips is enough to have tested the hypothesis; a third is the planner insisting.
+    # Uncalibrated, like its neighbours (S18).
+    detour_max_repeats: int = 2
+
     # When a due review stops being worth self-rating (S09/S10). A flashcard is graded by the
     # learner's own rating, so a component failed repeatedly on review produces a falling
     # ability and no account of *why* — the one situation where the cheap format is the wrong

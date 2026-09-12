@@ -91,6 +91,21 @@ async def _scaffolding(session: AsyncSession, learner_id: uuid.UUID) -> engine.S
     return engine.scaffolding_from_profile(values)
 
 
+def _open_detour_keys(steps: Iterable[Any]) -> set[tuple[str, str]]:
+    """``(prerequisite, blocked)`` for every detour step currently open.
+
+    Compared either side of a revision to tell a detour that was *inserted* from one that was
+    merely decided: ``revise_steps`` drops a detour whose step is already open or whose KC has
+    since been mastered, and a decision that changed nothing is not something the learner was
+    sent on.
+    """
+    return {
+        (str(step.get("kc_id")), str(step.get("detour_for")))
+        for step in steps
+        if step.get("step_type") == "detour" and step.get("status") != "done"
+    }
+
+
 def _apply_plan_level_hints(plan: LessonPlan, scaffolding: engine.ScaffoldingHints) -> None:
     plan.pacing = scaffolding.pacing
     plan.example_tags = scaffolding.example_tags
@@ -199,6 +214,7 @@ async def revise_plan(
     detour = await _prerequisite_detour(
         session, learner_id=learner_id, plan=plan, mastered=mastered
     )
+    open_detours_before = _open_detour_keys(plan.steps)
 
     revised = engine.revise_steps(
         cast("list[engine.StepDict]", plan.steps),
@@ -225,6 +241,21 @@ async def revise_plan(
             # Not passed again: the first pass already inserted it, and re-deciding here would
             # append a second identical step for the same prerequisite.
         )
+    # Recorded on *insertion*, not on decision: ``revise_steps`` declines a detour whose step
+    # is already open or whose KC turned out to be mastered, and counting a decision that
+    # changed nothing would make the cap fire on detours the learner was never sent on.
+    if detour is not None:
+        inserted = _open_detour_keys(revised) - open_detours_before
+        if (str(detour.prereq_kc_id), str(detour.blocked_kc_id)) in inserted:
+            mastery.record_detour(
+                session,
+                learner_id=learner_id,
+                blocked_kc_id=detour.blocked_kc_id,
+                prereq_kc_id=detour.prereq_kc_id,
+                reason=detour.reason,
+                consecutive_failures=detour.consecutive_failures,
+            )
+
     plan.steps = cast("list[dict[str, Any]]", revised)
     _apply_plan_level_hints(plan, scaffolding)
     plan.revision_pending = False  # whatever was owed, this recomputation covers it
@@ -276,6 +307,20 @@ async def _prerequisite_detour(
     prereq_ids = [edge.prereq_kc_id for edge in edges]
     if not prereq_ids:
         return None  # nothing upstream to detour to, so the difficulty is here
+
+    # Drop the ones already tried to exhaustion for this component. The trigger reads the
+    # *current* run of failures, which resets nothing about history: a learner stuck on a
+    # component whose prerequisite is not the real problem was detoured to it again after
+    # every failed attempt. Applied to the candidates rather than to the decision so that a
+    # graded prerequisite name pointing at an exhausted component falls through to the next
+    # plausible one instead of suppressing the detour entirely.
+    tried = await mastery.detour_attempts(session, learner_id, blocked_id)
+    prereq_ids = [
+        kc_id for kc_id in prereq_ids if tried.get(kc_id, 0) < settings.detour_max_repeats
+    ]
+    if not prereq_ids:
+        return None  # every route upstream has been tried; the difficulty is not up there
+
     names = {kc.id: kc.name for kc in await knowledge_svc.get_kcs(session, prereq_ids)}
     return engine.prerequisite_detour(
         blocked_kc_id=blocked_id,

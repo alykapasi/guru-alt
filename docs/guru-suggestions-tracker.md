@@ -142,6 +142,50 @@ the kind of question S59 exists for, and this deliberately does not answer it. A
 prerequisite outside the KC's direct prerequisites is dropped rather than treated as evidence
 the *graph* is wrong.
 
+**Implemented (third pass, branch `feat/residue-pass`) — recorded, capped, and asked in a
+format that can answer the question.** The three gaps this entry recorded, in the order they
+depend on each other.
+
+*Recorded.* A detour was a plan mutation and nothing else: the step appeared, the step closed,
+and nothing survived to say a decision had been made. "Did detouring help?" is exactly the
+question S59 exists to ask and it could not be asked of the data, because there was no data.
+`learning_events` now carries a `detour` row tagged to the **blocked** component — the question
+is whether detouring helped *it*; the prerequisite is where the learner went, not what was
+stuck — with the prerequisite, the reason, and how long the run of failures was when it fired.
+It is written on *insertion*, not on decision: revision runs after every graded answer, and
+`revise_steps` declines a detour whose step is already open, so recording the decision would
+put a learner on the record for a trip they were never sent on.
+
+*Capped.* Nothing bounded repetition, and the trigger reads the *current* run of failures,
+which resets nothing about history — so a learner stuck on a component whose prerequisite was
+not the real problem was sent back to that same prerequisite after every failed attempt,
+indefinitely. A prerequisite tried `detour_max_repeats` times for one blocked component stops
+being offered. The filter applies to the *candidates* rather than to the decision, so a graded
+prerequisite name pointing at an exhausted component falls through to the next plausible one
+instead of suppressing the detour altogether.
+
+*Verified, in the sense that was actually available.* A detour is a hypothesis — "you cannot do
+this because you cannot do that yet" — and ordinary practice on the prerequisite does not test
+it. The detour step now asks with an open question whatever the learner's format preference
+says, so the answer carries a failure kind and a per-component split **on the prerequisite**:
+the evidence that says whether the prerequisite is genuinely missing or the detour was a wrong
+turn. It deliberately overrides `score_by_format`, which answers "which formats does this
+learner do well on" — the wrong question to ask of a step whose purpose is to find something
+out.
+
+**Measured (third pass).** 7 tests, 6 mutations. One survived first time and the survival was
+the useful part: the insertion-versus-decision guard is unreachable through the ordinary
+ordering rules, so the test that claimed to cover it was covering nothing. Reaching it takes a
+hand-built plan, which is also the argument for keeping the guard rather than relying on the
+callers happening not to hit it. Re-tested at that level, it kills.
+
+**Still not done.** The detour verifies by *producing* diagnosable evidence, not by acting on
+it: nothing reads the prerequisite's failure kind back to close a detour early when the learner
+turns out to be fine, so a wrongly chosen detour still costs the full trip — it is now merely
+capped and on the record. Nothing tells the learner a route was abandoned when the cap trips;
+the plan simply stops offering it. And a diagnosed prerequisite outside the KC's direct
+prerequisites is still dropped rather than treated as evidence the *graph* is wrong.
+
 **Implemented (second pass, branch `feat/finish-partials-1`) — the detour explains itself.**
 `detour_for` and `detour_reason` were recorded precisely so a learner could be told why their
 plan changed, and then rendered nowhere: a detour appeared in the plan as an ordinary "New"
