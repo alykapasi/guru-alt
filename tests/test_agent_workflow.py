@@ -5,6 +5,7 @@ real app.services.assessment.answer_item, so a real Item/db_session is required,
 test_agent_agentic.py's DB e2e section.
 """
 
+import json
 import uuid
 
 import pytest
@@ -13,9 +14,10 @@ from sqlalchemy import Float, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.workflow import WorkflowState, build_workflow_graph, workflow_config
+from app.llm.providers import FakeProvider
 from app.llm.providers.fake import FakeTurn
-from app.llm.registry import fake_llm_client
-from app.llm.types import ChatMessage, ChatRole, Usage
+from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
+from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.models.assessment import Item, ItemType
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
@@ -182,3 +184,82 @@ async def test_a_scaffolded_second_round_is_weaker_evidence_than_the_first(
     assert second.payload["hints_used"] == 1
     assert second.payload["prior_attempts"] == 1
     assert second.payload["credit"] == pytest.approx(1 / 3)
+
+
+# --- the diagnosis reaching the feedback turn (S09) ---------------------------------------------
+
+
+class _RecordingProvider(FakeProvider):
+    """Plays a script and records the system prompt each streamed call was given.
+
+    The wiring under test is invisible from the outside — `respond` produces feedback either
+    way, and only the prompt it was given says whether the diagnosis reached it.
+    """
+
+    def __init__(self, *, script) -> None:
+        super().__init__(script=script)
+        self.systems: list[str | None] = []
+
+    async def stream(self, *, model, messages, system=None, **kwargs):  # type: ignore[override]
+        self.systems.append(system)
+        async for chunk in super().stream(model=model, messages=messages, system=system, **kwargs):
+            yield chunk
+
+
+async def test_the_feedback_turn_is_told_what_went_wrong_not_just_the_score(
+    db_session: AsyncSession,
+) -> None:
+    """Guided practice is where most attempts happen. It graded, stored a failure kind, and
+    handed the tutor a bare number — so the surface the learner spends most of their time on
+    made the least of the evidence it had (S09)."""
+    learner, item = await _learner_and_item(db_session)
+    # The single-component shape: one KC, so the grader reports its diagnosis at the top level
+    # (see app.learning.rubric_grading).
+    graded = json.dumps(
+        {
+            "score": 0.3,
+            "rationale": "The mechanism is confused.",
+            "diagnosis": {"kind": "conceptual", "confidence": 0.8, "evidence": ""},
+        }
+    )
+    provider = _RecordingProvider(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=graded), FakeTurn(text=RESPOND_1)]
+    )
+    client = LLMClient({"fake": provider}, {role: ModelSpec("fake", "m") for role in ModelRole})
+
+    graph = build_workflow_graph(client, db_session, learner_id=learner.id)
+    config = workflow_config(f"t-diagnosis-{uuid.uuid4().hex[:8]}")
+    await graph.ainvoke(_state(item), config)
+    await graph.ainvoke(Command(resume={"response_text": "Plants eat soil."}), config)
+
+    # The last streamed call is `respond`'s: it must carry the repair the kind calls for,
+    # not merely the number.
+    assert len(provider.systems) >= 2, provider.systems
+    feedback_system = provider.systems[-1]
+    assert feedback_system is not None
+    assert "conceptual" in feedback_system
+    assert "Re-teach the idea itself" in feedback_system
+
+
+async def test_the_graded_report_is_checkpointed_for_the_learner(
+    db_session: AsyncSession,
+) -> None:
+    """The report the learner is shown rides the checkpoint, so a resumed round still has it."""
+    learner, item = await _learner_and_item(db_session)
+    script = [
+        FakeTurn(text=PRESENT),
+        FakeTurn(text='{"score": 0.9, "rationale": "close enough"}'),
+        FakeTurn(text=RESPOND_2),
+    ]
+    graph = build_workflow_graph(fake_llm_client(script=script), db_session, learner_id=learner.id)
+    config = workflow_config(f"t-report-{uuid.uuid4().hex[:8]}")
+
+    await graph.ainvoke(_state(item), config)
+    await graph.ainvoke(Command(resume={"response_text": "Plants use light."}), config)
+
+    snapshot = await graph.aget_state(config)
+    report = snapshot.values.get("check_result")
+    assert report, "the graded report did not reach the checkpoint"
+    assert report["item_id"] == str(item.id)
+    assert report["components"], "the report named no components"
+    assert report["components"][0]["kc_name"] == "Photosynthesis"
