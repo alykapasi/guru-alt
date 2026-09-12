@@ -62,7 +62,7 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | S12 | Apply difficulty targeting to question selection/generation. | The session runner explicitly documents target difficulty as unapplied. [R6] | The learner's estimated capability affects the actual task they receive. | High | Implemented (see below) |
 | S13 | Distinguish assisted retries from independent demonstrations in mastery evidence. | Guided practice hints and retries the same question; every attempt updates mastery. Hint context is omitted by that workflow and is not used by the estimator even when recorded elsewhere. [R7–R8] | Prevent assistance and repeated exposure from producing unjustified mastery confidence. | First | Implemented (see below) |
 | S14 | Select fresh assessment items with awareness of prior exposure, and check delayed retention and transfer. | Bank selection returns the oldest matching item without considering the learner's exposure. [R2] | Establish that the learner can solve a different problem without help and retain that capability. | First | Implemented (see below) |
-| S15 | Connect exploratory conversation to structured learning evidence through a deliberate assessment mechanism. | Plain chat can ask questions, but its conversational answers do not directly update mastery. [R9] | Make the initial learner-led experience contribute trustworthy evidence without treating all conversation as proof of mastery. | High | Accepted |
+| S15 | Connect exploratory conversation to structured learning evidence through a deliberate assessment mechanism. | Plain chat can ask questions, but its conversational answers do not directly update mastery. [R9] | Make the initial learner-led experience contribute trustworthy evidence without treating all conversation as proof of mastery. | High | Implemented (see below) |
 | S16 | Share appropriate learner context and learning-state access across chat, agentic, and guided modes. | Plain chat injects memory and plan hints; agentic service does not inject those same contexts. [R9–R10] | Switching modes retains relevant understanding of the learner and their goal. | High | Accepted |
 | S17 | Persist resumable guided-practice state durably. | Workflow uses an in-memory checkpointer. [R7] | A restart does not lose the paused practice state needed to continue correctly. | Before reliable external use | Accepted |
 | S18 | Calibrate mastery, placement, and scaffolding heuristics against real evidence. | Placement mappings, completion thresholds, and profile-to-scaffolding thresholds are explicitly described as arbitrary or uncalibrated. [R1, R5, R11] | Progress estimates and teaching choices correspond to demonstrated capability. | High; requires data | Accepted |
@@ -141,6 +141,86 @@ the kind of question S59 exists for, and this deliberately does not answer it. T
 does not render a detour differently from any other step, so the explanation the two new fields
 exist to carry does not yet reach the learner. And a diagnosed prerequisite outside the KC's
 direct prerequisites is dropped rather than treated as evidence the *graph* is wrong.
+
+### S15 — Make a conversation produce evidence, without making all of it evidence
+
+**Status:** Partially implemented (branch `feat/s15-s16-s17`) · **Priority:** High
+
+**Implemented — the second door to the tracer.** Mastery was reachable from exactly one place:
+`answer_item`, called by the guided-practice workflow and by the `POST /items/{id}/answer`
+endpoint. A learner who explained an idea correctly in chat had demonstrated nothing the system
+recorded. A subject-scoped tutor turn now leaves one practice question with the learner, keeps
+it there until they answer it or decline it, and grades a genuine attempt through that same
+`answer_item` path — so the tracer, per-component evidence, diagnosis and plan revision all
+apply to a conversational answer exactly as they do to a submitted one.
+
+**Implemented — the recorded gap was again the smaller half.** The tracker row says
+conversational answers do not update mastery. What the code actually did was worse than
+inert: every subject-scoped turn resolved a *fresh* practice item, handed it to the client as a
+widget, never mentioned it to the tutor, and discarded it on the next turn. The tutor's own
+system prompt is instructed to "check the learner's understanding with questions", so it asked
+one question in prose while the client displayed a different one — and neither was graded. The
+conversation's phase said `chatting` throughout. There was no question to answer, no record of
+which question it was, and nothing that would have read an answer as an answer.
+
+**Implemented — the gate, and why its default is not neutral.** A message arriving against an
+open check is classified FAST as `attempt` / `deferral` / `withdrawal` before anything is
+graded. Every unparseable reply, every empty message and every provider failure resolves to
+`deferral`. The two errors are not symmetric: recording nothing leaves the question open and
+the learner able to answer it, while recording an invented attempt moves the ability estimate,
+reschedules the FSRS card and revises the lesson plan before anyone notices. So the default is
+the one that is recoverable, and eleven of the 39 tests exist to hold it there.
+
+**Implemented — declining is not failing.** A learner who changes the subject drops the check
+with no evidence recorded. A refusal to answer must not itself become a mark against them.
+
+**Implemented — help before the attempt is counted.** Each tutor reply given while the question
+still stands increments `Conversation.active_item_scaffolds`, which reaches `answer_item` as
+`hints_used` and discounts the observation exactly as a guided-practice hint does
+(`app.learning.assistance`). Asking "what does that even mean?" and answering after the
+explanation is not an independent demonstration, and now does not claim to be. The counter is
+stored rather than derived from message timestamps because `created_at` is transaction time:
+the reply that poses a check and the row that records it are written in different transactions.
+
+**Implemented — S09 and S10 finally change what the learner is told.** Both were built last
+pass and neither was consumed for teaching: the diagnosis was stored and returned to the client,
+and nothing branched on it. It now does. `notation` names the convention and moves on;
+`procedural` walks the step without re-explaining the idea; `conceptual` re-teaches from a
+different angle and explicitly withholds more practice, because repetition on a wrong idea
+entrenches it; `prerequisite` is S11's territory and says so. `none` and `incomplete` produce no
+instruction at all — a blank answer is not a diagnosed misconception. An evidence quote is shown
+back to the learner only when `evidence_verbatim` says the span was really found in what they
+wrote, which is the limit S09 stated and this is the first code that had to honour it.
+
+**Implemented — only SHORT items are posed as checks.** A conversational answer arrives as
+prose, and MCQ grading rejects a prose submission outright (`InvalidResponse`), so an MCQ posed
+in chat would produce an ungradable attempt rather than a wrong one — the learner's answer
+simply lost. Structured item types stay on the session surface, where the client sends a
+structured answer.
+
+**Measured.** 39 tests; 21 mutations, 19 killed, one equivalent (the `InvalidResponse` branch
+differs from the general handler only in log severity — both keep the check open), one inert
+control that survived as designed. Four survivors found real gaps: `none`/`incomplete`
+diagnoses were never exercised, so a repair instruction could have been attached to a blank
+answer; nothing stopped a fresh check being posed on top of an unanswered one; nothing pinned
+that the tutor is actually told the question in play; and nothing reset the scaffold count
+between checks, so help given for one question would have discounted every later answer, with
+the count never falling.
+
+**Not done.** The check is posed from the plan's active step, so a conversation about something
+the plan is not currently on gets no check — the tutor's own comprehension questions in prose
+are still invisible to the tracer, and making *those* evidence would need the tutor to declare a
+check, which is a larger change than this. The intent gate is one FAST classification with no
+calibration behind it: how often it reads a hedged attempt as a deferral is unmeasured, and that
+error is silent by construction. `answer_item` commits the observation before the call returns,
+so a failure in the narrow window after that commit leaves the check open and a re-answer would
+record a second observation; the HTTP endpoint solves this with a client-supplied `attempt_id`
+and chat has none. The frontend renders the item but never submits an answer to it — the
+learner's answer reaches the grader only by being typed as an ordinary message, which is the
+intended path, but it means the item widget is still display-only. Nothing surfaces to the
+learner that an answer was graded or that their mastery moved. And whether a conversational
+attempt is *worth* as much as a submitted one is assumed, not measured: the scaffold discount is
+S18's arbitrary-threshold problem in a new place.
 
 ### S09 — Say why an answer failed, not just how far
 

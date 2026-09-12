@@ -117,6 +117,15 @@ class Conversation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     active_item_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("items.id", ondelete="SET NULL"), default=None
     )
+    # Tutor replies given while ``active_item_id`` was still unanswered (S15). A learner who
+    # asks "what does that even mean?" and attempts only after the explanation has not made an
+    # independent demonstration, and this is how much help the eventual attempt carries into
+    # ``assistance.evidence_credit`` — the same discount a guided-practice hint gets. Counted
+    # here rather than derived from message timestamps because ``created_at`` is transaction
+    # time: the reply that poses a check and the row that records the check are written in
+    # different transactions, and ordering the two by clock is exactly the kind of inference
+    # this column exists to avoid.
+    active_item_scaffolds: Mapped[int] = mapped_column(server_default="0", default=0)
     # The newest message memory extraction has already read. Extraction used to take the last
     # N messages regardless, so a conversation that grew by more than N between write-backs
     # had the middle silently skipped — and one that grew by nothing paid a model call to

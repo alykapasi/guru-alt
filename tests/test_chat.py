@@ -32,6 +32,9 @@ from tests.embedding import FAKE_SPACE
 API = "/api/v1"
 REPLY = "Let us explore this together."
 MCQ_REPLY = json.dumps({"stem": "What is X?", "choices": ["A", "B", "C", "D"], "correct": 2})
+SHORT_REPLY = json.dumps(
+    {"stem": "What is velocity?", "criteria": ["names speed", "names direction"]}
+)
 
 
 @pytest.fixture
@@ -449,10 +452,12 @@ async def test_subject_scoped_turn_grounds_and_serves_an_item_for_its_own_subjec
     learner = await _get_dev_learner(api_client, db_session)
 
     subject_a, kc_a = await _seeded_subject(db_session, learner.id, "Physics", "Kinematics")
-    # Pre-seed the bank so the session runner reuses this item rather than generating one
-    # through the recording provider (whose canned reply isn't valid MCQ JSON).
-    seeded_item, _ = await item_generation.generate_mcq_item(
-        db_session, fake_llm_client(MCQ_REPLY), kc_a
+    # Pre-seed the bank so the check reuses this item rather than generating one through the
+    # recording provider (whose canned reply isn't valid short-item JSON). SHORT specifically:
+    # a conversational check is answered in prose, so only an open item can be posed as one
+    # (S15) — an MCQ seeded here would be left in the bank and no check would be posed.
+    seeded_item, _ = await item_generation.generate_short_item(
+        db_session, fake_llm_client(SHORT_REPLY), kc_a
     )
     assert seeded_item is not None
     _subject_b, _kc_b = await _seeded_subject(db_session, learner.id, "Biology", "Cells")
@@ -551,11 +556,10 @@ async def test_answering_a_served_item_through_the_real_endpoint_advances_the_ne
     existing, unchanged trigger); the very next turn serves something different."""
     learner = await _get_dev_learner(api_client, db_session)
     subject, kc = await _seeded_subject(db_session, learner.id, "Physics", "Kinematics")
-    # Pre-seed the bank so the session runner reuses this item rather than generating one
-    # through the recording provider (whose canned reply isn't valid flashcard JSON).
-    flashcard_reply = json.dumps({"stem": "What is velocity?", "answer": "Speed with direction"})
-    seeded_item, _ = await item_generation.generate_flashcard_item(
-        db_session, fake_llm_client(flashcard_reply), kc
+    # Pre-seed the bank so the check reuses this item rather than generating one through the
+    # recording provider (whose canned reply isn't valid short-item JSON).
+    seeded_item, _ = await item_generation.generate_short_item(
+        db_session, fake_llm_client(SHORT_REPLY), kc
     )
     assert seeded_item is not None
     db_session.add(
@@ -585,11 +589,22 @@ async def test_answering_a_served_item_through_the_real_endpoint_advances_the_ne
     assert r.status_code == 200
     first_done = next(e for e in _parse_sse(r.text) if e["type"] == "done")
     first_item = first_done["item"]
-    assert first_item is not None  # the due review, served as a flashcard
+    assert first_item is not None  # the due review, posed as the conversation's open check
 
-    r = await api_client.post(
-        f"{API}/items/{first_item['id']}/answer", json={"response": {"recalled": True}}
+    # The check is a SHORT item, so answering it is a rubric grade — and the recording
+    # provider's canned prose is not a rubric reply. Swap in a grader for this one call; the
+    # point of the test is the plan advancing, not how the grade was produced.
+    recorder = app.dependency_overrides[get_llm_client]
+    app.dependency_overrides[get_llm_client] = lambda: fake_llm_client(
+        reply='{"score": 0.9, "rationale": "Both parts named."}'
     )
+    try:
+        r = await api_client.post(
+            f"{API}/items/{first_item['id']}/answer",
+            json={"response": {"text": "speed plus direction"}},
+        )
+    finally:
+        app.dependency_overrides[get_llm_client] = recorder
     assert r.status_code == 200, r.text
 
     # The review step is no longer due (FSRS rescheduled it forward), so it flips to done and

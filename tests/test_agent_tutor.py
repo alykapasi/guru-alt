@@ -70,7 +70,7 @@ async def _drain(session: AsyncSession, llm: LLMClient, conv: Conversation) -> l
             session,
             llm,
             learner_id=conv.learner_id,
-            conversation_id=conv.id,
+            conversation=conv,
             history=[],
             user_content="What is a derivative?",
             max_tokens=256,

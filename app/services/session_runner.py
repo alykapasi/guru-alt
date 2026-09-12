@@ -119,15 +119,16 @@ async def short_answer_item_for_kc(
 ) -> Item | None:
     """A SHORT (open, rubric-graded) item for ``kc`` — reuse-then-generate only.
 
-    Unlike ``item_for_kc``, this has no any-type/MCQ fallback: the guided-practice workflow's
-    ``{"text": ...}`` submission shape only grades correctly against a SHORT item (MCQ grading
-    reads ``response["choice"]``, which would always be ``None`` and always score
-    "incorrect" — a silent correctness bug, not a crash). Returns ``None`` only if generation
-    itself fails to parse.
+    Unlike ``item_for_kc``, this has no any-type/MCQ fallback: a ``{"text": ...}`` submission
+    only grades against a SHORT item. MCQ grading reads ``response["choice"]`` and rejects the
+    submission outright (``InvalidResponse``), so a prose answer to an MCQ is not a wrong
+    answer — it is an ungradable one, and the learner's attempt is lost rather than scored.
+    Returns ``None`` only if generation itself fails to parse.
 
-    Resolves its own practice target rather than taking one: the guided-practice workflow is
-    the only caller, it has no reason to hold an opinion about difficulty, and leaving the
-    parameter for it to pass would have meant guided practice quietly opting out of S12.
+    Resolves its own practice target rather than taking one: neither caller — the
+    guided-practice workflow, and the conversational check in ``app.services.chat`` (S15) —
+    has a reason to hold an opinion about difficulty, and leaving the parameter for them to
+    pass would have meant both quietly opting out of S12.
     """
     target_difficulty = await practice_target_for_kc(session, learner_id=learner_id, kc_id=kc.id)
     item = await assessment_svc.find_item_for_kc(
