@@ -49,24 +49,36 @@ class CalibrationReport(BaseModel):
     n_recorded_predictions: int = 0
 
 
-def score_tracer_calibration(
-    dataset: CalibrationDataset,
-    *,
-    estimator: MasteryEstimator | None = None,
-    tolerance: float = 0.15,
-) -> CalibrationReport:
-    """Prequential (predict-then-update) replay; MAE/RMSE + a reliability table over all steps.
+class Replay(BaseModel):
+    """The raw output of one prequential pass, before anybody scores it.
+
+    Separated from :func:`score_tracer_calibration` so that scoring the same replay a second way
+    cannot mean replaying it a second way. The reliability report (S59) reads these pairs; if it
+    re-implemented the walk, the two would drift the first time the production update changed and
+    the disagreement would look like a finding.
+    """
+
+    by_sequence: list[list[tuple[float, float]]]
+    n_recorded_predictions: int
+
+    @property
+    def pairs(self) -> list[tuple[float, float]]:
+        """Every (predicted, actual) point, sequence boundaries dropped."""
+        return [pair for seq in self.by_sequence for pair in seq]
+
+
+def replay(dataset: CalibrationDataset, *, estimator: MasteryEstimator | None = None) -> Replay:
+    """Walk every sequence predict-then-update, collecting what was claimed against what happened.
 
     ``estimator`` scores a *candidate*: predictions are recomputed with it and the recorded ones
     ignored. Left unset, each sequence is replayed under the estimator that produced it.
     """
-    pairs: list[tuple[float, float]] = []  # (predicted, actual) across all sequences
-    sequences_passed = 0
+    by_sequence: list[list[tuple[float, float]]] = []
     recorded = 0
     for seq in dataset.sequences:
         est = estimator or _estimator_for(seq)
         estimate = initial_estimate(seq)
-        seq_abs_err = 0.0
+        seq_pairs: list[tuple[float, float]] = []
         for step in seq.steps:
             decayed = est.decay(estimate, elapsed_days=step.elapsed_days or 0.0)
             if estimator is None and step.predicted is not None:
@@ -74,8 +86,7 @@ def score_tracer_calibration(
                 recorded += 1
             else:
                 predicted = est.expected(decayed, difficulty=step.difficulty)
-            pairs.append((predicted, step.score))
-            seq_abs_err += abs(predicted - step.score)
+            seq_pairs.append((predicted, step.score))
             estimate = est.update(
                 decayed,
                 score=step.score,
@@ -83,8 +94,24 @@ def score_tracer_calibration(
                 weight=(step.weight if step.weight is not None else 1.0)
                 * (step.credit if step.credit is not None else 1.0),
             )
-        if seq.steps and seq_abs_err / len(seq.steps) <= tolerance:
-            sequences_passed += 1
+        by_sequence.append(seq_pairs)
+    return Replay(by_sequence=by_sequence, n_recorded_predictions=recorded)
+
+
+def score_tracer_calibration(
+    dataset: CalibrationDataset,
+    *,
+    estimator: MasteryEstimator | None = None,
+    tolerance: float = 0.15,
+) -> CalibrationReport:
+    """Prequential (predict-then-update) replay; MAE/RMSE + a reliability table over all steps."""
+    walked = replay(dataset, estimator=estimator)
+    sequences_passed = sum(
+        1
+        for seq in walked.by_sequence
+        if seq and sum(abs(p - a) for p, a in seq) / len(seq) <= tolerance
+    )
+    pairs = walked.pairs
     return CalibrationReport(
         mae=_mae(pairs),
         rmse=_rmse(pairs),
@@ -92,7 +119,7 @@ def score_tracer_calibration(
         reliability=_reliability(pairs),
         sequences_passed=sequences_passed,
         sequences_total=len(dataset.sequences),
-        n_recorded_predictions=recorded,
+        n_recorded_predictions=walked.n_recorded_predictions,
     )
 
 
