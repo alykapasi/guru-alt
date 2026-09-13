@@ -83,7 +83,7 @@ These are new proposals from the second review; the user's acceptance of prior s
 | S26 | Apply explicit, consistent source scope to every generation path; make intentional cross-subject expansion a separate decision. | Chat uses subject/source filters; generate_block retrieves across the learner's sources without subject/topic filters. This remains learner-scoped and is not evidence of cross-user retrieval leakage. [R9, R17–R18] | High | Proposed |
 | S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Proposed |
 | S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Proposed |
-| S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Proposed |
+| S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Implemented (see below) |
 
 ### S11 — Make targeted prerequisite detours an explicit planning move
 
@@ -1285,6 +1285,66 @@ rests on `SameSite=lax` plus an explicit CORS allowlist rather than a token, whi
 for a same-site deployment and is exactly the assumption to revisit if the app is ever served
 cross-site. And the admin portal and audited impersonation that P10 pairs with this are not
 started.
+
+### S29 — Key a cached block on everything that decided what it says
+
+**Status:** Implemented (branch `fix/s29-cache-invalidation`) · **Priority:** Supporting; before
+broad reuse
+
+**Implemented — the key now covers the whole request.** `cache_key` hashed the learner, the KCs,
+the block type and the grounding chunk *ids*. Four things that decide what the model actually
+writes sat outside it: the prompt text, the model behind the role, the KC's own name and
+description, and the chunks' text.
+
+Leaving a determinant out of a content-addressed key is not a missed refresh. It is a block
+served forever with no sign that anything changed — still rendering, still citing real chunks,
+written to instructions, a model, or an objective that no longer exists. Edit the lesson prompt
+and every learner who already has a lesson keeps reading the old one. Repoint `SMART` at a better
+model and the previous model's writing is what comes back; the block records `model`, but
+recording is not invalidating.
+
+Rather than add a field per determinant, the key is a hash of **the exact pair of prompts the
+model will be sent, plus the spec of the model that will answer them**. The prompt text, the
+block-type guidance, the KC's wording, the chunks' text and the shape of the template are then
+inside the key by construction, and none can change without changing it. There is no version
+constant to bump — a constant somebody has to remember is a cache that goes stale the first time
+they forget, which is the same reasoning that made `poe api-contract` a gate rather than a
+routine (S58).
+
+The prompts are built once in `generate_block` and handed to *both* the key and `_generate`, so
+the two cannot describe different requests. `_generate` takes the rendered strings instead of
+re-deriving them — the drift is removed rather than documented.
+
+`grounding_ids` stays in the key although the chunks' text already covers it. Re-ingestion
+deletes and recreates chunks, so identical text can arrive under a new id; without the ids the
+prompts are byte-identical, the cache hits, and the block returned cites a chunk that no longer
+exists. That is the "historical citation references" half of this item, and it is a test rather
+than a comment.
+
+**Measured.** Six tests, one per determinant plus a counterweight that an unchanged request
+still hits the cache — a key sensitive to everything is worthless if it is also unstable. Three
+mutations, all killed: dropping the model, dropping the prompts, dropping the grounding ids. The
+last survived the first round, which is how the missing re-ingestion test was found; the claim
+in the docstring had been written before anything held it to account.
+
+**Not done.** *Sharing.* The key still starts with the learner, so two learners asking for the
+same block on the same KC from the same sources generate it twice. That is deliberate for now —
+blocks are grounded in learner-owned sources, and deciding what may be shared is an ownership
+question (S25) rather than a cache question — but the long-term reuse ambition this item names
+is untouched.
+
+*Garbage collection.* Superseded blocks accumulate. Nothing deletes them, `list_blocks` still
+returns every block for a KC ordered oldest-first, and no caller asks for "the current one".
+More than one block per (learner, KC, type) was already reachable whenever grounding changed, so
+this is not a new state — but a prompt edit now reaches every learner at once, so it will be
+reached far more often. A retention and presentation policy is S61's and is not written.
+
+*Objective drift is invalidation, not reconciliation.* Retitling a KC regenerates the block; it
+does not tell anyone that what a learner already read was written to a different objective.
+
+*The chunk-text coverage is defensive, not load-bearing.* Ingestion replaces chunks rather than
+editing them in place, so today the id would have been enough. The key no longer depends on that
+remaining true.
 
 ## Open decisions
 
