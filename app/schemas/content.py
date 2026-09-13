@@ -14,6 +14,32 @@ class GenerateRequest(BaseModel):
     type: ContentType | None = None
 
 
+class ClaimVerdictRead(BaseModel):
+    """One checkable claim from a block, against the passages offered for it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    claim: str
+    verdict: str
+    supported_by: list[int]
+    reason: str
+
+
+class SupportReportRead(BaseModel):
+    """Whether a block's citations actually carry what it says (S28).
+
+    ``supported_fraction`` is null when no claim could be extracted — not 1.0, which would read
+    as a clean bill of health for a block nobody managed to check.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    claims: list[ClaimVerdictRead]
+    contradictions: list[tuple[int, int]]
+    supported_fraction: float | None
+    clean: bool
+
+
 class ContentBlockRead(BaseModel):
     """A generated, KC-tagged content block with its grounding citations."""
 

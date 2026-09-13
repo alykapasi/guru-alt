@@ -282,6 +282,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/content/blocks/{block_id}/citation-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check Block Citations
+         * @description Check whether the block's claims are carried by the passages it cited (S28).
+         *
+         *     A paid model call, so it is a POST a caller asks for rather than something generation does
+         *     for every block. Nothing gates on the result: what rate of unsupported claims is tolerable
+         *     is a threshold nobody has set.
+         */
+        post: operations["check_block_citations_api_v1_content_blocks__block_id__citation_check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/content/generate": {
         parameters: {
             query?: never;
@@ -1577,6 +1601,20 @@ export interface components {
             text: string;
         };
         /**
+         * ClaimVerdictRead
+         * @description One checkable claim from a block, against the passages offered for it.
+         */
+        ClaimVerdictRead: {
+            /** Claim */
+            claim: string;
+            /** Reason */
+            reason: string;
+            /** Supported By */
+            supported_by: number[];
+            /** Verdict */
+            verdict: string;
+        };
+        /**
          * ContentBlockRead
          * @description A generated, KC-tagged content block with its grounding citations.
          */
@@ -2771,6 +2809,26 @@ export interface components {
             /** Slug */
             slug: string;
         };
+        /**
+         * SupportReportRead
+         * @description Whether a block's citations actually carry what it says (S28).
+         *
+         *     ``supported_fraction`` is null when no claim could be extracted — not 1.0, which would read
+         *     as a clean bill of health for a block nobody managed to check.
+         */
+        SupportReportRead: {
+            /** Claims */
+            claims: components["schemas"]["ClaimVerdictRead"][];
+            /** Clean */
+            clean: boolean;
+            /** Contradictions */
+            contradictions: [
+                number,
+                number
+            ][];
+            /** Supported Fraction */
+            supported_fraction: number | null;
+        };
         /** TopicCreate */
         TopicCreate: {
             /** Description */
@@ -3219,6 +3277,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChunkRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    check_block_citations_api_v1_content_blocks__block_id__citation_check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                block_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupportReportRead"];
                 };
             };
             /** @description Validation Error */
