@@ -18,7 +18,7 @@ from pathlib import Path
 
 from tests.eval.datasets.calibration import replay
 from tests.eval.datasets.models import CalibrationDataset
-from tests.eval.reliability import agreement, comparison, difficulty, metrics
+from tests.eval.reliability import agreement, comparison, difficulty, knobs, metrics
 
 DEFAULT_DATASET = Path(__file__).resolve().parents[1] / "datasets" / "tracer-calibration.json"
 
@@ -168,17 +168,32 @@ def render_difficulty(g: difficulty.GeneratorCalibration | None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def calibration_from(
-    path: Path, *, binarise_at: float | None
-) -> tuple[metrics.Reliability | None, str]:
-    if not path.exists():
-        return None, f"{path} (missing — run `uv run poe build-calibration-dataset`)"
-    dataset = CalibrationDataset.from_file(path)
-    walked = replay(dataset)
-    note = f"{path.name}, {len(dataset.sequences)} sequences"
-    if walked.n_recorded_predictions == 0:
-        note += " — scoring today's estimator on old data, not the predictions production made"
-    return metrics.assess(walked.pairs, binarise_at=binarise_at), note
+def render_knobs() -> str:
+    """Every uncalibrated number the loop runs on (S18)."""
+    lines = [
+        "Uncalibrated constants",
+        f"  inventoried       {len(knobs.KNOBS)}",
+    ]
+    try:
+        drift = knobs.drifted()
+    except Exception as exc:  # settings unloadable; the list is still worth printing
+        return "\n".join([*lines, f"  could not read live values: {exc}"]) + "\n"
+    lines.append(f"  matching the code {len(knobs.KNOBS) - len(drift)}")
+    if drift:
+        lines.append("")
+        for knob, now in drift:
+            lines.append(f"  DRIFTED  {knob.id}: inventoried {knob.value:g}, code has {now}")
+        lines += [
+            "",
+            "  A drifted entry means an uncalibrated number was changed without the inventory",
+            "  being told. Re-guessing a knob nobody has measured is a decision, not an edit.",
+        ]
+    lines += [
+        "",
+        "  These are the numbers a reading would have to settle. None is set by evidence; each",
+        "  entry names the reading that would set it. The count is the denominator for S18.",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 async def agreement_against_labels() -> tuple[agreement.Agreement | None, str]:
@@ -206,6 +221,19 @@ async def agreement_against_labels() -> tuple[agreement.Agreement | None, str]:
             continue  # a weak model may emit unparseable output; it is not a disagreement
         pairs.append((result.score, case.expected_score))
     return agreement.compare(pairs), f"{len(pairs)} human-labelled golden cases"
+
+
+def calibration_from(
+    path: Path, *, binarise_at: float | None
+) -> tuple[metrics.Reliability | None, str]:
+    if not path.exists():
+        return None, f"{path} (missing — run `uv run poe build-calibration-dataset`)"
+    dataset = CalibrationDataset.from_file(path)
+    walked = replay(dataset)
+    note = f"{path.name}, {len(dataset.sequences)} sequences"
+    if walked.n_recorded_predictions == 0:
+        note += " — scoring today's estimator on old data, not the predictions production made"
+    return metrics.assess(walked.pairs, binarise_at=binarise_at), note
 
 
 def main() -> None:
