@@ -82,7 +82,7 @@ These are new proposals from the second review; the user's acceptance of prior s
 | S25 | Separate shared, curated knowledge from learner-specific generated curricula, with ownership and publishing rules. | Subjects are global, listing is unscoped, commit rejects a duplicate subject name globally, and learner-authenticated routes can add global topics/KCs/edges. Personal goal-derived structure has no explicit private draft boundary. [R14–R16] | Before multi-user release | Proposed |
 | S26 | Apply explicit, consistent source scope to every generation path; make intentional cross-subject expansion a separate decision. | Chat uses subject/source filters; generate_block retrieves across the learner's sources without subject/topic filters. This remains learner-scoped and is not evidence of cross-user retrieval leakage. [R9, R17–R18] | High | Implemented (see below) |
 | S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Proposed |
-| S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Partially implemented (see below) |
+| S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Implemented (see below) |
 | S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Implemented (see below) |
 
 ### S11 — Make targeted prerequisite detours an explicit planning move
@@ -887,8 +887,28 @@ a ring needs every node to appear as a dependent, so such a ring never reaches t
 That is not a lost case — planning loads the same set, so it is a constraint neither subject's
 ordering ever enforced, rather than one honoured and then sacrificed. Crossing it needs S24.
 
-**Not done.** Nothing *repairs* a subject that already contains a cycle: the bad edge stays in
-the database, and there is no removal path — deliberately, per the above, but it means the fix
+**Implemented (third pass, branch `fix/tracker-repairs-and-next`) — the report now has
+something to act on.** Naming the edge a plan could not honour while offering no way to remove
+it left the bad edge in the database and the ordering unjustified for as long as it took
+somebody to open a psql prompt. `DELETE /kcs/{kc_id}/prerequisites/{prereq_kc_id}`.
+
+**Removal needs no cycle check, and the asymmetry is the argument.** Deleting an edge removes a
+constraint, and removing constraints cannot create a cycle — so this is always safe in a way
+adding an edge is not, which is why `would_create_cycle` guards one path and not the other.
+There is a test for that property rather than a comment claiming it. Idempotent, so a client
+retrying after a dropped response gets the same answer as one that got through.
+
+The system repairs what a person *names*; it still does not choose. Two mutations took a second
+attempt and both are worth recording. Matching on the dependent alone survived the first round
+because `scalar()` returns the first row, which in a two-prerequisite fixture was the right edge
+by luck — the test now removes the *second* prerequisite, so the wrong query produces a visibly
+wrong answer. Dropping the commit also survived, because every other test here runs inside one
+transaction that is rolled back, where a delete that never commits is indistinguishable from one
+that does; pinned with `live_client`, reading back on a different connection.
+
+**Not done.** Nothing repairs a cycle *automatically*: the bad edge is removed when a person
+names it, and which edge of a ring is the wrong one is still not something the graph knows —
+deliberately, per the above, but it means the fix
 is still manual. Validation remains limited to cycles and existence: nothing checks that an edge
 is *pedagogically* true, that a prerequisite chain is not absurdly deep, or that a subject's
 graph is connected. Cross-subject edges are refused entry to a cycle but still ignored by plan
@@ -1301,7 +1321,7 @@ started.
 
 ### S28 — Say what to do when there are no sources, and stop contradicting it
 
-**Status:** Partially implemented (branch `fix/tracker-repairs-and-next`) · **Priority:** High
+**Status:** Implemented (branch `fix/tracker-repairs-and-next`) · **Priority:** High
 
 **Implemented — the two halves of the request no longer disagree.** The system message said
 "Using ONLY the numbered context snippets ... ground every claim in the context and cite the
@@ -1336,16 +1356,45 @@ cases, counting citations instead of grounding, restoring the contradicting user
 instruction, and — as the control on the migration — adding the `server_default` that would
 backfill a measurement nobody took.
 
-**Not done — and this is the larger half of the item.** *Citation validity is still not claim
-support.* `_resolve_citations` checks that an index is in range and maps it to a real chunk. It
-does not check that the passage says what the sentence citing it says. A block can cite six real
-chunks and be wrong about all of them, and nothing here would notice; that needs an entailment
-check against the cited passage, which is a model call per claim and a measurement problem (S59)
-before it is a feature.
+**Implemented (second pass) — a valid pointer is now distinguished from actual support.**
+`_resolve_citations` checks an index is in range and maps it to a real chunk, which makes a
+citation a valid *pointer* and says nothing about whether the passage carries the sentence
+attached to it. A block could cite six real chunks and be wrong about all of them while every
+check passed — and an ungrounded claim *presented* as grounded is the worse failure, because the
+footnote is what tells a learner they need not check it.
 
-*Contradictory sources are not handled at all.* This pass covers *insufficient* sources — the
-zero case. Two retrieved chunks that disagree are still handed over as equally authoritative
-context with no instruction about the conflict, and the model resolves it invisibly.
+`app.learning.citation_support` is **claim-first, not citation-first**, and that is the design
+decision. Walking the citations and asking whether each is relevant cannot see the more
+dangerous case at all: a claim nothing supports has no citation to walk. So the model extracts
+the block's checkable claims and, for each, names the passages establishing it or says none do.
+A block whose every citation is relevant can still fail.
+
+Two parsing rules carry the weight and both are mutation-checked. A claim the model calls
+supported while naming no snippet — or one that does not exist — is recorded as unsupported,
+because that is not support anyone can be shown; and out-of-range indices are dropped on the
+same grounds `_resolve_citations` drops them. An empty report is not a pass: `supported_fraction`
+is `None` rather than 1.0 when no claim could be extracted, or the least checkable blocks would
+score best.
+
+Passages are offered in **citation order**, pinned by a test: the snippet numbers in the report
+are positions in that list, so its order *is* the meaning of every `supported_by`, and building
+it from whatever order the rows came back in would keep the verdicts and repoint them at
+different passages. Chunks a block has outlived drop out.
+
+**Contradictory sources, from both ends.** Generation is now told to say so and cite both rather
+than silently choosing a side, and the checker reports the pairs it judges to disagree,
+normalised so a pair is one fact rather than two.
+
+Nothing gates on any of it: a POST a caller asks for, never part of generation. What rate of
+unsupported claims is tolerable is a threshold nobody has set — the same reasoning that keeps
+thresholds out of S59.
+
+**Not done.** *No reading.* The checker has never been run across a corpus, so there is no
+figure for how often citations actually support what cites them — the S59 problem again, and the
+number that would decide whether this becomes a gate. *Nothing is verified at generation time*,
+by choice: a model call per block would double the cost of content. *Contradiction detection is
+the model's judgement*, unverified against anything, and two passages that disagree subtly are
+exactly where that judgement is weakest.
 
 *Partial insufficiency has no threshold.* One weak chunk takes the grounded path exactly as six
 strong ones do. `grounding_count` now makes that visible after the fact, but nothing acts on it,
@@ -1660,6 +1709,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-13 | Fifteenth pass, branch `fix/s29-cache-invalidation` (off merged `main`, after PR #34): S29 (`76debf7`) and S26 (`3a8875e`), the first two items taken from the *knowledge-graph and content-pipeline* register block that had register rows but no entries. Both are the same shape of bug — something that decides what a learner reads was not accounted for, and the failure was silent. S29: the block cache key hashed the grounding chunk *ids* but not the prompt text, the model behind the role, the KC's wording, or the chunks' text, so editing a prompt left every existing learner reading the old lesson permanently; the key is now a hash of the exact prompts the model will be sent plus the spec of the model answering them, so the determinants are inside it by construction and there is no version constant to remember to bump. S26: `generate_block` was the only retrieval path in the app with no subject scope, so a learner studying two things had one grounding the other's lessons — and the scope is deliberately not a plain equality filter, because subject tagging is optional at upload and excluding untagged sources would have replaced cross-subject grounding with *no* grounding, which renders identically to a working lesson. `uv run poe check` green (1367 passed, 4 skipped). **6 mutations, all killed — but two survived the first round, and both were gaps in the tests rather than the code:** the re-ingestion case (identical chunk text under a new id), and the fact that nothing anywhere pinned that a subject-scoped retrieval excludes untagged sources — that mutation survives the entire chat, agent and workflow suites. |
 | 2026-09-13 | Sixteenth pass, branch `fix/tracker-repairs-and-next` (off merged `main`, after PRs #33-#35 all landed): tracker repairs plus S28 (`24fd711`) and S48 (`5ee178f`). **Repairs first:** two history rows carried a literal pipe inside a code span - a `docker build ... \| tail` example and, with some irony, the row describing the earlier row-gluing defect - so both rendered with an extra column; escaped, and all 26 rows now have exactly three unescaped pipes. Two rows deferred while three PRs were open in parallel were also written. Verified on merged main before touching anything: `poe check` green at 1396 passed, the first run covering S59's tests together with the S26/S29 changes, since neither PR had run against the other's code. **S28:** the system prompt said "using ONLY the numbered context snippets" while the user message for an empty retrieval said "write from general knowledge and cite nothing" - two incompatible instructions in one request, and which one the model obeyed was decided nowhere. Two system prompts now, and the user turn carries no instructions at all. `grounding_count` records how many chunks were offered, because an empty `citations` cannot distinguish "retrieval found nothing" from "the model was given six and cited none". **S48:** latency recorded beside cost, measured in `LLMClient` so no call site changes and none can time a different span; it surfaced that `embed_in_batches` would have summed *concurrent* batch latencies and reported more time than passed. Migrations 0042 and 0043 are both nullable and unbackfilled, and both carry a data test whose control mutation is adding the `server_default` that would backfill a measurement nobody took. `uv run poe check` green (1407 passed, 4 skipped). 11 mutations across the two items, all applied and all killed. |
 | 2026-09-14 | Seventeenth pass, same branch as the sixteenth: **the calibration spine completed as far as it can be without learners** — S12 (`c123982`), S56 (`307646c`), S18 (`1c5f19c`), S59 (`d90f72d`). Four instruments, one command. **S12:** the generator's requested difficulty is now measurable against what the answers say it delivered, solving for the d where expected total score meets observed total; this is the route O01 left open, and it needs no two learners to meet the same item. **S56:** the shipped estimator is scored against candidates on the same sequences, because a calibration number alone has no scale; the null model built at the dataset's own base rate must score exactly zero skill, which is the harness checking itself. **S18:** seventeen uncalibrated constants inventoried in one place, each naming the specific reading that would settle it rather than saying "needs data", with a test asserting the inventoried value still matches the code so that re-guessing a knob nobody has measured fails a test naming it. **S59:** all four behind `poe reliability-report`, dataset read once, every section printing whether or not there is data. **Two bugs were found by the instruments' own output rather than by the tests:** the comparison reported production's lead as `+0.0000` because it compared the best row against the shipped row when they were the same row, and the report silently dropped two of its four sections when the dataset was missing - which is exactly the state the repository is in. `uv run poe check` green (1430 passed, 4 skipped). 10 mutations, all applied and all killed; three survived the first round and one of those was a genuine equivalent mutant, pinned afterwards with a purpose-built estimator whose decay moves ability, because Glicko's does not and the contract should be fixed before one arrives that does. **What the command prints today:** three sections with nothing to score, and seventeen uncalibrated constants. The instruments are complete; the readings need a cohort. |
+| 2026-09-14 | Eighteenth pass, same branch: **completing what the status page still showed as partial**. S28 (`8ec665c`), S23 (`78e8481`), P11/S60 alerts (`25d759f`), S58 queue delivery (`43d72fe`). **S28** gains the half that was left: a valid citation *pointer* is now distinguished from actual claim support, claim-first rather than citation-first because a claim nothing supports has no citation to walk; contradictory sources are handled from both ends. **S23's** conflict report finally has a repair path - `DELETE` on one edge, safe without a cycle check because removing constraints cannot close a loop, which is why the system removes an edge a person *names* and still does not choose. **The alerts are polled and remembered**: transitions rather than evaluations, and a condition missing from a report is not treated as resolved, because closing an incident when the check stops running is how a monitoring outage reads as good news. **Queue delivery** goes through a real Redis broker in its own CI job, asserting on the task's arguments and not merely that bytes arrived. `uv run poe check` green (1458 passed, 6 skipped). 21 mutations across the four, all applied and all killed. **Two bugs found that no test had asked about.** Ordering alert history by `created_at` was wrong roughly half the time - `now()` is the transaction clock, so one sweep's rows share it and the order fell to a random UUID; that is the same tie behind S56, S14 and S62, so the fix is a database sequence rather than another tiebreak. And a `.replace()` written without the `assert old in s` guard this repo uses everywhere silently did nothing, leaving the fix unapplied while the commit message said otherwise - caught only because the flake persisted. |
 
 ## Remaining architecture autopsy — source pass
 
@@ -3123,9 +3173,22 @@ subtraction and degrading to an empty string rather than erroring — a summary 
 blank while still reporting success. And the `CI` job treats `skipped` as a failure alongside
 `failure` and `cancelled`, because an un-run gate is not a passed one.
 
-**Not done in this pass.** The split changes which job reports a failure; it adds no coverage.
-Every gap listed below is untouched — no browser journey, no queue integration, no fault
-injection. More pointedly: `main` carries **no branch protection and no rulesets**, so none of
+**Implemented (fourth pass) — queue delivery through a real broker.** One of the three gaps
+below, closed. The suite runs on `InMemoryBroker`, which proves the wiring and nothing about
+delivery: it never serialises a message, never writes it anywhere, never reads it back on
+another connection, so a change breaking any of those passed the whole suite. Two tests now
+dispatch through a real `ListQueueBroker` and read the message back off Redis, asserting on the
+task *name and arguments* — a message that survives the trip and loses its arguments is the
+failure that reaches production, and from the dispatch side it looks identical. The second pins
+the seam: a non-test environment with a Redis URL gets Redis, and the suite never reaches a real
+queue by accident.
+
+Opt-in behind `GURU_QUEUE_TESTS=1`, the same gate and reasoning as the live-model tests, with
+its own CI job carrying a Redis service — the only thing needing a broker, so bundling it would
+start one for every run of the suite.
+
+**Not done in this pass.** The split changed which job reports a failure and added no coverage;
+the queue work added one gap's worth. Browser journeys and fault injection are untouched. More pointedly: `main` carries **no branch protection and no rulesets**, so none of
 these checks is *required*. The `CI` job exists to make requiring one a one-line change, but
 that line has not been written, and nothing today stops a merge over a red gate. The same pass
 saw a run sit `queued` with zero jobs for nine hours while both cancel endpoints refused it with
@@ -3354,11 +3417,38 @@ control survived as it should. Two survivors were real test weaknesses and were 
 either way, so it proved nothing; and nothing asserted that the per-role and per-model
 breakdown respects the same window as the total, which are separate queries and can disagree.
 
+**Implemented (second pass, branch `fix/tracker-repairs-and-next`) — something now polls the
+alerts, and remembers.** The predicate existed and nothing ran it, so a condition could fire and
+resolve between two glances at a dashboard nobody was looking at. The worker evaluates on a
+timer, following the same loop-and-survive-its-own-failures shape as the reconciler and the
+purges, with the same `interval <= 0` switch. A failure in *this* loop is a monitoring outage,
+so it is logged and the loop continues — a watcher that dies on one bad evaluation is worse than
+no watcher, because the absence of alerts still reads as "nothing is wrong".
+
+**Transitions, not evaluations.** Writing a row per poll would be a row a minute forever and
+would bury the two rows anybody wants; only changes are recorded, so the table's length is the
+number of things that happened. It is also the only honest thing to notify on — delivering the
+firing set every poll would page somebody sixty times for one incident. A condition missing from
+a report is *not* treated as resolved: if the check that found a problem stops running the
+problem has not gone away, and closing the incident because the evaluation disappeared is how a
+monitoring outage comes to read as good news.
+
+The channel is the structured log, deliberately — one line per change, at the alert's severity.
+Anything shipping logs can alert on a line, and choosing a pager or a webhook is a deployment
+decision that should not have to be made before the conditions are watched at all: the same
+reasoning that made the predicate an endpoint rather than an integration.
+
+**Ordering by the transaction clock was a real bug here, not a style point.** `now()` in Postgres
+is the *transaction* timestamp, so every row one sweep writes shares it and the order fell
+through to a random UUID — which made "is this condition currently firing?" wrong about half the
+time. It surfaced as a flaky test; it was a flaky *answer*. This is the same tie behind three
+earlier findings (S56, S14, S62), so the column is a database sequence rather than another
+tiebreak, and the test chooses ids that sort *against* it to turn the coin-flip into a certainty.
+
 **Not done.** Still nothing rehearsed against real infrastructure — managed Postgres, real S3,
-TLS, secret delivery and network policy are all untested, and this pass changed nothing about
-that. **Nothing polls the alerts**: the predicate exists, the delivery does not — no scheduler,
-no notification channel, no history, no dashboard, and therefore no way to see that a condition
-was firing and stopped. The thresholds themselves are chosen rather than derived: a fifteen
+TLS, secret delivery and network policy are all untested. No notification *channel* beyond the
+log, no dashboard, and no alert has yet fired in anger, so the delivery path is unproven against
+a real incident. The thresholds themselves are chosen rather than derived: a fifteen
 minute pending age is a guess in the same spirit as S18's placement mappings, and no incident
 has yet suggested a number. There is no object-store *backup mechanism* — `blob-check` verifies
 a restore, while replication or a mirror schedule remains an infrastructure task this
