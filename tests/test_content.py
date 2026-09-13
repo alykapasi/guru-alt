@@ -75,13 +75,16 @@ async def _chunk(session: AsyncSession, source: Source, text: str, ordinal: int 
     return chunk
 
 
-async def _source(session: AsyncSession, learner: Learner) -> Source:
+async def _source(
+    session: AsyncSession, learner: Learner, *, subject_id: uuid.UUID | None = None
+) -> Source:
     source = Source(
         learner_id=learner.id,
         kind=SourceKind.FILE,
         origin="bio.txt",
         content_type="text/plain",
         status=SourceStatus.DONE,
+        subject_id=subject_id,
         meta={},
     )
     session.add(source)
@@ -381,3 +384,53 @@ async def test_a_chunk_replaced_by_an_identical_one_does_not_keep_the_old_citati
 
     assert second.id != first.id
     assert [c["chunk_id"] for c in second.citations] == [str(new_chunk.id)]
+
+
+# --- source scope (S26) -----------------------------------------------------
+
+
+async def test_a_source_tagged_to_another_subject_does_not_ground_the_block(
+    db_session: AsyncSession,
+) -> None:
+    """Every other retrieval path scopes by subject; this one did not. A learner studying two
+    things had material from one grounding lessons in the other whenever they shared a word."""
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)  # its own subject
+    other_subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Immunology")
+    db_session.add(other_subject)
+    await db_session.flush()
+
+    foreign = await _source(db_session, learner, subject_id=other_subject.id)
+    foreign_chunk = await _chunk(
+        db_session, foreign, "mitochondria are discussed in this immunology text too", 0
+    )
+    mine = await _source(db_session, learner)
+    ours = await _chunk(db_session, mine, "mitochondria are the powerhouse of the cell", 0)
+
+    block = await svc.generate_block(
+        db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    cited = {c["chunk_id"] for c in block.citations}
+    assert str(ours.id) in cited
+    assert str(foreign_chunk.id) not in cited
+
+
+async def test_an_untagged_source_still_grounds_the_block(db_session: AsyncSession) -> None:
+    """The deliberate half of the scope, and the reason it is not a plain equality filter.
+
+    Subject tagging is optional at upload, so most sources carry none. Excluding them would not
+    tighten the grounding — it would remove it, and `_build_prompt` would fall back to writing
+    from general knowledge with nothing cited, which looks identical to a working lesson.
+    """
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+    untagged = await _source(db_session, learner)
+    chunk = await _chunk(db_session, untagged, "mitochondria are the powerhouse of the cell", 0)
+
+    block = await svc.generate_block(
+        db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    assert untagged.subject_id is None
+    assert [c["chunk_id"] for c in block.citations] == [str(chunk.id)]

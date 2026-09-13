@@ -162,6 +162,42 @@ async def test_retrieval_scoped_to_subject(db_session: AsyncSession) -> None:
     assert in_scope.id in ids and out_scope.id not in ids
 
 
+async def test_a_subject_scope_excludes_untagged_sources_unless_asked(
+    db_session: AsyncSession,
+) -> None:
+    """The default, and the flag that widens it (S26).
+
+    Subject tagging is optional at upload, so "no subject" and "a different subject" are
+    different claims: the second says the material is about something else, the first says
+    nobody said. Callers that already narrow by subject keep the strict reading; content
+    generation opts into the wider one, because for it the alternative to imperfect grounding
+    is no grounding at all.
+    """
+    learner = await _learner(db_session)
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="S1")
+    db_session.add(subject)
+    await db_session.flush()
+    tagged = await _chunk(
+        db_session, await _source(db_session, learner, subject_id=subject.id), "calculus integrals"
+    )
+    untagged = await _chunk(db_session, await _source(db_session, learner), "calculus integrals")
+
+    strict = await retrieval.retrieve(
+        db_session, fake_llm_client(), "calculus", learner_id=learner.id, subject_id=subject.id
+    )
+    widened = await retrieval.retrieve(
+        db_session,
+        fake_llm_client(),
+        "calculus",
+        learner_id=learner.id,
+        subject_id=subject.id,
+        include_untagged_sources=True,
+    )
+
+    assert {h.chunk_id for h in strict} == {tagged.id}
+    assert {h.chunk_id for h in widened} == {tagged.id, untagged.id}
+
+
 async def test_retrieval_scoped_to_source_ids(db_session: AsyncSession) -> None:
     """A conversation narrowed to specific sources (Phase 7) — distinct from the single
     ``source_id`` the debug endpoint uses."""

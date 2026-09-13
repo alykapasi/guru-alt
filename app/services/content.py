@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
 from app.llm.registry import ModelSpec
 from app.models.content import ContentBlock, ContentType
-from app.models.knowledge import KC
+from app.models.knowledge import KC, Topic
 from app.rag import retrieval
 from app.rag.retrieval import RetrievalHit
 from app.services.llm_log import log_llm_call
@@ -93,8 +93,20 @@ async def generate_block(
     if kc is None:
         raise LookupError(f"KC {kc_id} not found")
 
+    # Scoped to the KC's own subject (S26). Every other retrieval path in the app passes a
+    # subject; this one did not, so a lesson on eigenvalues could be grounded in chunks uploaded
+    # for immunology purely because they shared a word. Untagged sources are still admitted —
+    # the tag is optional at upload, so excluding them would replace cross-subject grounding
+    # with no grounding, and the block would quietly fall back to general knowledge.
+    subject_id = await session.scalar(select(Topic.subject_id).where(Topic.id == kc.topic_id))
     grounding = await retrieval.retrieve(
-        session, llm, _kc_query(kc), learner_id=learner_id, limit=grounding_k
+        session,
+        llm,
+        _kc_query(kc),
+        learner_id=learner_id,
+        subject_id=subject_id,
+        include_untagged_sources=True,
+        limit=grounding_k,
     )
     role = _ROLE_BY_TYPE[block_type]
     system = _SYSTEM_PROMPT.format(guidance=_GUIDANCE[block_type])
