@@ -59,13 +59,13 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | S09 | Add structured diagnosis of specific misconceptions and prerequisite gaps, with uncertainty and supporting evidence. | Placement infers rough levels; grading returns a single score and short rationale. These do not establish why an answer failed. [R1–R3] | Distinguish forgotten notation, a procedural error, and a conceptual misunderstanding before choosing help. | High | Implemented (see below) |
 | S10 | Preserve component-specific assessment evidence and define explicit grading criteria for generated open questions. | The same aggregate score updates every tagged component with different weights; generated short questions have no explicit rubric. [R2–R4] | Avoid treating a failure in projections as equal evidence of failure in every skill involved in least squares. | High | Implemented (see below) |
 | S11 | Make targeted prerequisite detours an explicit planning capability. | Routine revision changes status, review order, and scaffolding hints while preserving remaining new-topic order. [R5] | Investigate and address the prerequisite blocking the learner, then return to the original objective. | High | Implemented (see below) |
-| S12 | Apply difficulty targeting to question selection/generation. | The session runner explicitly documents target difficulty as unapplied. [R6] | The learner's estimated capability affects the actual task they receive. | High | Implemented (see below) |
+| S12 | Apply difficulty targeting to question selection/generation, and establish that the difficulty asked for is the difficulty delivered. | The session runner explicitly documents target difficulty as unapplied. [R6] | The learner's estimated capability affects the actual task they receive. | High | Implemented (see below) |
 | S13 | Distinguish assisted retries from independent demonstrations in mastery evidence. | Guided practice hints and retries the same question; every attempt updates mastery. Hint context is omitted by that workflow and is not used by the estimator even when recorded elsewhere. [R7–R8] | Prevent assistance and repeated exposure from producing unjustified mastery confidence. | First | Implemented (see below) |
 | S14 | Select fresh assessment items with awareness of prior exposure, and check delayed retention and transfer. | Bank selection returns the oldest matching item without considering the learner's exposure. [R2] | Establish that the learner can solve a different problem without help and retain that capability. | First | Implemented (see below) |
 | S15 | Connect exploratory conversation to structured learning evidence through a deliberate assessment mechanism. | Plain chat can ask questions, but its conversational answers do not directly update mastery. [R9] | Make the initial learner-led experience contribute trustworthy evidence without treating all conversation as proof of mastery. | High | Implemented (see below) |
 | S16 | Share appropriate learner context and learning-state access across chat, agentic, and guided modes. | Plain chat injects memory and plan hints; agentic service does not inject those same contexts. [R9–R10] | Switching modes retains relevant understanding of the learner and their goal. | High | Implemented (see below) |
 | S17 | Persist resumable guided-practice state durably. | Workflow uses an in-memory checkpointer. [R7] | A restart does not lose the paused practice state needed to continue correctly. | Before reliable external use | Implemented (see below) |
-| S18 | Calibrate mastery, placement, and scaffolding heuristics against real evidence. | Placement mappings, completion thresholds, and profile-to-scaffolding thresholds are explicitly described as arbitrary or uncalibrated. [R1, R5, R11] Thirteen closed items have since added more of them. **Item difficulty specifically can no longer be calibrated from shared items** (O01) — the generator-level route replaces it. | Progress estimates and teaching choices correspond to demonstrated capability. | High; design settled by O04, still requires data | Accepted |
+| S18 | Calibrate mastery, placement, and scaffolding heuristics against real evidence. | Placement mappings, completion thresholds, and profile-to-scaffolding thresholds are explicitly described as arbitrary or uncalibrated. [R1, R5, R11] Thirteen closed items have since added more of them. **Item difficulty specifically can no longer be calibrated from shared items** (O01) — the generator-level route replaces it. | Progress estimates and teaching choices correspond to demonstrated capability. | High; design settled by O04, still requires data | Partially implemented (see below) |
 | S19 | Retain the useful existing foundations while improving the teaching loop. | Pure estimation logic, persistent per-component state, event logging, prerequisite planning, and provider abstraction already exist. | Improve the behavior incrementally using existing boundaries. | Ongoing | Accepted |
 | S20 | Synchronize documentation with implementation and the clarified mission. | README describes the frontend as future work; roadmap labels the experiment suite not started despite tooling being present. Audience guidance also needs the nuance agreed here. | Future reviews and implementation plans start from an accurate description. | Supporting | Accepted |
 | S21 | Replace the development identity stub before real multi-user access; review production readiness separately. | The inspected auth dependency resolves a single dev learner. [R12] | Real learner identity and tested authorization boundaries before independent user access. | Before external multi-user use | Implemented (see below) |
@@ -1355,6 +1355,101 @@ as S59's missing thresholds: it would be a guess.
 *Nothing surfaces it to the learner.* The field reaches the API; no view reads it, so a learner
 still cannot see that a lesson came from general knowledge rather than their own materials.
 
+### S18 — Count the numbers nobody has measured, before claiming any of them
+
+**Status:** Partially implemented (branch `fix/tracker-repairs-and-next`) · **Priority:** High;
+design settled by O04, still requires data
+
+**Implemented — an inventory, and a test that stops it becoming fiction.** S18 has sat at
+*Accepted · needs data* through sixteen passes while the thing it describes grew. Every pass
+that closed a loop added another threshold, and every one admitted in its own comment that it
+was a taste parameter: a detour at two failures below half marks, a 0.75 practice-success
+target, a one-day retention floor, mastery bars of 1.0 and 0.5, the profile cutoffs, the
+momentum ratios, the placement seeds. Those admissions were spread across nine modules, so the
+honest answer to "what uncalibrated numbers is the product running on?" was "read the codebase".
+
+There are **seventeen**, and they are now in one place — `tests/eval/reliability/knobs.py` —
+each with what it governs and, the part that matters, **the specific reading that would settle
+it**. Not "needs data", which is the sentence this item has carried for sixteen passes: the
+design that produces the number. A test asserts no entry is allowed to say "needs data", so the
+list doubles as the brief for what S59 must eventually be able to answer.
+
+**It is deliberately not a copy of the constants.** Each entry records the value as
+inventoried; `live()` reads what the code holds now; the two are asserted equal in the suite.
+Changing one of these numbers therefore fails a test naming it. That is the point — re-guessing
+a knob nobody has measured is a decision, not an edit, and it should be visible as one. The
+report prints drifted entries rather than reconciling to whatever the code now says, because
+reconciling would turn the inventory into a mirror of the constants instead of a record of what
+was last looked at.
+
+`live()` imports inside the function rather than at module scope, so the inventory can still be
+printed when the application's settings will not load — a list of what numbers are in force is
+least useful exactly when the app will not start.
+
+**Not done — and this is the whole of the item.** *Nothing here calibrates anything.* Not one
+of the seventeen is set by evidence, and this neither sets nor recommends a value. What it
+provides is the denominator: how many numbers a reading would have to settle.
+
+*The inventory is not enforced at the source.* The constants still live where they lived; the
+registry mirrors them and a test keeps the mirror honest. Making the code read its values *from*
+the registry would make drift impossible rather than merely detectable, and is a refactor across
+nine modules that should follow a reading rather than precede it.
+
+*Seventeen is a floor, not a census.* It covers the scalars that decide teaching behaviour.
+Prompt wording, retrieval `k`, the FSRS parameters and the model-role map are all choices nobody
+has measured either, and none of them is a float in a module.
+
+### S12 — Check that the difficulty asked for is the difficulty delivered
+
+**Status:** Implemented (branch `feat/s12-s23`; extended on branch
+`fix/tracker-repairs-and-next`) · **Priority:** High
+
+**Implemented (second pass) — the generator is now measurable, which is the route O01 left.**
+Difficulty targeting shipped in the sixth pass: the learner's ability now decides the item they
+receive. What was never checked is the other half — that an item stored at difficulty *D* is an
+item of difficulty *D*. The number the tracer predicts from was an instruction, not a
+measurement, and a systematically easy generator drifts every ability estimate upward while the
+calibration curve still looks fine, because the estimator and the item agree with each other and
+both are wrong about the learner.
+
+**O01 is what makes this the route rather than the consolation prize.** Classical item
+calibration separates "this item is hard" from "this learner is weak" by putting many learners
+on the same item. With the subject domain deliberately unrestricted and a cohort of five to
+twenty, two learners will never meet the same question, and that evidence will not accumulate at
+any cohort size this audience supports. Calibrating the **generator** needs none of it: every
+item comes from one prompt asking for difficulty *D*, so the map from requested to realised
+difficulty is measurable across thousands of items that share a generator and share no learner.
+
+Realised difficulty is the *d* at which the model's total expected score equals the total
+observed score. Under `E = sigmoid(θ - d)` that sum is strictly decreasing in *d*, so the root is
+unique and bisection finds it exactly. A band where every answer went the same way carries a
+direction and no magnitude: reported as saturated, and kept out of the mean, because a search
+bound printed as a measurement is the instrument describing itself.
+
+`Replay` gained the input side of each step — the ability the estimator held, **post-decay**, and
+the difficulty it faced. Added beside the pairs rather than folded into them: different
+information, not a different arrangement. Re-deriving it would mean walking the sequences a
+second way, which is the drift S56 exists to prevent.
+
+**The circularity is stated, not buried.** The abilities come from an estimator that assumed
+these difficulties were right, so a drift is the residual it could not absorb. Present drift is
+evidence of miscalibration; absent drift is weaker evidence of calibration. Shrinkage toward the
+middle is expected even from a perfect generator, so the report says to read a run against
+another run rather than against zero — a caveat added because the instrument's first output on a
+*correct* synthetic generator showed +0.33 drift at the easy end, which a reader would otherwise
+have taken for a finding.
+
+**Measured.** Ten tests against constructed truth. The headline is a differential: two runs
+identical but for a generator delivering items half a logit easier, recovered to 1e-6 without
+any item being answered twice.
+
+**Not done.** *No reading.* Exercised on synthetic sequences only; the mined dataset holds zero.
+*Nothing revises a stored difficulty.* This measures the map and does not correct it, and
+correcting it means deciding whether to rewrite stored numbers or to apply an offset at
+prediction time — a decision that should follow a reading. *Joint estimation is not attempted*,
+which is what would remove the circularity. *The map is not per-generator*: one prompt is assumed,
+so a change to the generation prompt makes the old and new items one undifferentiated population.
+
 ### S26 — Ground a block in its own subject's material
 
 **Status:** Implemented (branch `fix/s29-cache-invalidation`) · **Priority:** High
@@ -1564,6 +1659,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-13 | Fourteenth pass, branch `ci/modular-gates` (off merged `main`, after PR #33): **CI split into one gate per job** (`9b883c9`), recorded under S58 (`a7e78d7`). Three jobs became nine. A job stops at its first failing step, so `lint · type-check · test · migrate` could report only one of its four gates per run and hid the other three — a red check said one of four things was wrong, and finding the second cost another full cycle. Shared setup moved into composite actions under `.github/actions/`, because GitHub Actions has no YAML anchors and the alternative was eight copies of the toolchain block; `services` is job-level and cannot live in one, so the Postgres block is written twice, in exactly the two jobs that use it. A ninth job, `CI`, is green only when all eight are, and treats `skipped` as failure — an un-run gate is not a passed one. **Wall-clock did not improve** and the PR says so: measured 2m11s against 2m05s, because `test` takes 120s, dominates, and already ran in parallel with the frontend job. The gain is diagnostic, plus Postgres no longer starting for runs whose only work is ruff, and `type-check` returning in 12s. Two traps avoided: hyphenated job ids are dereferenced as `needs['type-check'].result`, since the dot form risks parsing as subtraction and degrading to an empty string rather than erroring. **Also surfaced, and not fixed:** `main` has no branch protection and no rulesets, so none of the nine checks is required — and a run sat `queued` with zero jobs for nine hours while both cancel endpoints refused it with contradictory errors, which an unenforced check makes indistinguishable from a passing one. |
 | 2026-09-13 | Fifteenth pass, branch `fix/s29-cache-invalidation` (off merged `main`, after PR #34): S29 (`76debf7`) and S26 (`3a8875e`), the first two items taken from the *knowledge-graph and content-pipeline* register block that had register rows but no entries. Both are the same shape of bug — something that decides what a learner reads was not accounted for, and the failure was silent. S29: the block cache key hashed the grounding chunk *ids* but not the prompt text, the model behind the role, the KC's wording, or the chunks' text, so editing a prompt left every existing learner reading the old lesson permanently; the key is now a hash of the exact prompts the model will be sent plus the spec of the model answering them, so the determinants are inside it by construction and there is no version constant to remember to bump. S26: `generate_block` was the only retrieval path in the app with no subject scope, so a learner studying two things had one grounding the other's lessons — and the scope is deliberately not a plain equality filter, because subject tagging is optional at upload and excluding untagged sources would have replaced cross-subject grounding with *no* grounding, which renders identically to a working lesson. `uv run poe check` green (1367 passed, 4 skipped). **6 mutations, all killed — but two survived the first round, and both were gaps in the tests rather than the code:** the re-ingestion case (identical chunk text under a new id), and the fact that nothing anywhere pinned that a subject-scoped retrieval excludes untagged sources — that mutation survives the entire chat, agent and workflow suites. |
 | 2026-09-13 | Sixteenth pass, branch `fix/tracker-repairs-and-next` (off merged `main`, after PRs #33-#35 all landed): tracker repairs plus S28 (`24fd711`) and S48 (`5ee178f`). **Repairs first:** two history rows carried a literal pipe inside a code span - a `docker build ... \| tail` example and, with some irony, the row describing the earlier row-gluing defect - so both rendered with an extra column; escaped, and all 26 rows now have exactly three unescaped pipes. Two rows deferred while three PRs were open in parallel were also written. Verified on merged main before touching anything: `poe check` green at 1396 passed, the first run covering S59's tests together with the S26/S29 changes, since neither PR had run against the other's code. **S28:** the system prompt said "using ONLY the numbered context snippets" while the user message for an empty retrieval said "write from general knowledge and cite nothing" - two incompatible instructions in one request, and which one the model obeyed was decided nowhere. Two system prompts now, and the user turn carries no instructions at all. `grounding_count` records how many chunks were offered, because an empty `citations` cannot distinguish "retrieval found nothing" from "the model was given six and cited none". **S48:** latency recorded beside cost, measured in `LLMClient` so no call site changes and none can time a different span; it surfaced that `embed_in_batches` would have summed *concurrent* batch latencies and reported more time than passed. Migrations 0042 and 0043 are both nullable and unbackfilled, and both carry a data test whose control mutation is adding the `server_default` that would backfill a measurement nobody took. `uv run poe check` green (1407 passed, 4 skipped). 11 mutations across the two items, all applied and all killed. |
+| 2026-09-14 | Seventeenth pass, same branch as the sixteenth: **the calibration spine completed as far as it can be without learners** — S12 (`c123982`), S56 (`307646c`), S18 (`1c5f19c`), S59 (`d90f72d`). Four instruments, one command. **S12:** the generator's requested difficulty is now measurable against what the answers say it delivered, solving for the d where expected total score meets observed total; this is the route O01 left open, and it needs no two learners to meet the same item. **S56:** the shipped estimator is scored against candidates on the same sequences, because a calibration number alone has no scale; the null model built at the dataset's own base rate must score exactly zero skill, which is the harness checking itself. **S18:** seventeen uncalibrated constants inventoried in one place, each naming the specific reading that would settle it rather than saying "needs data", with a test asserting the inventoried value still matches the code so that re-guessing a knob nobody has measured fails a test naming it. **S59:** all four behind `poe reliability-report`, dataset read once, every section printing whether or not there is data. **Two bugs were found by the instruments' own output rather than by the tests:** the comparison reported production's lead as `+0.0000` because it compared the best row against the shipped row when they were the same row, and the report silently dropped two of its four sections when the dataset was missing - which is exactly the state the repository is in. `uv run poe check` green (1430 passed, 4 skipped). 10 mutations, all applied and all killed; three survived the first round and one of those was a genuine equivalent mutant, pinned afterwards with a purpose-built estimator whose decay moves ability, because Glicko's does not and the contract should be fixed before one arrives that does. **What the command prints today:** three sections with nothing to score, and seventeen uncalibrated constants. The instruments are complete; the readings need a cohort. |
 
 ## Remaining architecture autopsy — source pass
 
@@ -2840,7 +2936,34 @@ and 42 days, split multi-KC weights and an assisted attempt replays to the store
 tolerance. Every behaviour above was mutation-checked: dropping the seed, the decay, the
 weighting, the estimator check, the replayability check or the ordering each fails tests.
 
-**Not done.** Item and rubric versions are still not recorded, so a replay reproduces the
+**Implemented (second pass, branch `fix/tracker-repairs-and-next`) — the comparison the replay
+made possible.** Faithful replay answered "did what we shipped predict well?" and left unanswered
+the question that decides anything: *would something else have predicted better?* A calibration
+number alone has no scale — 0.87 skill is good or poor only next to what a plain Elo, or a
+forecaster that ignores the learner entirely, scores on exactly the same steps.
+
+Every candidate walks the same dataset through the same predict-then-update replay, holding
+everything constant except the estimator: the sequences, the order, the elapsed gaps, the
+apportioned weights. The shipped row keeps the predictions production made at the time;
+candidate rows recompute theirs, because the recorded ones are not theirs — the distinction
+`replay(dataset, estimator=...)` was built to draw.
+
+The candidates live in the eval package rather than `app.learning.tracer`. Nothing ships them,
+and a candidate in the production module is one somebody can configure by accident; promoting
+one should follow a reading, not precede it.
+
+**The null model is the harness checking itself.** `ConstantEstimator` is built at the dataset's
+own base rate, making it the forecaster the skill score is *defined* against, so its skill must
+come out at exactly zero. Anything else means the replay and the metrics disagree about what
+they are measuring — and every other row would be measuring that disagreement too.
+
+**Its own output found a bug before the tests did.** `margin` was the best row's skill minus the
+shipped row's, which compares production with itself whenever production wins: the first real
+run printed a lead of `+0.0000` over a field it had beaten comfortably. It is measured against
+the best *candidate* now, with a regression test.
+
+**Not done.** No candidate has been scored on real sequences, so no estimator choice is licensed
+by anything here. Item and rubric versions are still not recorded, so a replay reproduces the
 *update* faithfully but cannot tell that the question changed underneath it. Events written
 before this (`schema_version` 1) are reported as unreplayable rather than backfilled — the
 information to backfill them does not exist. A history recorded out of chronological order
@@ -3089,6 +3212,23 @@ undefined it says why instead of printing 1.000.
 
 `datasets/calibration.py` grew a shared `replay()` so that scoring the same replay a second way
 cannot come to mean replaying it a second way.
+
+**Implemented (second pass, branch `fix/tracker-repairs-and-next`) — the rest of the spine.**
+`poe reliability-report` prints four sections rather than one: calibration, the estimator
+comparison (S56), the generator difficulty map (S12) and the uncalibrated-constants inventory
+(S18), with grading agreement still opt-in and paid. The dataset is loaded once and shared —
+three sections each opening the file for themselves is a way to publish a disagreement between
+three reads of a file somebody is mining in the background as a finding about the estimator, and
+a test counts the reads.
+
+Every section prints whether or not there is data. The test caught the first version skipping
+the comparison and difficulty sections entirely when the dataset was missing, so two of the four
+vanished silently in exactly the state this repository is in today. A section that disappears
+leaves a reader to notice an absence; one that says it has nothing tells them.
+
+**What the command prints today is the answer to "is any of this calibrated".** Three sections
+say they have nothing to score. The fourth reports seventeen uncalibrated constants, all
+matching the code. The instruments are complete; the readings need learners.
 
 **Not done — and the gap is the whole point of the entry.** There is no *reading*. The
 instrument has been exercised on synthetic sequences, where the generator matches the model and
