@@ -80,7 +80,7 @@ These are new proposals from the second review; the user's acceptance of prior s
 | S23 | Validate the prerequisite graph, including multi-node cycles and references, before relying on its order. | Edge creation checks self-loops and existence but not longer cycles; topo_sort appends unresolved nodes when a cycle occurs. [R5, R15] | High | Implemented (see below) |
 | S24 | Define concept identity and cross-subject prerequisite handling explicitly. | Each KC belongs to one topic. Duplicate concepts get separate IDs and mastery states; the planner's candidate pool and edge loading do not establish a complete cross-subject traversal. Cross-subject edges are possible in the schema, so this is an incomplete policy rather than a database prohibition. [R14, R16, R11] | High | Proposed |
 | S25 | Separate shared, curated knowledge from learner-specific generated curricula, with ownership and publishing rules. | Subjects are global, listing is unscoped, commit rejects a duplicate subject name globally, and learner-authenticated routes can add global topics/KCs/edges. Personal goal-derived structure has no explicit private draft boundary. [R14–R16] | Before multi-user release | Proposed |
-| S26 | Apply explicit, consistent source scope to every generation path; make intentional cross-subject expansion a separate decision. | Chat uses subject/source filters; generate_block retrieves across the learner's sources without subject/topic filters. This remains learner-scoped and is not evidence of cross-user retrieval leakage. [R9, R17–R18] | High | Proposed |
+| S26 | Apply explicit, consistent source scope to every generation path; make intentional cross-subject expansion a separate decision. | Chat uses subject/source filters; generate_block retrieves across the learner's sources without subject/topic filters. This remains learner-scoped and is not evidence of cross-user retrieval leakage. [R9, R17–R18] | High | Implemented (see below) |
 | S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Proposed |
 | S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Proposed |
 | S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Implemented (see below) |
@@ -1285,6 +1285,54 @@ rests on `SameSite=lax` plus an explicit CORS allowlist rather than a token, whi
 for a same-site deployment and is exactly the assumption to revisit if the app is ever served
 cross-site. And the admin portal and audited impersonation that P10 pairs with this are not
 started.
+
+### S26 — Ground a block in its own subject's material
+
+**Status:** Implemented (branch `fix/s29-cache-invalidation`) · **Priority:** High
+
+**Implemented — content generation now scopes like everything else.** Every retrieval path in
+the application passes a subject: chat, guided practice, the agent's `search_materials` tool,
+onboarding. `generate_block` did not, and retrieved across every source the learner owned. A
+learner studying two things had material from one grounding lessons in the other whenever the
+two shared a word — and because the block cites its grounding, the result looked deliberate.
+
+**The scope is not a plain equality filter, and that is the whole design.** Subject tagging is
+*optional at upload*, so most sources carry none. "No subject" and "a different subject" are
+different claims: the second says the material is about something else, the first says nobody
+said. Excluding material tagged elsewhere removes contamination. Excluding untagged material
+would remove the grounding itself — and the failure would be silent, because `_build_prompt`
+falls back to "write from general knowledge and cite nothing", which renders as a perfectly
+plausible lesson that happens to cite nothing. So `retrieve` gained `include_untagged_sources`,
+defaulting off so every existing caller keeps the strict reading, and content generation opts
+into the wider one.
+
+**The default was unpinned, and the mutation found it.** Ignoring the flag and always widening
+survives the entire chat, agent and workflow suites: none of them covers a source with no
+subject at all, so nothing anywhere asserted that a subject-scoped retrieval excludes untagged
+material. `test_retrieval.py` had a different-subject case that had been standing beside the gap
+without covering it. Pinned now.
+
+**Measured.** Four tests. Three mutations, all killed: dropping the scope, narrowing it to
+strict equality, ignoring the flag.
+
+**Not done.** *Explicit cross-subject expansion has no opt-in.* The item asks for deliberate
+expansion to be a separate decision, and that is satisfied in the negative — nothing crosses
+subjects implicitly any more — but no caller can ask to cross one on purpose, because none
+wants to yet. Adding the parameter before a use exists would be guessing at its shape.
+
+*Topic scope is unused.* `retrieve` supports `topic_id` and the KC knows its topic, so a block
+could be grounded more tightly still. Whether that is an improvement or a way to starve a lesson
+of relevant neighbouring material is a question about retrieval quality, and S76 is the item
+that would answer it.
+
+*The other generation paths were not audited.* This fixes `generate_block`, which is the one the
+item names. Item generation and note distillation retrieve on their own terms and were not
+examined in this pass.
+
+*Untagged material is still a guess.* Admitting it is the conservative reading of a missing tag,
+not a correct one: a source uploaded for immunology and never tagged still grounds a calculus
+lesson. The real repair is making the tag reliable at upload, which is S25's ownership model and
+S55's scope validation, not a filter here.
 
 ### S29 — Key a cached block on everything that decided what it says
 
