@@ -223,17 +223,29 @@ async def agreement_against_labels() -> tuple[agreement.Agreement | None, str]:
     return agreement.compare(pairs), f"{len(pairs)} human-labelled golden cases"
 
 
-def calibration_from(
-    path: Path, *, binarise_at: float | None
-) -> tuple[metrics.Reliability | None, str]:
+def dataset_from(path: Path) -> tuple[CalibrationDataset | None, str]:
+    """Load the mined dataset once, with the caveat that belongs to it.
+
+    Every section below reads the same sequences, so they load here rather than each opening
+    the file for itself — three sections silently scoring three different reads of a dataset
+    somebody is mining in the background is a way to publish a disagreement as a finding.
+    """
     if not path.exists():
         return None, f"{path} (missing — run `uv run poe build-calibration-dataset`)"
     dataset = CalibrationDataset.from_file(path)
-    walked = replay(dataset)
     note = f"{path.name}, {len(dataset.sequences)} sequences"
-    if walked.n_recorded_predictions == 0:
+    if replay(dataset).n_recorded_predictions == 0:
         note += " — scoring today's estimator on old data, not the predictions production made"
-    return metrics.assess(walked.pairs, binarise_at=binarise_at), note
+    return dataset, note
+
+
+def calibration_from(
+    path: Path, *, binarise_at: float | None
+) -> tuple[metrics.Reliability | None, str]:
+    dataset, note = dataset_from(path)
+    if dataset is None:
+        return None, note
+    return metrics.assess(replay(dataset).pairs, binarise_at=binarise_at), note
 
 
 def main() -> None:
@@ -252,9 +264,23 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    cal, source = calibration_from(args.dataset, binarise_at=args.binarise_at)
+    dataset, source = dataset_from(args.dataset)
+    walked = replay(dataset) if dataset is not None else None
+
+    # Every section prints, with or without data. A section that disappears when there is
+    # nothing to say leaves a reader to notice an absence; one that says it has nothing tells
+    # them. The shape of this output is the same on the day the dataset is empty and the day
+    # it is full, which is what makes the two comparable at a glance.
     print()
-    print(render_calibration(cal, source=source))
+    print(
+        render_calibration(
+            metrics.assess(walked.pairs, binarise_at=args.binarise_at) if walked else None,
+            source=source,
+        )
+    )
+    print(render_comparison(comparison.compare(dataset) if dataset is not None else None))
+    print(render_difficulty(difficulty.assess(walked.attempts) if walked else None))
+    print(render_knobs())
 
     if args.grade:
         agr, against = asyncio.run(agreement_against_labels())
