@@ -172,3 +172,42 @@ async def test_blocks_that_predate_the_grounding_count_come_through_as_unknown_n
             assert row["grounding_count"] is None, "backfilled a measurement nobody took"
         finally:
             await conn.close()
+
+
+async def test_calls_recorded_before_timing_come_through_unmeasured_not_instant() -> None:
+    """0043 (S48) adds `latency_ms`, nullable and unbackfilled for the same reason as 0042.
+
+    `cost_usd` on this same table already draws the distinction the column needs: NULL means
+    unpriced, 0.0 means it ran locally and cost nothing, and collapsing them reported unpriced
+    spend as free. Zero latency would claim an instantaneous call — a far more flattering lie
+    than the missing measurement it would be standing in for.
+    """
+    async with database_at("0042_content_grounding_count") as connect:
+        conn = await connect()
+        try:
+            call_id = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO llm_calls (id, role, provider, model, input_tokens, output_tokens) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
+                call_id,
+                "smart",
+                "anthropic",
+                "claude-sonnet-4-6",
+                100,
+                20,
+            )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0043_llm_call_latency")
+
+        conn = await connect()
+        try:
+            row = await conn.fetchrow(
+                "SELECT latency_ms, input_tokens FROM llm_calls WHERE id = $1", call_id
+            )
+            assert row is not None, "the call did not survive the upgrade"
+            assert row["input_tokens"] == 100, "the accounting it did hold was not disturbed"
+            assert row["latency_ms"] is None, "claimed a timing that was never taken"
+        finally:
+            await conn.close()

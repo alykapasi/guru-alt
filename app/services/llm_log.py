@@ -52,9 +52,11 @@ async def log_llm_call(
     usage: Usage,
     conversation_id: uuid.UUID | None = None,
 ) -> float | None:
-    """Record one call's tokens + estimated cost. Returns the cost, or ``None`` if unpriced.
+    """Record one call's tokens, latency and estimated cost. Returns the cost, or ``None``.
 
-    Commits on its own transaction; the caller's session is untouched.
+    Commits on its own transaction; the caller's session is untouched. Latency is not a
+    parameter: it travels on ``usage``, set by ``LLMClient`` where the call is actually made,
+    so no caller has to measure it and none can measure a different span (S48).
     """
     cost = price_usd(spec.provider, spec.model, usage)
     log.info(
@@ -65,6 +67,7 @@ async def log_llm_call(
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cost_usd=cost,
+        latency_ms=usage.latency_ms,
     )
     try:
         async with _session_factory() as session:
@@ -78,6 +81,7 @@ async def log_llm_call(
                     input_tokens=usage.input_tokens,
                     output_tokens=usage.output_tokens,
                     cost_usd=cost,
+                    latency_ms=usage.latency_ms,
                 )
             )
             await session.commit()

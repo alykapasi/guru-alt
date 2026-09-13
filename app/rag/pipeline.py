@@ -9,6 +9,7 @@ transaction and the source's status; the pipeline only flushes.
 
 import os
 import tempfile
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -42,18 +43,26 @@ async def embed_in_batches(
     embedding a document is the largest single model bill in ingestion and has to be countable.
     Splitting a large document's chunks keeps each embed request bounded and lets batches
     overlap instead of one giant serial call.
+
+    Tokens add up across batches; latency does not. The batches run concurrently, so summing
+    their times would report more time than actually passed — by the concurrency factor, and
+    flatteringly in the wrong direction for the one operation whose slowness anyone would be
+    investigating. The elapsed time of the whole batched call is measured here instead (S48).
     """
     if not texts:
         return EmbedResult(vectors=[])
     batches = [texts[i : i + batch_size] for i in range(0, len(texts), batch_size)]
+    started = time.perf_counter()
     results = await gather_bounded(
         [llm.embed(ModelRole.EMBED, batch) for batch in batches], concurrency
     )
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
     return EmbedResult(
         vectors=[vector for batch in results for vector in batch.vectors],
         usage=Usage(
             input_tokens=sum(batch.usage.input_tokens for batch in results),
             output_tokens=sum(batch.usage.output_tokens for batch in results),
+            latency_ms=elapsed_ms,
         ),
     )
 

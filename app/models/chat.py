@@ -221,6 +221,12 @@ class LLMCall(UUIDPrimaryKeyMixin, Base):
     # NULL = this model has no known price. Distinct from 0.0, which means "ran locally,
     # cost nothing" — collapsing the two reported unpriced spend as zero.
     cost_usd: Mapped[float | None] = mapped_column(default=None)
+    # Wall-clock milliseconds the provider took (S48). NULL = not measured: a row written from
+    # a hand-built `Usage`, or a streaming call, which has no single end to time. Distinct from
+    # 0, which would claim an instantaneous call. Latency sits beside cost because a turn that
+    # felt bad is either a slow model or a slow product, and only these two rows separate them
+    # (S64).
+    latency_ms: Mapped[int | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)
 
 

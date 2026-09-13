@@ -50,7 +50,13 @@ async def test_embed_in_batches_splits_into_ceil_batches_and_preserves_order() -
     assert embedded.vectors == whole.vectors
     # ...and the usage of the parts adds up to the usage of the whole, or splitting a document
     # into batches would quietly divide its bill by the number of batches.
-    assert embedded.usage == whole.usage
+    assert embedded.usage.input_tokens == whole.usage.input_tokens
+    assert embedded.usage.output_tokens == whole.usage.output_tokens
+    # Latency is deliberately not compared: three concurrent batches and one whole call take
+    # different amounts of time, which is the point of batching (S48). It is still measured —
+    # as the elapsed time of the whole operation, never the sum of concurrent parts, which
+    # would report more time than passed.
+    assert embedded.usage.latency_ms is not None
 
 
 async def test_embed_in_batches_empty_makes_no_calls() -> None:

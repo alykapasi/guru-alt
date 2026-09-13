@@ -90,10 +90,15 @@ def text_of(content: str | list[ContentPart]) -> str:
 
 
 class Usage(BaseModel):
-    """Token accounting for one call."""
+    """Token accounting for one call, and how long it took."""
 
     input_tokens: int = 0
     output_tokens: int = 0
+    # Wall-clock time the provider call took, measured at the client (S48). ``None`` means it
+    # was not measured — a `Usage` built by hand, or a streaming path where "the call" has no
+    # single end. Latency travels with tokens because it is the other half of what a call cost
+    # and the pair is what separates a slow model from a slow product (S64).
+    latency_ms: int | None = None
 
     @property
     def total_tokens(self) -> int:

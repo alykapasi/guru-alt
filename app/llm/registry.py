@@ -4,6 +4,7 @@ Code calls ``client.stream(ModelRole.SMART, messages)``; the registry resolves t
 to a `(provider, model)` from settings and dispatches. Swapping a model is a config edit.
 """
 
+import time
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 
@@ -54,6 +55,21 @@ def _validate(providers: dict[str, LLMProvider], roles: dict[ModelRole, ModelSpe
             )
 
 
+def _timed[T: (ChatResponse, EmbedResult)](result: T, started: float) -> T:
+    """Attach the elapsed provider time to the usage travelling with ``result``.
+
+    Measured here rather than at each call site: this is the one place every non-streaming
+    provider call passes through, so timing it means no service has to remember to, and none
+    can measure a different span from the others. Streaming is deliberately not timed — there
+    is no single end to a stream, and time-to-first-token and time-to-completion are different
+    questions that one number would blur (S48, S51).
+    """
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    return result.model_copy(
+        update={"usage": result.usage.model_copy(update={"latency_ms": elapsed_ms})}
+    )
+
+
 class LLMClient:
     def __init__(
         self,
@@ -89,9 +105,11 @@ class LLMClient:
         tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
         provider, model = self._resolve(role)
-        return await provider.complete(
+        started = time.perf_counter()
+        response = await provider.complete(
             model=model, messages=messages, system=system, max_tokens=max_tokens, tools=tools
         )
+        return _timed(response, started)
 
     def stream(
         self,
@@ -109,7 +127,9 @@ class LLMClient:
 
     async def embed(self, role: ModelRole, texts: Sequence[str]) -> EmbedResult:
         provider, model = self._resolve(role)
-        return await provider.embed(model=model, texts=texts)
+        started = time.perf_counter()
+        result = await provider.embed(model=model, texts=texts)
+        return _timed(result, started)
 
 
 def build_llm_client(settings: Settings) -> LLMClient:
