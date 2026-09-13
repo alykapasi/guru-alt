@@ -18,7 +18,7 @@ from pathlib import Path
 
 from tests.eval.datasets.calibration import replay
 from tests.eval.datasets.models import CalibrationDataset
-from tests.eval.reliability import agreement, difficulty, metrics
+from tests.eval.reliability import agreement, comparison, difficulty, metrics
 
 DEFAULT_DATASET = Path(__file__).resolve().parents[1] / "datasets" / "tracer-calibration.json"
 
@@ -81,6 +81,40 @@ def render_agreement(a: agreement.Agreement | None, *, against: str) -> str:
             "  Kappa is undefined because one grader used a single band for everything. Raw",
             "  agreement of 1.000 there means no judgement was exercised, not that two judges",
             "  concurred.",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def render_comparison(c: comparison.Comparison | None) -> str:
+    """The shipped estimator against the alternatives, best first (S56)."""
+    if c is None:
+        return "Estimator comparison\n  nothing to compare — no scorable points\n"
+    lines = [
+        "Estimator comparison",
+        f"  steps             {c.n_steps}",
+        "",
+        "  estimator        skill      ECE   resolution   config",
+    ]
+    for row in c.rows:
+        conf = ", ".join(f"{k}={v:g}" for k, v in sorted(row.config.items()))
+        mark = " *" if row.as_shipped else "  "
+        lines.append(
+            f" {mark}{row.name:<14} {row.skill:+.4f}   {row.reliability.ece:.4f}   "
+            f"{row.reliability.resolution:.4f}       {conf}"
+        )
+    lines += ["", "  * = what shipped, scored on the predictions production actually made."]
+    margin = c.margin
+    if margin is None:
+        lines.append("  No candidate to compare the shipped estimator against.")
+    elif c.shipped_is_best:
+        lines.append(f"  Shipped leads the best candidate by {margin:.4f} skill.")
+    else:
+        lines += [
+            f"  A CANDIDATE BEAT PRODUCTION by {-margin:.4f} skill.",
+            "  That is the only result here that licences changing the estimator — and it",
+            "  licences investigating it, not shipping it: one dataset, one replay, and the",
+            "  candidate never had to make its predictions before seeing the data collected",
+            "  under a different one.",
         ]
     return "\n".join(lines) + "\n"
 
