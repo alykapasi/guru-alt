@@ -9,9 +9,43 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# One gate per job, all in parallel. The point is the failure message: a red `type-check`
+# names the problem from the checks list, where a red `lint · type-check · test · migrate`
+# only says that one of four things went wrong and hid the other three behind it — a job
+# stops at its first failing step, so bundling them means each run reports at most one.
+#
+# The shared toolchain setup lives in `.github/actions/setup-*`; GitHub Actions does not
+# support YAML anchors, so a composite action is the only way to write it once. `services`
+# is job-level and cannot go in one, which is why the Postgres block below appears twice —
+# in the two jobs that actually need a database, and nowhere else.
+
 jobs:
-  check:
-    name: lint · type-check · test · migrate
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-backend
+
+      # Both are ruff and both are fixed the same way (`poe format`), so they are one gate.
+      - name: Format check
+        run: uv run poe format-check
+
+      - name: Lint
+        run: uv run poe lint
+
+  type-check:
+    name: type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-backend
+
+      - name: Type-check
+        run: uv run poe type-check
+
+  test:
+    name: test
     runs-on: ubuntu-latest
 
     env:
@@ -36,24 +70,40 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-backend
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          python-version: "3.13"
-          enable-cache: true
+      # `poe test` creates and migrates its own `_test` database (tests/testdb.py), so it
+      # needs a server but not the migrated `guru` database the `migrations` job builds.
+      # That independence is what lets these two run side by side instead of in sequence.
+      - name: Test
+        run: uv run poe test
 
-      - name: Install dependencies
-        run: uv sync --frozen
+  migrations:
+    name: migrations
+    runs-on: ubuntu-latest
 
-      - name: Format check
-        run: uv run poe format-check
+    env:
+      GURU_ENV: test
+      GURU_DATABASE_URL: postgresql+asyncpg://guru:guru@localhost:5432/guru
 
-      - name: Lint
-        run: uv run poe lint
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: guru
+          POSTGRES_PASSWORD: guru
+          POSTGRES_DB: guru
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U guru -d guru"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
 
-      - name: Type-check
-        run: uv run poe type-check
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-backend
 
       - name: Apply migrations
         run: uv run alembic upgrade head
@@ -74,66 +124,104 @@ jobs:
           uv run alembic downgrade base
           uv run alembic upgrade head
 
-      # `poe test` creates and migrates its own `_test` database (tests/testdb.py), so this
-      # also exercises the migrations a second time against a genuinely empty database.
-      - name: Test
-        run: uv run poe test
-
   # The frontend's typed client is generated from the backend's OpenAPI document, so the two
-  # are a contract with two sides and, until now, no gate: a backend change that removed a
-  # field or renamed a route could merge while the frontend kept compiling against the shape
-  # that used to be there. This regenerates the types and fails on any difference (S58).
-  contract:
+  # are a contract with two sides and, until recently, no gate: a backend change that removed
+  # a field or renamed a route could merge while the frontend kept compiling against the
+  # shape that used to be there. This regenerates the types and fails on any difference (S58).
+  api-contract:
     name: api contract
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v5
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          python-version: "3.13"
-          enable-cache: true
-
+      - uses: ./.github/actions/setup-backend
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
-
-      - name: Install dependencies
-        run: uv sync --frozen
 
       # No database and no server: the document comes from the app object, which is what lets
       # this be a check rather than something somebody has to remember to run.
       - name: Frontend types match the API
         run: uv run poe api-contract
 
-  frontend:
-    name: frontend lint · test · build
+  frontend-lint:
+    name: frontend lint
     runs-on: ubuntu-latest
-
     defaults:
       run:
         working-directory: frontend
-
     steps:
       - uses: actions/checkout@v5
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
+      - uses: ./.github/actions/setup-frontend
 
       - name: Lint
         run: npm run lint
 
+  frontend-test:
+    name: frontend test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-frontend
+
       - name: Test
         run: npm run test
+
+  frontend-build:
+    name: frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-frontend
 
       # `tsc -b && vite build` — the type-check gate for the frontend as well as the build.
       - name: Build
         run: npm run build
+
+  # One check that is green only when all eight are. Splitting the gates multiplies the names
+  # a branch-protection rule would have to list, and a rule that lists them by name silently
+  # stops covering a gate the day one is renamed or added. This job is the stable name to
+  # require; the eight above are where you look when it goes red.
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - lint
+      - type-check
+      - test
+      - migrations
+      - api-contract
+      - frontend-lint
+      - frontend-test
+      - frontend-build
+
+    steps:
+      - name: Summarise the gates
+        run: |
+          {
+            echo "| gate | result |"
+            echo "| --- | --- |"
+            echo "| lint | ${{ needs.lint.result }} |"
+            echo "| type-check | ${{ needs['type-check'].result }} |"
+            echo "| test | ${{ needs.test.result }} |"
+            echo "| migrations | ${{ needs.migrations.result }} |"
+            echo "| api contract | ${{ needs['api-contract'].result }} |"
+            echo "| frontend lint | ${{ needs['frontend-lint'].result }} |"
+            echo "| frontend test | ${{ needs['frontend-test'].result }} |"
+            echo "| frontend build | ${{ needs['frontend-build'].result }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # `success()` is not enough on its own here: with `if: always()` this job runs even when
+      # a dependency was skipped or cancelled, and a skipped gate is an un-run gate, not a
+      # passed one. Anything other than success in any of the eight fails this check.
+      - name: Fail unless every gate succeeded
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
+        run: |
+          echo "::error::At least one gate did not succeed — see the summary above."
+          exit 1
