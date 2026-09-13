@@ -124,6 +124,59 @@ jobs:
           uv run alembic downgrade base
           uv run alembic upgrade head
 
+  # Delivery through a real broker, which the default suite cannot show: it runs on
+  # `InMemoryBroker`, which never serialises a message, never writes it anywhere and never
+  # reads it back on another connection (S58). Its own job rather than a step in `test`,
+  # because it is the only one needing Redis and bundling it would start a broker for every
+  # run of the suite.
+  queue:
+    name: queue
+    runs-on: ubuntu-latest
+
+    env:
+      GURU_ENV: test
+      GURU_DATABASE_URL: postgresql+asyncpg://guru:guru@localhost:5432/guru
+      GURU_REDIS_URL: redis://localhost:6379/0
+      # The gate these tests skip behind, so a laptop without Redis still runs a green suite
+      # and CI still covers the path.
+      GURU_QUEUE_TESTS: "1"
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: guru
+          POSTGRES_PASSWORD: guru
+          POSTGRES_DB: guru
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U guru -d guru"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-backend
+
+      # The suite's conftest reaches for its own database on import, so it has to exist even
+      # for a test that never touches it.
+      - name: Create the suite's database
+        run: uv run poe test-db-init
+
+      - name: Queue integration
+        run: uv run pytest tests/test_queue_integration.py -v
+
   # The frontend's typed client is generated from the backend's OpenAPI document, so the two
   # are a contract with two sides and, until recently, no gate: a backend change that removed
   # a field or renamed a route could merge while the frontend kept compiling against the
@@ -196,6 +249,7 @@ jobs:
       - type-check
       - test
       - migrations
+      - queue
       - api-contract
       - frontend-lint
       - frontend-test
@@ -211,6 +265,7 @@ jobs:
             echo "| type-check | ${{ needs['type-check'].result }} |"
             echo "| test | ${{ needs.test.result }} |"
             echo "| migrations | ${{ needs.migrations.result }} |"
+            echo "| queue | ${{ needs.queue.result }} |"
             echo "| api contract | ${{ needs['api-contract'].result }} |"
             echo "| frontend lint | ${{ needs['frontend-lint'].result }} |"
             echo "| frontend test | ${{ needs['frontend-test'].result }} |"
