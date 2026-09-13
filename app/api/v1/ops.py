@@ -5,11 +5,15 @@ monitor, neither of which holds a learner session, and both of which poll — so
 does per-learner work, and nothing here returns anything about a learner.
 """
 
+from typing import Annotated
+
 from fastapi import APIRouter, Query, Response, status
 
 from app.api.deps import BlobStoreDep, SessionDep, SettingsDep
 from app.core.alerts import AlertReport, evaluate
 from app.core.readiness import ReadinessReport, readiness
+from app.schemas.ops import AlertTransitionRead
+from app.services import alert_history
 from app.services.ingestion import IngestionBacklog, backlog
 from app.services.spend import SpendWindow
 from app.services.spend import window as spend_window
@@ -58,6 +62,22 @@ async def spend(
     deliberately distinct from a local model that genuinely cost nothing.
     """
     return await spend_window(session, settings=settings, hours=hours)
+
+
+@router.get("/ops/alerts/history", response_model=list[AlertTransitionRead])
+async def alert_history_(
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    name: Annotated[str | None, Query()] = None,
+):
+    """When conditions started and stopped firing, newest first (P11).
+
+    The endpoint above answers "is anything wrong now"; this answers "was anything wrong at
+    three in the morning", which is the question an operator actually has and which an
+    on-demand predicate cannot answer at all. Rows are *transitions*, so the list is as long as
+    the number of things that happened rather than the number of times anybody polled.
+    """
+    return await alert_history.history(session, limit=limit, name=name)
 
 
 @router.get("/ops/alerts", response_model=AlertReport)

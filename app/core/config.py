@@ -184,6 +184,12 @@ class Settings(BaseSettings):
 
     session_purge_interval_seconds: int = 3600
 
+    # How often the worker evaluates the alert conditions and records what changed (P11).
+    # A minute is frequent enough that an incident is noticed within one, and — because only
+    # *transitions* are written — costs nothing in rows when nothing is happening. 0 disables
+    # the loop, the same switch every other sweep here uses.
+    alert_poll_interval_seconds: int = 60
+
     # The development sign-in seam: a single endpoint that issues a session for the dev learner
     # with no credential, so `poe dev` and the frontend work without anybody registering first.
     # It is the one piece of the old stub that survives, it is visible in the OpenAPI schema

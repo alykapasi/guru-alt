@@ -781,6 +781,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ops/alerts/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Alert History
+         * @description When conditions started and stopped firing, newest first (P11).
+         *
+         *     The endpoint above answers "is anything wrong now"; this answers "was anything wrong at
+         *     three in the morning", which is the question an operator actually has and which an
+         *     on-demand predicate cannot answer at all. Rows are *transitions*, so the list is as long as
+         *     the number of things that happened rather than the number of times anybody polled.
+         */
+        get: operations["alert_history__api_v1_ops_alerts_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ops/ingestion": {
         parameters: {
             query?: never;
@@ -1505,6 +1530,35 @@ export interface components {
             checked: string[];
             /** Firing */
             firing: components["schemas"]["Alert"][];
+        };
+        /**
+         * AlertTransitionRead
+         * @description One change of state for one alert condition (P11).
+         *
+         *     ``detail`` and ``action`` are what the alert said *at the time*. A threshold retuned since
+         *     would otherwise rewrite the history of every incident it was involved in.
+         */
+        AlertTransitionRead: {
+            /** Action */
+            action: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Detail */
+            detail: string | null;
+            /** Firing */
+            firing: boolean;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Severity */
+            severity: string | null;
         };
         /**
          * AnswerSubmit
@@ -4136,6 +4190,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AlertReport"];
+                };
+            };
+        };
+    };
+    alert_history__api_v1_ops_alerts_history_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                name?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertTransitionRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
