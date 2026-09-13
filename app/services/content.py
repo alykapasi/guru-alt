@@ -5,6 +5,15 @@ write the block **citing only those chunks**, and caches the result under a cont
 ``cache_key`` so an identical request reuses it. ``assemble`` returns the standard set of
 blocks for a KC, generating any that are missing. All model access is by role; the service
 owns the transaction and logs each call's cost.
+
+The cache key hashes *the exact prompts the model will be sent and the exact model that will
+answer them* (S29), rather than a summary of the inputs those prompts were built from. The
+distinction matters because a key that omits any determinant of the output does not merely
+miss a refresh — it serves the pre-change block forever, and does so silently: the block still
+renders and still cites real chunks, but it was written to instructions, a model, or an
+objective that no longer exists. Deriving the key from the rendered prompts means editing a
+prompt, retitling a KC, or repointing a role at a different model each invalidates on its own,
+with nothing to remember to bump.
 """
 
 import hashlib
@@ -17,8 +26,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
+from app.llm.registry import ModelSpec
 from app.models.content import ContentBlock, ContentType
-from app.models.knowledge import KC
+from app.models.knowledge import KC, Topic
 from app.rag import retrieval
 from app.rag.retrieval import RetrievalHit
 from app.services.llm_log import log_llm_call
@@ -71,25 +81,51 @@ async def generate_block(
 ) -> ContentBlock:
     """Generate (or reuse) a cached block for ``kc_id`` of the given type.
 
-    Retrieves grounding chunks, hashes them into a ``cache_key``, and returns the existing
-    block if one is cached for that exact (learner, KC, type, grounding) — otherwise generates,
+    Retrieves grounding chunks, renders the prompts, and returns the existing block if one is
+    cached for that exact (learner, KC, type, grounding, model, prompt) — otherwise generates,
     persists, logs cost, and commits.
+
+    The prompts are built once here and handed to both the key and the model, so the two cannot
+    describe different requests: a key computed from separately re-rendered text would drift
+    from what was actually sent the moment either construction changed.
     """
     kc = await session.get(KC, kc_id)
     if kc is None:
         raise LookupError(f"KC {kc_id} not found")
 
+    # Scoped to the KC's own subject (S26). Every other retrieval path in the app passes a
+    # subject; this one did not, so a lesson on eigenvalues could be grounded in chunks uploaded
+    # for immunology purely because they shared a word. Untagged sources are still admitted —
+    # the tag is optional at upload, so excluding them would replace cross-subject grounding
+    # with no grounding, and the block would quietly fall back to general knowledge.
+    subject_id = await session.scalar(select(Topic.subject_id).where(Topic.id == kc.topic_id))
     grounding = await retrieval.retrieve(
-        session, llm, _kc_query(kc), learner_id=learner_id, limit=grounding_k
+        session,
+        llm,
+        _kc_query(kc),
+        learner_id=learner_id,
+        subject_id=subject_id,
+        include_untagged_sources=True,
+        limit=grounding_k,
     )
-    cache_key = _cache_key(learner_id, [kc_id], block_type, [h.chunk_id for h in grounding])
+    role = _ROLE_BY_TYPE[block_type]
+    system = _SYSTEM_PROMPT.format(guidance=_GUIDANCE[block_type])
+    user = _build_prompt(kc, grounding)
+    cache_key = _cache_key(
+        learner_id,
+        [kc_id],
+        block_type,
+        [h.chunk_id for h in grounding],
+        spec=llm.spec(role),
+        system=system,
+        user=user,
+    )
 
     existing = await session.scalar(select(ContentBlock).where(ContentBlock.cache_key == cache_key))
     if existing is not None:
         return existing
 
-    role = _ROLE_BY_TYPE[block_type]
-    parsed, usage = await _generate(llm, role, kc, block_type, grounding)
+    parsed, usage = await _generate(llm, role, system=system, user=user)
     block = ContentBlock(
         learner_id=learner_id,
         kc_ids=[kc_id],
@@ -146,17 +182,17 @@ def _kc_query(kc: KC) -> str:
 
 
 async def _generate(
-    llm: LLMClient,
-    role: ModelRole,
-    kc: KC,
-    block_type: ContentType,
-    grounding: list[RetrievalHit],
+    llm: LLMClient, role: ModelRole, *, system: str, user: str
 ) -> tuple[_GeneratedBlock, Usage]:
-    """Call the model and parse its reply into a body + cited snippet indices."""
+    """Call the model and parse its reply into a body + cited snippet indices.
+
+    Takes the rendered prompts rather than the material they are rendered from: they are the
+    same strings the cache key was computed over, which is what keeps the two in step.
+    """
     completion = await llm.complete(
         role,
-        [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc, grounding))],
-        system=_SYSTEM_PROMPT.format(guidance=_GUIDANCE[block_type]),
+        [ChatMessage(role=ChatRole.USER, content=user)],
+        system=system,
         max_tokens=1024,
     )
     return _parse(completion.content), completion.usage
@@ -208,14 +244,35 @@ def _cache_key(
     kc_ids: list[uuid.UUID],
     block_type: ContentType,
     grounding_ids: list[uuid.UUID],
+    *,
+    spec: ModelSpec,
+    system: str,
+    user: str,
 ) -> str:
-    """Content-address a block over its learner, KCs, type, and grounding set."""
+    """Content-address a block over everything that decides what the model writes.
+
+    ``system`` and ``user`` are the rendered prompts, so the KC's own wording, the chunks'
+    text, the instructions for this block type and the shape of the prompt template are all
+    inside the key by construction — none of them needs its own field here, and none can be
+    changed without changing the key.
+
+    ``spec`` is separate because it is the one determinant that is not in the prompts: the
+    same request answered by a different model is a different block, and a role repointed from
+    one model to another must not keep serving the old one's writing.
+
+    ``grounding_ids`` is kept even though the chunks' text is already inside ``user``. Two
+    distinct chunks can hold identical text, and ``citations`` resolves to chunk and source
+    ids — so without the ids, a cached block could cite a source the request never retrieved.
+    """
     payload = json.dumps(
         {
             "learner": str(learner_id),
             "kcs": sorted(str(k) for k in kc_ids),
             "type": str(block_type),
             "grounding": sorted(str(c) for c in grounding_ids),
+            "model": f"{spec.provider}:{spec.model}",
+            "system": system,
+            "user": user,
         },
         sort_keys=True,
     )

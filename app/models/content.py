@@ -2,9 +2,15 @@
 
 A ``ContentBlock`` is a unit of generated instruction (a lesson, a wiki entry, a question)
 **tagged to one or more KCs** and **grounded in retrieved chunks** (its ``citations``). Blocks
-are content-addressed by ``cache_key`` — a hash over the learner, KCs, type, and the grounding
-set — so identical requests reuse a block instead of regenerating it. When the grounding
-changes (new sources ingested), the key changes and a fresh block is generated.
+are content-addressed by ``cache_key`` — a hash over the learner, KCs, type, the grounding set,
+the model that wrote it, and the exact prompts it was written from — so identical requests reuse
+a block instead of regenerating it. Anything that would change what the model produced changes
+the key and yields a fresh block: new sources ingested, a KC retitled, a prompt edited, or a
+role repointed at a different model (S29).
+
+Superseded blocks are not deleted. They remain the record of what a learner was actually shown,
+and ``citations`` on them still resolve; ``list_blocks`` returns every block for a KC, so a
+reader wanting the current one should take the newest.
 """
 
 import uuid

@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Sequence
 
 from pydantic import BaseModel
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -41,6 +41,7 @@ async def retrieve(
     topic_id: uuid.UUID | None = None,
     source_id: uuid.UUID | None = None,
     source_ids: Sequence[uuid.UUID] | None = None,
+    include_untagged_sources: bool = False,
     limit: int = 10,
     candidates: int = 50,
 ) -> list[RetrievalHit]:
@@ -49,6 +50,13 @@ async def retrieve(
     ``source_ids`` narrows to several specific sources (a conversation's explicit picks, see
     ``ConversationSource``) — distinct from ``source_id``, which narrows to exactly one (the
     debug ``/retrieve`` endpoint's existing use). Both may be combined with ``subject_id``.
+
+    ``include_untagged_sources`` widens ``subject_id`` to also admit sources carrying no subject
+    at all (S26). The tag is optional at upload, so most sources have none, and the two
+    exclusions are not equally justified: a source tagged to a *different* subject is known to be
+    about something else, while an untagged one is merely unclassified. Dropping the first
+    removes contamination; dropping the second would remove the grounding itself. It has no
+    effect unless ``subject_id`` is given.
     """
     query = query.strip()
     if not query:
@@ -65,7 +73,11 @@ async def retrieve(
         if source_ids is not None:
             stmt = stmt.where(Chunk.source_id.in_(source_ids))
         if subject_id is not None:
-            stmt = stmt.where(Source.subject_id == subject_id)
+            stmt = stmt.where(
+                or_(Source.subject_id == subject_id, Source.subject_id.is_(None))
+                if include_untagged_sources
+                else Source.subject_id == subject_id
+            )
         if topic_id is not None:
             stmt = stmt.where(Source.topic_id == topic_id)
         return stmt
