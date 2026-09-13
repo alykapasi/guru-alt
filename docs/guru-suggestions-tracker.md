@@ -1563,6 +1563,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-13 | Thirteenth pass, same branch as the decisions above: **S59's first slice built** (`c03e705`) — `tests/eval/reliability/`, run as `poe reliability-report`. `uv run poe check` green (1387 passed, 4 skipped); `poe db-check` and `poe api-contract` green. No migrations, no production code changed, no new dependency. 14 mutations, all applied and all killed. **The module is shaped around the fact that calibration alone is a flattering measure.** A forecaster that ignores the learner and always predicts the base rate is perfectly calibrated and useless, so a report leading with calibration error would call it excellent; the Murphy decomposition and a skill score against exactly that forecaster are therefore the headline, and where skill is at or below zero the report says so in words rather than only in a number. The same shape governs the grading half: raw agreement is the flattering number and kappa is the one the report points at. **Three mutations survived the first round and all three were gaps in the tests, not the code** — unweighted versus n-weighted calibration error, an unsigned bucket gap (which would say a band is miscalibrated without saying which way), and the binarising threshold's boundary case. **What was built is an instrument, not a reading**, and S59 now says so: it has been exercised only on synthetic sequences, where the generator matches the model and a high skill score is a property of the fixture; the mined dataset on this machine holds zero sequences, so the estimator has still never been scored on real learner history. Also a third sighting of the order-dependent flake first recorded in the eleventh pass — `test_another_learners_exposure_does_not_move_this_one` failed once in a full run, then passed in isolation and in a second full run; `tests/test_item_exposure.py` imports nothing from `tests/eval`, so this pass cannot reach it. |
 | 2026-09-13 | Fourteenth pass, branch `ci/modular-gates` (off merged `main`, after PR #33): **CI split into one gate per job** (`9b883c9`), recorded under S58 (`a7e78d7`). Three jobs became nine. A job stops at its first failing step, so `lint · type-check · test · migrate` could report only one of its four gates per run and hid the other three — a red check said one of four things was wrong, and finding the second cost another full cycle. Shared setup moved into composite actions under `.github/actions/`, because GitHub Actions has no YAML anchors and the alternative was eight copies of the toolchain block; `services` is job-level and cannot live in one, so the Postgres block is written twice, in exactly the two jobs that use it. A ninth job, `CI`, is green only when all eight are, and treats `skipped` as failure — an un-run gate is not a passed one. **Wall-clock did not improve** and the PR says so: measured 2m11s against 2m05s, because `test` takes 120s, dominates, and already ran in parallel with the frontend job. The gain is diagnostic, plus Postgres no longer starting for runs whose only work is ruff, and `type-check` returning in 12s. Two traps avoided: hyphenated job ids are dereferenced as `needs['type-check'].result`, since the dot form risks parsing as subtraction and degrading to an empty string rather than erroring. **Also surfaced, and not fixed:** `main` has no branch protection and no rulesets, so none of the nine checks is required — and a run sat `queued` with zero jobs for nine hours while both cancel endpoints refused it with contradictory errors, which an unenforced check makes indistinguishable from a passing one. |
 | 2026-09-13 | Fifteenth pass, branch `fix/s29-cache-invalidation` (off merged `main`, after PR #34): S29 (`76debf7`) and S26 (`3a8875e`), the first two items taken from the *knowledge-graph and content-pipeline* register block that had register rows but no entries. Both are the same shape of bug — something that decides what a learner reads was not accounted for, and the failure was silent. S29: the block cache key hashed the grounding chunk *ids* but not the prompt text, the model behind the role, the KC's wording, or the chunks' text, so editing a prompt left every existing learner reading the old lesson permanently; the key is now a hash of the exact prompts the model will be sent plus the spec of the model answering them, so the determinants are inside it by construction and there is no version constant to remember to bump. S26: `generate_block` was the only retrieval path in the app with no subject scope, so a learner studying two things had one grounding the other's lessons — and the scope is deliberately not a plain equality filter, because subject tagging is optional at upload and excluding untagged sources would have replaced cross-subject grounding with *no* grounding, which renders identically to a working lesson. `uv run poe check` green (1367 passed, 4 skipped). **6 mutations, all killed — but two survived the first round, and both were gaps in the tests rather than the code:** the re-ingestion case (identical chunk text under a new id), and the fact that nothing anywhere pinned that a subject-scoped retrieval excludes untagged sources — that mutation survives the entire chat, agent and workflow suites. |
+| 2026-09-13 | Sixteenth pass, branch `fix/tracker-repairs-and-next` (off merged `main`, after PRs #33-#35 all landed): tracker repairs plus S28 (`24fd711`) and S48 (`5ee178f`). **Repairs first:** two history rows carried a literal pipe inside a code span - a `docker build ... \| tail` example and, with some irony, the row describing the earlier row-gluing defect - so both rendered with an extra column; escaped, and all 26 rows now have exactly three unescaped pipes. Two rows deferred while three PRs were open in parallel were also written. Verified on merged main before touching anything: `poe check` green at 1396 passed, the first run covering S59's tests together with the S26/S29 changes, since neither PR had run against the other's code. **S28:** the system prompt said "using ONLY the numbered context snippets" while the user message for an empty retrieval said "write from general knowledge and cite nothing" - two incompatible instructions in one request, and which one the model obeyed was decided nowhere. Two system prompts now, and the user turn carries no instructions at all. `grounding_count` records how many chunks were offered, because an empty `citations` cannot distinguish "retrieval found nothing" from "the model was given six and cited none". **S48:** latency recorded beside cost, measured in `LLMClient` so no call site changes and none can time a different span; it surfaced that `embed_in_batches` would have summed *concurrent* batch latencies and reported more time than passed. Migrations 0042 and 0043 are both nullable and unbackfilled, and both carry a data test whose control mutation is adding the `server_default` that would backfill a measurement nobody took. `uv run poe check` green (1407 passed, 4 skipped). 11 mutations across the two items, all applied and all killed. |
 
 ## Remaining architecture autopsy — source pass
 
@@ -2372,7 +2373,8 @@ single turn can still overshoot; it bounds accumulation, not one turn's cost.
 
 ### S48 — Make model-call accounting complete and independent of business transactions
 
-**Status:** Implemented (`0a94191`, `ed0ad5e`, branch `fix/tracker-s54-s38`) · **Priority:** Before cost decisions
+**Status:** Implemented (`0a94191`, `ed0ad5e`, branch `fix/tracker-s54-s38`; extended on branch
+`fix/tracker-repairs-and-next`) · **Priority:** Before cost decisions
 
 **Implemented — an unpriced model is unknown, not free.** `cost_usd` returned 0.0 for any model
 missing from the price table, so a paid model with no entry was indistinguishable from a locally
@@ -2404,10 +2406,34 @@ that produced unusable output still cost what it cost. The onboarding gate, up t
 negotiation billed to nobody, now records them: discarding the transcript was never a reason to
 discard the cost.
 
-**Not done.** Reconciliation against actual provider billing, per-call latency and
-failure/partial status on the row, and prompt-version identity. Tests bind accounting to the
-test's own connection, so no service-level test can detect a reintroduced coupling — only the
-direct coverage in `tests/test_llm_log.py` can.
+**Implemented (second pass, branch `fix/tracker-repairs-and-next`) — latency beside cost.**
+The table could answer "what did we spend" and not "why did that turn feel slow". Those separate
+only with both numbers, and S64 names the mistake they prevent: during founder testing,
+attributing weak inference or latency to product design, or the reverse.
+
+Measured in `LLMClient`, not at the call sites. That is the single point every non-streaming
+provider call passes through, so no service has to remember to time anything and none can time a
+different span — the prompt build, the parse, the commit. It travels on `Usage` beside the
+tokens, so `log_llm_call` records it with no signature change and every existing caller gets it
+without being touched. Streaming stays NULL deliberately: a stream has no single end, and
+time-to-first-token and time-to-completion are different questions one column would blur.
+
+Migration 0043 is nullable and unbackfilled, for the reason `cost_usd` on this same table already
+established — NULL is unpriced, 0.0 is "ran locally and cost nothing", and collapsing them
+reported unpriced spend as free. Zero latency is the more flattering of the two lies: it claims
+an instantaneous call where there was only a missing measurement.
+
+**It surfaced a real aggregation bug.** `embed_in_batches` sums usage across batches, and the
+batches run *concurrently* — so summing their latencies would have reported more time than
+actually passed, by the concurrency factor, and in the flattering direction for the single
+operation whose slowness anyone would be investigating. The elapsed time of the whole batched
+call is measured instead. Six mutations, all killed, including backfilling the migration.
+
+**Not done.** Reconciliation against actual provider billing, failure/partial status on the row,
+and prompt-version identity. Latency for *streaming* calls is still unrecorded, and needs two
+measurements rather than one plus a decision about what a discarded partial reply costs (S51).
+Tests bind accounting to the test's own connection, so no service-level test can detect a
+reintroduced coupling — only the direct coverage in `tests/test_llm_log.py` can.
 
 **Evidence:** Unknown models are priced as zero. Embeddings return only vectors and lose usage. Curriculum generation discards usage; onboarding refinement does not persist it. Many logs occur after successful parsing/stream completion or inside transactions that can roll back after paid work.
 
