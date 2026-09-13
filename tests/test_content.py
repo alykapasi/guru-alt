@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_llm_client
 from app.llm import ModelRole
-from app.llm.registry import fake_llm_client
+from app.llm.registry import ModelSpec, fake_llm_client
 from app.main import app
 from app.models.content import ContentBlock, ContentType
 from app.models.knowledge import KC, Subject, Topic
@@ -225,3 +225,159 @@ async def test_get_kc_content_reads_cache(
 
     filtered = await api_client.get(f"{API}/content/kc/{kc.id}", params={"type": "wiki_brief"})
     assert filtered.json() == []  # only a lesson was generated
+
+
+# --- cache invalidation (S29) -----------------------------------------------
+#
+# The old key hashed the learner, the KCs, the block type and the grounding chunk *ids*. That
+# left the prompt text, the model, the KC's own wording and the chunks' text outside it — and
+# the consequence of leaving a determinant out is not a missed refresh but a permanently stale
+# block, served with no signal that anything changed. Each of these edits an input the old key
+# could not see and asserts the block is written again.
+
+
+async def _count_blocks(session: AsyncSession, kc: KC) -> int | None:
+    return await session.scalar(
+        select(func.count()).select_from(ContentBlock).where(ContentBlock.kc_ids.contains([kc.id]))
+    )
+
+
+async def test_editing_the_prompt_regenerates_rather_than_serving_the_old_wording(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failure this is built to stop: change how blocks are written, and every learner who
+    already has one keeps reading the version written under the old instructions."""
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+    await _seed_grounding(db_session, learner)
+
+    first = await svc.generate_block(
+        db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    monkeypatch.setitem(
+        svc._GUIDANCE, ContentType.LESSON, "a terse lesson, no worked examples at all"
+    )
+    second = await svc.generate_block(
+        db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    assert first.id != second.id
+    assert await _count_blocks(db_session, kc) == 2
+
+
+async def test_repointing_a_role_at_another_model_regenerates(db_session: AsyncSession) -> None:
+    """A block records the model that wrote it, but recording is not invalidating: without the
+    model in the key, an upgraded SMART tier keeps serving the previous model's writing."""
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+    await _seed_grounding(db_session, learner)
+
+    first = await svc.generate_block(
+        db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    upgraded = _client().with_roles({ModelRole.SMART: ModelSpec(provider="fake", model="fake-2")})
+    second = await svc.generate_block(
+        db_session, upgraded, learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    assert first.model == "fake-1"
+    assert second.model == "fake-2"
+    assert first.id != second.id
+
+
+async def test_retitling_the_kc_regenerates_even_with_the_same_grounding(
+    db_session: AsyncSession,
+) -> None:
+    """The KC's name and description are the learning objective in the prompt. Editing them
+    changes what was asked for while the grounding — all the old key could see — is untouched."""
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+    await _seed_grounding(db_session, learner)
+
+    first = await svc.generate_block(
+        db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    kc.description = "Explain ATP yield per glucose molecule, with the arithmetic shown."
+    await db_session.flush()
+    second = await svc.generate_block(
+        db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    assert first.id != second.id
+    assert await _count_blocks(db_session, kc) == 2
+
+
+async def test_a_chunk_rewritten_in_place_regenerates(db_session: AsyncSession) -> None:
+    """Keying on chunk ids assumed a chunk's text never changes under a stable id. Ingestion
+    replaces chunks today, so the assumption holds by accident rather than by rule — and an
+    edit that keeps the id is exactly the change a key made of ids cannot see."""
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+    a, _b = await _seed_grounding(db_session, learner)
+
+    first = await svc.generate_block(
+        db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    # Same chunk, same id, same embedding — only the text a prompt would carry is different.
+    a.text = f"{a.text}; corrected: they also buffer calcium"
+    await db_session.flush()
+    second = await svc.generate_block(
+        db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    assert first.id != second.id
+
+
+async def test_an_unchanged_request_still_reuses_its_block(db_session: AsyncSession) -> None:
+    """The counterweight. A key sensitive to everything is worthless if it is also unstable —
+    a cache that never hits is just a slower, costlier generator, so the property that the key
+    is a *function* of the request is worth pinning beside the invalidation cases."""
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+    await _seed_grounding(db_session, learner)
+
+    ids = set()
+    for _ in range(3):
+        block = await svc.generate_block(
+            db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+        )
+        ids.add(block.id)
+
+    assert len(ids) == 1
+    assert await _count_blocks(db_session, kc) == 1
+
+
+async def test_a_chunk_replaced_by_an_identical_one_does_not_keep_the_old_citation(
+    db_session: AsyncSession,
+) -> None:
+    """Re-ingestion deletes and recreates chunks, so identical text can arrive under a new id.
+
+    The prompts are then byte-identical and a key made only of them would hit — returning a
+    block whose ``citations`` name a chunk that no longer exists. The grounding ids are in the
+    key for this case alone, and this is the case.
+    """
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+    source = await _source(db_session, learner)
+    text = "mitochondria are the powerhouse of the cell"
+    old_chunk = await _chunk(db_session, source, text, 0)
+
+    first = await svc.generate_block(
+        db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+    assert [c["chunk_id"] for c in first.citations] == [str(old_chunk.id)]
+
+    await db_session.delete(old_chunk)
+    await db_session.flush()
+    new_chunk = await _chunk(db_session, source, text, 0)  # same words, new identity
+
+    second = await svc.generate_block(
+        db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    assert second.id != first.id
+    assert [c["chunk_id"] for c in second.citations] == [str(new_chunk.id)]
