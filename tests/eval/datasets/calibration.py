@@ -49,6 +49,21 @@ class CalibrationReport(BaseModel):
     n_recorded_predictions: int = 0
 
 
+class Attempt(BaseModel):
+    """One replayed step's *inputs*: the ability the estimator held, and what it was facing.
+
+    Distinct from the (predicted, actual) pair beside it, which is the estimator's output. The
+    difficulty instrument (S12) needs the input side — separating "this item was harder than
+    asked for" from "this learner was weaker than believed" is impossible without the ability
+    the model held at the time, and re-deriving it would mean walking the sequences a second
+    way (S56).
+    """
+
+    prior_ability: float
+    difficulty: float
+    score: float
+
+
 class Replay(BaseModel):
     """The raw output of one prequential pass, before anybody scores it.
 
@@ -60,6 +75,10 @@ class Replay(BaseModel):
 
     by_sequence: list[list[tuple[float, float]]]
     n_recorded_predictions: int
+    # The input side of every step, flat. Added rather than folded into ``by_sequence`` so the
+    # existing consumers of the pairs keep their shape; this is different information, not a
+    # different arrangement of the same information.
+    attempts: list[Attempt] = []
 
     @property
     def pairs(self) -> list[tuple[float, float]]:
@@ -74,6 +93,7 @@ def replay(dataset: CalibrationDataset, *, estimator: MasteryEstimator | None = 
     ignored. Left unset, each sequence is replayed under the estimator that produced it.
     """
     by_sequence: list[list[tuple[float, float]]] = []
+    attempts: list[Attempt] = []
     recorded = 0
     for seq in dataset.sequences:
         est = estimator or _estimator_for(seq)
@@ -81,6 +101,11 @@ def replay(dataset: CalibrationDataset, *, estimator: MasteryEstimator | None = 
         seq_pairs: list[tuple[float, float]] = []
         for step in seq.steps:
             decayed = est.decay(estimate, elapsed_days=step.elapsed_days or 0.0)
+            # Post-decay: the ability the estimator actually predicted from, not the one it
+            # held before time was accounted for.
+            attempts.append(
+                Attempt(prior_ability=decayed.ability, difficulty=step.difficulty, score=step.score)
+            )
             if estimator is None and step.predicted is not None:
                 predicted = step.predicted
                 recorded += 1
@@ -95,7 +120,7 @@ def replay(dataset: CalibrationDataset, *, estimator: MasteryEstimator | None = 
                 * (step.credit if step.credit is not None else 1.0),
             )
         by_sequence.append(seq_pairs)
-    return Replay(by_sequence=by_sequence, n_recorded_predictions=recorded)
+    return Replay(by_sequence=by_sequence, n_recorded_predictions=recorded, attempts=attempts)
 
 
 def score_tracer_calibration(

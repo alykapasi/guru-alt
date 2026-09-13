@@ -18,7 +18,7 @@ from pathlib import Path
 
 from tests.eval.datasets.calibration import replay
 from tests.eval.datasets.models import CalibrationDataset
-from tests.eval.reliability import agreement, metrics
+from tests.eval.reliability import agreement, difficulty, metrics
 
 DEFAULT_DATASET = Path(__file__).resolve().parents[1] / "datasets" / "tracer-calibration.json"
 
@@ -82,6 +82,55 @@ def render_agreement(a: agreement.Agreement | None, *, against: str) -> str:
             "  agreement of 1.000 there means no judgement was exercised, not that two judges",
             "  concurred.",
         ]
+    return "\n".join(lines) + "\n"
+
+
+def render_difficulty(g: difficulty.GeneratorCalibration | None) -> str:
+    """Requested difficulty against what the answers say it was worth (S12)."""
+    if g is None:
+        return "Generator difficulty\n  nothing to score\n"
+    lines = [
+        "Generator difficulty",
+        f"  attempts          {g.n}  ({g.n_scored} in bands large enough to solve)",
+        "",
+        "  requested        n   asked    delivered    drift",
+    ]
+    for b in g.bands:
+        if b.realised is None:
+            got, drift = "     —", "  too few"
+        elif b.saturated:
+            got, drift = f"{b.realised:+.2f}*", " saturated"
+        else:
+            got, drift = f"{b.realised:+.2f} ", f"{b.drift:+.3f}"
+        lines.append(
+            f"  {b.lo:+.1f}-{b.hi:+.1f} {b.n:>5}  {b.mean_requested:+.2f}      {got}   {drift}"
+        )
+    lines.append("")
+    if g.mean_absolute_drift is not None:
+        lines.append(f"  mean |drift|      {g.mean_absolute_drift:.3f}  logits, n-weighted")
+    if not g.usable:
+        lines += [
+            "",
+            "  Too few populated bands to describe the map; this is one band, not a curve.",
+        ]
+    elif not g.monotonic:
+        lines += [
+            "",
+            "  NOT MONOTONIC — asking for a harder item did not produce a harder one. The",
+            "  stored difficulty is not merely miscalibrated in magnitude; it is not ordering",
+            "  the requests, which is the weakest thing the label has to do to be worth having.",
+        ]
+    lines += [
+        "",
+        "  * saturated: every answer in the band went one way, so the data gives a direction",
+        "    and no magnitude.",
+        "  Abilities come from an estimator that assumed these difficulties were right, so a",
+        "  drift here is the residual it could not absorb — evidence of miscalibration when",
+        "  present, weaker evidence of calibration when absent. Expect drift to fall as",
+        "  requested difficulty rises even from a perfect generator: the estimator absorbs",
+        "  part of each item's difficulty into the learner's ability, which shrinks both ends",
+        "  toward the middle. Read the drift against another run, not against zero.",
+    ]
     return "\n".join(lines) + "\n"
 
 
