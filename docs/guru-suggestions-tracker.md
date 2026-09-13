@@ -2657,8 +2657,8 @@ and wiring it through `run_cell`. Prompt-version identity is not yet recorded.
 
 ### S58 — Expand CI to cover the delivered product and actual failure boundaries
 
-**Status:** Partially implemented (`36c16e5`, branch `fix/tracker-s54-s38`; extended on branch
-`feat/s21-s58-s60`) · **Priority:** Before release
+**Status:** Partially implemented (`36c16e5`, branch `fix/tracker-s54-s38`; extended on branches
+`feat/s21-s58-s60` and `ci/modular-gates`) · **Priority:** Before release
 
 **Implemented:** Three gates that were missing entirely.
 
@@ -2741,6 +2741,44 @@ a control on the harness itself — not migrating the scratch database at all, w
 every case that claims to seed an older revision. The `server_default` mutation is worth a
 note: the *first* attempt at it silently did not apply (a `sed` pattern that did not match),
 and reported as a survivor. Checking that a mutation applied is part of the result.
+
+**Implemented (third pass, branch `ci/modular-gates`) — one gate per job.** CI ran three jobs
+and two of them bundled several gates each. A job stops at its first failing step, so
+`lint · type-check · test · migrate` could report only one of its four gates per run and hid the
+other three behind whichever failed first: a red check said that one of four things was wrong,
+and finding the second cost another full cycle. Nine jobs now, one gate each — `lint` (ruff
+format and check together, since both are fixed by running `poe format`), `type-check`, `test`,
+`migrations`, `api contract`, `frontend lint`, `frontend test`, `frontend build` — plus a `CI`
+job that is green only when all eight are.
+
+Two consequences beyond the failure message. Postgres starts only for `test` and `migrations`;
+the pgvector service was previously raised for every run, including ones whose only work was
+ruff. And `type-check` now returns in 12 seconds instead of queueing behind a database and a
+test suite. Wall-clock is *not* the win, and the PR says so: measured 2m11s against 2m05s,
+because `test` takes 120s, dominates everything, and already ran in parallel with the frontend
+job. Billed minutes roughly double; the repository is public, so they are free.
+
+Shared setup moved into composite actions (`.github/actions/setup-backend`, `setup-frontend`),
+because GitHub Actions has no YAML anchors and the alternative was eight copies of the toolchain
+block. `services` is job-level and cannot live in one, so the Postgres block is written twice —
+in exactly the two jobs that use it. The frontend composite pins `npm ci` to `frontend/`
+explicitly: a job's `defaults.run.working-directory` does not reach inside a composite action,
+so inheriting it would have installed at the repository root.
+
+Two details that would otherwise have failed quietly. Job ids containing hyphens are
+dereferenced as `needs['type-check'].result`, because the dot form risks parsing the hyphen as
+subtraction and degrading to an empty string rather than erroring — a summary table that renders
+blank while still reporting success. And the `CI` job treats `skipped` as a failure alongside
+`failure` and `cancelled`, because an un-run gate is not a passed one.
+
+**Not done in this pass.** The split changes which job reports a failure; it adds no coverage.
+Every gap listed below is untouched — no browser journey, no queue integration, no fault
+injection. More pointedly: `main` carries **no branch protection and no rulesets**, so none of
+these checks is *required*. The `CI` job exists to make requiring one a one-line change, but
+that line has not been written, and nothing today stops a merge over a red gate. The same pass
+saw a run sit `queued` with zero jobs for nine hours while both cancel endpoints refused it with
+contradictory errors — a wedged run that never reached a runner, and which an unenforced check
+makes indistinguishable from a passing one to anyone not reading the list.
 
 **Still open:** browser/e2e journeys — the upload→curriculum→chat→practice→notes path in a real
 browser is still unwritten, and it is now the largest single gap here. Queue *integration*: the
