@@ -1396,6 +1396,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-12 | Eleventh pass, branch `feat/residue-pass` (stacked on `feat/finish-partials-1`, PRs #26 and #27 still open): the whole of the tracker's "residue" section, taken in one pass — S09 twice (`d9d24ed`, `30dad3e`), S11 (`40c57c1`), S15 twice (`829d940`, `1212249`), S17 (`675b3e1`), S16 (`091f4b8`), S14 (`8f03d33`) and S21 (`115bb10`). `uv run poe check` green (1342 passed, 4 skipped); `npm run lint`, `npm run test` (51) and `npm run build` green; `poe api-contract` and `poe db-check` green. Migrations `0040` and `0041`. 45 mutations across nine commits; all killed, four of them only after the tests were fixed. **One recorded gap turned out to be wrong, and saying so is the main result.** "MCQ is the default generated type, so most attempts produce no diagnosis" was written from the code's shape rather than its call graph: there are exactly three generation call sites, neither of the two flows a learner practises in is an MCQ one, and `next_item` — the function that would have reached the MCQ fallback most often — **has had no caller outside its own tests since Phase 5**. The diagnosis-free attempts were never mostly MCQs; they are self-rated flashcards on the review queue, which is a different problem with a different fix, and implementing what was written down would have moved almost nothing. **Three mutations in three separate commits found the same class of hole**: a shared function covered directly and its call site not covered at all — the review escalation, guided practice's half of report persistence, and the resume path's revalidation. It is now the most reliable defect this project produces, and reading the tests does not find it. **Two existing gates earned their keep unprompted**: `poe api-contract` caught a commit that edited a response docstring without regenerating `schema.d.ts` (so that commit would have failed CI), and S61's retention map refused the build until somebody decided what deleting an account does to a password-reset token. **One finding recorded rather than fixed**: both LangGraph graphs key their checkpoint thread on the bare conversation id, so the refinement gate and the practice loop share one state slot — currently unreachable in a damaging way, and namespacing it would orphan every checkpoint in flight, which is exactly what S17 existed to stop. Also two flake sightings, both order-dependent and both green on re-run: `test_retrieval_eval_gate` again (S76), and `test_another_learners_exposure_does_not_move_this_one`, which failed once in a full run and passed in isolation and in two subsequent full runs. |
 | 2026-09-12 | Twelfth pass, branch `feat/s23-s62` (off merged `main`, after PRs #26–#31 landed the previous two passes): S23 (`0e64b4d`) and S62 (`3b1d00f`), plus one fix with no tracker id (`09529c0`). Both were picked for being small — no migration, no new dependency, each reusing logic already tested. `uv run poe check` green (1358 passed, 4 skipped); `npm run lint`, `npm run test` (56) and `npm run build` green; `poe api-contract` and `poe db-check` green. 10 mutations, all applied and all killed. **The first draft of S23's own comment was wrong and a test caught it.** It claimed a cross-subject ring would be reported; `list_edges_for_subject` loads only edges whose *dependent* is in the subject, so every node of a reportable ring is necessarily inside it and such a ring never reaches the edge set at all. The comment was corrected and the test rewritten to pin the real boundary rather than relaxed to pass — and the boundary is not a lost case, since planning loads the same set. **A gate was found broken by verifying, not by reviewing.** An end-to-end run started the app, the durable checkpointer created its own tables (S17), and `poe db-check` then reported four tables and three indexes to drop — on any database the app had actually run against, for a developer who had changed nothing. The noise was the smaller half: the migration autogenerate would write from it drops every paused conversation's state, which is what S17 exists to keep. Filtered by name rather than by prefix, so a real table of ours starting with `checkpoint` is not silently swallowed too. **The transaction-clock finding appeared for the third time** (after S56 and S14), now as a pagination cursor: `created_at` ties across a turn's messages, so the cursor is `(created_at, id)`. Also fixed here: six rows of this very table had been concatenated with `||` since the fifth pass, so the last six passes did not render as rows at all. Not recorded in the tracker at the time of the pass — this row and both entries were written afterwards, which is the process gap worth noting. |
 | 2026-09-13 | **O01 and O04 answered by the user**; no code changed. O01: the first cohort is well-educated adults in senior positions or complex knowledge work, with the subject domain deliberately unrestricted. That answer removes a method rather than unblocking one — with arbitrary subjects and a cohort this size, no two learners will ever answer the same item, so classical item calibration is not available at any cohort size this audience supports. S12 and S18 are rewritten against the generator-level route (calibrate the mapping from requested to realised difficulty across all items, which share a prompt even when they share no learner); two further routes are recorded beside it. O04: **calibration first** — establish reliability (estimator calibration, then grading agreement) before validity, because every outcome measurement is expressed in the estimator's numbers and a miscalibrated one makes them uninterpretable rather than noisy, and because calibration works at N=5 while the designs that establish effect do not. S59 moves to **First**, is no longer blocked, and now carries the chosen design plus the three deferred ones. No thresholds set: "calibrated enough to ship" is left unchosen on purpose, since picking it before the first reliability curve would be the guess S59 exists to stop. |
+| 2026-09-13 | Thirteenth pass, same branch as the decisions above: **S59's first slice built** (`c03e705`) — `tests/eval/reliability/`, run as `poe reliability-report`. `uv run poe check` green (1387 passed, 4 skipped); `poe db-check` and `poe api-contract` green. No migrations, no production code changed, no new dependency. 14 mutations, all applied and all killed. **The module is shaped around the fact that calibration alone is a flattering measure.** A forecaster that ignores the learner and always predicts the base rate is perfectly calibrated and useless, so a report leading with calibration error would call it excellent; the Murphy decomposition and a skill score against exactly that forecaster are therefore the headline, and where skill is at or below zero the report says so in words rather than only in a number. The same shape governs the grading half: raw agreement is the flattering number and kappa is the one the report points at. **Three mutations survived the first round and all three were gaps in the tests, not the code** — unweighted versus n-weighted calibration error, an unsigned bucket gap (which would say a band is miscalibrated without saying which way), and the binarising threshold's boundary case. **What was built is an instrument, not a reading**, and S59 now says so: it has been exercised only on synthetic sequences, where the generator matches the model and a high skill score is a property of the fixture; the mined dataset on this machine holds zero sequences, so the estimator has still never been scored on real learner history. Also a third sighting of the order-dependent flake first recorded in the eleventh pass — `test_another_learners_exposure_does_not_move_this_one` failed once in a full run, then passed in isolation and in a second full run; `tests/test_item_exposure.py` imports nothing from `tests/eval`, so this pass cannot reach it. |
 
 ## Remaining architecture autopsy — source pass
 
@@ -2798,7 +2799,7 @@ but it means they cannot run concurrently with each other either.
 
 ### S59 — Separate software correctness, model quality, and educational effectiveness gates
 
-**Status:** Proposed · **Priority:** First — unblocked by O04
+**Status:** Partially implemented (branch `docs/o01-o04-answered`) · **Priority:** First
 
 **Unblocked 2026-09-13 (O04): reliability before validity.** This entry was the only one that
 could say whether the product teaches, and it was waiting on a study design. The design is now
@@ -2832,9 +2833,46 @@ small N, at the cost of knowingly teaching some components worse); and **expert-
 tasks** (can they now do real work they could not before — the most externally valid, the most
 expensive, and the one this audience would actually believe).
 
-**Not started.** Nothing above is built. No thresholds are set either: "calibrated enough to
-ship" is a number nobody has chosen, and choosing it before seeing the first reliability curve
-would be the same guess this entry exists to stop.
+**Implemented — the reliability instrument, not yet a reading.** `tests/eval/reliability/`, run
+as `uv run poe reliability-report`. The calibration half needs no model and no network: it
+replays a mined dataset through the production estimator and scores what was claimed against
+what happened.
+
+The design problem it is shaped around is that *calibration alone is a flattering measure*. A
+forecaster that ignores the learner and always predicts the base rate is perfectly calibrated
+and worthless — it says the same thing about a mastered component and an unseen one — so a
+report leading with calibration error would call it excellent. The Murphy decomposition splits
+the Brier score into reliability (are the numbers honest), resolution (do they say anything) and
+uncertainty (what the do-nothing forecaster scores), and the **skill score against that
+forecaster is the headline**. Where skill is at or below zero the report says so in words.
+
+Two smaller honesty points are built in rather than left to the reader. Outcomes here are partial
+credit, not binary, so "Brier" is used in its mean-squared-error sense and `--binarise-at` gives
+the correctness reading explicitly instead of letting one silently stand for the other. An empty
+band is omitted rather than zero-filled, because reporting it as zero error would improve every
+average it entered.
+
+The grading half compares two graders before and after correcting for chance. Raw agreement is
+the number that looks best and means least — two graders who pass everything agree 100% of the
+time while exercising no judgement — so kappa is what the report points at, and where kappa is
+undefined it says why instead of printing 1.000.
+
+`datasets/calibration.py` grew a shared `replay()` so that scoring the same replay a second way
+cannot come to mean replaying it a second way.
+
+**Not done — and the gap is the whole point of the entry.** There is no *reading*. The
+instrument has been exercised on synthetic sequences, where the generator matches the model and
+a high skill score is a property of the fixture rather than a finding about production; the
+mined dataset on this machine holds zero sequences, so the estimator has never actually been
+scored on real learner history. Nothing runs it on a schedule, nothing gates a release on it,
+and the grading half has not been run at all — it needs paid calls, and the grader-versus-grader
+comparison (as opposed to grader-versus-the-ten-golden-labels) needs a second prompt that does
+not exist yet.
+
+No thresholds are set either: "calibrated enough to ship" is a number nobody has chosen, and
+choosing it before seeing the first real reliability curve would be the same guess this entry
+exists to stop. The deferred designs above remain deferred; none of this establishes that the
+product teaches, which is by construction.
 
 **Evidence:** Existing tests and suites cover useful mechanics and model task scores, but the reviewed release workflow does not establish durable independent learner gains. Model-scored event labels can reproduce the model's errors.
 
