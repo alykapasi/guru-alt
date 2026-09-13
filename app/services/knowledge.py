@@ -415,6 +415,35 @@ async def add_prerequisite(
     return edge
 
 
+async def remove_prerequisite(
+    session: AsyncSession, *, kc_id: uuid.UUID, prereq_kc_id: uuid.UUID
+) -> bool:
+    """Delete one prerequisite edge. Returns whether there was one to delete (S23).
+
+    The repair path the conflict report had no counterpart for. Reporting a cycle without a way
+    to act on it leaves the bad edge in the database and the ordering unjustified for as long
+    as anyone takes to open a psql prompt.
+
+    **Removal needs no cycle check, and that asymmetry is the point.** Deleting an edge removes
+    a constraint, and removing constraints cannot create a cycle — so this is always safe in a
+    way that adding an edge is not. It is also why the system offers removal and not repair: it
+    can delete an edge a *person* names, and it cannot choose which edge of a cycle is the
+    wrong one, because a cycle means two components each claim to come first and the graph does
+    not know which claim is mistaken.
+
+    Idempotent: deleting an edge that is not there is not an error, so a client retrying after
+    a dropped response gets the same answer as one that succeeded.
+    """
+    edge = await session.scalar(
+        select(KCEdge).where(KCEdge.kc_id == kc_id, KCEdge.prereq_kc_id == prereq_kc_id)
+    )
+    if edge is None:
+        return False
+    await session.delete(edge)
+    await session.commit()
+    return True
+
+
 async def list_prerequisites(session: AsyncSession, kc_id: uuid.UUID) -> Sequence[KCEdge]:
     """This KC's direct prerequisites, in declaration order.
 

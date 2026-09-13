@@ -131,6 +131,27 @@ async def subject_prerequisite_conflicts(
     return await svc.sacrificed_prerequisites(session, subject_id)
 
 
+@router.delete("/kcs/{kc_id}/prerequisites/{prereq_kc_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_prerequisite(
+    kc_id: uuid.UUID,
+    prereq_kc_id: uuid.UUID,
+    session: SessionDep,
+    _: CurrentLearner,
+):
+    """Remove one prerequisite edge — the repair path for a graph a plan could not honour.
+
+    The conflict endpoint above reports which edges a plan had to sacrifice and deliberately
+    changes nothing, because a cycle means two components each claim to come first and which
+    claim is wrong is not something the graph knows. This is how a person acts on that report.
+
+    404 only when the edge does not exist *and* neither does the KC — deleting an edge that is
+    already gone succeeds, so a retried request behaves like the one that got through.
+    """
+    if await svc.get_kc(session, kc_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "kc not found")
+    await svc.remove_prerequisite(session, kc_id=kc_id, prereq_kc_id=prereq_kc_id)
+
+
 @router.get("/subjects/{subject_id}/coverage", response_model=list[KCCoverageRead])
 async def subject_coverage(subject_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
     """Which KCs in this subject the learner's own library actually covers.

@@ -550,6 +550,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/kcs/{kc_id}/prerequisites/{prereq_kc_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Prerequisite
+         * @description Remove one prerequisite edge — the repair path for a graph a plan could not honour.
+         *
+         *     The conflict endpoint above reports which edges a plan had to sacrifice and deliberately
+         *     changes nothing, because a cycle means two components each claim to come first and which
+         *     claim is wrong is not something the graph knows. This is how a person acts on that report.
+         *
+         *     404 only when the edge does not exist *and* neither does the KC — deleting an edge that is
+         *     already gone succeeds, so a retried request behaves like the one that got through.
+         */
+        delete: operations["remove_prerequisite_api_v1_kcs__kc_id__prerequisites__prereq_kc_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me": {
         parameters: {
             query?: never;
@@ -3790,6 +3817,36 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["PrerequisiteRead"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_prerequisite_api_v1_kcs__kc_id__prerequisites__prereq_kc_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kc_id: string;
+                prereq_kc_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

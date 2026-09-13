@@ -27,7 +27,7 @@ from app.core import db as core_db
 from app.core.config import Settings
 from app.llm.registry import fake_llm_client
 from app.main import app
-from app.models.knowledge import KC, Subject, Topic
+from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearningEvent
 from app.models.source import Source, SourceKind, SourceStatus
@@ -234,3 +234,49 @@ async def test_revoking_a_session_is_seen_by_a_connection_that_already_used_it(
         assert await auth.revoke_all(session, live_learner.id) == 1
 
     assert (await live_client.get(f"{API}/auth/me")).status_code == 401
+
+
+# --- removing a prerequisite actually persists (S23) -------------------------------------------
+
+
+async def _seed_edge(engine: AsyncEngine) -> tuple[Subject, KC, KC]:
+    """A committed two-KC graph with one prerequisite edge between them."""
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Ordering")
+        session.add(subject)
+        await session.flush()
+        topic = Topic(subject_id=subject.id, slug=f"t-{uuid.uuid4().hex[:8]}", name="Edges")
+        session.add(topic)
+        await session.flush()
+        prereq = KC(topic_id=topic.id, slug=f"k-{uuid.uuid4().hex[:8]}", name="Comes first")
+        dependent = KC(topic_id=topic.id, slug=f"k-{uuid.uuid4().hex[:8]}", name="Comes second")
+        session.add_all([prereq, dependent])
+        await session.flush()
+        session.add(KCEdge(kc_id=dependent.id, prereq_kc_id=prereq.id, weight=1.0))
+        await session.commit()
+    return subject, prereq, dependent
+
+
+async def test_removing_a_prerequisite_survives_the_request_that_removed_it(
+    live_client: AsyncClient, engine: AsyncEngine
+) -> None:
+    """The shared-session suite cannot ask this. Every other test for removal runs inside one
+    transaction that is rolled back, so a service that deleted the row and never committed
+    would look identical to one that did — right up to production, where the request's session
+    closes without committing and the edge the operator removed is still there.
+
+    S23's whole point is acting on a reported conflict; an act that does not persist is not one.
+    """
+    subject, prereq, dependent = await _seed_edge(engine)
+    try:
+        removed = await live_client.delete(f"{API}/kcs/{dependent.id}/prerequisites/{prereq.id}")
+
+        assert removed.status_code == 204
+        # A different connection entirely — the only way to tell a commit from a flush.
+        async with AsyncSession(engine) as session:
+            left = await session.scalar(
+                select(func.count()).select_from(KCEdge).where(KCEdge.kc_id == dependent.id)
+            )
+        assert left == 0, "the edge came back after the request that deleted it"
+    finally:
+        await _drop_subject(engine, subject)

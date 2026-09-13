@@ -314,3 +314,100 @@ async def test_the_endpoint_404s_on_a_subject_that_does_not_exist(
 ) -> None:
     r = await api_client.get(f"{API}/subjects/{uuid.uuid4()}/prerequisite-conflicts")
     assert r.status_code == 404
+
+
+# --- acting on the report (S23) -----------------------------------------------
+
+
+async def test_removing_the_reported_edge_clears_the_conflict(db_session: AsyncSession) -> None:
+    """The whole point of reporting it. Until now the conflict endpoint named an edge and
+    nothing could act on the name, so the bad edge stayed and the ordering stayed unjustified
+    for as long as it took somebody to open a psql prompt.
+    """
+    subject, (a, b, c) = await _graph(db_session, 3)
+    await _edges(db_session, [(a, b), (b, c), (c, a)])
+    (reported,) = await knowledge_svc.sacrificed_prerequisites(db_session, subject.id)
+
+    removed = await knowledge_svc.remove_prerequisite(
+        db_session, kc_id=reported.kc_id, prereq_kc_id=reported.prereq_kc_id
+    )
+
+    assert removed
+    assert await knowledge_svc.sacrificed_prerequisites(db_session, subject.id) == []
+
+
+async def test_removing_an_edge_that_is_already_gone_is_not_an_error(
+    db_session: AsyncSession,
+) -> None:
+    """Idempotent, so a client retrying after a dropped response gets the same answer as one
+    whose request got through."""
+    _subject, (a, b) = await _graph(db_session, 2)
+    await _edges(db_session, [(a, b)])
+
+    assert await knowledge_svc.remove_prerequisite(db_session, kc_id=b.id, prereq_kc_id=a.id)
+    assert not await knowledge_svc.remove_prerequisite(db_session, kc_id=b.id, prereq_kc_id=a.id)
+
+
+async def test_removal_takes_out_one_edge_and_leaves_the_rest_of_the_ring(
+    db_session: AsyncSession,
+) -> None:
+    """A cycle means two components each claim to come first, and the graph does not know which
+    claim is wrong — so removal deletes exactly the edge it was given and nothing else. The
+    system repairs what a person names; it does not choose."""
+    subject, (a, b, c) = await _graph(db_session, 3)
+    await _edges(db_session, [(a, b), (b, c), (c, a)])
+
+    await knowledge_svc.remove_prerequisite(db_session, kc_id=b.id, prereq_kc_id=a.id)
+
+    remaining = {
+        (e.prereq_kc_id, e.kc_id)
+        for e in await knowledge_svc.list_edges_for_subject(db_session, subject.id)
+    }
+    assert remaining == {(b.id, c.id), (c.id, a.id)}
+
+
+async def test_removal_takes_the_named_prerequisite_and_not_the_others(
+    db_session: AsyncSession,
+) -> None:
+    """A component usually has more than one prerequisite, and the edge is identified by the
+    *pair*. Deleting by dependent alone would take out every prerequisite a component has when
+    a caller asked to drop one of them — and the caller would see the success they asked for.
+    """
+    _subject, (a, b, c) = await _graph(db_session, 3)
+    await _edges(db_session, [(a, c), (b, c)])  # c depends on both a and b
+
+    # The *second* edge, deliberately. Matching on the dependent alone takes the first row it
+    # finds, which would be the right one here by luck — asking for the other one is what makes
+    # the wrong query produce the wrong answer.
+    removed = await knowledge_svc.remove_prerequisite(db_session, kc_id=c.id, prereq_kc_id=b.id)
+
+    assert removed
+    remaining = [
+        (e.prereq_kc_id, e.kc_id) for e in await knowledge_svc.list_prerequisites(db_session, c.id)
+    ]
+    assert remaining == [(a.id, c.id)], "a is still a prerequisite of c; only b was named"
+
+
+async def test_removing_an_edge_cannot_introduce_a_cycle(db_session: AsyncSession) -> None:
+    """The asymmetry that makes removal safe where addition is not: deleting an edge removes a
+    constraint, and removing constraints cannot close a loop. That is why there is no cycle
+    check on this path and why it needs none."""
+    subject, (a, b, c) = await _graph(db_session, 3)
+    await _edges(db_session, [(a, b), (b, c)])
+
+    await knowledge_svc.remove_prerequisite(db_session, kc_id=c.id, prereq_kc_id=b.id)
+
+    assert await knowledge_svc.sacrificed_prerequisites(db_session, subject.id) == []
+
+
+async def test_the_removal_endpoint_is_reachable_and_404s_on_an_unknown_kc(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    _subject, (a, b) = await _graph(db_session, 2)
+    await _edges(db_session, [(a, b)])
+
+    ok = await api_client.delete(f"{API}/kcs/{b.id}/prerequisites/{a.id}")
+    missing = await api_client.delete(f"{API}/kcs/{uuid.uuid4()}/prerequisites/{a.id}")
+
+    assert ok.status_code == 204
+    assert missing.status_code == 404
