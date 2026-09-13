@@ -65,7 +65,7 @@ ML is a concrete review scenario, not an agreed permanent subject boundary or la
 | S15 | Connect exploratory conversation to structured learning evidence through a deliberate assessment mechanism. | Plain chat can ask questions, but its conversational answers do not directly update mastery. [R9] | Make the initial learner-led experience contribute trustworthy evidence without treating all conversation as proof of mastery. | High | Implemented (see below) |
 | S16 | Share appropriate learner context and learning-state access across chat, agentic, and guided modes. | Plain chat injects memory and plan hints; agentic service does not inject those same contexts. [R9–R10] | Switching modes retains relevant understanding of the learner and their goal. | High | Implemented (see below) |
 | S17 | Persist resumable guided-practice state durably. | Workflow uses an in-memory checkpointer. [R7] | A restart does not lose the paused practice state needed to continue correctly. | Before reliable external use | Implemented (see below) |
-| S18 | Calibrate mastery, placement, and scaffolding heuristics against real evidence. | Placement mappings, completion thresholds, and profile-to-scaffolding thresholds are explicitly described as arbitrary or uncalibrated. [R1, R5, R11] | Progress estimates and teaching choices correspond to demonstrated capability. | High; requires data | Accepted |
+| S18 | Calibrate mastery, placement, and scaffolding heuristics against real evidence. | Placement mappings, completion thresholds, and profile-to-scaffolding thresholds are explicitly described as arbitrary or uncalibrated. [R1, R5, R11] Thirteen closed items have since added more of them. **Item difficulty specifically can no longer be calibrated from shared items** (O01) — the generator-level route replaces it. | Progress estimates and teaching choices correspond to demonstrated capability. | High; design settled by O04, still requires data | Accepted |
 | S19 | Retain the useful existing foundations while improving the teaching loop. | Pure estimation logic, persistent per-component state, event logging, prerequisite planning, and provider abstraction already exist. | Improve the behavior incrementally using existing boundaries. | Ongoing | Accepted |
 | S20 | Synchronize documentation with implementation and the clarified mission. | README describes the frontend as future work; roadmap labels the experiment suite not started despite tooling being present. Audience guidance also needs the nuance agreed here. | Future reviews and implementation plans start from an accurate description. | Supporting | Accepted |
 | S21 | Replace the development identity stub before real multi-user access; review production readiness separately. | The inspected auth dependency resolves a single dev learner. [R12] | Real learner identity and tested authorization boundaries before independent user access. | Before external multi-user use | Implemented (see below) |
@@ -982,6 +982,19 @@ Two targets coexist; removing the stored one touches persisted plan JSON and pla
 it was left. Content generation (explanations, worked examples) is still not pitched at all —
 only items are.
 
+**O01 answered (2026-09-13) — the blocker changed shape rather than lifting.** This entry assumed
+item difficulty would eventually be calibrated the ordinary way: many learners answering the same
+item, so that a hard question can be told from a weak answer. The first cohort studies whatever
+it likes, so that evidence will never accumulate — items are shared globally, but two learners
+with different subjects never meet one, at any cohort size this audience supports.
+
+What replaces it is generator-level calibration. Every generated item comes from one prompt
+asking for difficulty *D*, so the mapping from requested to realised difficulty is measurable
+across all items at once, and a stored `difficulty` can be corrected by that mapping without any
+item ever being answered twice. It is a different piece of work from the one described above, it
+is not built, and it waits on S59's calibration slice — it is the same question asked of a
+different number.
+
 ### S14 — Select fresh items with awareness of exposure, and check retention and transfer
 
 **Status:** Partially implemented (branch `feat/s22-s14`; extended on branch
@@ -1290,12 +1303,34 @@ started.
 
 | ID | Question | Current position |
 | --- | --- | --- |
-| O01 | Who exactly are the first users, and in which subject or task? | Audience characteristics agreed; recruitment cohort and first domain remain open. |
+| O01 | Who exactly are the first users, and in which subject or task? | **Answered 2026-09-13.** Adults who are well educated and either in very senior positions or in complex knowledge work. **The domain is deliberately unrestricted** — letting them study anything is the point of the product, so no first subject will be chosen. See the note below on what this forecloses. |
 | O02 | Are initial users primarily a closely involved test cohort, paying customers, or both? | Sustainable revenue matters; cohort arrangement and pricing remain open. |
 | O03 | Which independent capabilities define the first successful experience? | ML theory and forgotten linear algebra provide a reference case; acceptance criteria not yet chosen. |
-| O04 | How will learning gains, retention, transfer, grading reliability, and cost be measured? | Need identified; study design, baselines, and thresholds remain open. |
+| O04 | How will learning gains, retention, transfer, grading reliability, and cost be measured? | **Answered 2026-09-13 — calibration first.** Establish *reliability* before *validity*: does a 70% prediction come true about 70% of the time, and do two graders agree? Thresholds still to be set, and the later designs (delayed unassisted probe, within-learner KC randomisation, expert-rated transfer) are deferred rather than rejected — see S59. |
 | O05 | What eventually funds free access? | Individual payments, institutions, sponsorship, or combinations remain possibilities, not commitments. |
 | O06 | Build an LMS or integrate with existing institutional systems? | Deferred until institutional requirements are understood. |
+
+**What O01's answer forecloses, and what replaces it.** An unrestricted domain means the first
+cohort will not overlap on items. The bank is global, so items *can* be shared — but with
+arbitrary subjects and a cohort of perhaps five to twenty people, no two learners will ever meet
+the same question. That removes classical item calibration outright: separating "this item is
+hard" from "this learner is weak" is done by many learners answering *one item*, and that
+evidence will not exist at any cohort size this audience supports.
+
+This is a constraint on method, not a reason to narrow the domain. Three routes survive it, and
+S12 and S18 are written against the first:
+
+1. **Calibrate the generator, not the item.** Every generated item comes from one prompt asking
+   for difficulty *D*. The mapping from requested to realised difficulty can be measured across
+   thousands of items spanning every subject, because they share a generator even when they
+   share no learner. This is the cheapest route and the one the existing pipeline already
+   supports.
+2. **Calibrate item *features*, not identities** — type, stem length, KC depth, reasoning steps —
+   fitting weights globally so an unseen item gets a predicted difficulty. The explanatory-IRT
+   route; more powerful, and needs a feature schema that does not exist yet.
+3. **A domain-general anchor set** every learner answers regardless of subject, giving a common
+   scale to link otherwise disjoint estimates. The only route that recovers a shared scale, and
+   the only one that costs the learner time on something they did not ask to study.
 
 ## Evidence and review limits
 
@@ -1360,6 +1395,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-12 | Tenth pass, branch `feat/finish-partials-1` (stacked on `feat/s21-s58-s60`, PR #26): finishing recorded gaps rather than taking new items — S15 (`1d8f723`), S09 and S10 (`b246339`), S11 (`84f1a32`) and S14 (`9e579a1`). `uv run poe check` green (1257 passed, 4 skipped); `npm run lint`, `npm run test` (42) and `npm run build` green. No migrations. **The theme is that four items had produced evidence nothing showed anybody.** S15's recorded clause was one sentence and the gap was larger: the grade never left the server at all — `TurnEvent` carried tokens, an item and citations, and no result — so a conversational answer moved the ability estimate, rescheduled the card and revised the plan with the tutor's next paragraph as the only evidence any of it had happened. **Guided practice turned out never to have consumed S09 or S10 at all**: it graded an answer, stored a failure kind, and handed the tutor a bare score, so the flow most attempts happen in made the least of the evidence the grader produced. Both flows now build the teaching instruction and the learner-facing report through one module each, because plain chat and guided practice describing one mistake two ways is the defect S16 fixed for learner context arriving in a second place. Three things worth recording. **A scripted edit silently did not apply** — the pattern did not match, the script printed success, and the workflow was unchanged; caught only by reading the file afterwards, which is the same lesson as the ninth pass's unapplied mutation, and every replace in this pass asserts now. **A mutation survived because the tests tested the wrong layer**: the shared feedback module was covered directly and the graph wiring that carries its output was not, so renaming the state key made `respond` fall back to a bare score with nothing failing. **A stray `app/services/assessment.py.bak` was found committed** in the ninth pass (`d8089ca`, swept up by `git add -A` after an interrupted mutation run); removed on PR #26's branch so it never reaches `main`, and `*.bak` is now ignored. Also a fresh S76 sighting: the retrieval eval gate failed once in a full-suite run and passed in isolation, on the parent commit, and on a re-run — still order-dependent and unexplained. |
 | 2026-09-12 | Eleventh pass, branch `feat/residue-pass` (stacked on `feat/finish-partials-1`, PRs #26 and #27 still open): the whole of the tracker's "residue" section, taken in one pass — S09 twice (`d9d24ed`, `30dad3e`), S11 (`40c57c1`), S15 twice (`829d940`, `1212249`), S17 (`675b3e1`), S16 (`091f4b8`), S14 (`8f03d33`) and S21 (`115bb10`). `uv run poe check` green (1342 passed, 4 skipped); `npm run lint`, `npm run test` (51) and `npm run build` green; `poe api-contract` and `poe db-check` green. Migrations `0040` and `0041`. 45 mutations across nine commits; all killed, four of them only after the tests were fixed. **One recorded gap turned out to be wrong, and saying so is the main result.** "MCQ is the default generated type, so most attempts produce no diagnosis" was written from the code's shape rather than its call graph: there are exactly three generation call sites, neither of the two flows a learner practises in is an MCQ one, and `next_item` — the function that would have reached the MCQ fallback most often — **has had no caller outside its own tests since Phase 5**. The diagnosis-free attempts were never mostly MCQs; they are self-rated flashcards on the review queue, which is a different problem with a different fix, and implementing what was written down would have moved almost nothing. **Three mutations in three separate commits found the same class of hole**: a shared function covered directly and its call site not covered at all — the review escalation, guided practice's half of report persistence, and the resume path's revalidation. It is now the most reliable defect this project produces, and reading the tests does not find it. **Two existing gates earned their keep unprompted**: `poe api-contract` caught a commit that edited a response docstring without regenerating `schema.d.ts` (so that commit would have failed CI), and S61's retention map refused the build until somebody decided what deleting an account does to a password-reset token. **One finding recorded rather than fixed**: both LangGraph graphs key their checkpoint thread on the bare conversation id, so the refinement gate and the practice loop share one state slot — currently unreachable in a damaging way, and namespacing it would orphan every checkpoint in flight, which is exactly what S17 existed to stop. Also two flake sightings, both order-dependent and both green on re-run: `test_retrieval_eval_gate` again (S76), and `test_another_learners_exposure_does_not_move_this_one`, which failed once in a full run and passed in isolation and in two subsequent full runs. |
 | 2026-09-12 | Twelfth pass, branch `feat/s23-s62` (off merged `main`, after PRs #26–#31 landed the previous two passes): S23 (`0e64b4d`) and S62 (`3b1d00f`), plus one fix with no tracker id (`09529c0`). Both were picked for being small — no migration, no new dependency, each reusing logic already tested. `uv run poe check` green (1358 passed, 4 skipped); `npm run lint`, `npm run test` (56) and `npm run build` green; `poe api-contract` and `poe db-check` green. 10 mutations, all applied and all killed. **The first draft of S23's own comment was wrong and a test caught it.** It claimed a cross-subject ring would be reported; `list_edges_for_subject` loads only edges whose *dependent* is in the subject, so every node of a reportable ring is necessarily inside it and such a ring never reaches the edge set at all. The comment was corrected and the test rewritten to pin the real boundary rather than relaxed to pass — and the boundary is not a lost case, since planning loads the same set. **A gate was found broken by verifying, not by reviewing.** An end-to-end run started the app, the durable checkpointer created its own tables (S17), and `poe db-check` then reported four tables and three indexes to drop — on any database the app had actually run against, for a developer who had changed nothing. The noise was the smaller half: the migration autogenerate would write from it drops every paused conversation's state, which is what S17 exists to keep. Filtered by name rather than by prefix, so a real table of ours starting with `checkpoint` is not silently swallowed too. **The transaction-clock finding appeared for the third time** (after S56 and S14), now as a pagination cursor: `created_at` ties across a turn's messages, so the cursor is `(created_at, id)`. Also fixed here: six rows of this very table had been concatenated with `||` since the fifth pass, so the last six passes did not render as rows at all. Not recorded in the tracker at the time of the pass — this row and both entries were written afterwards, which is the process gap worth noting. |
+| 2026-09-13 | **O01 and O04 answered by the user**; no code changed. O01: the first cohort is well-educated adults in senior positions or complex knowledge work, with the subject domain deliberately unrestricted. That answer removes a method rather than unblocking one — with arbitrary subjects and a cohort this size, no two learners will ever answer the same item, so classical item calibration is not available at any cohort size this audience supports. S12 and S18 are rewritten against the generator-level route (calibrate the mapping from requested to realised difficulty across all items, which share a prompt even when they share no learner); two further routes are recorded beside it. O04: **calibration first** — establish reliability (estimator calibration, then grading agreement) before validity, because every outcome measurement is expressed in the estimator's numbers and a miscalibrated one makes them uninterpretable rather than noisy, and because calibration works at N=5 while the designs that establish effect do not. S59 moves to **First**, is no longer blocked, and now carries the chosen design plus the three deferred ones. No thresholds set: "calibrated enough to ship" is left unchosen on purpose, since picking it before the first reliability curve would be the guess S59 exists to stop. |
 
 ## Remaining architecture autopsy — source pass
 
@@ -2762,7 +2798,43 @@ but it means they cannot run concurrently with each other either.
 
 ### S59 — Separate software correctness, model quality, and educational effectiveness gates
 
-**Status:** Proposed · **Priority:** High
+**Status:** Proposed · **Priority:** First — unblocked by O04
+
+**Unblocked 2026-09-13 (O04): reliability before validity.** This entry was the only one that
+could say whether the product teaches, and it was waiting on a study design. The design is now
+chosen, and it deliberately does not answer that question first. It answers a smaller one that
+everything else depends on: **are the numbers the system reports true?**
+
+Two things, in this order:
+
+1. **Estimator calibration.** A tracer that says a learner has a 70% chance of answering
+   correctly should be right about 70% of the time. Measured from the event log already being
+   written — predicted probability against observed frequency, as a reliability curve plus a
+   scalar (Brier score, or expected calibration error). No learner burden, no new instrument, and
+   the S56 replay is most of the machinery.
+2. **Grading agreement.** The rubric grader's score against a second, differently-prompted model
+   and against a human-labelled sample, reported as agreement rather than accuracy — there is no
+   ground truth here, only concordance. This is the half of S59 that stops the production grader
+   being the sole judge of its own teaching.
+
+Why this order, rather than measuring learning first. Every outcome measurement is expressed in
+these numbers: a retention claim is a claim about estimates, and a claim that a detour helped is
+a comparison of estimates before and after. If the estimator is miscalibrated, those readings are
+uninterpretable rather than merely noisy — and the miscalibration is silent. Calibration also
+works at N=5, which is the cohort size O01 implies; the designs that establish *effect* do not.
+
+**Deferred, not rejected.** Three designs were considered and set aside for after the cohort is
+running, and each answers a question calibration cannot: a **delayed unassisted probe** (does it
+stick without help — cheap, works across arbitrary subjects, but has no counterfactual); a
+**within-learner KC randomisation** (does the adaptive machinery beat a plain baseline — the unit
+of analysis is the KC rather than the person, which is what makes a causal claim possible at
+small N, at the cost of knowingly teaching some components worse); and **expert-rated transfer
+tasks** (can they now do real work they could not before — the most externally valid, the most
+expensive, and the one this audience would actually believe).
+
+**Not started.** Nothing above is built. No thresholds are set either: "calibrated enough to
+ship" is a number nobody has chosen, and choosing it before seeing the first reliability curve
+would be the same guess this entry exists to stop.
 
 **Evidence:** Existing tests and suites cover useful mechanics and model task scores, but the reviewed release workflow does not establish durable independent learner gains. Model-scored event labels can reproduce the model's errors.
 
