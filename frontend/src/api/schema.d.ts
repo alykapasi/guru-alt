@@ -1589,6 +1589,8 @@ export interface components {
             citations: {
                 [key: string]: unknown;
             }[];
+            /** Grounding Count */
+            grounding_count?: number | null;
             /**
              * Id
              * Format: uuid

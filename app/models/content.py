@@ -50,3 +50,9 @@ class ContentBlock(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Content-addressed dedup key over (learner, kc_ids, type, grounding-set).
     cache_key: Mapped[str] = mapped_column(unique=True, index=True)
     model: Mapped[str]  # the resolved model that produced this block
+    # How many chunks were offered as grounding when this block was written (S28). Zero means
+    # the block was written from general knowledge because retrieval found nothing — which an
+    # empty ``citations`` cannot tell you on its own, since a model given six snippets may
+    # still cite none. NULL means the block predates this column and nothing was recorded;
+    # it is not reconstructible, because the grounding set was never stored.
+    grounding_count: Mapped[int | None] = mapped_column(default=None)

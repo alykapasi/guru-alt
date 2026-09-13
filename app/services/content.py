@@ -60,6 +60,20 @@ _SYSTEM_PROMPT = (
     '{{"body": "<the content>", "citations": [<indices of snippets used>]}} and nothing else.'
 )
 
+# The instruction for a request with nothing retrieved (S28). Previously one system prompt
+# served both cases — "using ONLY the numbered context snippets" — while the user message for
+# an empty retrieval said "write from general knowledge and cite nothing". The model was told
+# to do two incompatible things in the same request, and which one it obeyed was not decided
+# anywhere. This states the situation once, in the place that describes the task.
+_UNGROUNDED_SYSTEM_PROMPT = (
+    "You are an expert instructional author. No source material was retrieved for this "
+    "learning objective, so write {guidance} from established general knowledge. Say plainly "
+    "within the body that it does not draw on the learner's own materials. Cite nothing: "
+    "there are no snippets, so any index would point at material that does not exist. Respond "
+    'with ONLY a JSON object of the form {{"body": "<the content>", "citations": []}} and '
+    "nothing else."
+)
+
 
 class ContentGenerationError(RuntimeError):
     """The model's reply could not be parsed into a content block."""
@@ -109,7 +123,8 @@ async def generate_block(
         limit=grounding_k,
     )
     role = _ROLE_BY_TYPE[block_type]
-    system = _SYSTEM_PROMPT.format(guidance=_GUIDANCE[block_type])
+    template = _SYSTEM_PROMPT if grounding else _UNGROUNDED_SYSTEM_PROMPT
+    system = template.format(guidance=_GUIDANCE[block_type])
     user = _build_prompt(kc, grounding)
     cache_key = _cache_key(
         learner_id,
@@ -134,6 +149,7 @@ async def generate_block(
         citations=_resolve_citations(parsed.citations, grounding),
         cache_key=cache_key,
         model=llm.spec(role).model,
+        grounding_count=len(grounding),
     )
     session.add(block)
     await log_llm_call(learner_id=learner_id, role=str(role), spec=llm.spec(role), usage=usage)
@@ -199,11 +215,16 @@ async def _generate(
 
 
 def _build_prompt(kc: KC, grounding: list[RetrievalHit]) -> str:
+    """The user message: the objective, and the snippets if there are any.
+
+    With nothing retrieved there is no context section at all, rather than a parenthetical
+    telling the model what to do instead. Instructions belong in the system prompt — a user
+    message that also gave them is how the two came to disagree (S28).
+    """
     objective = _kc_query(kc)
-    if grounding:
-        context = "\n\n".join(f"[{i}] {hit.text}" for i, hit in enumerate(grounding))
-    else:
-        context = "(no context retrieved; write from general knowledge and cite nothing)"
+    if not grounding:
+        return f"Learning objective:\n{objective}"
+    context = "\n\n".join(f"[{i}] {hit.text}" for i, hit in enumerate(grounding))
     return f"Learning objective:\n{objective}\n\nContext snippets:\n{context}"
 
 

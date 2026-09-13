@@ -25,3 +25,8 @@ class ContentBlockRead(BaseModel):
     body: str
     citations: list[dict]
     model: str
+    # How many chunks were offered as grounding (S28). ``0`` means the block was written from
+    # general knowledge because retrieval found nothing — which an empty ``citations`` alone
+    # cannot say, since a model given snippets may cite none of them. ``None`` means the block
+    # predates the column and nothing was recorded.
+    grounding_count: int | None = None

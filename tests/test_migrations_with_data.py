@@ -126,3 +126,49 @@ async def test_conversations_that_predate_the_scaffold_count_get_a_number_not_a_
             assert scaffolds == 0, "an existing conversation came through with no scaffold count"
         finally:
             await conn.close()
+
+
+async def test_blocks_that_predate_the_grounding_count_come_through_as_unknown_not_zero() -> None:
+    """0042 (S28) adds `grounding_count`, and deliberately does *not* backfill it.
+
+    The inverse of the case above: here a server default would be the bug. Zero is a claim —
+    "this block was written with no source material" — and for a row that predates the column
+    it is a claim nobody measured. The grounding set was never stored, and `citations` counts
+    what was cited rather than what was offered, so there is nothing to reconstruct from.
+    Backfilling would put a measurement on rows that were never measured; NULL says "not
+    recorded", which is the true thing to say about them.
+    """
+    async with database_at("0041_password_reset_throttle") as connect:
+        conn = await connect()
+        try:
+            learner_id, kc_id, block_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "reader"
+            )
+            await conn.execute(
+                "INSERT INTO content_blocks "
+                "(id, learner_id, kc_ids, block_type, body, citations, cache_key, model) "
+                "VALUES ($1, $2, $3::uuid[], $4, $5, $6::jsonb, $7, $8)",
+                block_id,
+                learner_id,
+                [kc_id],
+                "lesson",
+                "A lesson written before anyone counted the grounding.",
+                "[]",
+                "key-that-predates-0042",
+                "some-model-1",
+            )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0042_content_grounding_count")
+
+        conn = await connect()
+        try:
+            row = await conn.fetchrow(
+                "SELECT grounding_count, body FROM content_blocks WHERE id = $1", block_id
+            )
+            assert row is not None, "the block did not survive the upgrade"
+            assert row["grounding_count"] is None, "backfilled a measurement nobody took"
+        finally:
+            await conn.close()
