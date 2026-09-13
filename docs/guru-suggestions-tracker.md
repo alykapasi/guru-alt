@@ -82,7 +82,7 @@ These are new proposals from the second review; the user's acceptance of prior s
 | S25 | Separate shared, curated knowledge from learner-specific generated curricula, with ownership and publishing rules. | Subjects are global, listing is unscoped, commit rejects a duplicate subject name globally, and learner-authenticated routes can add global topics/KCs/edges. Personal goal-derived structure has no explicit private draft boundary. [R14–R16] | Before multi-user release | Proposed |
 | S26 | Apply explicit, consistent source scope to every generation path; make intentional cross-subject expansion a separate decision. | Chat uses subject/source filters; generate_block retrieves across the learner's sources without subject/topic filters. This remains learner-scoped and is not evidence of cross-user retrieval leakage. [R9, R17–R18] | High | Implemented (see below) |
 | S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Proposed |
-| S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Proposed |
+| S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Partially implemented (see below) |
 | S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Implemented (see below) |
 
 ### S11 — Make targeted prerequisite detours an explicit planning move
@@ -1298,6 +1298,62 @@ rests on `SameSite=lax` plus an explicit CORS allowlist rather than a token, whi
 for a same-site deployment and is exactly the assumption to revisit if the app is ever served
 cross-site. And the admin portal and audited impersonation that P10 pairs with this are not
 started.
+
+### S28 — Say what to do when there are no sources, and stop contradicting it
+
+**Status:** Partially implemented (branch `fix/tracker-repairs-and-next`) · **Priority:** High
+
+**Implemented — the two halves of the request no longer disagree.** The system message said
+"Using ONLY the numbered context snippets ... ground every claim in the context and cite the
+snippets you used". When retrieval returned nothing, the user message said "(no context
+retrieved; write from general knowledge and cite nothing)". Both went in the same request. The
+model was told to do two incompatible things, and **which one it obeyed was decided nowhere** —
+not in code, not in config, not in a test. Whatever it did was the provider's disposition on the
+day, and a change of model could change it silently.
+
+There are two system prompts now. The grounded one is unchanged. The ungrounded one states that
+no material was retrieved, asks for general knowledge, requires the body to say plainly that it
+does not draw on the learner's own materials, and forbids citations — an index would point at a
+snippet that does not exist. The user message carries no instructions at all any more: with
+nothing retrieved it states the objective and stops. A user turn that also gave instructions is
+how the two came to disagree in the first place.
+
+**Implemented — "no sources" is now a recorded fact rather than an inference.**
+`ContentBlock.grounding_count` holds how many chunks were offered. `citations` could never
+answer "was this written from the learner's own material?", because an empty list means either
+that retrieval found nothing *or* that a model handed six snippets cited none of them. Those are
+different facts and only the first is about the sources. It is exposed on `ContentBlockRead`,
+because a state recorded where nothing can read it is half a fix.
+
+**Migration 0042 is nullable with no backfill, and the reasoning is the inverse of 0037's.**
+There, a missing `server_default` was the bug (S58). Here a `server_default` would be: zero is a
+claim — "written with no source material" — and for a row predating the column it is a claim
+nobody measured. The grounding set was never stored and `citations` counts what was used rather
+than what was offered, so there is nothing to reconstruct from. NULL says "not recorded".
+
+**Measured.** Nine tests. Five mutations, all killed: pinning either system prompt for both
+cases, counting citations instead of grounding, restoring the contradicting user-turn
+instruction, and — as the control on the migration — adding the `server_default` that would
+backfill a measurement nobody took.
+
+**Not done — and this is the larger half of the item.** *Citation validity is still not claim
+support.* `_resolve_citations` checks that an index is in range and maps it to a real chunk. It
+does not check that the passage says what the sentence citing it says. A block can cite six real
+chunks and be wrong about all of them, and nothing here would notice; that needs an entailment
+check against the cited passage, which is a model call per claim and a measurement problem (S59)
+before it is a feature.
+
+*Contradictory sources are not handled at all.* This pass covers *insufficient* sources — the
+zero case. Two retrieved chunks that disagree are still handed over as equally authoritative
+context with no instruction about the conflict, and the model resolves it invisibly.
+
+*Partial insufficiency has no threshold.* One weak chunk takes the grounded path exactly as six
+strong ones do. `grounding_count` now makes that visible after the fact, but nothing acts on it,
+and what count or what retrieval score is "enough" is unset — deliberately, on the same grounds
+as S59's missing thresholds: it would be a guess.
+
+*Nothing surfaces it to the learner.* The field reaches the API; no view reads it, so a learner
+still cannot see that a lesson came from general knowledge rather than their own materials.
 
 ### S26 — Ground a block in its own subject's material
 
