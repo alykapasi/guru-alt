@@ -1710,6 +1710,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-13 | Sixteenth pass, branch `fix/tracker-repairs-and-next` (off merged `main`, after PRs #33-#35 all landed): tracker repairs plus S28 (`24fd711`) and S48 (`5ee178f`). **Repairs first:** two history rows carried a literal pipe inside a code span - a `docker build ... \| tail` example and, with some irony, the row describing the earlier row-gluing defect - so both rendered with an extra column; escaped, and all 26 rows now have exactly three unescaped pipes. Two rows deferred while three PRs were open in parallel were also written. Verified on merged main before touching anything: `poe check` green at 1396 passed, the first run covering S59's tests together with the S26/S29 changes, since neither PR had run against the other's code. **S28:** the system prompt said "using ONLY the numbered context snippets" while the user message for an empty retrieval said "write from general knowledge and cite nothing" - two incompatible instructions in one request, and which one the model obeyed was decided nowhere. Two system prompts now, and the user turn carries no instructions at all. `grounding_count` records how many chunks were offered, because an empty `citations` cannot distinguish "retrieval found nothing" from "the model was given six and cited none". **S48:** latency recorded beside cost, measured in `LLMClient` so no call site changes and none can time a different span; it surfaced that `embed_in_batches` would have summed *concurrent* batch latencies and reported more time than passed. Migrations 0042 and 0043 are both nullable and unbackfilled, and both carry a data test whose control mutation is adding the `server_default` that would backfill a measurement nobody took. `uv run poe check` green (1407 passed, 4 skipped). 11 mutations across the two items, all applied and all killed. |
 | 2026-09-14 | Seventeenth pass, same branch as the sixteenth: **the calibration spine completed as far as it can be without learners** — S12 (`c123982`), S56 (`307646c`), S18 (`1c5f19c`), S59 (`d90f72d`). Four instruments, one command. **S12:** the generator's requested difficulty is now measurable against what the answers say it delivered, solving for the d where expected total score meets observed total; this is the route O01 left open, and it needs no two learners to meet the same item. **S56:** the shipped estimator is scored against candidates on the same sequences, because a calibration number alone has no scale; the null model built at the dataset's own base rate must score exactly zero skill, which is the harness checking itself. **S18:** seventeen uncalibrated constants inventoried in one place, each naming the specific reading that would settle it rather than saying "needs data", with a test asserting the inventoried value still matches the code so that re-guessing a knob nobody has measured fails a test naming it. **S59:** all four behind `poe reliability-report`, dataset read once, every section printing whether or not there is data. **Two bugs were found by the instruments' own output rather than by the tests:** the comparison reported production's lead as `+0.0000` because it compared the best row against the shipped row when they were the same row, and the report silently dropped two of its four sections when the dataset was missing - which is exactly the state the repository is in. `uv run poe check` green (1430 passed, 4 skipped). 10 mutations, all applied and all killed; three survived the first round and one of those was a genuine equivalent mutant, pinned afterwards with a purpose-built estimator whose decay moves ability, because Glicko's does not and the contract should be fixed before one arrives that does. **What the command prints today:** three sections with nothing to score, and seventeen uncalibrated constants. The instruments are complete; the readings need a cohort. |
 | 2026-09-14 | Eighteenth pass, same branch: **completing what the status page still showed as partial**. S28 (`8ec665c`), S23 (`78e8481`), P11/S60 alerts (`25d759f`), S58 queue delivery (`43d72fe`). **S28** gains the half that was left: a valid citation *pointer* is now distinguished from actual claim support, claim-first rather than citation-first because a claim nothing supports has no citation to walk; contradictory sources are handled from both ends. **S23's** conflict report finally has a repair path - `DELETE` on one edge, safe without a cycle check because removing constraints cannot close a loop, which is why the system removes an edge a person *names* and still does not choose. **The alerts are polled and remembered**: transitions rather than evaluations, and a condition missing from a report is not treated as resolved, because closing an incident when the check stops running is how a monitoring outage reads as good news. **Queue delivery** goes through a real Redis broker in its own CI job, asserting on the task's arguments and not merely that bytes arrived. `uv run poe check` green (1458 passed, 6 skipped). 21 mutations across the four, all applied and all killed. **Two bugs found that no test had asked about.** Ordering alert history by `created_at` was wrong roughly half the time - `now()` is the transaction clock, so one sweep's rows share it and the order fell to a random UUID; that is the same tie behind S56, S14 and S62, so the fix is a database sequence rather than another tiebreak. And a `.replace()` written without the `assert old in s` guard this repo uses everywhere silently did nothing, leaving the fix unapplied while the commit message said otherwise - caught only because the flake persisted. |
+| 2026-09-15 | Nineteenth pass, same branch: **faults injected mid-operation, which is where they cost** — S60 (`bfd77e4`), S58 (`1c50d17`, `5b75eac`). Every failure test in the suite failed its dependency *before* it did anything: the stream raises on its first chunk, the queue refuses the dispatch, the bucket is empty. Those establish that an exception propagates and nothing else; none of them reaches the state that costs money and trust — work already done, already partly paid for, already partly on the learner's screen. Three faults now fire partway through, each recording that it fired, because a fault that silently failed to inject reports as a pass. **Both defects it found were in code whose own docstring promised otherwise.** `llm_log` states that accounting is not part of the work it pays for, and `asyncio.gather` abandons its siblings on the first exception — so a fan-out of embedding batches threw away the usage of the batches that had *succeeded*, and a source failing on batch three and retrying three times billed the provider three times over while the budget watch saw a quiet account. And `blob-check`, whose entire job is to produce a verdict on a restore, produced none at all when the store errored on a key: the exception ended the walk. An unanswered key is now a third outcome — calling it present passes a restore nobody verified, calling it missing raises a data-loss alarm over a blip. `uv run poe check` green (1465 passed, 6 skipped). 6 mutations, all applied and all killed. One of the seven new tests is recorded as a regression anchor rather than a load-bearing one, since it holds today by construction. **Browser journeys are now the only one of S58's three original gaps still open.** |
 
 ## Remaining architecture autopsy — source pass
 
@@ -3187,8 +3188,39 @@ Opt-in behind `GURU_QUEUE_TESTS=1`, the same gate and reasoning as the live-mode
 its own CI job carrying a Redis service — the only thing needing a broker, so bundling it would
 start one for every run of the suite.
 
+**Implemented (fifth pass) — faults injected mid-operation, which is where they cost.** Every
+failure test in the suite failed its dependency *before* it did anything: the stream raises on
+its first chunk, the queue refuses the dispatch, the bucket is empty. Those establish that an
+exception propagates. None of them reaches the state that costs money and trust — work already
+done, already partly paid for, already partly on the learner's screen — so the whole class of
+"what are we left holding?" questions had no coverage at all.
+
+`tests/faults.py` injects three: a stream that delivers three tokens and then loses the
+connection, an embedding provider that fails on the third of six batches, and a store that
+fails on the *n*-th call to one named method. Every fault records that it fired and every test
+asserts it did, because a fault that silently failed to inject reports as a pass — the same
+defect as a mutation that did not apply, which has already happened twice on this branch.
+
+**It found two defects, and both were in code whose own docstring promised otherwise.**
+`llm_log` states that accounting is not part of the work it pays for: the row survives a
+rollback because the money left regardless. `asyncio.gather` abandons its siblings on the first
+exception, so a fan-out of embedding batches threw away the usage of the batches that had
+*succeeded* along with their vectors — a source failing on batch three and retrying three times
+billed the provider three times over and recorded nothing, with the budget watch (P11) seeing a
+quiet account. The batches are now settled rather than abandoned and the bill is recorded before
+the failure propagates. The second is S60's: `blob-check` treated a store that errors as neither
+present nor missing by letting the exception end the walk. Both described in their own entries.
+
+Seven tests, six mutations, all killed — including both wrong readings of an unanswered key and
+removing the guard that stops a failed turn being persisted anyway. One of the seven is a
+regression anchor rather than a load-bearing test and is recorded as such: "a failed embedding
+writes no chunks at all" holds today by construction, since chunks are written after the embed
+returns. It would only fail against a pipeline that persisted incrementally, which is exactly
+the refactor it exists to catch.
+
 **Not done in this pass.** The split changed which job reports a failure and added no coverage;
-the queue work added one gap's worth. Browser journeys and fault injection are untouched. More pointedly: `main` carries **no branch protection and no rulesets**, so none of
+the queue work and the fault injection added one gap's worth each. Browser journeys are
+untouched, and are now the only one of the three original gaps left. More pointedly: `main` carries **no branch protection and no rulesets**, so none of
 these checks is *required*. The `CI` job exists to make requiring one a one-line change, but
 that line has not been written, and nothing today stops a merge over a red gate. The same pass
 saw a run sit `queued` with zero jobs for nine hours while both cancel endpoints refused it with
@@ -3196,9 +3228,10 @@ contradictory errors — a wedged run that never reached a runner, and which an 
 makes indistinguishable from a passing one to anyone not reading the list.
 
 **Still open:** browser/e2e journeys — the upload→curriculum→chat→practice→notes path in a real
-browser is still unwritten, and it is now the largest single gap here. Queue *integration*: the
-worker's tasks are tested, delivery through a real Redis broker is not, and no CI job runs one.
-Fault injection: nothing exercises a blob store or a provider failing mid-operation on purpose.
+browser is still unwritten, and it is now the largest single gap here, and the last of the three
+this entry opened with. It needs a running stack in CI: backend, frontend, Postgres and a
+browser driver, plus a way to run the model-facing paths deterministically, since a journey that
+calls a real provider is neither offline nor repeatable.
 The migration harness covers two revisions rather than being applied to every future one, and
 nothing requires a new migration to come with a data case. `guru_migration_test` is a fixed
 name, so the harness assumes the suite is not run in parallel against one server. And the
@@ -3444,6 +3477,21 @@ through to a random UUID — which made "is this condition currently firing?" wr
 time. It surfaced as a flaky test; it was a flaky *answer*. This is the same tie behind three
 earlier findings (S56, S14, S62), so the column is a database sequence rather than another
 tiebreak, and the test chooses ids that sort *against* it to turn the coin-flip into a certainty.
+
+**Implemented (third pass, branch `fix/tracker-repairs-and-next`) — the drill can now say "I
+could not tell".** Found by the fault injection S58 owes: the walk asked the store whether each
+key was present and treated the reply as a boolean. A store that *errors* — a network blip,
+throttling, a half-available bucket during exactly the restore this runs after — is neither
+answer, and the exception propagated, so the walk stopped at the first bad key and produced no
+verdict at all. That is the worst possible failure for this particular command, whose entire
+job is to produce one before learners are let back in, and it would have produced none again on
+the next run.
+
+An unanswered key is a third outcome with its own list. Calling it present passes a restore
+nobody verified; calling it missing raises a data-loss alarm over a blip; `intact` is false
+while any key is unanswered, because "we did not find a problem" is not "there is no problem".
+The walk finishes either way, so the operator gets one complete picture instead of the first
+error. Both wrong readings were mutation-tested.
 
 **Not done.** Still nothing rehearsed against real infrastructure — managed Postgres, real S3,
 TLS, secret delivery and network policy are all untested. No notification *channel* beyond the
