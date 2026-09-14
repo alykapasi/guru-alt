@@ -236,7 +236,69 @@ jobs:
       - name: Build
         run: npm run build
 
-  # One check that is green only when all eight are. Splitting the gates multiplies the names
+  # The half of the product no other gate can reach (S58). The backend tests drive the turn
+  # function directly and never serialise an SSE frame; the component tests render the chat
+  # against a mocked client and never make a request. The seam between them — the event
+  # stream, the credentialed cross-origin fetch, the cookie the browser decides whether to
+  # send — is exactly where a change breaks the product while both suites stay green.
+  #
+  # Both toolchains, because it runs the real API against the real built bundle. No Redis and
+  # no object store: these journeys touch neither, and starting them would be starting
+  # dependencies to watch them idle.
+  e2e:
+    name: browser journeys
+    runs-on: ubuntu-latest
+
+    env:
+      GURU_ENV: dev
+      GURU_DATABASE_URL: postgresql+asyncpg://guru:guru@localhost:5432/guru
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: guru
+          POSTGRES_PASSWORD: guru
+          POSTGRES_DB: guru
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U guru -d guru"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-backend
+      - uses: ./.github/actions/setup-frontend
+
+      # Chromium only, and `--with-deps` because the runner image has none of the shared
+      # libraries a browser needs. One engine is a deliberate limit: these journeys are here
+      # to cover the seam between the halves of the product, not to survey rendering engines.
+      - name: Install the browser
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+
+      # Playwright starts the API and the preview server itself (see playwright.config.ts) and
+      # waits for both to answer, so there is no sleep here and no race on startup.
+      - name: Browser journeys
+        run: npm run e2e
+        working-directory: frontend
+
+      # Traces and video are captured only for a failure, so this uploads the evidence for a
+      # red run and nothing at all for a green one.
+      - name: Upload the failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          retention-days: 7
+
+  # One check that is green only when all nine are. Splitting the gates multiplies the names
   # a branch-protection rule would have to list, and a rule that lists them by name silently
   # stops covering a gate the day one is renamed or added. This job is the stable name to
   # require; the eight above are where you look when it goes red.
@@ -254,6 +316,7 @@ jobs:
       - frontend-lint
       - frontend-test
       - frontend-build
+      - e2e
 
     steps:
       - name: Summarise the gates
@@ -270,11 +333,12 @@ jobs:
             echo "| frontend lint | ${{ needs['frontend-lint'].result }} |"
             echo "| frontend test | ${{ needs['frontend-test'].result }} |"
             echo "| frontend build | ${{ needs['frontend-build'].result }} |"
+            echo "| browser journeys | ${{ needs.e2e.result }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # `success()` is not enough on its own here: with `if: always()` this job runs even when
       # a dependency was skipped or cancelled, and a skipped gate is an un-run gate, not a
-      # passed one. Anything other than success in any of the eight fails this check.
+      # passed one. Anything other than success in any of the nine fails this check.
       - name: Fail unless every gate succeeded
         if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
         run: |
