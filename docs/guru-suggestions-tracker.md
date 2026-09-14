@@ -78,10 +78,10 @@ These are new proposals from the second review; the user's acceptance of prior s
 | --- | --- | --- | --- | --- | --- |
 | S22 | Generate, validate, and persist prerequisite relationships during curriculum creation. | CurriculumProposal and create_subject_with_graph contain topics and KCs but no prerequisite edges. Newly generated curricula therefore lack the dependencies the planner needs. [R13–R14] | First | Implemented (see below) |
 | S23 | Validate the prerequisite graph, including multi-node cycles and references, before relying on its order. | Edge creation checks self-loops and existence but not longer cycles; topo_sort appends unresolved nodes when a cycle occurs. [R5, R15] | High | Implemented (see below) |
-| S24 | Define concept identity and cross-subject prerequisite handling explicitly. | Each KC belongs to one topic. Duplicate concepts get separate IDs and mastery states; the planner's candidate pool and edge loading do not establish a complete cross-subject traversal. Cross-subject edges are possible in the schema, so this is an incomplete policy rather than a database prohibition. [R14, R16, R11] | High | Proposed |
-| S25 | Separate shared, curated knowledge from learner-specific generated curricula, with ownership and publishing rules. | Subjects are global, listing is unscoped, commit rejects a duplicate subject name globally, and learner-authenticated routes can add global topics/KCs/edges. Personal goal-derived structure has no explicit private draft boundary. [R14–R16] | Before multi-user release | Proposed |
+| S24 | Define concept identity and cross-subject prerequisite handling explicitly. | Each KC belongs to one topic. Duplicate concepts get separate IDs and mastery states; the planner's candidate pool and edge loading do not establish a complete cross-subject traversal. Cross-subject edges are possible in the schema, so this is an incomplete policy rather than a database prohibition. [R14, R16, R11] | High | Partially implemented (see below) |
+| S25 | Separate shared, curated knowledge from learner-specific generated curricula, with ownership and publishing rules. | Subjects are global, listing is unscoped, commit rejects a duplicate subject name globally, and learner-authenticated routes can add global topics/KCs/edges. Personal goal-derived structure has no explicit private draft boundary. [R14–R16] | Before multi-user release | Partially implemented (see below) |
 | S26 | Apply explicit, consistent source scope to every generation path; make intentional cross-subject expansion a separate decision. | Chat uses subject/source filters; generate_block retrieves across the learner's sources without subject/topic filters. This remains learner-scoped and is not evidence of cross-user retrieval leakage. [R9, R17–R18] | High | Implemented (see below) |
-| S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Proposed |
+| S27 | Preserve technical document structure and evaluate extraction on equations, tables, code, and derivations; represent unknown extraction quality honestly. | PDF extraction falls back to OCR based on text length; chunking collapses whitespace and uses 1,000-character windows; pipeline assigns confidence 1.0 to every chunk. This establishes risk, not measured corruption rates. [R19–R21] | High for advanced technical learning | Partially implemented (see below) |
 | S28 | Distinguish valid citation pointers from claim support, and establish behavior when sources are insufficient or contradictory. | Citation resolution validates indices, not whether passages support claims. Content generation's source-only system instruction conflicts with its general-knowledge fallback for empty retrieval. [R17, R22] | High | Implemented (see below) |
 | S29 | Define content cache versions and invalidation for changes in objectives, prompts, models, and source revisions; separately decide what may be shared. | The current key includes learner, KC IDs, block type, and grounding IDs, but omits prompt/model versions and KC description changes. Current cache is learner-specific despite the long-term reuse ambition. Reingestion deletes/recreates chunks, warranting explicit handling for historical citation references. [R17, R21] | Supporting; before broad reuse | Implemented (see below) |
 
@@ -808,6 +808,176 @@ could not score separately shows *no* score rather than the item's aggregate. Th
 the point: copying the aggregate down would present one verdict as several measurements, which
 is precisely the error this item exists to stop, and it would do it in the one place a learner
 would read it as a measurement of themselves.
+
+### S24 — Define concept identity and cross-subject prerequisite handling explicitly
+
+**Status:** Partially implemented (branch `fix/tracker-repairs-and-next`) · **Priority:** High
+
+**Implemented — a concept now has one identity.** A `KC` belongs to exactly one topic of one
+subject, so derivatives taught in Calculus and derivatives taught in Physics were two unrelated
+ids with nothing anywhere recording that they were about the same thing. A learner who had
+studied one looked, to every query in the system, exactly like a learner who had studied
+neither. `concepts` is that missing identity and a KC becomes a *presentation* of one, resolved
+by the canonical form of its name on every path that creates a KC, and backfilled for rows that
+already existed.
+
+**What sharing a concept is not allowed to mean, and this is the load-bearing decision.** It is
+evidence about names, so mastery does not transfer. "Functions" in Calculus and "Functions" in a
+programming course reach the same key, and a system that silently marked the second mastered
+because of the first would stop teaching something the learner had never seen — with nothing
+downstream able to tell, because a skipped component and a mastered one look identical from
+every angle except the learner's. The identity is reported so a person can act on it. It is not
+applied on their behalf.
+
+**Implemented — the cross-subject prerequisite was not a policy, it was a crash.** A lesson plan
+sequences one subject's components, so a prerequisite outside it has no step that could teach
+it. The foreign component nonetheless reached the topological sort, which had no tiebreak entry
+for it, and comparing that fallback — a bare UUID — against the integers used for local
+components raised `TypeError`. So a cross-subject edge, which the schema permits and
+`POST /kcs/{id}/prerequisites` creates, did not weaken a plan's ordering: it meant no plan at
+all, for that learner, until somebody deleted the edge.
+
+The edge is now dropped deliberately and reported by
+`GET /subjects/{id}/cross-subject-prerequisites`, with the subject that owns the prerequisite
+named and a `met_elsewhere` flag saying whether this learner has met that concept anywhere.
+That is the same shape S23 settled on for cycles, for the same reason: which subject should
+absorb the other's component is a curriculum decision the graph cannot make. `topo_sort`'s
+tiebreak is total either way — a function whose docstring promises it tolerates outside KCs
+must not raise on one.
+
+**Measured.** 21 tests. 6 mutations, all killed. Two survived the first round and both were
+real gaps: nothing drove *plan generation* with a cross-subject edge (the sort was covered
+directly and its only caller not at all, which is this repository's recurring defect), and the
+"internal edges are not reported" case returned early before reaching the line that decides it.
+
+**Not done.** Mastery is still per presentation, which is the deliberate half — but nothing yet
+lets a person *act* on a reported identity: there is no way to say "these two are the same
+thing, treat the evidence as shared", or to split a pair the canonical name merged wrongly. The
+backfill's claim is only as good as the naming, and no reading has checked how often it is
+right. The planner still drops a foreign prerequisite rather than offering to teach it, so a
+learner blocked by a component in another subject is told, not routed — the detour machinery
+(S11) works within one subject only.
+
+**Evidence:** Each KC belongs to one topic; duplicate concepts got separate ids and mastery
+states; the planner's candidate pool and edge loading did not establish a complete cross-subject
+traversal.
+
+**Second-pass check:** The same concept met in two subjects is recognisable as one thing, and a
+prerequisite that crosses a subject boundary produces a plan and a report rather than an error.
+
+### S25 — Separate shared, curated knowledge from learner-specific generated curricula
+
+**Status:** Partially implemented (branch `fix/tracker-repairs-and-next`) · **Priority:** Before
+multi-user release
+
+**Implemented — a subject belongs to someone, or to nobody on purpose.** Subjects were global
+and unscoped, and all three consequences were live. Listing returned every learner's. A
+duplicate name was rejected across all learners, so the first person to study Calculus took the
+name from everyone after them — reported to the second as though they had made a mistake. And
+any authenticated learner could add topics, components and prerequisite edges to any subject,
+including one somebody else was actively being taught from.
+
+`subjects.owner_learner_id` is the boundary, and the NULL is meaningful rather than missing:
+**NULL means curated** — shared, visible to everyone, read-only through the learner API. A
+learner id means a private curriculum, visible and editable only by its owner. A generated
+curriculum belongs to the learner it was generated for.
+
+**Two failures, two answers, deliberately.** A curated subject openly exists and refusing an
+edit with 403 says so, which is useful and gives nothing away. Another learner's subject answers
+404 to everything, because 403 would confirm that the id names a real subject — the one thing a
+stranger must not be able to establish about somebody else's private curriculum.
+
+**Both ends of a prerequisite edge are checked.** Checking only the dependent would let a
+learner attach their own component to a stranger's as a prerequisite: an edge constrains the
+order *both* are taught in, so it changes a curriculum that is not theirs however the request
+happens to be addressed.
+
+**The backfill is conservative on purpose.** Existing rows become curated, which is a loss of
+capability that shows up immediately and is fixed by assigning an owner. Guessing an owner
+instead — from whoever uploaded a source into it, say — would hand one learner private control
+of a subject others may already be studying, and that is a change nobody would notice until the
+graph moved under them.
+
+**It made the retention statement wrong, so the statement moved.** A learner's own subject goes
+with their account; a curated one does not. That needed a fourth disposition, "partly deleted",
+because one table now holds both kinds of row and "deleted" and "retained" are each false about
+half of it. The policy's completeness test now looks for any column *ending* in `learner_id`,
+or a whole new class of learner-owned table could arrive without anybody choosing what deleting
+an account does to it.
+
+**Measured.** 14 tests. 8 mutations, all killed. The first sweep found dead authorisation code:
+a 404 branch for "somebody else's subject" that no caller could reach, because the visibility
+check rejects it first. Removed rather than kept — an unreachable authorisation check reads as a
+protection that is never exercised, and nothing would notice if it stopped working. Three
+existing tests changed, each because the boundary is real: two edited a subject nobody owned,
+and one passed a fabricated learner id that was advisory before and is a foreign key now.
+
+**Not done.** There is no *publishing* path: a learner cannot offer their curriculum to the
+shared library, and nothing promotes a private subject to curated. Nothing creates curated
+subjects at all through any interface — they exist only if inserted directly. There are no
+admin roles, so "who may curate" is unanswered and belongs with P10. Sharing between two named
+learners does not exist; the only states are private and everyone. Items and rubrics are
+untouched by this and keep the boundary S33 describes.
+
+**Evidence:** Subjects were global, listing unscoped, commit rejected a duplicate name globally,
+and learner-authenticated routes could add global topics, KCs and edges.
+
+**Second-pass check:** Two learners can study subjects of the same name without colliding, and
+neither can see or change the other's.
+
+### S27 — Represent extraction quality honestly instead of asserting it
+
+**Status:** Partially implemented (branch `fix/tracker-repairs-and-next`) · **Priority:** High
+for advanced technical learning
+
+**Implemented — the fabricated confidence is gone.** Every chunk was stored with
+`"confidence": 1.0`. Nothing computed it and nothing read it, and it made the strongest possible
+claim — that this text is exactly what the document said — about a scanned page OCR'd into
+nonsense just as confidently as about a born-digital paragraph. There was no number anywhere
+that could have said otherwise.
+
+`app/rag/extraction_quality.py` replaces it with cheap, ground-truth-free indicators that text
+has been *damaged*: characters a decoder already gave up on, control bytes, the single-letter
+spray a failed OCR produces, words with no vowels, tokens long enough that the spaces were
+plainly lost. Measured per chunk and stored as they are.
+
+**No single score, and no threshold.** Collapsing the indicators into one number would recreate
+exactly what is being removed — a scalar that reads as "how good is this text" and is nothing of
+the sort; a test asserts no field named confidence, score or quality ever appears. And whether
+an isolated-letter ratio of 0.2 is a ruined scan or a page of diagram captions has never been
+measured, so `poe extraction-report` prints the distribution and the worst ten and says on the
+page that it is setting no line. Picking one before seeing a real distribution is the guess S18
+exists to count.
+
+**The limitation is executed, not merely documented.** Two columns of a PDF read straight across
+produce real words in meaningless order and trip none of these indicators — so there is a test
+asserting that this text reads clean, sitting beside the claim that a clean reading is the
+absence of evidence rather than evidence of absence. A module whose docstring admits a
+limitation and whose tests never exercise it is making a promise nobody checks.
+
+The OCR fallback this item names — a PDF page yielding under 16 characters is treated as scanned
+— is now in the S18 inventory, where the drift test pins it. It was exactly the kind of
+uncalibrated number that item exists to count, and it was not being counted.
+
+**Measured.** 23 tests. 8 mutations, all killed. One survived the first sweep and was a real
+gap: nothing asserted that a replacement character *on its own* is enough to report that
+something was found, so dropping it from `any_indicator` changed nothing — the field would have
+kept working for the other four signals while the fifth silently stopped counting.
+
+**Not done, and this is the larger half.** Nothing yet *preserves* technical structure: chunking
+still collapses whitespace into 1,000-character windows, so a table becomes a run of numbers
+with no columns, a derivation loses its line breaks, and a code block loses its indentation —
+all of which read as clean text to every indicator here. There is no evaluation on equations,
+tables, code or derivations against known-correct extractions, because there is no labelled set
+to evaluate against; building one is the reading that would settle both the OCR threshold and
+what these indicator values are worth. And the indicators are recorded but consume nothing:
+retrieval does not down-rank a damaged chunk and generation is not told it is citing one.
+
+**Evidence:** PDF extraction fell back to OCR on a text-length heuristic; chunking collapses
+whitespace into 1,000-character windows; the pipeline assigned confidence 1.0 to every chunk.
+
+**Second-pass check:** A corrupt extraction is distinguishable from a clean one in the stored
+record, and the system never claims a quality it has not measured.
 
 ### S23 — Validate the prerequisite graph before relying on its order
 
@@ -1712,6 +1882,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-14 | Eighteenth pass, same branch: **completing what the status page still showed as partial**. S28 (`8ec665c`), S23 (`78e8481`), P11/S60 alerts (`25d759f`), S58 queue delivery (`43d72fe`). **S28** gains the half that was left: a valid citation *pointer* is now distinguished from actual claim support, claim-first rather than citation-first because a claim nothing supports has no citation to walk; contradictory sources are handled from both ends. **S23's** conflict report finally has a repair path - `DELETE` on one edge, safe without a cycle check because removing constraints cannot close a loop, which is why the system removes an edge a person *names* and still does not choose. **The alerts are polled and remembered**: transitions rather than evaluations, and a condition missing from a report is not treated as resolved, because closing an incident when the check stops running is how a monitoring outage reads as good news. **Queue delivery** goes through a real Redis broker in its own CI job, asserting on the task's arguments and not merely that bytes arrived. `uv run poe check` green (1458 passed, 6 skipped). 21 mutations across the four, all applied and all killed. **Two bugs found that no test had asked about.** Ordering alert history by `created_at` was wrong roughly half the time - `now()` is the transaction clock, so one sweep's rows share it and the order fell to a random UUID; that is the same tie behind S56, S14 and S62, so the fix is a database sequence rather than another tiebreak. And a `.replace()` written without the `assert old in s` guard this repo uses everywhere silently did nothing, leaving the fix unapplied while the commit message said otherwise - caught only because the flake persisted. |
 | 2026-09-15 | Nineteenth pass, same branch: **faults injected mid-operation, which is where they cost** — S60 (`bfd77e4`), S58 (`1c50d17`, `5b75eac`). Every failure test in the suite failed its dependency *before* it did anything: the stream raises on its first chunk, the queue refuses the dispatch, the bucket is empty. Those establish that an exception propagates and nothing else; none of them reaches the state that costs money and trust — work already done, already partly paid for, already partly on the learner's screen. Three faults now fire partway through, each recording that it fired, because a fault that silently failed to inject reports as a pass. **Both defects it found were in code whose own docstring promised otherwise.** `llm_log` states that accounting is not part of the work it pays for, and `asyncio.gather` abandons its siblings on the first exception — so a fan-out of embedding batches threw away the usage of the batches that had *succeeded*, and a source failing on batch three and retrying three times billed the provider three times over while the budget watch saw a quiet account. And `blob-check`, whose entire job is to produce a verdict on a restore, produced none at all when the store errored on a key: the exception ended the walk. An unanswered key is now a third outcome — calling it present passes a restore nobody verified, calling it missing raises a data-loss alarm over a blip. `uv run poe check` green (1465 passed, 6 skipped). 6 mutations, all applied and all killed. One of the seven new tests is recorded as a regression anchor rather than a load-bearing one, since it holds today by construction. **Browser journeys are now the only one of S58's three original gaps still open.** |
 | 2026-09-15 | Twentieth pass, same branch: **the product driven in a real browser** — S58 (`3c06281`, `935a2a0`, `a7bfaf2`). The last of the three gaps S58 opened with. Three Playwright journeys against Chromium, running the real API and the *built* bundle, covering what is invisible to both suites on either side of them: the backend tests drive the turn function directly and never serialise an SSE frame, the component tests render the chat against a mocked client and never make a request, and the seam between them — the event stream, the credentialed cross-origin fetch, the cookie the browser decides whether to send — is exactly where a change breaks the product while both suites stay green. **The model had to go**: a journey calling a real provider is neither offline nor repeatable, so the deterministic provider is reachable by naming it in a role map, through the existing routing rather than a parallel switch, with production refusing to start when any role points at it — a stack answering from a canned sentence looks exactly like a stack that is working. **No retries, and that earned itself immediately**: the reload journey failed about one run in five, and the cause was the test racing the commit rather than the product losing turns — the reply on screen during a stream is the live buffer, and an interrupted reply is discarded by design. Eight clean runs after the fix. 4 mutations, all killed; the auth-gate one had to be rewritten because the first form did not compile, so the run produced no summary and the sweep read the absence of a failure as a pass — the third time on this branch that a mutation which never reached a running system reported as evidence. `uv run poe check` green (1469 passed, 6 skipped). Browser journeys now run as a tenth CI gate. **What they do not yet cover:** upload, curriculum generation and practice, because those parse structured model output and the deterministic provider returns one sentence. |
+| 2026-09-15 | Twenty-first pass, same branch: **the knowledge-graph section completed** — S24 (`965fa42`), S25 (`5aa59f5`), S27 (`7ca84c1`). The three items that had never been started. **S24:** a concept now has one identity across subjects, and the deliberate limit is the decision that matters — sharing a canonical name is evidence about *names*, so mastery does not transfer; "Functions" in Calculus and in a programming course reach the same key, and silently marking the second mastered would stop the product teaching something the learner had never seen, invisibly. The cross-subject prerequisite turned out not to be a policy at all but a crash: the foreign component reached the topological sort, which had no tiebreak entry for it, and comparing a UUID against the integers used for local components raised `TypeError` — so such an edge did not weaken a plan's ordering, it meant no plan at all. **S25:** subjects now have an owner, NULL meaning curated; a stranger's subject answers 404 rather than 403 because 403 confirms it exists; both ends of a prerequisite edge are checked, since an edge constrains the order both components are taught in. It made the retention statement wrong, which needed a fourth disposition — one table now holds both a learner's rows and nobody's, and "deleted" and "retained" are each false about half of it. **S27:** the `confidence: 1.0` written on every chunk, computed by nothing and read by nothing, is replaced by measured indicators of damage — with no single score and no threshold, both refused on the record, and the documented limitation (two interleaved columns read clean) turned into a test rather than left as prose. `uv run poe check` green (1527 passed, 6 skipped). 22 mutations across the three, all applied and all killed; four survived a first sweep and every one was a real gap, including **dead authorisation code** — a 404 branch no caller could reach, removed rather than kept, because an unreachable authorisation check reads as a protection that is never exercised. |
 
 ## Remaining architecture autopsy — source pass
 
