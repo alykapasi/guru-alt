@@ -32,6 +32,23 @@ class MisconfiguredForProduction(RuntimeError):
         super().__init__(f"refusing to start in prod:\n  - {joined}")
 
 
+def _role_specs(settings: Settings) -> dict[str, str]:
+    """Each role's configured provider, by env-var name, without building a client.
+
+    Read off the settings rather than through ``build_llm_client`` on purpose: this runs
+    *before* the app starts, and a routing check that first has to construct provider SDK
+    clients would fail for reasons that have nothing to do with the routing.
+    """
+    names = {
+        "GURU_MODEL_FAST": settings.model_fast,
+        "GURU_MODEL_SMART": settings.model_smart,
+        "GURU_MODEL_GENIUS": settings.model_genius,
+        "GURU_MODEL_VISION": settings.model_vision,
+        "GURU_MODEL_EMBED": settings.model_embed,
+    }
+    return {name: spec.split(":", 1)[0].strip().lower() for name, spec in names.items()}
+
+
 def _host_of(url: str) -> str:
     try:
         return (urlsplit(url).hostname or "").lower()
@@ -72,6 +89,17 @@ def production_problems(settings: Settings) -> list[str]:
     # actually be called, and the two hosted providers are the only ones that take a key.
     if not settings.openrouter_api_key and not settings.anthropic_api_key:
         problems.append("no model provider key is set (GURU_OPENROUTER_API_KEY/ANTHROPIC_API_KEY)")
+
+    # The deterministic provider exists so a browser journey can drive the stack without a
+    # model. In production it is the worst kind of failure: every request succeeds, every page
+    # renders, and every answer is a canned sentence — indistinguishable from working, which no
+    # health check or readiness probe would ever report.
+    faked = sorted(role for role, spec in _role_specs(settings).items() if spec == "fake")
+    if faked:
+        problems.append(
+            f"{', '.join(faked)} resolve(s) to the deterministic fake provider — every answer "
+            "would be a canned sentence and nothing would report it as broken"
+        )
 
     # Auth (S21). The development sign-in seam issues a session for the dev learner with no
     # credential at all, so leaving it on in production is not a weak password — it is no

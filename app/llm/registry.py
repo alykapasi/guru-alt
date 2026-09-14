@@ -150,6 +150,13 @@ def build_llm_client(settings: Settings) -> LLMClient:
             **limits,
         ),
         "anthropic": AnthropicProvider(api_key=settings.anthropic_api_key, **limits),
+        # Reachable by naming it in a role map (`GURU_MODEL_SMART=fake:fake-1`), which is what
+        # lets a browser journey drive the whole stack without a model. It is registered here
+        # rather than behind a separate switch so it goes through the same routing every other
+        # provider does — and `app.core.release` refuses to start production with any role
+        # pointing at it, on the same reasoning as the dev-login seam: a stack answering from a
+        # canned reply looks exactly like a stack that is working.
+        "fake": FakeProvider(),
     }
     roles = {
         ModelRole.FAST: _parse_spec(settings.model_fast),

@@ -69,6 +69,10 @@ def test_a_correct_production_config_starts() -> None:
         # S21: a session issued with no credential, for anybody who finds the endpoint.
         ({"dev_auto_login": True}, "GURU_DEV_AUTO_LOGIN"),
         ({"session_cookie_secure": False}, "GURU_SESSION_COOKIE_SECURE"),
+        # S58: the provider the browser journeys route through. Every request succeeds and
+        # every answer is canned, so nothing downstream reports it as broken.
+        ({"model_smart": "fake:fake-1"}, "GURU_MODEL_SMART"),
+        ({"model_embed": "FAKE:fake-1"}, "GURU_MODEL_EMBED"),
         (
             {"session_cookie_samesite": "none", "session_cookie_secure": False},
             "GURU_SESSION_COOKIE_SAMESITE=none",
@@ -79,6 +83,15 @@ def test_each_development_default_refuses_production(overrides: dict, expected: 
     with pytest.raises(MisconfiguredForProduction) as caught:
         enforce_production_settings(_prod(**overrides))
     assert any(expected in problem for problem in caught.value.problems)
+
+
+def test_every_faked_role_is_named_not_just_the_first() -> None:
+    """An operator who fixes SMART and restarts into the same refusal for GENIUS has learned
+    the list one outage at a time, which is what this module exists to prevent."""
+    problems = production_problems(_prod(model_smart="fake:fake-1", model_genius="fake:fake-1"))
+    faked = [p for p in problems if "fake provider" in p]
+    assert len(faked) == 1
+    assert "GURU_MODEL_SMART" in faked[0] and "GURU_MODEL_GENIUS" in faked[0]
 
 
 def test_every_problem_is_reported_at_once() -> None:
