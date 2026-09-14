@@ -118,5 +118,17 @@ test("the reply is streamed into the page, not delivered in one piece", async ({
   // terminal frame here is `awaiting_reply` rather than `done`: a new conversation's first
   // turn goes through the refinement gate, which proposes a goal and waits for an answer.
   expect(TERMINAL_EVENTS).toContain(events.at(-1)?.type);
-  await expect(page.getByText("Hello from the fake tutor.")).toBeVisible();
+  // Exactly one, not merely visible — and this is the assertion CI corrected.
+  //
+  // `toBeVisible` does not retry past a strict-mode violation, so when the transcript briefly
+  // held both the live buffer and the persisted message, it failed on the first poll rather
+  // than waiting for the duplicate to resolve. That is how a real defect surfaced: the pending
+  // buffer was cleared only after three refetches, two of which change nothing the transcript
+  // renders, so on a slow connection a learner would read their reply twice.
+  //
+  // Stated plainly, because it matters for how much this line is worth: the duplicate has
+  // never been reproduced locally — the window is too short on this machine, with or without
+  // the fix — so CI is the only place it has ever been observed, and the only place the fix
+  // has been checked.
+  await expect(page.getByText("Hello from the fake tutor.")).toHaveCount(1);
 });
