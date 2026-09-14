@@ -15,7 +15,8 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import prerequisites
-from app.models.knowledge import KC, KCEdge, Subject, Topic
+from app.models.knowledge import KC, Concept, KCEdge, Subject, Topic
+from app.models.learning import LearnerKCState
 from app.models.source import Chunk, ChunkKC, Source
 from app.schemas.knowledge import KCCreate, SubjectCreate, TopicCreate
 
@@ -48,6 +49,46 @@ def _slugify(text: str) -> str:
     # Remove trailing hyphen
     text = text.rstrip("-")
     return text
+
+
+def concept_key(name: str) -> str:
+    """The canonical form of a KC name — the identity two presentations share (S24).
+
+    Deliberately not ``_slugify``. That one keeps underscores and unicode word characters
+    because it builds URL slugs, where preserving what the author typed is the point. This one
+    is an *identity*, so it is narrower on purpose: two presentations should reach the same key
+    despite differing in case and punctuation, and a key that varied with an underscore would
+    fail at exactly the job it exists for.
+
+    Mirrored in SQL by migration 0045's backfill. ``test_knowledge_concepts`` runs both over the
+    same names and asserts they agree, because a backfill that canonicalises differently from
+    the code would split every concept it touched.
+    """
+    text = re.sub(r"[^a-z0-9\s]", "", name.lower())
+    return re.sub(r"\s+", "-", text).strip("-")
+
+
+async def resolve_concept(session: AsyncSession, name: str) -> Concept | None:
+    """The concept this name denotes, created if this is the first presentation of it.
+
+    ``None`` when the name canonicalises to nothing — "???" or "" is not an identity, and
+    giving every such KC one shared empty-string concept would claim they are all the same
+    thing, which is the one answer that is certainly wrong.
+
+    Flushes rather than commits: creating a KC and giving it an identity is one act, and a
+    concept row committed beside a KC that then failed to save would leave an identity for a
+    presentation that does not exist.
+    """
+    key = concept_key(name)
+    if not key:
+        return None
+    existing = await session.scalar(select(Concept).where(Concept.key == key))
+    if existing is not None:
+        return existing
+    concept = Concept(key=key, name=name)
+    session.add(concept)
+    await session.flush()
+    return concept
 
 
 async def subject_name_exists(session: AsyncSession, name: str) -> bool:
@@ -200,11 +241,16 @@ async def create_subject_with_graph(
                 counter += 1
             kc_seen_slugs.add(kc_slug)
 
+            # Resolved per KC rather than in a batch afterwards: a generated curriculum can
+            # name the same concept in two of its own topics, and a batch would then race
+            # itself into two rows for one key.
+            concept = await resolve_concept(session, kc_name)
             kc = KC(
                 topic_id=topic.id,
                 slug=kc_slug,
                 name=kc_name,
                 description=kc_desc,
+                concept_id=concept.id if concept else None,
             )
             session.add(kc)
             # `key` is assigned by curriculum parsing and carried through the review step.
@@ -324,11 +370,13 @@ async def get_topic(session: AsyncSession, topic_id: uuid.UUID) -> Topic | None:
 
 
 async def create_kc(session: AsyncSession, topic_id: uuid.UUID, data: KCCreate) -> KC:
+    concept = await resolve_concept(session, data.name)
     kc = KC(
         topic_id=topic_id,
         slug=data.slug,
         name=data.name,
         description=data.description,
+        concept_id=concept.id if concept else None,
     )
     session.add(kc)
     await session.commit()
@@ -559,6 +607,106 @@ async def sacrificed_prerequisites(
             )
         )
     return sacrificed
+
+
+@dataclass(frozen=True)
+class ForeignPrerequisite:
+    """A prerequisite this subject declares on a component another subject owns (S24).
+
+    The schema permits these and ``POST /kcs/{id}/prerequisites`` creates them, so they are a
+    real state of the graph rather than a hypothetical one.
+    """
+
+    prereq_kc_id: uuid.UUID
+    prereq_name: str
+    prereq_subject_id: uuid.UUID
+    prereq_subject_name: str
+    kc_id: uuid.UUID
+    kc_name: str
+    # Whether the learner has any presentation of that concept in their history. Not "has
+    # mastered it" — see ``Concept``: sharing a canonical name is evidence about names.
+    met_elsewhere: bool
+
+
+async def cross_subject_prerequisites(
+    session: AsyncSession, subject_id: uuid.UUID, *, learner_id: uuid.UUID | None = None
+) -> list[ForeignPrerequisite]:
+    """Prerequisites of this subject's components that live in another subject.
+
+    **The policy, stated.** A lesson plan is a sequence of one subject's components, so a
+    prerequisite outside it cannot be ordered inside it — there is no step that could teach it.
+    Planning therefore drops these edges, and until now it dropped them into a `TypeError`: the
+    foreign component reached the topological sort, which had no tiebreak entry for it, and
+    comparing that fallback against the integers used for local components raised. A
+    cross-subject prerequisite did not order the plan badly, it stopped the plan existing.
+
+    So the edge is dropped deliberately and reported here, which is the same shape S23 settled
+    on for cycles and for the same reason: which of two subjects should absorb the other's
+    component is a curriculum decision, and the graph does not know it.
+
+    ``learner_id`` adds the one fact that makes the report actionable — whether this learner has
+    met that concept at all. It is deliberately *not* "has mastered it": two presentations share
+    a concept on the evidence of their names (see ``Concept``), and treating that as transferred
+    mastery would silently stop teaching something the learner has never seen.
+    """
+    edges = await list_edges_for_subject(session, subject_id)
+    if not edges:
+        return []
+    local = {kc.id for kc in await list_kcs_for_subject(session, subject_id)}
+    foreign_ids = {e.prereq_kc_id for e in edges if e.prereq_kc_id not in local}
+    if not foreign_ids:
+        return []
+
+    rows = (
+        await session.execute(
+            select(KC, Subject)
+            .join(Topic, KC.topic_id == Topic.id)
+            .join(Subject, Topic.subject_id == Subject.id)
+            .where(KC.id.in_(foreign_ids | {e.kc_id for e in edges}))
+        )
+    ).all()
+    named = {kc.id: (kc, subject) for kc, subject in rows}
+
+    met: set[uuid.UUID] = set()
+    if learner_id is not None:
+        concept_ids = {kc.concept_id for kc, _ in named.values() if kc.concept_id is not None}
+        if concept_ids:
+            found = await session.scalars(
+                select(KC.concept_id)
+                .join(LearnerKCState, LearnerKCState.kc_id == KC.id)
+                .where(
+                    LearnerKCState.learner_id == learner_id,
+                    KC.concept_id.in_(concept_ids),
+                    # The foreign component itself does not count as meeting the concept
+                    # elsewhere — that would report every prerequisite the learner has so
+                    # much as been estimated on as already met.
+                    KC.id.notin_(foreign_ids),
+                )
+                .distinct()
+            )
+            met = {cid for cid in found.all() if cid is not None}
+
+    out: list[ForeignPrerequisite] = []
+    for edge in edges:
+        if edge.prereq_kc_id in local:
+            continue
+        prereq = named.get(edge.prereq_kc_id)
+        dependent = named.get(edge.kc_id)
+        if prereq is None or dependent is None:
+            continue  # deleted between the two queries; a gap, not a crash
+        prereq_kc, prereq_subject = prereq
+        out.append(
+            ForeignPrerequisite(
+                prereq_kc_id=prereq_kc.id,
+                prereq_name=prereq_kc.name,
+                prereq_subject_id=prereq_subject.id,
+                prereq_subject_name=prereq_subject.name,
+                kc_id=dependent[0].id,
+                kc_name=dependent[0].name,
+                met_elsewhere=prereq_kc.concept_id is not None and prereq_kc.concept_id in met,
+            )
+        )
+    return out
 
 
 async def subjects_for_kcs(session: AsyncSession, kc_ids: Iterable[uuid.UUID]) -> set[uuid.UUID]:

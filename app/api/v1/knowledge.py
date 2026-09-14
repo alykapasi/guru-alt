@@ -131,6 +131,44 @@ async def subject_prerequisite_conflicts(
     return await svc.sacrificed_prerequisites(session, subject_id)
 
 
+class ForeignPrerequisiteRead(BaseModel):
+    """A prerequisite this subject declares on a component another subject owns (S24)."""
+
+    prereq_kc_id: uuid.UUID
+    prereq_name: str
+    prereq_subject_id: uuid.UUID
+    prereq_subject_name: str
+    kc_id: uuid.UUID
+    kc_name: str
+    met_elsewhere: bool
+
+
+@router.get(
+    "/subjects/{subject_id}/cross-subject-prerequisites",
+    response_model=list[ForeignPrerequisiteRead],
+)
+async def subject_cross_subject_prerequisites(
+    subject_id: uuid.UUID, session: SessionDep, learner: CurrentLearner
+):
+    """Prerequisites of this subject that live in another subject (S24).
+
+    A lesson plan sequences one subject's components, so a prerequisite outside it has no step
+    that could teach it and planning drops the edge. That is a real weakening of the ordering
+    and it used to be invisible — worse than invisible, since carrying the foreign component
+    into the sort raised `TypeError` and no plan was produced at all.
+
+    `met_elsewhere` says whether this learner has any presentation of that concept in their
+    history. Deliberately not "has mastered it": two components share a concept on the evidence
+    of their names, and treating that as transferred mastery would stop the product teaching
+    something the learner has never seen.
+
+    An empty list is the ordinary answer.
+    """
+    if await svc.get_subject(session, subject_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
+    return await svc.cross_subject_prerequisites(session, subject_id, learner_id=learner.id)
+
+
 @router.delete("/kcs/{kc_id}/prerequisites/{prereq_kc_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_prerequisite(
     kc_id: uuid.UUID,

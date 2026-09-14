@@ -1214,6 +1214,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/subjects/{subject_id}/cross-subject-prerequisites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Subject Cross Subject Prerequisites
+         * @description Prerequisites of this subject that live in another subject (S24).
+         *
+         *     A lesson plan sequences one subject's components, so a prerequisite outside it has no step
+         *     that could teach it and planning drops the edge. That is a real weakening of the ordering
+         *     and it used to be invisible — worse than invisible, since carrying the foreign component
+         *     into the sort raised `TypeError` and no plan was produced at all.
+         *
+         *     `met_elsewhere` says whether this learner has any presentation of that concept in their
+         *     history. Deliberately not "has mastered it": two components share a concept on the evidence
+         *     of their names, and treating that as transferred mastery would stop the product teaching
+         *     something the learner has never seen.
+         *
+         *     An empty list is the ordinary answer.
+         */
+        get: operations["subject_cross_subject_prerequisites_api_v1_subjects__subject_id__cross_subject_prerequisites_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/subjects/{subject_id}/lesson-plan": {
         parameters: {
             query?: never;
@@ -1901,6 +1933,35 @@ export interface components {
          * @enum {string}
          */
         FailureKind: "none" | "notation" | "procedural" | "conceptual" | "prerequisite" | "incomplete";
+        /**
+         * ForeignPrerequisiteRead
+         * @description A prerequisite this subject declares on a component another subject owns (S24).
+         */
+        ForeignPrerequisiteRead: {
+            /**
+             * Kc Id
+             * Format: uuid
+             */
+            kc_id: string;
+            /** Kc Name */
+            kc_name: string;
+            /** Met Elsewhere */
+            met_elsewhere: boolean;
+            /**
+             * Prereq Kc Id
+             * Format: uuid
+             */
+            prereq_kc_id: string;
+            /** Prereq Name */
+            prereq_name: string;
+            /**
+             * Prereq Subject Id
+             * Format: uuid
+             */
+            prereq_subject_id: string;
+            /** Prereq Subject Name */
+            prereq_subject_name: string;
+        };
         /**
          * GenerateRequest
          * @description Generate content for a KC. With ``type`` omitted, the default block set is assembled.
@@ -4788,6 +4849,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["KCCoverageRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    subject_cross_subject_prerequisites_api_v1_subjects__subject_id__cross_subject_prerequisites_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ForeignPrerequisiteRead"][];
                 };
             };
             /** @description Validation Error */
