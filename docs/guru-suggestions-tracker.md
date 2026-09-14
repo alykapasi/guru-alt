@@ -1711,6 +1711,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-14 | Seventeenth pass, same branch as the sixteenth: **the calibration spine completed as far as it can be without learners** — S12 (`c123982`), S56 (`307646c`), S18 (`1c5f19c`), S59 (`d90f72d`). Four instruments, one command. **S12:** the generator's requested difficulty is now measurable against what the answers say it delivered, solving for the d where expected total score meets observed total; this is the route O01 left open, and it needs no two learners to meet the same item. **S56:** the shipped estimator is scored against candidates on the same sequences, because a calibration number alone has no scale; the null model built at the dataset's own base rate must score exactly zero skill, which is the harness checking itself. **S18:** seventeen uncalibrated constants inventoried in one place, each naming the specific reading that would settle it rather than saying "needs data", with a test asserting the inventoried value still matches the code so that re-guessing a knob nobody has measured fails a test naming it. **S59:** all four behind `poe reliability-report`, dataset read once, every section printing whether or not there is data. **Two bugs were found by the instruments' own output rather than by the tests:** the comparison reported production's lead as `+0.0000` because it compared the best row against the shipped row when they were the same row, and the report silently dropped two of its four sections when the dataset was missing - which is exactly the state the repository is in. `uv run poe check` green (1430 passed, 4 skipped). 10 mutations, all applied and all killed; three survived the first round and one of those was a genuine equivalent mutant, pinned afterwards with a purpose-built estimator whose decay moves ability, because Glicko's does not and the contract should be fixed before one arrives that does. **What the command prints today:** three sections with nothing to score, and seventeen uncalibrated constants. The instruments are complete; the readings need a cohort. |
 | 2026-09-14 | Eighteenth pass, same branch: **completing what the status page still showed as partial**. S28 (`8ec665c`), S23 (`78e8481`), P11/S60 alerts (`25d759f`), S58 queue delivery (`43d72fe`). **S28** gains the half that was left: a valid citation *pointer* is now distinguished from actual claim support, claim-first rather than citation-first because a claim nothing supports has no citation to walk; contradictory sources are handled from both ends. **S23's** conflict report finally has a repair path - `DELETE` on one edge, safe without a cycle check because removing constraints cannot close a loop, which is why the system removes an edge a person *names* and still does not choose. **The alerts are polled and remembered**: transitions rather than evaluations, and a condition missing from a report is not treated as resolved, because closing an incident when the check stops running is how a monitoring outage reads as good news. **Queue delivery** goes through a real Redis broker in its own CI job, asserting on the task's arguments and not merely that bytes arrived. `uv run poe check` green (1458 passed, 6 skipped). 21 mutations across the four, all applied and all killed. **Two bugs found that no test had asked about.** Ordering alert history by `created_at` was wrong roughly half the time - `now()` is the transaction clock, so one sweep's rows share it and the order fell to a random UUID; that is the same tie behind S56, S14 and S62, so the fix is a database sequence rather than another tiebreak. And a `.replace()` written without the `assert old in s` guard this repo uses everywhere silently did nothing, leaving the fix unapplied while the commit message said otherwise - caught only because the flake persisted. |
 | 2026-09-15 | Nineteenth pass, same branch: **faults injected mid-operation, which is where they cost** — S60 (`bfd77e4`), S58 (`1c50d17`, `5b75eac`). Every failure test in the suite failed its dependency *before* it did anything: the stream raises on its first chunk, the queue refuses the dispatch, the bucket is empty. Those establish that an exception propagates and nothing else; none of them reaches the state that costs money and trust — work already done, already partly paid for, already partly on the learner's screen. Three faults now fire partway through, each recording that it fired, because a fault that silently failed to inject reports as a pass. **Both defects it found were in code whose own docstring promised otherwise.** `llm_log` states that accounting is not part of the work it pays for, and `asyncio.gather` abandons its siblings on the first exception — so a fan-out of embedding batches threw away the usage of the batches that had *succeeded*, and a source failing on batch three and retrying three times billed the provider three times over while the budget watch saw a quiet account. And `blob-check`, whose entire job is to produce a verdict on a restore, produced none at all when the store errored on a key: the exception ended the walk. An unanswered key is now a third outcome — calling it present passes a restore nobody verified, calling it missing raises a data-loss alarm over a blip. `uv run poe check` green (1465 passed, 6 skipped). 6 mutations, all applied and all killed. One of the seven new tests is recorded as a regression anchor rather than a load-bearing one, since it holds today by construction. **Browser journeys are now the only one of S58's three original gaps still open.** |
+| 2026-09-15 | Twentieth pass, same branch: **the product driven in a real browser** — S58 (`3c06281`, `935a2a0`, `a7bfaf2`). The last of the three gaps S58 opened with. Three Playwright journeys against Chromium, running the real API and the *built* bundle, covering what is invisible to both suites on either side of them: the backend tests drive the turn function directly and never serialise an SSE frame, the component tests render the chat against a mocked client and never make a request, and the seam between them — the event stream, the credentialed cross-origin fetch, the cookie the browser decides whether to send — is exactly where a change breaks the product while both suites stay green. **The model had to go**: a journey calling a real provider is neither offline nor repeatable, so the deterministic provider is reachable by naming it in a role map, through the existing routing rather than a parallel switch, with production refusing to start when any role points at it — a stack answering from a canned sentence looks exactly like a stack that is working. **No retries, and that earned itself immediately**: the reload journey failed about one run in five, and the cause was the test racing the commit rather than the product losing turns — the reply on screen during a stream is the live buffer, and an interrupted reply is discarded by design. Eight clean runs after the fix. 4 mutations, all killed; the auth-gate one had to be rewritten because the first form did not compile, so the run produced no summary and the sweep read the absence of a failure as a pass — the third time on this branch that a mutation which never reached a running system reported as evidence. `uv run poe check` green (1469 passed, 6 skipped). Browser journeys now run as a tenth CI gate. **What they do not yet cover:** upload, curriculum generation and practice, because those parse structured model output and the deterministic provider returns one sentence. |
 
 ## Remaining architecture autopsy — source pass
 
@@ -3061,7 +3062,8 @@ and wiring it through `run_cell`. Prompt-version identity is not yet recorded.
 ### S58 — Expand CI to cover the delivered product and actual failure boundaries
 
 **Status:** Partially implemented (`36c16e5`, branch `fix/tracker-s54-s38`; extended on branches
-`feat/s21-s58-s60` and `ci/modular-gates`) · **Priority:** Before release
+`feat/s21-s58-s60`, `ci/modular-gates` and `fix/tracker-repairs-and-next`) · **Priority:**
+Before release
 
 **Implemented:** Three gates that were missing entirely.
 
@@ -3218,20 +3220,61 @@ writes no chunks at all" holds today by construction, since chunks are written a
 returns. It would only fail against a pipeline that persisted incrementally, which is exactly
 the refactor it exists to catch.
 
+**Implemented (sixth pass) — the product driven in a real browser.** The last of the three
+gaps this entry opened with. Three Playwright journeys against Chromium, running the real API
+and the *built* bundle rather than the dev server, because the bundle is what ships and the dev
+server transforms modules on the fly.
+
+What they cover is invisible to both suites on either side of them. The backend tests drive
+`run_tutor_turn` directly and never serialise an SSE frame; the component tests render the chat
+against a mocked client and never make a request. The seam between them — the event stream, the
+credentialed cross-origin fetch, the cookie the browser decides whether to send — is exactly
+where a change breaks the product while both suites stay green. Three of the four mutations are
+in that seam, and all four were killed.
+
+**The model had to go.** A journey that calls a real provider is neither offline nor repeatable
+and would bill for every CI run, so the deterministic provider is reachable by naming it in a
+role map (`GURU_MODEL_SMART=fake:fake-1`). That is deliberately the existing routing rather than
+a parallel switch, so the journey exercises what production exercises with one provider swapped;
+`app/core/release.py` refuses to start production with any role pointing at it, and names every
+such role at once. The reasoning is the dev-login seam's: a stack answering from a canned
+sentence looks exactly like a stack that is working, and nothing downstream would say otherwise.
+
+**Three choices that are not incidental.** Port 5173 is the origin `cors_origins` allows by
+default and the one the cookie's SameSite policy treats as same-site as the API, so the journey
+runs the credential path a developer actually runs rather than a relaxed variant. There is no
+dev-login seam: the journeys register through the form, which is the path a first user takes and
+the only one available — the development sign-in button is compiled out of a production build —
+and leaving the seam off is what lets one journey assert a signed-out browser is turned away.
+And the stack gets its own database, derived from `GURU_DATABASE_URL` the way the suite's is,
+because these journeys commit and cannot use the transactional fixtures.
+
+**No retries, and it earned that immediately.** The reload journey failed about one run in five.
+The cause was the test racing the commit: the reply visible during the stream is the live
+buffer, and the assistant message lands only after the final frame, so a reload taken mid-stream
+correctly finds nothing — an interrupted reply is discarded by design rather than persisted half
+written. Waiting for the stream to finish fixed it; eight consecutive clean runs followed. A
+retry would have hidden it and left the product looking like it loses turns.
+
+**A mutation that does not compile is not a survivor.** The first form of the auth-gate mutation
+failed `tsc -b`, so the run produced no test summary at all and the sweep read the absence of a
+failure as a pass. Rewritten to compile, the journey killed it. This is the same trap as a
+mutation that never applied, in a different disguise, and it is the third time on this branch.
+
 **Not done in this pass.** The split changed which job reports a failure and added no coverage;
-the queue work and the fault injection added one gap's worth each. Browser journeys are
-untouched, and are now the only one of the three original gaps left. More pointedly: `main` carries **no branch protection and no rulesets**, so none of
+the queue work, the fault injection and the browser journeys added one gap's worth each. More pointedly: `main` carries **no branch protection and no rulesets**, so none of
 these checks is *required*. The `CI` job exists to make requiring one a one-line change, but
 that line has not been written, and nothing today stops a merge over a red gate. The same pass
 saw a run sit `queued` with zero jobs for nine hours while both cancel endpoints refused it with
 contradictory errors — a wedged run that never reached a runner, and which an unenforced check
 makes indistinguishable from a passing one to anyone not reading the list.
 
-**Still open:** browser/e2e journeys — the upload→curriculum→chat→practice→notes path in a real
-browser is still unwritten, and it is now the largest single gap here, and the last of the three
-this entry opened with. It needs a running stack in CI: backend, frontend, Postgres and a
-browser driver, plus a way to run the model-facing paths deterministically, since a journey that
-calls a real provider is neither offline nor repeatable.
+**Still open:** the journeys cover registration, the chat turn and its survival of a reload —
+the *first* legs of the path this entry named, not all of it. Upload, curriculum generation and
+practice are not driven yet, and the obstacle is specific rather than effort: those paths parse
+structured model output, and the deterministic provider returns one canned sentence, so they
+need a fake that answers differently depending on what was asked. That is the next slice, and
+the harness it would go in now exists.
 The migration harness covers two revisions rather than being applied to every future one, and
 nothing requires a new migration to come with a data case. `guru_migration_test` is a fixed
 name, so the harness assumes the suite is not run in parallel against one server. And the
