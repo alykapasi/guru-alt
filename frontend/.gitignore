@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Playwright (S58): run output, never committed.
+test-results
+playwright-report
+blob-report
+.playwright
