@@ -3427,6 +3427,23 @@ correctly finds nothing — an interrupted reply is discarded by design rather t
 written. Waiting for the stream to finish fixed it; eight consecutive clean runs followed. A
 retry would have hidden it and left the product looking like it loses turns.
 
+**It caught a defect on its second CI run**, which is the first thing this gate has found
+rather than been written against. `MessageList` renders the persisted transcript and the live
+buffer together, and the buffer was cleared only after three awaited refetches — two of which
+change nothing the transcript renders. Between the messages query resolving and the last of
+them finishing, the reply was on screen twice: once live, once from the database, long enough
+on a slow connection for a learner to read their answer and then read it again. The buffer is
+dropped as soon as the transcript lands now.
+
+The assertion was wrong in an instructive way too. `toBeVisible` does not retry past a
+strict-mode violation, so two matching elements failed it on the first poll — which is *why*
+CI saw this at all — while reporting "not visible" about something plainly visible. It asserts
+a count of one now. And the honest limit: the duplicate has never been reproduced locally, with
+or without the fix, so CI is the only place it has been observed. An attempt to make it
+deterministic by holding the two trailing refetches open was removed when it turned out to hold
+nothing — those queries are inactive in this journey, so no request was ever delayed, and the
+comment claiming determinism would have been false assurance.
+
 **A mutation that does not compile is not a survivor.** The first form of the auth-gate mutation
 failed `tsc -b`, so the run produced no test summary at all and the sweep read the absence of a
 failure as a pass. Rewritten to compile, the journey killed it. This is the same trap as a
