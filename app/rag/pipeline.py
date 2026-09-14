@@ -7,6 +7,7 @@ re-ingest replaces rather than duplicates. The caller (ingestion service / worke
 transaction and the source's status; the pipeline only flushes.
 """
 
+import asyncio
 import os
 import tempfile
 import time
@@ -25,13 +26,27 @@ from app.models.source import Chunk, ChunkKC, Source, SourceStatus
 from app.rag import simhash, textnorm
 from app.rag.adapters import ExtractContext, select_adapter
 from app.rag.chunking import chunk_units
-from app.rag.concurrency import gather_bounded
+from app.rag.concurrency import gather_bounded, gather_bounded_settled
 from app.rag.demux import MediaDemuxer
 from app.rag.transcription import Transcriber
 from app.services.llm_log import log_llm_call
 from app.storage import BlobStore
 
 log = structlog.get_logger(__name__)
+
+
+class PartialEmbedding(RuntimeError):
+    """A batch failed after other batches had already been sent — and billed.
+
+    The usage it carries is what the batches that *did* complete cost. Losing it with the
+    vectors is how a retry loop spends real money and reports none of it: the source rolls
+    back, the chunks are discarded, the job runs again, and the budget watch (P11) sees a
+    quiet account while the provider's invoice grows with every attempt.
+    """
+
+    def __init__(self, usage: Usage, cause: BaseException) -> None:
+        super().__init__(f"embedding failed after {usage.total_tokens} billed tokens: {cause}")
+        self.usage = usage
 
 
 async def embed_in_batches(
@@ -48,23 +63,34 @@ async def embed_in_batches(
     their times would report more time than actually passed — by the concurrency factor, and
     flatteringly in the wrong direction for the one operation whose slowness anyone would be
     investigating. The elapsed time of the whole batched call is measured here instead (S48).
+
+    A batch that fails raises :class:`PartialEmbedding` carrying what the *other* batches cost.
+    The vectors are worthless without all of them and the caller will discard them — but the
+    requests were made and are charged for, so the bill has to leave here even though the work
+    does not.
     """
     if not texts:
         return EmbedResult(vectors=[])
     batches = [texts[i : i + batch_size] for i in range(0, len(texts), batch_size)]
     started = time.perf_counter()
-    results = await gather_bounded(
+    results = await gather_bounded_settled(
         [llm.embed(ModelRole.EMBED, batch) for batch in batches], concurrency
     )
     elapsed_ms = int((time.perf_counter() - started) * 1000)
-    return EmbedResult(
-        vectors=[vector for batch in results for vector in batch.vectors],
-        usage=Usage(
-            input_tokens=sum(batch.usage.input_tokens for batch in results),
-            output_tokens=sum(batch.usage.output_tokens for batch in results),
-            latency_ms=elapsed_ms,
-        ),
+    done = [batch for batch in results if isinstance(batch, EmbedResult)]
+    usage = Usage(
+        input_tokens=sum(batch.usage.input_tokens for batch in done),
+        output_tokens=sum(batch.usage.output_tokens for batch in done),
+        latency_ms=elapsed_ms,
     )
+    failure = next((batch for batch in results if isinstance(batch, BaseException)), None)
+    if failure is not None:
+        # Cancellation is not a provider failure and must not be converted into one: swallowing
+        # it here would break the job deadline `ingest_source` wraps this in.
+        if isinstance(failure, asyncio.CancelledError):
+            raise failure
+        raise PartialEmbedding(usage, failure) from failure
+    return EmbedResult(vectors=[vector for batch in done for vector in batch.vectors], usage=usage)
 
 
 class IngestionError(RuntimeError):
@@ -192,12 +218,25 @@ async def run(
             learner_id=source.learner_id, role=str(role), spec=llm.spec(role), usage=usage
         )
 
-    embedded = await embed_in_batches(
-        llm,
-        [c.text for c in chunks],
-        batch_size=settings.embed_batch_size,
-        concurrency=settings.embed_concurrency,
-    )
+    try:
+        embedded = await embed_in_batches(
+            llm,
+            [c.text for c in chunks],
+            batch_size=settings.embed_batch_size,
+            concurrency=settings.embed_concurrency,
+        )
+    except PartialEmbedding as exc:
+        # Recorded before re-raising, on accounting's own transaction, so it survives the
+        # rollback that discards this source. The batches that completed were charged for
+        # whether or not anything is left to show for them.
+        if exc.usage.total_tokens:
+            await log_llm_call(
+                learner_id=source.learner_id,
+                role=str(ModelRole.EMBED),
+                spec=llm.spec(ModelRole.EMBED),
+                usage=exc.usage,
+            )
+        raise
     if embedded.usage.total_tokens:
         await log_llm_call(
             learner_id=source.learner_id,
