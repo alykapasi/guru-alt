@@ -137,8 +137,13 @@ def test_ordering_a_cyclic_graph_raises_instead_of_guessing() -> None:
         topo_sort([x, y], [Edge(prereq_kc_id=x, kc_id=y), Edge(prereq_kc_id=y, kc_id=x)], {})
 
 
-async def _graph(session: AsyncSession, n: int) -> tuple[Subject, list[KC]]:
-    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="S")
+async def _graph(
+    session: AsyncSession, n: int, *, owner: uuid.UUID | None = None
+) -> tuple[Subject, list[KC]]:
+    """``owner=None`` builds a *curated* subject (S25) — fine for the service-level tests here,
+    which never go through the ownership guard. A test driving the API has to own it, because
+    a curated subject is read-only through that boundary."""
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="S", owner_learner_id=owner)
     session.add(subject)
     await session.flush()
     topic = Topic(subject_id=subject.id, slug="t", name="T")
@@ -401,9 +406,9 @@ async def test_removing_an_edge_cannot_introduce_a_cycle(db_session: AsyncSessio
 
 
 async def test_the_removal_endpoint_is_reachable_and_404s_on_an_unknown_kc(
-    api_client: AsyncClient, db_session: AsyncSession
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
 ) -> None:
-    _subject, (a, b) = await _graph(db_session, 2)
+    _subject, (a, b) = await _graph(db_session, 2, owner=api_learner.id)
     await _edges(db_session, [(a, b)])
 
     ok = await api_client.delete(f"{API}/kcs/{b.id}/prerequisites/{a.id}")

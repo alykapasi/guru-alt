@@ -61,7 +61,10 @@ def test_every_learner_owned_table_has_a_stated_disposition() -> None:
     owned = {
         table.name
         for table in Base.metadata.tables.values()
-        if any(c.name == "learner_id" for c in table.columns)
+        # Any column *ending* in learner_id, not just the bare name: S25 introduced
+        # `subjects.owner_learner_id`, and a guard that only looked for `learner_id` would
+        # have let a whole new class of learner-owned table in without a decision.
+        if any(c.name.endswith("learner_id") for c in table.columns)
     }
     assert owned - named == set(), f"no retention decision recorded for: {owned - named}"
 

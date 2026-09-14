@@ -14,13 +14,31 @@ from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 
 
 class Subject(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """A top-level domain (e.g. "Calculus")."""
+    """A top-level domain (e.g. "Calculus"), either curated or one learner's own (S25).
+
+    ``owner_learner_id`` is the boundary between the two, and the null is meaningful rather
+    than missing data: **NULL means curated** — shared, visible to everyone, and not editable
+    through the learner API. A learner id means a private curriculum, visible only to that
+    learner and editable only by them.
+
+    Before this every subject was global and unscoped: listing returned everybody's, a
+    duplicate name was rejected across all learners so the first person to study Calculus
+    took the name from everyone after them, and any authenticated learner could add topics,
+    components and prerequisite edges to any subject — including one somebody else was
+    actively being taught from.
+    """
 
     __tablename__ = "subjects"
 
     slug: Mapped[str] = mapped_column(unique=True, index=True)
     name: Mapped[str]
     description: Mapped[str | None] = mapped_column(default=None)
+    # CASCADE: a learner's own curriculum is theirs, and closing the account takes it. Curated
+    # subjects carry NULL here and are untouched by any account deletion — see
+    # `app.services.retention`, which states both halves.
+    owner_learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="CASCADE"), default=None, index=True
+    )
 
     topics: Mapped[list["Topic"]] = relationship(
         back_populates="subject", cascade="all, delete-orphan"

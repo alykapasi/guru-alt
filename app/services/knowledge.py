@@ -11,7 +11,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 import structlog
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import prerequisites
@@ -91,10 +91,27 @@ async def resolve_concept(session: AsyncSession, name: str) -> Concept | None:
     return concept
 
 
-async def subject_name_exists(session: AsyncSession, name: str) -> bool:
-    """Check if a subject with this name exists (case-insensitive)."""
+async def subject_name_exists(
+    session: AsyncSession, name: str, *, owner_learner_id: uuid.UUID | None
+) -> bool:
+    """Whether this owner already has a subject by this name (case-insensitive).
+
+    Scoped to the owner, and that is the fix rather than a refinement (S25): the check was
+    global, so the first learner to study Calculus took the name from every learner after
+    them — a conflict on somebody else's private curriculum, reported as though they had
+    made a mistake. A learner is still stopped from creating the same subject twice, which is
+    the duplicate this was ever meant to catch, and a clash with a *curated* name is allowed
+    because the two are different things: one is the shared library, the other is theirs.
+    """
     result = await session.scalar(
-        select(Subject).where(func.lower(Subject.name) == name.strip().lower()).limit(1)
+        select(Subject)
+        .where(
+            func.lower(Subject.name) == name.strip().lower(),
+            Subject.owner_learner_id == owner_learner_id
+            if owner_learner_id is not None
+            else Subject.owner_learner_id.is_(None),
+        )
+        .limit(1)
     )
     return result is not None
 
@@ -102,8 +119,17 @@ async def subject_name_exists(session: AsyncSession, name: str) -> bool:
 # --- Subjects ---------------------------------------------------------------
 
 
-async def create_subject(session: AsyncSession, data: SubjectCreate) -> Subject:
-    subject = Subject(slug=data.slug, name=data.name, description=data.description)
+async def create_subject(
+    session: AsyncSession, data: SubjectCreate, *, owner_learner_id: uuid.UUID | None = None
+) -> Subject:
+    """``owner_learner_id=None`` creates a *curated* subject: shared, and read-only through
+    the learner API (S25). No route a learner can reach passes None."""
+    subject = Subject(
+        slug=data.slug,
+        name=data.name,
+        description=data.description,
+        owner_learner_id=owner_learner_id,
+    )
     session.add(subject)
     await session.commit()
     await session.refresh(subject)
@@ -192,6 +218,9 @@ async def create_subject_with_graph(
         slug=subject_slug,
         name=subject_name,
         description=subject_description,
+        # A curriculum generated for a learner from their own goal is theirs (S25). Curated
+        # subjects are created deliberately and carry NULL; nothing reaches this path.
+        owner_learner_id=learner_id,
     )
     session.add(subject)
     await session.flush()
@@ -330,13 +359,58 @@ async def resolve_source_scope(
     return topic.subject_id, topic_id
 
 
-async def list_subjects(session: AsyncSession) -> Sequence[Subject]:
-    result = await session.scalars(select(Subject).order_by(Subject.slug))
+async def list_subjects(
+    session: AsyncSession, *, learner_id: uuid.UUID | None = None
+) -> Sequence[Subject]:
+    """Curated subjects plus this learner's own (S25).
+
+    ``learner_id=None`` returns everything and is for internal callers with no learner in
+    hand — never for a request, which would put every learner's private curriculum in front
+    of whoever asked.
+    """
+    statement = select(Subject).order_by(Subject.slug)
+    if learner_id is not None:
+        statement = statement.where(
+            or_(Subject.owner_learner_id.is_(None), Subject.owner_learner_id == learner_id)
+        )
+    result = await session.scalars(statement)
     return result.all()
 
 
 async def get_subject(session: AsyncSession, subject_id: uuid.UUID) -> Subject | None:
     return await session.get(Subject, subject_id)
+
+
+def is_visible_to(subject: Subject, learner_id: uuid.UUID) -> bool:
+    """Curated, or this learner's own. Anything else does not exist as far as they know."""
+    return subject.owner_learner_id is None or subject.owner_learner_id == learner_id
+
+
+def is_writable_by(subject: Subject, learner_id: uuid.UUID) -> bool:
+    """Only the owner may change a subject's graph.
+
+    A curated subject is deliberately writable by nobody through this API: it is the shared
+    library, and letting any authenticated learner add components to it is how the shared
+    library becomes one learner's notes.
+    """
+    return subject.owner_learner_id == learner_id
+
+
+async def subject_of_topic(session: AsyncSession, topic_id: uuid.UUID) -> Subject | None:
+    """The subject a topic belongs to — the unit ownership is decided at."""
+    return await session.scalar(
+        select(Subject).join(Topic, Topic.subject_id == Subject.id).where(Topic.id == topic_id)
+    )
+
+
+async def subject_of_kc(session: AsyncSession, kc_id: uuid.UUID) -> Subject | None:
+    """The subject a component belongs to, through its topic."""
+    return await session.scalar(
+        select(Subject)
+        .join(Topic, Topic.subject_id == Subject.id)
+        .join(KC, KC.topic_id == Topic.id)
+        .where(KC.id == kc_id)
+    )
 
 
 # --- Topics -----------------------------------------------------------------

@@ -569,7 +569,8 @@ export interface paths {
          *     claim is wrong is not something the graph knows. This is how a person acts on that report.
          *
          *     404 only when the edge does not exist *and* neither does the KC — deleting an edge that is
-         *     already gone succeeds, so a retried request behaves like the one that got through.
+         *     already gone succeeds, so a retried request behaves like the one that got through. Only the
+         *     subject's owner may do it: editing the graph is editing the curriculum (S25).
          */
         delete: operations["remove_prerequisite_api_v1_kcs__kc_id__prerequisites__prereq_kc_id__delete"];
         options?: never;
@@ -1141,10 +1142,17 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Subjects */
+        /**
+         * List Subjects
+         * @description Curated subjects and this learner's own — not everybody's (S25).
+         */
         get: operations["list_subjects_api_v1_subjects_get"];
         put?: never;
-        /** Create Subject */
+        /**
+         * Create Subject
+         * @description A subject created through this route belongs to its creator (S25). Curated subjects
+         *     carry no owner and are not created here — nothing a learner can reach makes one.
+         */
         post: operations["create_subject_api_v1_subjects_post"];
         delete?: never;
         options?: never;

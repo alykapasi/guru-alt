@@ -239,10 +239,14 @@ async def test_revoking_a_session_is_seen_by_a_connection_that_already_used_it(
 # --- removing a prerequisite actually persists (S23) -------------------------------------------
 
 
-async def _seed_edge(engine: AsyncEngine) -> tuple[Subject, KC, KC]:
-    """A committed two-KC graph with one prerequisite edge between them."""
+async def _seed_edge(engine: AsyncEngine, owner: uuid.UUID) -> tuple[Subject, KC, KC]:
+    """A committed two-KC graph with one prerequisite edge between them, owned by ``owner``.
+
+    Owned rather than curated because the test removes the edge through the API, and a curated
+    subject is read-only across that boundary (S25).
+    """
     async with AsyncSession(engine, expire_on_commit=False) as session:
-        subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Ordering")
+        subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Ordering", owner_learner_id=owner)
         session.add(subject)
         await session.flush()
         topic = Topic(subject_id=subject.id, slug=f"t-{uuid.uuid4().hex[:8]}", name="Edges")
@@ -258,7 +262,7 @@ async def _seed_edge(engine: AsyncEngine) -> tuple[Subject, KC, KC]:
 
 
 async def test_removing_a_prerequisite_survives_the_request_that_removed_it(
-    live_client: AsyncClient, engine: AsyncEngine
+    live_client: AsyncClient, engine: AsyncEngine, live_learner: Learner
 ) -> None:
     """The shared-session suite cannot ask this. Every other test for removal runs inside one
     transaction that is rolled back, so a service that deleted the row and never committed
@@ -267,7 +271,7 @@ async def test_removing_a_prerequisite_survives_the_request_that_removed_it(
 
     S23's whole point is acting on a reported conflict; an act that does not persist is not one.
     """
-    subject, prereq, dependent = await _seed_edge(engine)
+    subject, prereq, dependent = await _seed_edge(engine, live_learner.id)
     try:
         removed = await live_client.delete(f"{API}/kcs/{dependent.id}/prerequisites/{prereq.id}")
 

@@ -41,7 +41,12 @@ from app.storage.base import BlobStore
 
 log = structlog.get_logger(__name__)
 
-Disposition = Literal["deleted", "anonymised", "retained"]
+# "partly deleted" is a fourth answer rather than a fudge of the other three, and S25 is what
+# made it necessary: one table can now hold both a learner's own rows and rows belonging to
+# nobody, so "deleted" and "retained" are each false about half of it. Calling it either would
+# be the kind of statement this module exists to stop — a policy that reads as decided and is
+# wrong in the case somebody eventually asks about.
+Disposition = Literal["deleted", "anonymised", "retained", "partly deleted"]
 
 
 @dataclass(frozen=True)
@@ -120,8 +125,12 @@ RETENTION: tuple[StoreRetention, ...] = (
     ),
     StoreRetention(
         "subjects/topics/kcs/kc_edges/items(generated)/rubrics",
-        "retained",
-        "Shared curriculum and the generated question bank belong to no one learner.",
+        "partly deleted",
+        "Split by ownership since S25. A subject the learner created is theirs and goes with "
+        "the account, taking its topics, components and prerequisite edges by cascade. A "
+        "*curated* subject carries no owner, belongs to no one learner, and is retained — "
+        "deleting one account must not empty the shared library for everybody else. The "
+        "generated question bank is retained either way; authored items are handled above.",
     ),
 )
 
