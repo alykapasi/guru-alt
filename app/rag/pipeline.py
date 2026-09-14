@@ -23,7 +23,7 @@ from app.learning.kc_tagging import TAGGING_ROLE, load_candidate_kcs, tag_chunk
 from app.llm import EmbedResult, LLMClient, ModelRole, Usage
 from app.llm.embedding_space import current_space
 from app.models.source import Chunk, ChunkKC, Source, SourceStatus
-from app.rag import simhash, textnorm
+from app.rag import extraction_quality, simhash, textnorm
 from app.rag.adapters import ExtractContext, select_adapter
 from app.rag.chunking import chunk_units
 from app.rag.concurrency import gather_bounded, gather_bounded_settled
@@ -260,7 +260,14 @@ async def run(
                 **unit.locator,
                 "source_id": str(source.id),
                 "method": unit.method or adapter.name,
-                "confidence": 1.0,
+                # Measured indicators, where a hardcoded `"confidence": 1.0` used to sit (S27).
+                # Nothing computed that number and nothing read it, and it asserted the
+                # strongest possible claim — that this text is exactly what the document said
+                # — about a scanned page OCR'd into nonsense just as confidently as about a
+                # born-digital paragraph. These are signs of *damage*, deliberately not
+                # collapsed into a score: a clean reading means nothing was detected, which is
+                # not the same as the extraction being right.
+                "extraction": extraction_quality.measure(unit.text).model_dump(),
             },
         )
         session.add(row)

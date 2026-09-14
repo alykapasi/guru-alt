@@ -155,6 +155,16 @@ KNOBS: list[Knob] = [
         governs="where a learner claiming strong background is seeded before any evidence",
         settled_by="the observed ability of learners who described themselves that way",
     ),
+    Knob(
+        id="ingest.ocr_min_text_chars",
+        where="app.rag.adapters.pdf._MIN_TEXT_CHARS",
+        value=16.0,
+        governs="how little text a PDF page may yield before it is treated as scanned and OCR'd",
+        settled_by=(
+            "the character count below which a page's own text layer is worse than OCR of it, "
+            "measured on pages where both are available (S27)"
+        ),
+    ),
 ]
 
 
@@ -169,6 +179,7 @@ def live() -> dict[str, float]:
     from app.core.config import get_settings
     from app.learning import activity
     from app.learning import lesson_plan as learning_plan
+    from app.rag.adapters import pdf
     from app.services import lesson_plan as service_plan
     from app.services import placement
 
@@ -191,6 +202,7 @@ def live() -> dict[str, float]:
         "activity.momentum_down_ratio": float(activity.MOMENTUM_DOWN_RATIO),
         "placement.some.ability": float(placement._ESTIMATE_BY_LEVEL["some"].ability),
         "placement.strong.ability": float(placement._ESTIMATE_BY_LEVEL["strong"].ability),
+        "ingest.ocr_min_text_chars": float(pdf._MIN_TEXT_CHARS),
     }
 
 
