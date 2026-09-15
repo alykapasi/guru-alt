@@ -153,6 +153,21 @@ async def test_a_percentile_says_how_many_calls_it_was_computed_over(
     assert report.first_token.p50_ms == 40
 
 
+async def test_p95_is_not_p50_under_another_name(db_session: AsyncSession) -> None:
+    """A tail is the only reason to report a p95 at all. Nine fast calls and one slow one is
+    the shape that matters — a median that looks fine over a deployment where one turn in ten
+    takes four seconds, which is the turn somebody complains about."""
+    for _ in range(9):
+        await _call(db_session, cost=1.0, latency_ms=100)
+    await _call(db_session, cost=1.0, latency_ms=4000)
+
+    report = await window(db_session, settings=Settings(), hours=24)
+
+    assert report.completion.p50_ms == 100
+    assert report.completion.p95_ms is not None
+    assert report.completion.p95_ms > 2000
+
+
 async def test_no_timed_call_means_no_percentile_rather_than_zero(
     db_session: AsyncSession,
 ) -> None:

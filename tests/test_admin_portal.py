@@ -117,14 +117,17 @@ async def test_an_unpriced_call_is_counted_rather_than_summed_as_zero(
 ) -> None:
     """Same distinction the deployment total draws (S48): NULL is "no known price", not free."""
     learner = await _learner(db_session, "unpriced")
+    # Two unpriced and one priced, deliberately lopsided: with one of each, a count that
+    # tallied the *priced* calls instead would give the same 1 and look right.
+    await _call(db_session, learner, cost=None)
     await _call(db_session, learner, cost=None)
     await _call(db_session, learner, cost=1.0)
 
     roster = await learner_usage(db_session, hours=24)
     row = next(r for r in roster.learners if r.id == learner.id)
 
-    assert row.calls == 2
-    assert row.unpriced_calls == 1
+    assert row.calls == 3
+    assert row.unpriced_calls == 2
     assert row.cost_usd == 1.0
 
 
