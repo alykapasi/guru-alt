@@ -30,4 +30,15 @@ export GURU_MODEL_EMBED=shaped:shaped-1
 # compiled out of the production bundle these run against. Leaving the seam off also lets the
 # first journey assert that a signed-out browser is turned away.
 
-exec uv run uvicorn app.main:app --host 127.0.0.1 --port "${GURU_E2E_API_PORT:-8000}" --log-level warning
+# An ingestion worker beside the API, because the upload journey is about what the learner
+# waits for. The upload itself is synchronous — the bytes reach the object store and the row is
+# committed inside the request — but everything that makes a source usable happens in a queued
+# job, so without a worker the library would sit on "pending" forever and the journey could
+# only assert that a file was accepted. Run as a child rather than a separate server entry:
+# Playwright's `webServer` needs a URL or a port to poll for readiness, and a worker has
+# neither. The trap is what stops it outliving the run, so this does not `exec` the API.
+uv run taskiq worker app.workers.broker:broker app.workers.tasks --workers 1 &
+WORKER_PID=$!
+trap 'kill "$WORKER_PID" 2>/dev/null || true' EXIT INT TERM
+
+uv run uvicorn app.main:app --host 127.0.0.1 --port "${GURU_E2E_API_PORT:-8000}" --log-level warning

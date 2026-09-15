@@ -252,6 +252,7 @@ jobs:
     env:
       GURU_ENV: dev
       GURU_DATABASE_URL: postgresql+asyncpg://guru:guru@localhost:5432/guru
+      GURU_REDIS_URL: redis://localhost:6379/0
 
     services:
       postgres:
@@ -267,11 +268,33 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      # The upload journey's file is ingested by a queued job, so this job needs somewhere for
+      # that job to queue. `scripts/e2e-backend.sh` runs the worker that drains it.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
 
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-backend
       - uses: ./.github/actions/setup-frontend
+
+      # Where the uploaded bytes actually go. Brought up from the project's own compose file
+      # rather than restated here, so the journey environment is the one a developer runs and
+      # there is no second definition to keep in step. It cannot be a `services:` container:
+      # MinIO needs a command (`server /data`) and a service container can only be given an
+      # image and its environment. `run --rm` on the bootstrap blocks until the bucket exists,
+      # so the first upload cannot race the bucket being created.
+      - name: Object store for uploads
+        run: |
+          docker compose up -d minio
+          docker compose run --rm minio-bootstrap
 
       # Chromium only, and `--with-deps` because the runner image has none of the shared
       # libraries a browser needs. One engine is a deliberate limit: these journeys are here
