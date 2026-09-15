@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Gauge } from "lucide-react";
-import { useLearnerRoster, useSpend } from "../api/admin";
+import { useImpersonations, useLearnerRoster, useSpend, useStartVisit } from "../api/admin";
 import type { components } from "../api/schema";
 
 type Latency = components["schemas"]["Latency"];
@@ -40,7 +40,10 @@ function ms(value: number | null): string {
 
 function ago(iso: string | null): string {
   if (!iso) return "—";
-  const minutes = Math.round((Date.now() - new Date(iso + "Z").getTime()) / 60_000);
+  // Most timestamps here are naive UTC (the timestamp mixin), but the visit's own clock is
+  // zoned; a "Z" appended to one that already has a zone is an invalid date.
+  const zoned = /(Z|[+-]\d{2}:?\d{2})$/.test(iso);
+  const minutes = Math.round((Date.now() - new Date(zoned ? iso : iso + "Z").getTime()) / 60_000);
   if (minutes < 1) return "just now";
   if (minutes < 60) return `${minutes}m ago`;
   if (minutes < 60 * 24) return `${Math.round(minutes / 60)}h ago`;
@@ -95,7 +98,13 @@ function BucketRows({ buckets }: { buckets: SpendBucket[] }) {
   );
 }
 
-function RosterRow({ learner }: { learner: LearnerUsage }) {
+function RosterRow({
+  learner,
+  onView,
+}: {
+  learner: LearnerUsage;
+  onView: (learner: LearnerUsage) => void;
+}) {
   return (
     <tr className="border-base-300 border-t">
       <td className="py-2 pr-4">
@@ -110,13 +119,129 @@ function RosterRow({ learner }: { learner: LearnerUsage }) {
         {money(learner.cost_usd)}
         {learner.unpriced_calls > 0 && <span className="text-base-content/40"> +</span>}
       </td>
-      <td className="py-2 text-right tabular-nums">{ago(learner.last_call_at)}</td>
+      <td className="py-2 pr-4 text-right tabular-nums">{ago(learner.last_call_at)}</td>
+      <td className="py-2 text-right">
+        <button type="button" className="btn btn-ghost btn-xs" onClick={() => onView(learner)}>
+          View as
+        </button>
+      </td>
     </tr>
+  );
+}
+
+/** Asking why, before the credential exists.
+ *
+ * A dialog rather than a confirm step, because the reason is the point: the API refuses a
+ * visit without one, and every row of the log is only as useful as the sentence somebody
+ * typed here. Naming the account in the heading is the second job — the mistake this catches
+ * is clicking the wrong row. */
+function ViewAsDialog({ learner, onClose }: { learner: LearnerUsage; onClose: () => void }) {
+  const [reason, setReason] = useState("");
+  const start = useStartVisit();
+
+  function submit(event: React.FormEvent) {
+    event.preventDefault();
+    start.mutate({ learnerId: learner.id, reason }, { onSuccess: onClose });
+  }
+
+  return (
+    <div className="bg-base-content/40 fixed inset-0 z-50 flex items-center justify-center p-6">
+      <form
+        onSubmit={submit}
+        className="bg-base-100 border-base-300 flex w-full max-w-md flex-col gap-4 rounded-box border p-6"
+      >
+        <h2 className="text-h2">View {learner.display_name || learner.handle}&rsquo;s account</h2>
+        {/* No number: the limit is `GURU_IMPERSONATION_TTL_MINUTES`, and a page that printed
+            "15 minutes" would be wrong for any deployment that changed it. */}
+        <p className="text-body text-base-content/70">
+          Read only, and it expires on its own. It is recorded against your name before you get in,
+          and {learner.display_name || learner.handle} can see it in their own data export.
+        </p>
+        <label className="flex flex-col gap-1">
+          <span className="text-caption text-base-content/70">Why are you looking?</span>
+          <input
+            className="input input-bordered"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="They report their upload never became a lesson"
+            autoFocus
+          />
+        </label>
+        {start.error && <p className="text-caption text-error">{start.error.message}</p>}
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="btn btn-primary btn-sm" disabled={start.isPending}>
+            Start viewing
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/** The record of who looked at whom.
+ *
+ * Shown on the same page as the button that creates the rows, deliberately: an audit an
+ * administrator has to go somewhere else to read is one they do not read. `ended_at` is blank
+ * for a visit nobody closed — it expired instead, which is what `expires_at` bounds, and
+ * printing a wall-clock end nobody performed would be inventing an event. */
+function AccessLog() {
+  const log = useImpersonations();
+
+  if (log.isLoading) return <p className="text-caption text-base-content/50">Loading…</p>;
+  if (log.isError || !log.data)
+    return <p className="text-body text-error">Could not read the access log.</p>;
+  if (!log.data.length)
+    return (
+      <p className="text-body text-base-content/60">
+        Nobody has viewed a learner&rsquo;s account. Every visit is recorded here, and stays
+        recorded if viewing is switched off.
+      </p>
+    );
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="text-body w-full">
+        <thead className="text-caption text-base-content/50 text-left">
+          <tr>
+            <th className="pb-2 pr-4 font-normal">Administrator</th>
+            <th className="pb-2 pr-4 font-normal">Account</th>
+            <th className="pb-2 pr-4 font-normal">Reason</th>
+            <th className="pb-2 pr-4 font-normal">Started</th>
+            <th className="pb-2 font-normal">Ended</th>
+          </tr>
+        </thead>
+        <tbody>
+          {log.data.map((row) => (
+            <tr key={row.id} className="border-base-300 border-t">
+              <td className="py-2 pr-4">{row.admin_handle}</td>
+              {/* Blank when the account has been closed: the id and handle are cleared and the
+                  rest of the row is kept, which is the record outliving its subject. */}
+              <td className="py-2 pr-4">
+                {row.learner_handle ?? <span className="text-base-content/40">account closed</span>}
+              </td>
+              <td className="py-2 pr-4">{row.reason}</td>
+              <td className="py-2 pr-4 tabular-nums">{ago(row.created_at)}</td>
+              <td className="py-2 tabular-nums">
+                {row.ended_at ? (
+                  ago(row.ended_at)
+                ) : (
+                  <span className="text-base-content/40">expired</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
 export function Admin() {
   const [hours, setHours] = useState(24);
+  const [viewing, setViewing] = useState<LearnerUsage | null>(null);
   const spend = useSpend(hours);
   const roster = useLearnerRoster(hours);
 
@@ -229,18 +354,26 @@ export function Admin() {
                   <th className="pb-2 pr-4 font-normal">Learner</th>
                   <th className="pb-2 pr-4 text-right font-normal">Calls</th>
                   <th className="pb-2 pr-4 text-right font-normal">Cost</th>
-                  <th className="pb-2 text-right font-normal">Last call</th>
+                  <th className="pb-2 pr-4 text-right font-normal">Last call</th>
+                  <th className="pb-2 text-right font-normal" />
                 </tr>
               </thead>
               <tbody>
                 {roster.data.learners.map((learner) => (
-                  <RosterRow key={learner.id} learner={learner} />
+                  <RosterRow key={learner.id} learner={learner} onView={setViewing} />
                 ))}
               </tbody>
             </table>
           </div>
         )}
       </section>
+
+      <section className="flex flex-col gap-2">
+        <h2 className="text-h2">Who has looked at an account</h2>
+        <AccessLog />
+      </section>
+
+      {viewing && <ViewAsDialog learner={viewing} onClose={() => setViewing(null)} />}
     </div>
   );
 }

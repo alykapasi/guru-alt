@@ -1,5 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
+import { startVisit } from "./impersonation";
 
 /** Reads for the operator's portal (P10).
  *
@@ -32,6 +33,60 @@ export function useLearnerRoster(hours: number) {
       });
       if (error) throw error;
       return data;
+    },
+  });
+}
+
+/** The record of who has viewed whose account (P10).
+ *
+ * Not polled. The other two answer "what is happening now"; this one is a log, and a log that
+ * refreshes under the reader is harder to read rather than more current. It is invalidated
+ * when a visit starts or ends, which is every way it changes from this browser. */
+export function useImpersonations() {
+  return useQuery({
+    queryKey: ["admin", "impersonations"],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/admin/impersonations");
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+export class VisitRefused extends Error {}
+
+/** Start a read-only visit to a learner's account.
+ *
+ * The cache is cleared on success, not invalidated: everything in it was fetched as the
+ * administrator, and a stale read of their own dashboard rendering under a banner that names
+ * somebody else is precisely the confusion the banner exists to prevent. */
+export function useStartVisit() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { learnerId: string; reason: string }) => {
+      const { data, error, response } = await api.POST("/api/v1/admin/impersonate", {
+        body: { learner_id: body.learnerId, reason: body.reason },
+      });
+      if (error || !data) {
+        throw new VisitRefused(
+          response.status === 404
+            ? "Viewing accounts is switched off for this deployment."
+            : response.status === 422
+              ? "Say why, in a sentence."
+              : "Could not start viewing that account.",
+        );
+      }
+      return data;
+    },
+    onSuccess: (data) => {
+      startVisit({
+        impersonationId: data.impersonation.id,
+        learnerId: data.learner_id,
+        learnerHandle: data.learner_handle,
+        token: data.token,
+        expiresAt: data.expires_at,
+      });
+      queryClient.clear();
     },
   });
 }

@@ -76,7 +76,7 @@ function jsonResponse(body: unknown) {
   });
 }
 
-function serve(spend: unknown = SPEND, roster: unknown = ROSTER) {
+function serve(spend: unknown = SPEND, roster: unknown = ROSTER, log: unknown = []) {
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL) => {
@@ -84,6 +84,7 @@ function serve(spend: unknown = SPEND, roster: unknown = ROSTER) {
       // Request]", which matches every branch and none of them usefully.
       const url =
         typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
+      if (url.includes("/admin/impersonations")) return Promise.resolve(jsonResponse(log));
       return Promise.resolve(jsonResponse(url.includes("/admin/learners") ? roster : spend));
     }),
   );
@@ -159,6 +160,31 @@ describe("the operator's portal", () => {
     renderPortal();
 
     expect(await screen.findByText(/costliest of 188 accounts/)).toBeInTheDocument();
+  });
+
+  it("says when a visit started and ended, whichever way the timestamp is written", async () => {
+    // `created_at` arrives without a zone (the timestamp mixin is naive UTC) and `ended_at` with
+    // one. Appending "Z" to both made the second an invalid date, and the log read "NaNd ago".
+    const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+    serve(SPEND, ROSTER, [
+      {
+        id: "imp-1",
+        admin_learner_id: "a-1",
+        admin_handle: "root",
+        learner_id: "l-1",
+        learner_handle: "active",
+        reason: "checking an upload that failed",
+        created_at: minutesAgo(10).replace("Z", ""),
+        expires_at: minutesAgo(-5),
+        ended_at: minutesAgo(3),
+      },
+    ]);
+    renderPortal();
+
+    expect(await screen.findByText("checking an upload that failed")).toBeInTheDocument();
+    expect(screen.getByText("10m ago")).toBeInTheDocument();
+    expect(screen.getByText("3m ago")).toBeInTheDocument();
+    expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
   });
 
   it("does not claim truncation when every account is shown", async () => {
