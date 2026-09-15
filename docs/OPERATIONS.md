@@ -83,6 +83,12 @@ Everything under `/api/v1/ops` takes one of two credentials:
   credential that expires, and resolving a session is a database read: when the database is
   the thing that is wrong, the session route cannot answer and this one still can. Set it.
 
+`/api/v1/admin/learners` is who is here: every account, most expensive first, with the calls,
+cost and last activity inside the window. A learner with no calls is listed with zeroes — that
+is the row worth reading, and a query that left them out would make the alpha look healthier
+than it is. **Administrator session only**, not the ops token: the token is a shared secret in
+a monitor's configuration and this is not an aggregate.
+
 ## Health, readiness, and what to alert on
 
 `/health` is **liveness**: the process is up. It touches nothing, deliberately — a supervisor
@@ -102,9 +108,16 @@ nothing is processed at all.
 | `expired_leases` > 0 for longer than `GURU_INGEST_RECONCILE_INTERVAL_SECONDS` | The reconciler is not running | `uv run poe reconcile-ingestion` to sweep now, then find out why the worker's timer is not firing. |
 | `failed` rising | Sources exhausting `ingest_max_attempts` | Read `sources.error`; these are parked, not retried. |
 
-`/api/v1/ops/spend` is the bill so far. Cost and token use are logged per call (`llm_calls`,
-tagged by role and model); this totals a window and splits it by role and by model. Set
-`GURU_SPEND_BUDGET_USD` and `GURU_SPEND_WINDOW_HOURS` to make it assert something.
+`/api/v1/ops/spend` is the bill so far **and how long the models took**. Cost, tokens and
+timing are logged per call (`llm_calls`, tagged by role and model); this totals a window and
+splits it by role and by model. Set `GURU_SPEND_BUDGET_USD` and `GURU_SPEND_WINDOW_HOURS` to
+make it assert something.
+
+> Two timings, and they are not interchangeable. `completion` is how long a non-streamed call
+> took end to end. `first_token` is how long a streamed call took to *start* — the tutoring
+> turn and the refinement gate, the calls a learner is sitting in front of. Each reports the
+> `calls` it was computed over, because each covers part of the traffic and a p95 without its
+> population reads as a claim about all of it.
 
 > `cost_usd` is a **floor** whenever `unpriced_calls` is non-zero. A NULL price means the model
 > has no known one, which is deliberately not the same as 0.00 — a local model that genuinely

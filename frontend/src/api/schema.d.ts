@@ -21,6 +21,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/learners": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Learners
+         * @description Everyone with an account, most expensive first, with what they did in the window.
+         *
+         *     Defaults to the same window as ``/ops/spend`` so the per-learner figures add up to
+         *     something a reader has already seen, rather than to a total from a different fortnight.
+         *
+         *     A learner with no calls in the window is still listed, with zeroes. They are the row worth
+         *     reading: somebody registered and did not come back, and leaving them out would make the
+         *     deployment look healthier than it is.
+         */
+        get: operations["learners_api_v1_admin_learners_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/dev-login": {
         parameters: {
             query?: never;
@@ -2274,6 +2301,23 @@ export interface components {
             topic_id: string;
         };
         /**
+         * Latency
+         * @description One timing's percentiles, and how many calls they were computed over.
+         *
+         *     ``calls`` is not decoration. A completion records ``latency_ms`` and a stream records
+         *     ``first_token_ms``, so each of these covers part of the traffic; a p95 shown without the
+         *     population it came from reads as a statement about everything. Zero calls means no
+         *     percentile rather than a zero one, which is why both are nullable.
+         */
+        Latency: {
+            /** Calls */
+            calls: number;
+            /** P50 Ms */
+            p50_ms: number | null;
+            /** P95 Ms */
+            p95_ms: number | null;
+        };
+        /**
          * LearnerRead
          * @description The learner a session belongs to.
          */
@@ -2294,6 +2338,38 @@ export interface components {
              * @default false
              */
             is_admin: boolean;
+        };
+        /**
+         * LearnerUsage
+         * @description One learner, and what they did inside the window.
+         */
+        LearnerUsage: {
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Display Name */
+            display_name: string | null;
+            /** Email */
+            email: string | null;
+            /** Handle */
+            handle: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Admin */
+            is_admin: boolean;
+            /** Last Call At */
+            last_call_at: string | null;
+            /** Unpriced Calls */
+            unpriced_calls: number;
         };
         /**
          * LessonPlanRead
@@ -2849,13 +2925,15 @@ export interface components {
         };
         /**
          * SpendBucket
-         * @description Spend attributed to one role or one model.
+         * @description Spend and timing attributed to one role or one model.
          */
         SpendBucket: {
             /** Calls */
             calls: number;
+            completion: components["schemas"]["Latency"];
             /** Cost Usd */
             cost_usd: number;
+            first_token: components["schemas"]["Latency"];
             /** Input Tokens */
             input_tokens: number;
             /** Name */
@@ -2867,7 +2945,7 @@ export interface components {
         };
         /**
          * SpendWindow
-         * @description Total model spend over a window, and whether it is over budget.
+         * @description Total model spend and timing over a window, and whether spend is over budget.
          */
         SpendWindow: {
             /** Budget Usd */
@@ -2878,8 +2956,10 @@ export interface components {
             by_role: components["schemas"]["SpendBucket"][];
             /** Calls */
             calls: number;
+            completion: components["schemas"]["Latency"];
             /** Cost Usd */
             cost_usd: number;
+            first_token: components["schemas"]["Latency"];
             /** Input Tokens */
             input_tokens: number;
             /** Output Tokens */
@@ -3120,6 +3200,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ActivityRead"];
+                };
+            };
+        };
+    };
+    learners_api_v1_admin_learners_get: {
+        parameters: {
+            query?: {
+                hours?: number | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LearnerUsage"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
