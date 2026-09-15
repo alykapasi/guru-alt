@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { register } from "./journey";
+
 /** Mirrors `TERMINAL_EVENTS` in `src/api/sse.ts`. Restated rather than imported because that
  * module reaches `import.meta.env`, which the Playwright runner has no equivalent of — and a
  * spec that cannot load is worse than a duplicated four-element list. Adding a terminal event
@@ -17,27 +19,6 @@ const TERMINAL_EVENTS = ["done", "awaiting_reply", "committed", "error"];
  * The account is registered through the form rather than through a development sign-in, for
  * two reasons: the dev-login button is compiled out of a production build, which this runs
  * against on purpose, and registering is the path a first user actually takes. */
-
-/** A fresh account per run. The journey commits, and a fixed address would make the second
- * run of the day fail on a unique constraint with a message about email addresses. */
-function newAccount() {
-  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  // example.com, not example.test: the API validates deliverability, and the reserved
-  // special-use TLDs are refused before the address ever reaches a handler.
-  return { email: `journey-${stamp}@example.com`, password: "journey-password-1" };
-}
-
-async function register(page: Page): Promise<void> {
-  const account = newAccount();
-  await page.goto("/signin");
-  await page.getByRole("button", { name: "Create one" }).click();
-  await page.getByLabel("Email").fill(account.email);
-  // Not an exact match: in register mode the field's label carries the "At least 12
-  // characters" hint, so its accessible name is the two of them together.
-  await page.getByLabel(/^Password/).fill(account.password);
-  await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page).toHaveURL(/\/app\/chat/);
-}
 
 async function startGeneralChat(page: Page): Promise<void> {
   await page.getByRole("button", { name: "New chat" }).click();
