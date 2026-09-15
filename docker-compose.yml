@@ -30,8 +30,13 @@ services:
       retries: 10
 
   # S3-compatible object store for raw uploads (Phase 4). Console on :9001.
+  #
+  # From MinIO's own registry rather than Docker Hub, which is where their documentation points
+  # and, more practically, the reason the browser-journeys job could not start one: an
+  # anonymous pull of `minio/minio` from a GitHub runner is refused, and the refusal reads as
+  # "repository does not exist or may require 'docker login'" rather than as a rate limit.
   minio:
-    image: minio/minio
+    image: quay.io/minio/minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -44,7 +49,7 @@ services:
 
   # One-shot: create the uploads bucket, retrying until MinIO is reachable.
   minio-bootstrap:
-    image: minio/mc
+    image: quay.io/minio/mc
     depends_on:
       - minio
     entrypoint: >
