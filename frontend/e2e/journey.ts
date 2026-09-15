@@ -26,7 +26,7 @@ export function newAccount(): { email: string; password: string } {
  * compiled out of the production build these run against on purpose, and registering is the
  * path a first user actually takes.
  */
-export async function register(page: Page): Promise<void> {
+export async function register(page: Page): Promise<{ email: string; password: string }> {
   const account = newAccount();
   await page.goto("/signin");
   await page.getByRole("button", { name: "Create one" }).click();
@@ -36,6 +36,9 @@ export async function register(page: Page): Promise<void> {
   await page.getByLabel(/^Password/).fill(account.password);
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page).toHaveURL(/\/app\/chat/);
+  // Returned because a journey may need to act on this account from outside the browser —
+  // granting it admin, for one, which has no API by design.
+  return account;
 }
 
 /** One API call as the signed-in learner.

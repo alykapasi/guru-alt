@@ -60,9 +60,9 @@ async def test_a_learner_who_never_called_anything_is_still_listed(
     omitting exactly the people who registered and did not come back."""
     quiet = await _learner(db_session, "quiet")
 
-    rows = await learner_usage(db_session, hours=24)
+    roster = await learner_usage(db_session, hours=24)
 
-    row = next(r for r in rows if r.id == quiet.id)
+    row = next(r for r in roster.learners if r.id == quiet.id)
     assert row.calls == 0
     assert row.cost_usd == 0.0
     assert row.last_call_at is None
@@ -77,7 +77,7 @@ async def test_usage_is_attributed_to_the_learner_who_incurred_it(
     await _call(db_session, heavy, cost=2.0)
     await _call(db_session, light, cost=0.5)
 
-    rows = {r.id: r for r in await learner_usage(db_session, hours=24)}
+    rows = {r.id: r for r in (await learner_usage(db_session, hours=24)).learners}
 
     assert rows[heavy.id].calls == 2
     assert rows[heavy.id].cost_usd == 5.0
@@ -91,9 +91,9 @@ async def test_the_most_expensive_learner_comes_first(db_session: AsyncSession) 
     await _call(db_session, cheap, cost=1.0)
     await _call(db_session, dear, cost=9.0)
 
-    rows = await learner_usage(db_session, hours=24)
+    roster = await learner_usage(db_session, hours=24)
 
-    assert [r.id for r in rows][:2] == [dear.id, cheap.id]
+    assert [r.id for r in roster.learners][:2] == [dear.id, cheap.id]
 
 
 async def test_a_call_outside_the_window_does_not_count_but_the_learner_still_appears(
@@ -104,7 +104,8 @@ async def test_a_call_outside_the_window_does_not_count_but_the_learner_still_ap
     lapsed = await _learner(db_session, "lapsed")
     await _call(db_session, lapsed, cost=4.0, age_h=48)
 
-    row = next(r for r in await learner_usage(db_session, hours=24) if r.id == lapsed.id)
+    roster = await learner_usage(db_session, hours=24)
+    row = next(r for r in roster.learners if r.id == lapsed.id)
 
     assert row.calls == 0
     assert row.cost_usd == 0.0
@@ -119,7 +120,8 @@ async def test_an_unpriced_call_is_counted_rather_than_summed_as_zero(
     await _call(db_session, learner, cost=None)
     await _call(db_session, learner, cost=1.0)
 
-    row = next(r for r in await learner_usage(db_session, hours=24) if r.id == learner.id)
+    roster = await learner_usage(db_session, hours=24)
+    row = next(r for r in roster.learners if r.id == learner.id)
 
     assert row.calls == 2
     assert row.unpriced_calls == 1
@@ -131,7 +133,8 @@ async def test_the_last_call_is_when_they_were_last_here(db_session: AsyncSessio
     await _call(db_session, learner, cost=1.0, age_h=10)
     await _call(db_session, learner, cost=1.0, age_h=2)
 
-    row = next(r for r in await learner_usage(db_session, hours=24) if r.id == learner.id)
+    roster = await learner_usage(db_session, hours=24)
+    row = next(r for r in roster.learners if r.id == learner.id)
 
     assert row.last_call_at is not None
     assert (_naive_now() - row.last_call_at) < timedelta(hours=3)
@@ -149,8 +152,27 @@ async def test_an_administrator_reads_the_roster(
     r = await admin_client.get(f"{API}/admin/learners")
 
     assert r.status_code == 200
-    row = next(x for x in r.json() if x["id"] == str(learner.id))
+    row = next(x for x in r.json()["learners"] if x["id"] == str(learner.id))
     assert row["calls"] == 1 and row["cost_usd"] == 2.0
+
+
+async def test_a_truncated_roster_says_how_many_there_were(db_session: AsyncSession) -> None:
+    """A page showing a hundred of two hundred looks exactly like one showing all of them —
+    and the ordering puts the quiet learners last, so the cap removes the rows the list exists
+    to surface. A browser journey found this against a database with 188 accounts."""
+    for i in range(3):
+        await _learner(db_session, f"crowd{i}")
+
+    roster = await learner_usage(db_session, hours=24, limit=2)
+
+    assert len(roster.learners) == 2
+    assert roster.total >= 3
+
+
+async def test_the_roster_states_the_window_it_was_measured_over(
+    db_session: AsyncSession,
+) -> None:
+    assert (await learner_usage(db_session, hours=72)).window_hours == 72
 
 
 async def test_an_ordinary_learner_may_not_read_the_roster(api_client: AsyncClient) -> None:

@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes, useParams } from "react-router-dom";
 import { PageShell } from "./components/PageShell";
 import { RequireLearner } from "./components/RequireLearner";
+import { RequireAdmin } from "./components/RequireAdmin";
 import { ChatShell } from "./components/chat/ChatShell";
 import { SessionShell } from "./components/lessons/SessionShell";
 import { Landing } from "./pages/Landing";
@@ -15,6 +16,7 @@ import { Notes } from "./pages/Notes";
 import { NoteView } from "./pages/NoteView";
 import { Memory } from "./pages/Memory";
 import { SubjectWizard } from "./pages/SubjectWizard";
+import { Admin } from "./pages/Admin";
 
 /** Keys Chat on conversationId so switching conversations remounts it fresh — its local
  * in-flight-turn state (see useChatConversation) must not carry over between conversations. */
@@ -55,6 +57,11 @@ function App() {
             <Route path="memory" element={<Memory />} />
             <Route path="notes/:topicId" element={<NoteView />} />
             <Route path="subjects/new" element={<SubjectWizard />} />
+            {/* The operator's portal (P10). Guarded again inside the shell rather than
+                beside it, so an administrator's page keeps the same chrome as every other. */}
+            <Route element={<RequireAdmin />}>
+              <Route path="admin" element={<Admin />} />
+            </Route>
           </Route>
         </Route>
       </Routes>

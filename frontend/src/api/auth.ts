@@ -14,6 +14,9 @@ export type CurrentLearner = {
   handle: string;
   display_name: string | null;
   email: string | null;
+  /** Whether to offer the operator's portal at all (P10). Not what authorizes it — the API
+   * refuses a non-administrator whatever the browser renders. */
+  is_admin: boolean;
 };
 
 export function useCurrentLearner() {

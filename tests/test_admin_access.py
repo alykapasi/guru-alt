@@ -11,6 +11,7 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_app_settings
@@ -133,3 +134,58 @@ def test_production_refuses_to_start_with_no_ops_token() -> None:
     problems = production_problems(Settings(ops_token=None))
     assert any("GURU_OPS_TOKEN" in p for p in problems)
     assert not any("GURU_OPS_TOKEN" in p for p in production_problems(Settings(ops_token="t")))
+
+
+# --- the bootstrap command -----------------------------------------------------------------
+
+
+async def test_the_grant_command_promotes_demotes_and_refuses_an_unknown_address(
+    engine, monkeypatch
+) -> None:
+    """The only way a deployment gets its first administrator, and nothing drove it.
+
+    Committing for real on its own connection, because that is what the command does — it runs
+    outside any request, against the live database, which is the whole reason it exists.
+    """
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.workers import grant_admin
+
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def make():
+        async with factory() as session:
+            yield session
+
+    monkeypatch.setattr(grant_admin, "SessionFactory", make)
+
+    handle = f"grant-{uuid.uuid4().hex[:8]}"
+    email = f"{handle}@example.com"
+    async with factory() as setup:
+        setup.add(Learner(handle=handle, email=email))
+        await setup.commit()
+
+    try:
+        assert await grant_admin.run(email, revoke=False) == 0
+        async with factory() as check:
+            granted = await check.scalar(select(Learner).where(Learner.email == email))
+            assert granted is not None and granted.is_admin is True
+
+        # Mixed case, because an operator types an address the way a person writes one and the
+        # column is stored normalised.
+        assert await grant_admin.run(email.upper(), revoke=True) == 0
+        async with factory() as check:
+            demoted = await check.scalar(select(Learner).where(Learner.email == email))
+            assert demoted is not None and demoted.is_admin is False
+
+        # Non-zero, so a deployment script that typos an address stops rather than reporting a
+        # grant that never happened.
+        assert await grant_admin.run("nobody@example.com", revoke=False) == 1
+    finally:
+        async with factory() as cleanup:
+            await cleanup.execute(delete(Learner).where(Learner.email == email))
+            await cleanup.commit()

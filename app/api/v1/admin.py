@@ -18,12 +18,12 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 from app.api.deps import CurrentAdmin, SessionDep, SettingsDep
-from app.services.admin import LearnerUsage, learner_usage
+from app.services.admin import LearnerRoster, learner_usage
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-@router.get("/learners", response_model=list[LearnerUsage])
+@router.get("/learners", response_model=LearnerRoster)
 async def learners(
     _: CurrentAdmin,
     session: SessionDep,
@@ -39,6 +39,10 @@ async def learners(
     A learner with no calls in the window is still listed, with zeroes. They are the row worth
     reading: somebody registered and did not come back, and leaving them out would make the
     deployment look healthier than it is.
+
+    ``total`` is every account rather than the number returned, because the ordering puts those
+    quiet learners last and the cap then removes them — a truncated page and a complete one are
+    indistinguishable without it.
     """
     window_hours = hours if hours is not None else settings.spend_window_hours
     return await learner_usage(session, hours=window_hours, limit=limit)

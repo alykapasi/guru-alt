@@ -10,6 +10,13 @@ go and talk to.
 A learner with no calls at all is included deliberately. They are the most interesting row on
 the page: somebody registered and never came back, and a query that inner-joined the call log
 would report the alpha as healthier than it is by omitting exactly those people.
+
+**The list is ordered by cost and it is capped, so the total is reported beside it.** Those two
+facts together are a way to lie: the quiet learners sort last, so a cap silently removes the
+very rows the paragraph above argues for, and a page showing a hundred rows out of two hundred
+looks exactly like a page showing all of them. A browser journey caught this against a database
+with 188 accounts — the freshly registered one was not on the page and nothing said so. So the
+count is part of the answer rather than something a reader is left to infer from the length.
 """
 
 from __future__ import annotations
@@ -44,9 +51,20 @@ class LearnerUsage(BaseModel):
     last_call_at: datetime | None
 
 
-async def learner_usage(
-    session: AsyncSession, *, hours: int, limit: int = 100
-) -> list[LearnerUsage]:
+class LearnerRoster(BaseModel):
+    """The learners listed, and how many there were to list.
+
+    ``total`` is every account, not every returned row. A truncated page and a complete one
+    look identical without it, which is the same failure as a percentile printed without the
+    calls behind it.
+    """
+
+    total: int
+    window_hours: int
+    learners: list[LearnerUsage]
+
+
+async def learner_usage(session: AsyncSession, *, hours: int, limit: int = 100) -> LearnerRoster:
     """Every learner, most expensive first, with their activity inside the window."""
     # Naive UTC: `llm_calls.created_at` is TIMESTAMP WITHOUT TIME ZONE, and comparing it to an
     # aware value would raise rather than quietly compare wrong.
@@ -72,7 +90,8 @@ async def learner_usage(
         .order_by(cost.desc(), func.count(LLMCall.id).desc(), Learner.created_at.desc(), Learner.id)
         .limit(limit)
     )
-    return [
+    total = await session.scalar(select(func.count()).select_from(Learner)) or 0
+    listed = [
         LearnerUsage(
             id=learner.id,
             handle=learner.handle,
@@ -87,3 +106,4 @@ async def learner_usage(
         )
         for learner, calls, spent, unpriced, last_call_at in rows
     ]
+    return LearnerRoster(total=total, window_hours=hours, learners=listed)

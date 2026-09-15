@@ -86,8 +86,14 @@ Everything under `/api/v1/ops` takes one of two credentials:
 `/api/v1/admin/learners` is who is here: every account, most expensive first, with the calls,
 cost and last activity inside the window. A learner with no calls is listed with zeroes — that
 is the row worth reading, and a query that left them out would make the alpha look healthier
-than it is. **Administrator session only**, not the ops token: the token is a shared secret in
-a monitor's configuration and this is not an aggregate.
+than it is. `total` is every account rather than the number returned: the ordering puts those
+quiet learners last, so the cap removes exactly them, and a truncated page looks like a
+complete one without it. **Administrator session only**, not the ops token: the token is a
+shared secret in a monitor's configuration and this is not an aggregate.
+
+The portal is at `/app/admin`, offered in the nav only to an administrator. Read-only —
+suspending an account or impersonating a learner are decisions with their own audit
+requirements, and P10's impersonation half is not started.
 
 ## Health, readiness, and what to alert on
 

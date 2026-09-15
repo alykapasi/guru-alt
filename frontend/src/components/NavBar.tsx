@@ -2,6 +2,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import {
   BookOpen,
   Brain,
+  Gauge,
   LayoutDashboard,
   LogOut,
   MessageSquare,
@@ -21,6 +22,11 @@ const LINKS = [
   { to: "/app/memory", label: "Memory", icon: Brain },
 ];
 
+/** Offered only to an administrator (P10). Not a security decision — the API refuses a
+ * non-administrator whatever is rendered — but showing everybody a link that answers 403 is
+ * how a product teaches people it is broken. */
+const ADMIN_LINK = { to: "/app/admin", label: "Admin", icon: Gauge };
+
 export function NavBar() {
   const navigate = useNavigate();
   const { data: learner } = useCurrentLearner();
@@ -38,22 +44,24 @@ export function NavBar() {
           <Logo />
         </NavLink>
         <nav className="flex items-center gap-1">
-          {LINKS.map(({ to, label, icon: Icon }) => (
-            <NavLink
-              key={to}
-              to={to}
-              className={({ isActive }) =>
-                `flex items-center gap-2 rounded-field px-3 py-2 text-caption transition-colors ${
-                  isActive
-                    ? "bg-primary/10 text-primary"
-                    : "text-base-content/70 hover:bg-base-200 hover:text-base-content"
-                }`
-              }
-            >
-              <Icon size={16} />
-              {label}
-            </NavLink>
-          ))}
+          {[...LINKS, ...(learner?.is_admin ? [ADMIN_LINK] : [])].map(
+            ({ to, label, icon: Icon }) => (
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) =>
+                  `flex items-center gap-2 rounded-field px-3 py-2 text-caption transition-colors ${
+                    isActive
+                      ? "bg-primary/10 text-primary"
+                      : "text-base-content/70 hover:bg-base-200 hover:text-base-content"
+                  }`
+                }
+              >
+                <Icon size={16} />
+                {label}
+              </NavLink>
+            ),
+          )}
         </nav>
         <div className="flex items-center gap-2">
           {learner && (

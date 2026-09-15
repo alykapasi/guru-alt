@@ -38,6 +38,10 @@ export interface paths {
          *     A learner with no calls in the window is still listed, with zeroes. They are the row worth
          *     reading: somebody registered and did not come back, and leaving them out would make the
          *     deployment look healthier than it is.
+         *
+         *     ``total`` is every account rather than the number returned, because the ordering puts those
+         *     quiet learners last and the cap then removes them — a truncated page and a complete one are
+         *     indistinguishable without it.
          */
         get: operations["learners_api_v1_admin_learners_get"];
         put?: never;
@@ -2340,6 +2344,22 @@ export interface components {
             is_admin: boolean;
         };
         /**
+         * LearnerRoster
+         * @description The learners listed, and how many there were to list.
+         *
+         *     ``total`` is every account, not every returned row. A truncated page and a complete one
+         *     look identical without it, which is the same failure as a percentile printed without the
+         *     calls behind it.
+         */
+        LearnerRoster: {
+            /** Learners */
+            learners: components["schemas"]["LearnerUsage"][];
+            /** Total */
+            total: number;
+            /** Window Hours */
+            window_hours: number;
+        };
+        /**
          * LearnerUsage
          * @description One learner, and what they did inside the window.
          */
@@ -3222,7 +3242,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["LearnerUsage"][];
+                    "application/json": components["schemas"]["LearnerRoster"];
                 };
             };
             /** @description Validation Error */
