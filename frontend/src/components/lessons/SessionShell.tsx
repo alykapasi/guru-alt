@@ -1,4 +1,5 @@
 import { Outlet } from "react-router-dom";
+import { ImpersonationBanner } from "../ImpersonationBanner";
 import { NavBar } from "../NavBar";
 
 /** Full-height layout for a guided-practice session — like ChatShell, breaks out of PageShell's
@@ -7,6 +8,7 @@ import { NavBar } from "../NavBar";
 export function SessionShell() {
   return (
     <div className="bg-base-100 flex h-svh flex-col">
+      <ImpersonationBanner />
       <NavBar />
       <div className="flex min-h-0 flex-1">
         <Outlet />

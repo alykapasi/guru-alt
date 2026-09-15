@@ -21,6 +21,118 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/impersonate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Impersonate
+         * @description Start a recorded, read-only session onto one learner's account (P10).
+         *
+         *     404 rather than 403 when the capability is switched off, because a capability a deployment
+         *     has not enabled should not announce that it exists.
+         *
+         *     The token is returned once and is a *second* credential — the administrator's own session
+         *     is untouched, so ending the visit cannot sign them out and losing its token costs them
+         *     nothing. Signing that session out ends the visit and stamps the record; nothing else needs
+         *     to be called, which is deliberate, because an end that depends on the polite endpoint being
+         *     used is an end that goes unrecorded the first time somebody just logs out.
+         */
+        post: operations["impersonate_api_v1_admin_impersonate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/impersonations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Impersonations
+         * @description Every recorded visit, newest first.
+         *
+         *     Listed whether or not the capability is currently enabled: turning it off must not hide
+         *     what was done while it was on, which would make the switch a way to erase the record
+         *     rather than a way to withdraw the power.
+         */
+        get: operations["impersonations_api_v1_admin_impersonations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/impersonations/{impersonation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * End Impersonation
+         * @description End a visit, as yourself rather than as the account being viewed.
+         *
+         *     Signing the visit's own session out ends it too, and that is the path a script uses. It is
+         *     the wrong one for a browser: `/auth/logout` clears the session cookie on its way out, and
+         *     the cookie in that browser belongs to the administrator — so ending a visit that way would
+         *     sign them out of their own account.
+         *
+         *     Not gated on the capability being enabled, for the same reason the log is not: switching it
+         *     off must not leave a live visit that nobody can close.
+         */
+        delete: operations["end_impersonation_api_v1_admin_impersonations__impersonation_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/learners": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Learners
+         * @description Everyone with an account, most expensive first, with what they did in the window.
+         *
+         *     Defaults to the same window as ``/ops/spend`` so the per-learner figures add up to
+         *     something a reader has already seen, rather than to a total from a different fortnight.
+         *
+         *     A learner with no calls in the window is still listed, with zeroes. They are the row worth
+         *     reading: somebody registered and did not come back, and leaving them out would make the
+         *     deployment look healthier than it is.
+         *
+         *     ``total`` is every account rather than the number returned, because the ordering puts those
+         *     quiet learners last and the cap then removes them — a truncated page and a complete one are
+         *     indistinguishable without it.
+         */
+        get: operations["learners_api_v1_admin_learners_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/dev-login": {
         parameters: {
             query?: never;
@@ -282,6 +394,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/content/blocks/{block_id}/citation-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check Block Citations
+         * @description Check whether the block's claims are carried by the passages it cited (S28).
+         *
+         *     A paid model call, so it is a POST a caller asks for rather than something generation does
+         *     for every block. Nothing gates on the result: what rate of unsupported claims is tolerable
+         *     is a threshold nobody has set.
+         */
+        post: operations["check_block_citations_api_v1_content_blocks__block_id__citation_check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/content/generate": {
         parameters: {
             query?: never;
@@ -526,6 +662,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/kcs/{kc_id}/prerequisites/{prereq_kc_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Prerequisite
+         * @description Remove one prerequisite edge — the repair path for a graph a plan could not honour.
+         *
+         *     The conflict endpoint above reports which edges a plan had to sacrifice and deliberately
+         *     changes nothing, because a cycle means two components each claim to come first and which
+         *     claim is wrong is not something the graph knows. This is how a person acts on that report.
+         *
+         *     404 only when the edge does not exist *and* neither does the KC — deleting an edge that is
+         *     already gone succeeds, so a retried request behaves like the one that got through. Only the
+         *     subject's owner may do it: editing the graph is editing the curriculum (S25).
+         */
+        delete: operations["remove_prerequisite_api_v1_kcs__kc_id__prerequisites__prereq_kc_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me": {
         parameters: {
             query?: never;
@@ -730,6 +894,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ops/alerts/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Alert History
+         * @description When conditions started and stopped firing, newest first (P11).
+         *
+         *     The endpoint above answers "is anything wrong now"; this answers "was anything wrong at
+         *     three in the morning", which is the question an operator actually has and which an
+         *     on-demand predicate cannot answer at all. Rows are *transitions*, so the list is as long as
+         *     the number of things that happened rather than the number of times anybody polled.
+         */
+        get: operations["alert_history__api_v1_ops_alerts_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ops/ingestion": {
         parameters: {
             query?: never;
@@ -895,6 +1084,11 @@ export interface paths {
          *     answerable item where one was eagerly resolved — a flashcard normally, an open question
          *     where the component keeps failing (see ``session_runner.due_review_items`` and the
          *     ``reviews_due_item_limit`` cost bound).
+         *
+         *     An administrator viewing the account (P10) gets the queue without the items. Resolving
+         *     one can generate it, which bills a model call to the learner and commits an item to
+         *     their bank, and this is a GET: the one method a visit is allowed, so the method rule
+         *     alone would let it through.
          */
         get: operations["due_reviews_api_v1_reviews_due_get"];
         put?: never;
@@ -1065,10 +1259,17 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Subjects */
+        /**
+         * List Subjects
+         * @description Curated subjects and this learner's own — not everybody's (S25).
+         */
         get: operations["list_subjects_api_v1_subjects_get"];
         put?: never;
-        /** Create Subject */
+        /**
+         * Create Subject
+         * @description A subject created through this route belongs to its creator (S25). Curated subjects
+         *     carry no owner and are not created here — nothing a learner can reach makes one.
+         */
         post: operations["create_subject_api_v1_subjects_post"];
         delete?: never;
         options?: never;
@@ -1130,6 +1331,38 @@ export interface paths {
          *     citable passage behind it — which is the more actionable half of the answer.
          */
         get: operations["subject_coverage_api_v1_subjects__subject_id__coverage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/subjects/{subject_id}/cross-subject-prerequisites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Subject Cross Subject Prerequisites
+         * @description Prerequisites of this subject that live in another subject (S24).
+         *
+         *     A lesson plan sequences one subject's components, so a prerequisite outside it has no step
+         *     that could teach it and planning drops the edge. That is a real weakening of the ordering
+         *     and it used to be invisible — worse than invisible, since carrying the foreign component
+         *     into the sort raised `TypeError` and no plan was produced at all.
+         *
+         *     `met_elsewhere` says whether this learner has any presentation of that concept in their
+         *     history. Deliberately not "has mastered it": two components share a concept on the evidence
+         *     of their names, and treating that as transferred mastery would stop the product teaching
+         *     something the learner has never seen.
+         *
+         *     An empty list is the ordinary answer.
+         */
+        get: operations["subject_cross_subject_prerequisites_api_v1_subjects__subject_id__cross_subject_prerequisites_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1456,6 +1689,35 @@ export interface components {
             firing: components["schemas"]["Alert"][];
         };
         /**
+         * AlertTransitionRead
+         * @description One change of state for one alert condition (P11).
+         *
+         *     ``detail`` and ``action`` are what the alert said *at the time*. A threshold retuned since
+         *     would otherwise rewrite the history of every incident it was involved in.
+         */
+        AlertTransitionRead: {
+            /** Action */
+            action: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Detail */
+            detail: string | null;
+            /** Firing */
+            firing: boolean;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Severity */
+            severity: string | null;
+        };
+        /**
          * AnswerSubmit
          * @description A learner's response. ``response`` shape depends on the item type (see grading).
          *
@@ -1577,6 +1839,20 @@ export interface components {
             text: string;
         };
         /**
+         * ClaimVerdictRead
+         * @description One checkable claim from a block, against the passages offered for it.
+         */
+        ClaimVerdictRead: {
+            /** Claim */
+            claim: string;
+            /** Reason */
+            reason: string;
+            /** Supported By */
+            supported_by: number[];
+            /** Verdict */
+            verdict: string;
+        };
+        /**
          * ContentBlockRead
          * @description A generated, KC-tagged content block with its grounding citations.
          */
@@ -1589,6 +1865,8 @@ export interface components {
             citations: {
                 [key: string]: unknown;
             }[];
+            /** Grounding Count */
+            grounding_count?: number | null;
             /**
              * Id
              * Format: uuid
@@ -1781,6 +2059,35 @@ export interface components {
          */
         FailureKind: "none" | "notation" | "procedural" | "conceptual" | "prerequisite" | "incomplete";
         /**
+         * ForeignPrerequisiteRead
+         * @description A prerequisite this subject declares on a component another subject owns (S24).
+         */
+        ForeignPrerequisiteRead: {
+            /**
+             * Kc Id
+             * Format: uuid
+             */
+            kc_id: string;
+            /** Kc Name */
+            kc_name: string;
+            /** Met Elsewhere */
+            met_elsewhere: boolean;
+            /**
+             * Prereq Kc Id
+             * Format: uuid
+             */
+            prereq_kc_id: string;
+            /** Prereq Name */
+            prereq_name: string;
+            /**
+             * Prereq Subject Id
+             * Format: uuid
+             */
+            prereq_subject_id: string;
+            /** Prereq Subject Name */
+            prereq_subject_name: string;
+        };
+        /**
          * GenerateRequest
          * @description Generate content for a KC. With ``type`` omitted, the default block set is assembled.
          */
@@ -1850,6 +2157,83 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * ImpersonationRead
+         * @description One recorded visit.
+         *
+         *     The ids are nullable and the handles are not, which is the record outliving the accounts:
+         *     closing either one clears its id and leaves the handle, so a row still says who did what
+         *     rather than becoming two empty columns. ``ended_at`` means *explicitly* ended — a visit
+         *     nobody closed simply expires, and ``expires_at`` is the outer bound either way.
+         */
+        ImpersonationRead: {
+            /** Admin Handle */
+            admin_handle: string;
+            /** Admin Learner Id */
+            admin_learner_id: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Ended At */
+            ended_at: string | null;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Learner Handle */
+            learner_handle: string | null;
+            /** Learner Id */
+            learner_id: string | null;
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * ImpersonationRequest
+         * @description Ask to view one learner's account, and say why.
+         *
+         *     The reason is required by the schema rather than checked later, so a request without one
+         *     never reaches the code that issues a credential. Nothing here can tell a real reason from
+         *     a plausible one; what the floor enforces is that somebody had to type a sentence next to
+         *     their own name first.
+         */
+        ImpersonationRequest: {
+            /**
+             * Learner Id
+             * Format: uuid
+             */
+            learner_id: string;
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * ImpersonationStarted
+         * @description The credential, returned once, and the record that was written with it.
+         */
+        ImpersonationStarted: {
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            impersonation: components["schemas"]["ImpersonationRead"];
+            /** Learner Handle */
+            learner_handle: string;
+            /**
+             * Learner Id
+             * Format: uuid
+             */
+            learner_id: string;
+            /** Token */
+            token: string;
         };
         /**
          * IngestionBacklog
@@ -2084,6 +2468,23 @@ export interface components {
             topic_id: string;
         };
         /**
+         * Latency
+         * @description One timing's percentiles, and how many calls they were computed over.
+         *
+         *     ``calls`` is not decoration. A completion records ``latency_ms`` and a stream records
+         *     ``first_token_ms``, so each of these covers part of the traffic; a p95 shown without the
+         *     population it came from reads as a statement about everything. Zero calls means no
+         *     percentile rather than a zero one, which is why both are nullable.
+         */
+        Latency: {
+            /** Calls */
+            calls: number;
+            /** P50 Ms */
+            p50_ms: number | null;
+            /** P95 Ms */
+            p95_ms: number | null;
+        };
+        /**
          * LearnerRead
          * @description The learner a session belongs to.
          */
@@ -2099,6 +2500,59 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /**
+             * Is Admin
+             * @default false
+             */
+            is_admin: boolean;
+        };
+        /**
+         * LearnerRoster
+         * @description The learners listed, and how many there were to list.
+         *
+         *     ``total`` is every account, not every returned row. A truncated page and a complete one
+         *     look identical without it, which is the same failure as a percentile printed without the
+         *     calls behind it.
+         */
+        LearnerRoster: {
+            /** Learners */
+            learners: components["schemas"]["LearnerUsage"][];
+            /** Total */
+            total: number;
+            /** Window Hours */
+            window_hours: number;
+        };
+        /**
+         * LearnerUsage
+         * @description One learner, and what they did inside the window.
+         */
+        LearnerUsage: {
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Display Name */
+            display_name: string | null;
+            /** Email */
+            email: string | null;
+            /** Handle */
+            handle: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Admin */
+            is_admin: boolean;
+            /** Last Call At */
+            last_call_at: string | null;
+            /** Unpriced Calls */
+            unpriced_calls: number;
         };
         /**
          * LessonPlanRead
@@ -2654,13 +3108,15 @@ export interface components {
         };
         /**
          * SpendBucket
-         * @description Spend attributed to one role or one model.
+         * @description Spend and timing attributed to one role or one model.
          */
         SpendBucket: {
             /** Calls */
             calls: number;
+            completion: components["schemas"]["Latency"];
             /** Cost Usd */
             cost_usd: number;
+            first_token: components["schemas"]["Latency"];
             /** Input Tokens */
             input_tokens: number;
             /** Name */
@@ -2672,7 +3128,7 @@ export interface components {
         };
         /**
          * SpendWindow
-         * @description Total model spend over a window, and whether it is over budget.
+         * @description Total model spend and timing over a window, and whether spend is over budget.
          */
         SpendWindow: {
             /** Budget Usd */
@@ -2683,8 +3139,10 @@ export interface components {
             by_role: components["schemas"]["SpendBucket"][];
             /** Calls */
             calls: number;
+            completion: components["schemas"]["Latency"];
             /** Cost Usd */
             cost_usd: number;
+            first_token: components["schemas"]["Latency"];
             /** Input Tokens */
             input_tokens: number;
             /** Output Tokens */
@@ -2768,6 +3226,26 @@ export interface components {
             name: string;
             /** Slug */
             slug: string;
+        };
+        /**
+         * SupportReportRead
+         * @description Whether a block's citations actually carry what it says (S28).
+         *
+         *     ``supported_fraction`` is null when no claim could be extracted — not 1.0, which would read
+         *     as a clean bill of health for a block nobody managed to check.
+         */
+        SupportReportRead: {
+            /** Claims */
+            claims: components["schemas"]["ClaimVerdictRead"][];
+            /** Clean */
+            clean: boolean;
+            /** Contradictions */
+            contradictions: [
+                number,
+                number
+            ][];
+            /** Supported Fraction */
+            supported_fraction: number | null;
         };
         /** TopicCreate */
         TopicCreate: {
@@ -2905,6 +3383,133 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ActivityRead"];
+                };
+            };
+        };
+    };
+    impersonate_api_v1_admin_impersonate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImpersonationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImpersonationStarted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    impersonations_api_v1_admin_impersonations_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImpersonationRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    end_impersonation_api_v1_admin_impersonations__impersonation_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                impersonation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImpersonationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    learners_api_v1_admin_learners_get: {
+        parameters: {
+            query?: {
+                hours?: number | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LearnerRoster"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3217,6 +3822,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChunkRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    check_block_citations_api_v1_content_blocks__block_id__citation_check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                block_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupportReportRead"];
                 };
             };
             /** @description Validation Error */
@@ -3711,6 +4347,36 @@ export interface operations {
             };
         };
     };
+    remove_prerequisite_api_v1_kcs__kc_id__prerequisites__prereq_kc_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kc_id: string;
+                prereq_kc_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     delete_me_api_v1_me_delete: {
         parameters: {
             query?: never;
@@ -3988,6 +4654,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AlertReport"];
+                };
+            };
+        };
+    };
+    alert_history__api_v1_ops_alerts_history_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                name?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertTransitionRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -4554,6 +5252,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["KCCoverageRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    subject_cross_subject_prerequisites_api_v1_subjects__subject_id__cross_subject_prerequisites_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ForeignPrerequisiteRead"][];
                 };
             };
             /** @description Validation Error */

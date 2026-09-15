@@ -23,10 +23,11 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import structlog
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import Item
+from app.models.auth import Impersonation
 from app.models.chat import Conversation, Message, Turn
 from app.models.content import ContentBlock
 from app.models.learner import Learner
@@ -41,7 +42,12 @@ from app.storage.base import BlobStore
 
 log = structlog.get_logger(__name__)
 
-Disposition = Literal["deleted", "anonymised", "retained"]
+# "partly deleted" is a fourth answer rather than a fudge of the other three, and S25 is what
+# made it necessary: one table can now hold both a learner's own rows and rows belonging to
+# nobody, so "deleted" and "retained" are each false about half of it. Calling it either would
+# be the kind of statement this module exists to stop — a policy that reads as decided and is
+# wrong in the case somebody eventually asks about.
+Disposition = Literal["deleted", "anonymised", "retained", "partly deleted"]
 
 
 @dataclass(frozen=True)
@@ -61,6 +67,18 @@ RETENTION: tuple[StoreRetention, ...] = (
         "Cascades from the learner (S21). Deleting the account has to stop every session "
         "authenticating as it at once — a session that outlived its owner would be a live "
         "credential for an account that no longer exists.",
+    ),
+    StoreRetention(
+        "impersonations",
+        "partly deleted",
+        "The record of an administrator viewing this account (P10), and the fourth disposition "
+        "is doing real work here rather than hedging. The learner's half goes: their id is "
+        "cleared by the foreign key and the service clears the handle beside it, so nothing "
+        "left names them. The administrator's half is retained, because a record of who "
+        "accessed accounts that any *subject* of that access can erase is not an audit of "
+        "access — and the platform still has to be able to answer what its administrators did "
+        "after an account is closed. What survives is that somebody with a name viewed "
+        "somebody, when, for how long, and the reason they gave.",
     ),
     StoreRetention(
         "password_reset_tokens",
@@ -120,8 +138,12 @@ RETENTION: tuple[StoreRetention, ...] = (
     ),
     StoreRetention(
         "subjects/topics/kcs/kc_edges/items(generated)/rubrics",
-        "retained",
-        "Shared curriculum and the generated question bank belong to no one learner.",
+        "partly deleted",
+        "Split by ownership since S25. A subject the learner created is theirs and goes with "
+        "the account, taking its topics, components and prerequisite edges by cascade. A "
+        "*curated* subject carries no owner, belongs to no one learner, and is retained — "
+        "deleting one account must not empty the shared library for everybody else. The "
+        "generated question bank is retained either way; authored items are handled above.",
     ),
 )
 
@@ -196,6 +218,9 @@ async def export_learner(session: AsyncSession, learner_id: uuid.UUID) -> dict[s
         "sources": await rows(Source, Source.learner_id == learner_id),
         "chunks": await rows(Chunk, Chunk.source_id.in_(source_ids)),
         "authored_items": await rows(Item, Item.author_learner_id == learner_id),
+        # Their half of P10's audit: who has viewed this account, when, and why. A record of
+        # access that the person accessed cannot see is a record kept for somebody else.
+        "impersonations": await rows(Impersonation, Impersonation.learner_id == learner_id),
     }
 
 
@@ -226,6 +251,13 @@ async def delete_learner(
         delete(Item).where(Item.author_learner_id == learner_id).returning(Item.id)
     )
     report.items_deleted = len(authored.all())
+    # Before the learner row goes: the foreign key clears `learner_id` on its own, and after
+    # that there is no way left to find the rows whose *handle* still names this person (P10).
+    await session.execute(
+        update(Impersonation)
+        .where(Impersonation.learner_id == learner_id)
+        .values(learner_handle=None)
+    )
     await session.execute(delete(Learner).where(Learner.id == learner_id))
     await session.commit()
 

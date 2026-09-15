@@ -1,5 +1,21 @@
 import createClient from "openapi-fetch";
 import type { paths } from "./schema";
+import { visitToken } from "./impersonation";
+
+/** Attach the impersonation token when an administrator is viewing an account (P10).
+ *
+ * As a header rather than by swapping the cookie: the API prefers an explicit `Authorization`
+ * over the cookie when both are present, so the administrator's own session survives the visit
+ * untouched in the same browser. Swapping the cookie would end their session to start a
+ * fifteen-minute one, and getting back would mean signing in again.
+ *
+ * Read per request, never captured: the visit starts and ends while the app is running, and a
+ * header decided once at module load would be the wrong one for most of the page's life. */
+function withVisit(init: RequestInit = {}): RequestInit {
+  const token = visitToken();
+  if (!token) return init;
+  return { ...init, headers: { ...init.headers, Authorization: `Bearer ${token}` } };
+}
 
 /** The base URL the typed client and the hand-rolled SSE helper both target. Dev default
  * matches app/core/config.py's cors_origins counterpart (the FastAPI dev server). */
@@ -24,7 +40,11 @@ export const CREDENTIALS: RequestCredentials = "include";
 export const api = createClient<paths>({
   baseUrl: API_BASE_URL,
   credentials: CREDENTIALS,
-  fetch: (request) => globalThis.fetch(request),
+  fetch: (request) => {
+    const token = visitToken();
+    if (token) request.headers.set("Authorization", `Bearer ${token}`);
+    return globalThis.fetch(request);
+  },
 });
 
 /** `fetch` against the API with the session cookie attached.
@@ -35,7 +55,7 @@ export const api = createClient<paths>({
  * quietly drops the credential. */
 export function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   return fetch(path.startsWith("http") ? path : `${API_BASE_URL}${path}`, {
-    ...init,
+    ...withVisit(init),
     credentials: CREDENTIALS,
   });
 }

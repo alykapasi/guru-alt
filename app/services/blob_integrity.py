@@ -37,15 +37,32 @@ class MissingBlob(BaseModel):
     blob_key: str
 
 
+class UnreadableBlob(BaseModel):
+    """A key the store would not answer for. Not missing — *unknown*."""
+
+    source_id: uuid.UUID
+    learner_id: uuid.UUID | None
+    origin: str
+    blob_key: str
+    error: str
+
+
 class IntegrityReport(BaseModel):
-    """What the walk found."""
+    """What the walk found — and what it could not find out."""
 
     checked: int
     missing: list[MissingBlob]
+    unreadable: list[UnreadableBlob] = []
 
     @property
     def intact(self) -> bool:
-        return not self.missing
+        """Every referenced blob was asked about *and* answered for.
+
+        An unanswered key counts against this. The command exists to license letting learners
+        back in after a restore, and a walk that could not read part of the bucket has not
+        established that — "we did not find a problem" is not "there is no problem".
+        """
+        return not self.missing and not self.unreadable
 
 
 async def check(
@@ -56,19 +73,39 @@ async def check(
     Sources with no ``blob_key`` are skipped rather than reported: a URL source that was
     fetched and parsed has no stored object by design, and reporting those as missing would
     bury the real failures under rows that are working correctly.
+
+    A store that *errors* on a key is a third answer, and it gets its own list. Calling it
+    present passes a restore nobody verified; calling it missing raises a data-loss alarm over
+    a network blip; and letting it propagate — which is what this used to do — abandons the
+    walk at the first bad key, so the one command whose whole job is to produce a verdict
+    produces none, and produces none again on the next run.
     """
     statement = select(Source).where(Source.blob_key.is_not(None)).order_by(Source.created_at)
     if limit is not None:
         statement = statement.limit(limit)
 
     missing: list[MissingBlob] = []
+    unreadable: list[UnreadableBlob] = []
     checked = 0
     for source in (await session.scalars(statement)).all():
         key = source.blob_key
         if not key:
             continue
         checked += 1
-        if not await store.exists(key):
+        try:
+            present = await store.exists(key)
+        except Exception as exc:
+            unreadable.append(
+                UnreadableBlob(
+                    source_id=source.id,
+                    learner_id=source.learner_id,
+                    origin=source.origin,
+                    blob_key=key,
+                    error=f"{type(exc).__name__}: {exc}"[:500],
+                )
+            )
+            continue
+        if not present:
             missing.append(
                 MissingBlob(
                     source_id=source.id,
@@ -77,4 +114,4 @@ async def check(
                     blob_key=key,
                 )
             )
-    return IntegrityReport(checked=checked, missing=missing)
+    return IntegrityReport(checked=checked, missing=missing, unreadable=unreadable)

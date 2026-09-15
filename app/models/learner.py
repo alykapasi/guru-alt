@@ -13,7 +13,7 @@ address is the one combination that is nonsense, and the database refuses it rat
 leaving it to be documented.
 """
 
-from sqlalchemy import CheckConstraint
+from sqlalchemy import CheckConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -38,3 +38,9 @@ class Learner(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # as equal, so any number of credential-less learners coexist.
     email: Mapped[str | None] = mapped_column(unique=True, index=True, default=None)
     password_hash: Mapped[str | None] = mapped_column(default=None)
+    # The only authorization *tier* there is (P10). Not a role table and deliberately not one:
+    # two tiers is what the product has, and a table of roles nobody assigns is a permission
+    # model that exists only in the schema. It lives on the learner rather than beside them
+    # because there is no such thing as an administrator who is not also an account — the
+    # portal is read with the same session everything else is.
+    is_admin: Mapped[bool] = mapped_column(server_default=false(), default=False)

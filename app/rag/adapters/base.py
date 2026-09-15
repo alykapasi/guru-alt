@@ -11,6 +11,7 @@ for vision-OCR, a transcriber for ASR, …). Plain text/doc adapters ignore the 
 adapters use it.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -20,6 +21,25 @@ from pydantic import BaseModel, Field
 from app.llm import LLMClient, ModelRole, Usage
 from app.rag.demux import MediaDemuxer
 from app.rag.transcription import Transcriber
+
+# Tab, because that is the separator normalization keeps as a column boundary rather than
+# collapsing into the surrounding whitespace (see `app.rag.chunking._collapse`).
+COLUMN = "\t"
+
+
+def table_text(rows: Iterable[Iterable[str]]) -> str:
+    """A table as one line per row, cells tab-separated (S27).
+
+    Shared by every adapter that meets a table, because they all have the same two ways to
+    destroy one and it would be three separate chances to get it wrong. An empty cell is kept
+    as an empty field: dropping it moves every later value one column left, so a row with a gap
+    in the middle silently becomes a row of different data rather than a row with a gap. The line
+    breaks inside a cell become spaces, so one row stays one line — otherwise the row ends early
+    and the remainder of the cell becomes a line with no columns at all. A wholly blank row is
+    dropped, which displaces nothing.
+    """
+    lines = [COLUMN.join(" ".join(cell.split()) for cell in row) for row in rows]
+    return "\n".join(line for line in lines if line.strip(COLUMN).strip())
 
 
 class ExtractedUnit(BaseModel):

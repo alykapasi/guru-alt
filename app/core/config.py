@@ -140,6 +140,26 @@ class Settings(BaseSettings):
     # None = host-only, which is right unless the API and the app are on sibling subdomains.
     session_cookie_domain: str | None = None
 
+    # Scoped impersonation (P10) — the alpha support affordance, and the seam that makes
+    # removing it later a deployment change rather than an argument. Off by default: a
+    # capability for acting as another person should be something a deployment turned on.
+    # With it off the endpoints answer 404 rather than 403, because a capability that is not
+    # enabled should not announce itself.
+    impersonation_enabled: bool = False
+    # The credential is what is time-boxed, not the administrator's own session. Short enough
+    # that forgetting to end a visit is not a standing grant onto somebody's account, long
+    # enough to read a lesson plan and a source list without racing a clock.
+    impersonation_ttl_minutes: int = 15
+
+    # The operational endpoints' second credential (P10). They are read by an administrator
+    # through the portal *and* by a monitor, and the monitor is the reason this exists rather
+    # than an admin session being the only way in: resolving a session is a database read, so
+    # an instance whose database is sick cannot authenticate the very administrator who needs
+    # to ask it what is wrong. A static token answers without touching a row. Sent as
+    # ``X-Ops-Token``; unset means the endpoints admit administrators only, and
+    # ``app.core.release`` refuses to start production that way.
+    ops_token: str | None = None
+
     # Spend watch (S60). Cost has been recorded per call since Phase 1 and capped per learner
     # since S47; nothing looked at the total, so the failure mode was a bill discovered monthly.
     # None = report spend but assert nothing about it.
@@ -183,6 +203,12 @@ class Settings(BaseSettings):
     password_reset_enabled: bool = False
 
     session_purge_interval_seconds: int = 3600
+
+    # How often the worker evaluates the alert conditions and records what changed (P11).
+    # A minute is frequent enough that an incident is noticed within one, and — because only
+    # *transitions* are written — costs nothing in rows when nothing is happening. 0 disables
+    # the loop, the same switch every other sweep here uses.
+    alert_poll_interval_seconds: int = 60
 
     # The development sign-in seam: a single endpoint that issues a session for the dev learner
     # with no credential, so `poe dev` and the frontend work without anybody registering first.

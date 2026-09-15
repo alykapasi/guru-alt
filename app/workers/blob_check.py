@@ -29,17 +29,30 @@ async def run() -> int:
         print("OK: every blob the database references is present.")
         return 0
 
-    print(f"MISSING {len(report.missing)}:", file=sys.stderr)
-    for entry in report.missing:
+    if report.missing:
+        print(f"MISSING {len(report.missing)}:", file=sys.stderr)
+        for entry in report.missing:
+            print(
+                f"  {entry.blob_key}  source={entry.source_id}  origin={entry.origin}",
+                file=sys.stderr,
+            )
         print(
-            f"  {entry.blob_key}  source={entry.source_id}  origin={entry.origin}", file=sys.stderr
+            "\nThese sources cannot be re-ingested: the bytes are gone and content-addressed "
+            "de-duplication means nothing else holds a copy. Restore the bucket from its own "
+            "backup (see docs/OPERATIONS.md).",
+            file=sys.stderr,
         )
-    print(
-        "\nThese sources cannot be re-ingested: the bytes are gone and content-addressed "
-        "de-duplication means nothing else holds a copy. Restore the bucket from its own "
-        "backup (see docs/OPERATIONS.md).",
-        file=sys.stderr,
-    )
+    if report.unreadable:
+        print(f"\nUNREADABLE {len(report.unreadable)}:", file=sys.stderr)
+        for entry in report.unreadable:
+            print(f"  {entry.blob_key}  source={entry.source_id}  {entry.error}", file=sys.stderr)
+        print(
+            "\nThe store did not answer for these — which is not the same as saying they are "
+            "gone. Nothing here is evidence of data loss and nothing here is evidence against "
+            "it; the walk simply did not establish the thing it was run to establish. Fix the "
+            "store's availability and run it again before letting learners back in.",
+            file=sys.stderr,
+        )
     return 1
 
 

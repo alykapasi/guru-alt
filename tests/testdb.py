@@ -20,20 +20,21 @@ import asyncpg
 from sqlalchemy.engine import make_url
 
 TEST_SUFFIX = "_test"
+E2E_SUFFIX = "_e2e"  # the browser journeys commit, so they cannot share the suite's (S58)
 
 
-def test_database_url(url: str) -> str:
-    """The test twin of ``url``: same host and credentials, ``_test`` database.
+def test_database_url(url: str, suffix: str = TEST_SUFFIX) -> str:
+    """The twin of ``url``: same host and credentials, suffixed database name.
 
-    Idempotent — a URL already naming a ``_test`` database is returned unchanged, so
+    Idempotent — a URL already naming a suffixed database is returned unchanged, so
     pointing ``GURU_DATABASE_URL`` straight at one works too.
     """
     parsed = make_url(url)
     name = parsed.database or "guru"
-    if name.endswith(TEST_SUFFIX):
+    if name.endswith(suffix):
         return url
     # str(URL) masks the password; rendering explicitly keeps the DSN usable.
-    return parsed.set(database=f"{name}{TEST_SUFFIX}").render_as_string(hide_password=False)
+    return parsed.set(database=f"{name}{suffix}").render_as_string(hide_password=False)
 
 
 async def _create_if_missing(url: str) -> bool:
@@ -61,9 +62,17 @@ async def _create_if_missing(url: str) -> bool:
 
 
 def main() -> None:
+    """``python -m tests.testdb [--suffix _e2e] [--print-url]``.
+
+    ``--print-url`` puts the DSN on stdout and everything else on stderr, so a shell can
+    capture it — which is how the browser-journey stack learns where its database is without
+    a second DSN anybody has to keep in sync (S58).
+    """
     from app.core.config import Settings
 
-    url = test_database_url(Settings().database_url)
+    args = sys.argv[1:]
+    suffix = args[args.index("--suffix") + 1] if "--suffix" in args else TEST_SUFFIX
+    url = test_database_url(Settings().database_url, suffix)
     created = asyncio.run(_create_if_missing(url))
     # Alembic's env.py reads the URL from settings, so hand it over the same way the root
     # conftest does rather than setting it on the Config (which env.py would overwrite).
@@ -74,7 +83,9 @@ def main() -> None:
 
     command.upgrade(Config("alembic.ini"), "head")
     name = make_url(url).database
-    print(f"test database {name!r} {'created and ' if created else ''}at head", file=sys.stderr)
+    print(f"database {name!r} {'created and ' if created else ''}at head", file=sys.stderr)
+    if "--print-url" in args:
+        print(url)
 
 
 if __name__ == "__main__":

@@ -50,7 +50,13 @@ async def test_embed_in_batches_splits_into_ceil_batches_and_preserves_order() -
     assert embedded.vectors == whole.vectors
     # ...and the usage of the parts adds up to the usage of the whole, or splitting a document
     # into batches would quietly divide its bill by the number of batches.
-    assert embedded.usage == whole.usage
+    assert embedded.usage.input_tokens == whole.usage.input_tokens
+    assert embedded.usage.output_tokens == whole.usage.output_tokens
+    # Latency is deliberately not compared: three concurrent batches and one whole call take
+    # different amounts of time, which is the point of batching (S48). It is still measured —
+    # as the elapsed time of the whole operation, never the sum of concurrent parts, which
+    # would report more time than passed.
+    assert embedded.usage.latency_ms is not None
 
 
 async def test_embed_in_batches_empty_makes_no_calls() -> None:
@@ -93,8 +99,11 @@ async def _chunk_count(session: AsyncSession, source_id: uuid.UUID) -> int:
 # --- chunking (pure) --------------------------------------------------------
 
 
-def test_normalize_collapses_whitespace() -> None:
-    assert normalize("a\n\n  b\tc ") == "a b c"
+def test_normalize_collapses_runs_within_a_line_but_keeps_the_lines() -> None:
+    """It used to return "a b c" for this, and that is the S27 defect: collapsing every
+    newline flattened a table into a run of numbers and a code block into one line. Runs of
+    spaces inside a line still collapse, which was always the right half."""
+    assert normalize("a\n\n  b   c ") == "a\n\n  b c"
 
 
 def test_normalize_strips_nul_bytes() -> None:
