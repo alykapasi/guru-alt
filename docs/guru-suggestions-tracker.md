@@ -1883,6 +1883,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-15 | Nineteenth pass, same branch: **faults injected mid-operation, which is where they cost** — S60 (`bfd77e4`), S58 (`1c50d17`, `5b75eac`). Every failure test in the suite failed its dependency *before* it did anything: the stream raises on its first chunk, the queue refuses the dispatch, the bucket is empty. Those establish that an exception propagates and nothing else; none of them reaches the state that costs money and trust — work already done, already partly paid for, already partly on the learner's screen. Three faults now fire partway through, each recording that it fired, because a fault that silently failed to inject reports as a pass. **Both defects it found were in code whose own docstring promised otherwise.** `llm_log` states that accounting is not part of the work it pays for, and `asyncio.gather` abandons its siblings on the first exception — so a fan-out of embedding batches threw away the usage of the batches that had *succeeded*, and a source failing on batch three and retrying three times billed the provider three times over while the budget watch saw a quiet account. And `blob-check`, whose entire job is to produce a verdict on a restore, produced none at all when the store errored on a key: the exception ended the walk. An unanswered key is now a third outcome — calling it present passes a restore nobody verified, calling it missing raises a data-loss alarm over a blip. `uv run poe check` green (1465 passed, 6 skipped). 6 mutations, all applied and all killed. One of the seven new tests is recorded as a regression anchor rather than a load-bearing one, since it holds today by construction. **Browser journeys are now the only one of S58's three original gaps still open.** |
 | 2026-09-15 | Twentieth pass, same branch: **the product driven in a real browser** — S58 (`3c06281`, `935a2a0`, `a7bfaf2`). The last of the three gaps S58 opened with. Three Playwright journeys against Chromium, running the real API and the *built* bundle, covering what is invisible to both suites on either side of them: the backend tests drive the turn function directly and never serialise an SSE frame, the component tests render the chat against a mocked client and never make a request, and the seam between them — the event stream, the credentialed cross-origin fetch, the cookie the browser decides whether to send — is exactly where a change breaks the product while both suites stay green. **The model had to go**: a journey calling a real provider is neither offline nor repeatable, so the deterministic provider is reachable by naming it in a role map, through the existing routing rather than a parallel switch, with production refusing to start when any role points at it — a stack answering from a canned sentence looks exactly like a stack that is working. **No retries, and that earned itself immediately**: the reload journey failed about one run in five, and the cause was the test racing the commit rather than the product losing turns — the reply on screen during a stream is the live buffer, and an interrupted reply is discarded by design. Eight clean runs after the fix. 4 mutations, all killed; the auth-gate one had to be rewritten because the first form did not compile, so the run produced no summary and the sweep read the absence of a failure as a pass — the third time on this branch that a mutation which never reached a running system reported as evidence. `uv run poe check` green (1469 passed, 6 skipped). Browser journeys now run as a tenth CI gate. **What they do not yet cover:** upload, curriculum generation and practice, because those parse structured model output and the deterministic provider returns one sentence. |
 | 2026-09-15 | Twenty-first pass, same branch: **the knowledge-graph section completed** — S24 (`965fa42`), S25 (`5aa59f5`), S27 (`7ca84c1`). The three items that had never been started. **S24:** a concept now has one identity across subjects, and the deliberate limit is the decision that matters — sharing a canonical name is evidence about *names*, so mastery does not transfer; "Functions" in Calculus and in a programming course reach the same key, and silently marking the second mastered would stop the product teaching something the learner had never seen, invisibly. The cross-subject prerequisite turned out not to be a policy at all but a crash: the foreign component reached the topological sort, which had no tiebreak entry for it, and comparing a UUID against the integers used for local components raised `TypeError` — so such an edge did not weaken a plan's ordering, it meant no plan at all. **S25:** subjects now have an owner, NULL meaning curated; a stranger's subject answers 404 rather than 403 because 403 confirms it exists; both ends of a prerequisite edge are checked, since an edge constrains the order both components are taught in. It made the retention statement wrong, which needed a fourth disposition — one table now holds both a learner's rows and nobody's, and "deleted" and "retained" are each false about half of it. **S27:** the `confidence: 1.0` written on every chunk, computed by nothing and read by nothing, is replaced by measured indicators of damage — with no single score and no threshold, both refused on the record, and the documented limitation (two interleaved columns read clean) turned into a test rather than left as prose. `uv run poe check` green (1527 passed, 6 skipped). 22 mutations across the three, all applied and all killed; four survived a first sweep and every one was a real gap, including **dead authorisation code** — a 404 branch no caller could reach, removed rather than kept, because an unreachable authorisation check reads as a protection that is never exercised. |
+| 2026-09-15 | Twenty-second pass, same branch: **the rest of the product driven in a browser** — S58 (`f84d244`, `63937f0`, `cd41787`, `9959a75`). The journeys stopped at the chat turn, and the obstacle was the stand-in rather than effort: curriculum design, objective selection, item writing and grading all parse the reply as JSON, and `FakeProvider` answers everything with one sentence, so each took its parse-failure path. **`ShapedProvider`** reads the system prompt, recognises which job it is, and answers in that shape — derived from the request where cheap, so a journey can assert that what the learner typed shaped what came back; anything unrecognised falls through to prose, which is correct for a conversational turn and the right failure for a drifted prompt. Three tests hold the coupling nothing else would notice breaking: each real prompt claimed by *exactly* one shape, a sweep of every `*SYSTEM_PROMPT` in `app` requiring that the conversational ones match nothing, and no shape matching nothing. The production guard now refuses the whole family, with a test walking the registry's real provider table. **Eleven journeys**: the wizard end to end, a graded practice round, and a real file through real storage and a real worker — the last needing Redis and MinIO in the CI job, brought up from the project's own compose file. **Three defects found, all on the happy path.** The subject wizard could never see any material: the step called a hook that disables itself when given no subject, so it rendered neither the list nor its own empty message, and grounding a curriculum in your own documents was unreachable from the UI. The library never said a document was ready — ingestion finishes in a queued job and `refetchInterval` appeared nowhere in `frontend/src`, so the page showed "pending" forever. And the stand-in's first failing diagnosis was a kind the product deliberately drops, so the S09 "say why it failed" path could not have been exercised at all. **Plus one wrong assumption of ours:** the curriculum journey first asserted the subject is named after the sentence the learner typed. It is not — "Looks good" accepts the gate's *refined proposal*, which is the entire reason the gate exists. `uv run poe check` green (1557 passed, 6 skipped); `npm run test`, `lint` and `build` green; four consecutive clean journey runs. |
 
 ## Remaining architecture autopsy — source pass
 
@@ -3457,12 +3458,67 @@ saw a run sit `queued` with zero jobs for nine hours while both cancel endpoints
 contradictory errors — a wedged run that never reached a runner, and which an unenforced check
 makes indistinguishable from a passing one to anyone not reading the list.
 
-**Still open:** the journeys cover registration, the chat turn and its survival of a reload —
-the *first* legs of the path this entry named, not all of it. Upload, curriculum generation and
-practice are not driven yet, and the obstacle is specific rather than effort: those paths parse
-structured model output, and the deterministic provider returns one canned sentence, so they
-need a fake that answers differently depending on what was asked. That is the next slice, and
-the harness it would go in now exists.
+**The whole path is driven now, and the obstacle was the stand-in.** The journeys stopped at
+the chat turn because curriculum design, objective selection, item writing and grading all
+parse the reply as JSON, and `FakeProvider` answers every request with the same sentence — so
+each of them took its parse-failure path and there was nothing for a journey to reach.
+`ShapedProvider` reads the system prompt, recognises which of those jobs it is, and answers in
+that job's shape, derived from the request where that is cheap: a curriculum named after the
+goal, an item about the component it was given, a grade quoting the learner's own words.
+Anything unrecognised falls through to prose, which is both correct for a conversational turn
+and the right failure for a caller whose prompt has drifted — its own parser fails loudly
+rather than being served something invented.
+
+Three tests hold a coupling nothing else would notice breaking. Each real system prompt must be
+claimed by *exactly* one shape: zero means a reworded prompt now silently gets prose, two means
+a marker is broad enough to answer someone else's request in the wrong shape, which is live
+rather than theoretical because the two graders share an opening sentence. A sweep walks every
+`*SYSTEM_PROMPT` in `app` and requires that the conversational ones match nothing, since a
+marker catching the tutor's prompt would replace teaching with JSON while every journey went on
+passing. And no shape may match nothing. The production guard was widened from the name `fake`
+to the whole family, with a test that walks the registry's real provider table so a third
+stand-in cannot be added and left out — the shaped one is the *more* dangerous in production,
+because it answers a curriculum request with a real curriculum and the product would look like
+it was teaching.
+
+Eleven journeys now: the wizard end to end, a graded practice round, and a real file through
+real storage and a real worker. The upload journey needed the environment to gain both — a
+worker beside the API in `scripts/e2e-backend.sh`, and Redis plus MinIO in the CI job, the
+latter from the project's own compose file so the journey environment is the one a developer
+already runs rather than a second definition to keep in step.
+
+**The journeys found four things, three of them defects in the product.**
+
+*A diagnosis the product deliberately drops.* The stand-in first returned `incomplete` for a
+poor answer, and `build_check_result` discards the diagnosis for the two kinds that name no
+specific failure. The grade arrived with `failure_kind: null` and the S09 path — saying *why*
+an answer failed — could not have been exercised at all. Found by driving the loop, not by
+reading the code.
+
+*The subject wizard could never see any material.* The materials step called
+`useSources(undefined)`, and that hook reads `undefined` as "no subject chosen yet" and
+disables itself — correct for the New Chat picker it was written for. The request was never
+made, and with `data` undefined and `isLoading` false the step rendered neither the sources nor
+its own empty-state message, just a gap. Grounding a curriculum in your own documents is the
+reason uploads exist, and it was unreachable from the UI no matter how many you had uploaded.
+
+*The library never said a document was ready.* Ingestion finishes in a queued job after the
+upload returns, and `refetchInterval` appeared nowhere in `frontend/src`. The page showed the
+status it first fetched — "pending" — forever, with no error and nothing moving, and the only
+way to learn otherwise was to reload.
+
+*And one wrong assumption of ours, worth recording.* The curriculum journey first asserted the
+subject would be named after the sentence the learner typed. It is not: "Looks good" accepts the
+gate's *refined proposal*, and that is what generation is given. The typed sentence is an
+opening position in a negotiation, which is the entire reason the gate exists.
+
+**Still open:** only a plain text file goes through the upload journey — a PDF exercises
+adapters it never reaches, and OCR and ASR reach providers the stand-in does not model at all.
+Every reply the stand-in gives is the well-formed case, so a journey passing against it says
+the product handles a good reply and never that it handles a bad one; malformed replies remain
+the business of each parser's unit tests and the fault-injection suite. And two hooks still list
+the same resource while disagreeing about what `undefined` means, with nothing but a reader's
+attention stopping the next caller picking the wrong one.
 The migration harness covers two revisions rather than being applied to every future one, and
 nothing requires a new migration to come with a data case. `guru_migration_test` is a fixed
 name, so the harness assumes the suite is not run in parallel against one server. And the
