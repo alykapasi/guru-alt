@@ -174,7 +174,7 @@ async def test_an_untimed_call_records_no_latency_rather_than_zero(
     independent_accounting: async_sessionmaker,
 ) -> None:
     """Same distinction `cost_usd` already draws. Zero would claim an instantaneous call;
-    NULL says it was never measured, which is what a streaming or hand-built usage means."""
+    NULL says it was never measured, which is what a hand-built usage means."""
     await log_llm_call(
         learner_id=None, role="smart", spec=SPEC, usage=Usage(input_tokens=1, output_tokens=1)
     )
@@ -182,6 +182,74 @@ async def test_an_untimed_call_records_no_latency_rather_than_zero(
     async with independent_accounting() as session:
         row = await session.scalar(select(LLMCall).where(LLMCall.learner_id.is_(None)))
     assert row is not None
+    assert row.latency_ms is None
+    assert row.first_token_ms is None
+
+
+# --- time to first token (P10) ----------------------------------------------
+
+
+async def test_a_streamed_call_is_timed_to_its_first_token() -> None:
+    """The streamed calls are the ones a learner sits in front of, and they were the only
+    ones with no timing at all — so a latency report drawn from `llm_calls` would have
+    described grading and embedding and omitted every turn anybody complains about."""
+    from app.llm import ModelRole
+    from app.llm.registry import fake_llm_client
+
+    client = fake_llm_client("one two three")
+    usage = None
+    async for chunk in client.stream(ModelRole.SMART, []):
+        if chunk.usage is not None:
+            usage = chunk.usage
+
+    assert usage is not None
+    assert usage.first_token_ms is not None and usage.first_token_ms >= 0
+    # Not the same question, and deliberately still unanswered for a stream: a completion
+    # time would be as much a claim about how long the answer was as about the model.
+    assert usage.latency_ms is None
+
+
+async def test_a_completion_has_no_first_token_time() -> None:
+    """One row carries one of the two, and which one says what kind of call it was."""
+    from app.llm import ModelRole
+    from app.llm.registry import fake_llm_client
+
+    response = await fake_llm_client(reply="hello").complete(ModelRole.SMART, [])
+
+    assert response.usage.latency_ms is not None
+    assert response.usage.first_token_ms is None
+
+
+async def test_a_stream_that_produced_no_text_records_no_first_token() -> None:
+    """A turn that only called a tool has no first token, and 0 would claim it arrived
+    instantly — the same distinction `cost_usd` and `latency_ms` already draw."""
+    from app.llm import ModelRole
+    from app.llm.registry import fake_llm_client
+
+    client = fake_llm_client("")
+    usage = None
+    async for chunk in client.stream(ModelRole.SMART, []):
+        if chunk.usage is not None:
+            usage = chunk.usage
+
+    assert usage is not None
+    assert usage.first_token_ms is None
+
+
+async def test_a_recorded_stream_carries_its_first_token_time(
+    independent_accounting: async_sessionmaker,
+) -> None:
+    await log_llm_call(
+        learner_id=None,
+        role="smart",
+        spec=SPEC,
+        usage=Usage(input_tokens=10, output_tokens=5, first_token_ms=87),
+    )
+
+    async with independent_accounting() as session:
+        row = await session.scalar(select(LLMCall).where(LLMCall.learner_id.is_(None)))
+    assert row is not None
+    assert row.first_token_ms == 87
     assert row.latency_ms is None
 
 

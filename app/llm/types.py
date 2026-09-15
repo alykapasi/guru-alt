@@ -99,6 +99,16 @@ class Usage(BaseModel):
     # single end. Latency travels with tokens because it is the other half of what a call cost
     # and the pair is what separates a slow model from a slow product (S64).
     latency_ms: int | None = None
+    # Time from making a streamed call to its first content token (P10). ``None`` on a
+    # non-streamed call, and on a streamed one that produced no text at all — a turn that only
+    # called a tool has no first token, and 0 would claim it arrived instantly.
+    #
+    # It is a second field rather than ``latency_ms`` set differently for streams, because one
+    # column meaning "how long it took" for a completion and "how long until it started" for a
+    # stream is the blur S48 refused. Both numbers now exist and neither pretends to be the
+    # other. This is the one that matters for a turn a learner is sitting in front of: the rest
+    # of a stream arrives while they are already reading.
+    first_token_ms: int | None = None
 
     @property
     def total_tokens(self) -> int:

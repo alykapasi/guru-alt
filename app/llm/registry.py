@@ -117,7 +117,7 @@ class LLMClient:
         )
         return _timed(response, started)
 
-    def stream(
+    async def stream(
         self,
         role: ModelRole,
         messages: Sequence[ChatMessage],
@@ -126,10 +126,41 @@ class LLMClient:
         max_tokens: int = 1024,
         tools: Sequence[ToolDef] | None = None,
     ) -> AsyncIterator[ChatChunk]:
+        """Stream a completion, timing how long the first token took to arrive (P10).
+
+        Streaming was left untimed because a stream has no single end and one number would
+        blur time-to-first-token with time-to-completion (S48). That reasoning holds, and the
+        consequence of stopping there did not: the streamed calls are the tutoring turn and
+        the refinement gate, so the only calls a learner actually waits on were the only ones
+        with no timing at all. A latency report built on what was recorded would have covered
+        grading, curriculum design and embedding — the work nobody is sitting in front of —
+        and silently omitted every turn whose slowness anyone ever complains about.
+
+        So the blur is avoided by measuring the other thing rather than by measuring nothing.
+        Time-to-completion for a stream is still not recorded and is still the ambiguous one;
+        it would be as much a claim about how long the answer was as about how fast the model
+        is. Measured here for the same reason completions are: this is the one place every
+        call passes through, so no caller has to remember and none can measure a different
+        span from the others.
+        """
         provider, model = self._resolve(role)
-        return provider.stream(
+        started = time.perf_counter()
+        first_token_ms: int | None = None
+        async for chunk in provider.stream(
             model=model, messages=messages, system=system, max_tokens=max_tokens, tools=tools
-        )
+        ):
+            if first_token_ms is None and chunk.text:
+                first_token_ms = int((time.perf_counter() - started) * 1000)
+            if chunk.usage is None:
+                yield chunk
+            else:
+                # The terminal chunk carries the usage that becomes the accounting row, so the
+                # measurement has to ride on that one or it never reaches `llm_calls`.
+                yield chunk.model_copy(
+                    update={
+                        "usage": chunk.usage.model_copy(update={"first_token_ms": first_token_ms})
+                    }
+                )
 
     async def embed(self, role: ModelRole, texts: Sequence[str]) -> EmbedResult:
         provider, model = self._resolve(role)

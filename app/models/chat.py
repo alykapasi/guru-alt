@@ -227,6 +227,11 @@ class LLMCall(UUIDPrimaryKeyMixin, Base):
     # felt bad is either a slow model or a slow product, and only these two rows separate them
     # (S64).
     latency_ms: Mapped[int | None] = mapped_column(default=None)
+    # The streamed half of the same question (P10). `latency_ms` is NULL for a stream, so a
+    # latency report built on it alone would have described every call except the ones a
+    # learner waits on. NULL here means not measured too: a non-streamed call has no first
+    # token, and neither does a streamed turn that only called a tool.
+    first_token_ms: Mapped[int | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)
 
 
