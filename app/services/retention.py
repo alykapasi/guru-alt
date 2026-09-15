@@ -23,10 +23,11 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import structlog
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import Item
+from app.models.auth import Impersonation
 from app.models.chat import Conversation, Message, Turn
 from app.models.content import ContentBlock
 from app.models.learner import Learner
@@ -66,6 +67,18 @@ RETENTION: tuple[StoreRetention, ...] = (
         "Cascades from the learner (S21). Deleting the account has to stop every session "
         "authenticating as it at once — a session that outlived its owner would be a live "
         "credential for an account that no longer exists.",
+    ),
+    StoreRetention(
+        "impersonations",
+        "partly deleted",
+        "The record of an administrator viewing this account (P10), and the fourth disposition "
+        "is doing real work here rather than hedging. The learner's half goes: their id is "
+        "cleared by the foreign key and the service clears the handle beside it, so nothing "
+        "left names them. The administrator's half is retained, because a record of who "
+        "accessed accounts that any *subject* of that access can erase is not an audit of "
+        "access — and the platform still has to be able to answer what its administrators did "
+        "after an account is closed. What survives is that somebody with a name viewed "
+        "somebody, when, for how long, and the reason they gave.",
     ),
     StoreRetention(
         "password_reset_tokens",
@@ -205,6 +218,9 @@ async def export_learner(session: AsyncSession, learner_id: uuid.UUID) -> dict[s
         "sources": await rows(Source, Source.learner_id == learner_id),
         "chunks": await rows(Chunk, Chunk.source_id.in_(source_ids)),
         "authored_items": await rows(Item, Item.author_learner_id == learner_id),
+        # Their half of P10's audit: who has viewed this account, when, and why. A record of
+        # access that the person accessed cannot see is a record kept for somebody else.
+        "impersonations": await rows(Impersonation, Impersonation.learner_id == learner_id),
     }
 
 
@@ -235,6 +251,13 @@ async def delete_learner(
         delete(Item).where(Item.author_learner_id == learner_id).returning(Item.id)
     )
     report.items_deleted = len(authored.all())
+    # Before the learner row goes: the foreign key clears `learner_id` on its own, and after
+    # that there is no way left to find the rows whose *handle* still names this person (P10).
+    await session.execute(
+        update(Impersonation)
+        .where(Impersonation.learner_id == learner_id)
+        .values(learner_handle=None)
+    )
     await session.execute(delete(Learner).where(Learner.id == learner_id))
     await session.commit()
 

@@ -21,6 +21,87 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/impersonate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Impersonate
+         * @description Start a recorded, read-only session onto one learner's account (P10).
+         *
+         *     404 rather than 403 when the capability is switched off, because a capability a deployment
+         *     has not enabled should not announce that it exists.
+         *
+         *     The token is returned once and is a *second* credential — the administrator's own session
+         *     is untouched, so ending the visit cannot sign them out and losing its token costs them
+         *     nothing. Signing that session out ends the visit and stamps the record; nothing else needs
+         *     to be called, which is deliberate, because an end that depends on the polite endpoint being
+         *     used is an end that goes unrecorded the first time somebody just logs out.
+         */
+        post: operations["impersonate_api_v1_admin_impersonate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/impersonations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Impersonations
+         * @description Every recorded visit, newest first.
+         *
+         *     Listed whether or not the capability is currently enabled: turning it off must not hide
+         *     what was done while it was on, which would make the switch a way to erase the record
+         *     rather than a way to withdraw the power.
+         */
+        get: operations["impersonations_api_v1_admin_impersonations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/impersonations/{impersonation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * End Impersonation
+         * @description End a visit, as yourself rather than as the account being viewed.
+         *
+         *     Signing the visit's own session out ends it too, and that is the path a script uses. It is
+         *     the wrong one for a browser: `/auth/logout` clears the session cookie on its way out, and
+         *     the cookie in that browser belongs to the administrator — so ending a visit that way would
+         *     sign them out of their own account.
+         *
+         *     Not gated on the capability being enabled, for the same reason the log is not: switching it
+         *     off must not leave a live visit that nobody can close.
+         */
+        delete: operations["end_impersonation_api_v1_admin_impersonations__impersonation_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/learners": {
         parameters: {
             query?: never;
@@ -1003,6 +1084,11 @@ export interface paths {
          *     answerable item where one was eagerly resolved — a flashcard normally, an open question
          *     where the component keeps failing (see ``session_runner.due_review_items`` and the
          *     ``reviews_due_item_limit`` cost bound).
+         *
+         *     An administrator viewing the account (P10) gets the queue without the items. Resolving
+         *     one can generate it, which bills a model call to the learner and commits an item to
+         *     their bank, and this is a GET: the one method a visit is allowed, so the method rule
+         *     alone would let it through.
          */
         get: operations["due_reviews_api_v1_reviews_due_get"];
         put?: never;
@@ -2071,6 +2157,83 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * ImpersonationRead
+         * @description One recorded visit.
+         *
+         *     The ids are nullable and the handles are not, which is the record outliving the accounts:
+         *     closing either one clears its id and leaves the handle, so a row still says who did what
+         *     rather than becoming two empty columns. ``ended_at`` means *explicitly* ended — a visit
+         *     nobody closed simply expires, and ``expires_at`` is the outer bound either way.
+         */
+        ImpersonationRead: {
+            /** Admin Handle */
+            admin_handle: string;
+            /** Admin Learner Id */
+            admin_learner_id: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Ended At */
+            ended_at: string | null;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Learner Handle */
+            learner_handle: string | null;
+            /** Learner Id */
+            learner_id: string | null;
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * ImpersonationRequest
+         * @description Ask to view one learner's account, and say why.
+         *
+         *     The reason is required by the schema rather than checked later, so a request without one
+         *     never reaches the code that issues a credential. Nothing here can tell a real reason from
+         *     a plausible one; what the floor enforces is that somebody had to type a sentence next to
+         *     their own name first.
+         */
+        ImpersonationRequest: {
+            /**
+             * Learner Id
+             * Format: uuid
+             */
+            learner_id: string;
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * ImpersonationStarted
+         * @description The credential, returned once, and the record that was written with it.
+         */
+        ImpersonationStarted: {
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            impersonation: components["schemas"]["ImpersonationRead"];
+            /** Learner Handle */
+            learner_handle: string;
+            /**
+             * Learner Id
+             * Format: uuid
+             */
+            learner_id: string;
+            /** Token */
+            token: string;
         };
         /**
          * IngestionBacklog
@@ -3220,6 +3383,101 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ActivityRead"];
+                };
+            };
+        };
+    };
+    impersonate_api_v1_admin_impersonate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImpersonationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImpersonationStarted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    impersonations_api_v1_admin_impersonations_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImpersonationRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    end_impersonation_api_v1_admin_impersonations__impersonation_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                impersonation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImpersonationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

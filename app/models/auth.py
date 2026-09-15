@@ -37,6 +37,62 @@ class LearnerSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Set rather than deleted, so a revoked session stays distinguishable from one that was
     # never issued for as long as the row is retained.
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # Who is *really* holding this session, when that is not its learner (P10). NULL for every
+    # ordinary session, which is almost all of them.
+    #
+    # The flag lives here rather than only on ``impersonations`` because every request resolves
+    # this row already, and the alternative is a join on the hot path of every authenticated
+    # call to answer a question whose answer is NULL for almost all of them. The audit row is
+    # the *record*; this is what the request path reads. SET NULL rather than CASCADE: deleting
+    # an administrator's account must not silently delete the sessions they opened onto other
+    # people's — it must strand them, and a stranded one is caught by the same expiry as any
+    # other.
+    impersonated_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="SET NULL"), index=True, default=None
+    )
+
+
+class Impersonation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One administrator's read-only visit to one learner's account, recorded (P10).
+
+    The audit is the *product*, not a side effect of it: ``impersonation.begin`` writes this
+    row and issues the credential in the same transaction, so there is no path that grants
+    access without leaving a record. That is the whole difference between "we log
+    impersonations" and "impersonation is logged".
+
+    **It has to outlive both accounts, which is why the ids are nullable and the handles are
+    not.** A record that a deleted learner can erase is not an audit of access to that
+    learner's data, and one an administrator can erase by closing their own account is not an
+    audit of anything at all. So both foreign keys are SET NULL and the handles are captured
+    here as text at the time. The learner's is the one that has to go on deletion, and the
+    service clears it — see ``app.services.retention``, which states both halves.
+
+    ``ended_at`` means *explicitly* ended, by signing the impersonated session out. NULL does
+    not mean "still running": an untouched visit simply expires, and ``expires_at`` is the
+    outer bound either way. Recording a wall-clock end that nobody performed would be inventing
+    an event.
+    """
+
+    __tablename__ = "impersonations"
+
+    admin_learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="SET NULL"), index=True, default=None
+    )
+    admin_handle: Mapped[str] = mapped_column()
+    learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="SET NULL"), index=True, default=None
+    )
+    learner_handle: Mapped[str | None] = mapped_column(default=None)
+    # Required by the endpoint, and required to be more than a couple of characters: an audit
+    # whose every row says "support" records that something happened and nothing about why.
+    reason: Mapped[str] = mapped_column()
+    # The credential this record issued. SET NULL because sessions are purged once they can no
+    # longer authenticate anybody, and the audit must not be purged with them.
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learner_sessions.id", ondelete="SET NULL"), default=None
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
 
 class PasswordResetToken(UUIDPrimaryKeyMixin, TimestampMixin, Base):

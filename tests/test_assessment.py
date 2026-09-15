@@ -10,7 +10,8 @@ from sqlalchemy import Integer, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_llm_client
+from app.api.deps import get_app_settings, get_llm_client
+from app.core.config import get_settings
 from app.llm.registry import fake_llm_client
 from app.main import app
 from app.models.assessment import Item, ItemKC, ItemType
@@ -311,6 +312,49 @@ async def test_due_reviews_endpoint(
     assert due[0]["item"] is not None
     assert due[0]["item"]["item_type"] == "flashcard"
     assert "answer_key" not in due[0]["item"]
+
+
+async def test_an_administrator_viewing_the_account_reads_the_queue_without_generating(
+    api_client: AsyncClient,
+    admin_client: AsyncClient,
+    anon_client: AsyncClient,
+    api_learner: Learner,
+    db_session: AsyncSession,
+    fake_flashcard_llm: None,
+) -> None:
+    """A visit (P10) is read-only by method, and this is a GET that can write: resolving a due
+    review generates a flashcard when the bank has none, which bills a model call to the learner
+    and commits an item they never asked for. The visit sees what is due and nothing is made."""
+    (kc,) = await _seed_kcs(db_session)
+    item_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
+    await api_client.post(f"{API}/items/{item_id}/answer", json={"response": {"choice": 1}})
+    state = await db_session.scalar(select(LearnerKCState).where(LearnerKCState.kc_id == kc.id))
+    assert state is not None
+    state.due_at = datetime(2000, 1, 1, tzinfo=UTC)
+    await db_session.commit()
+    items_before = len((await db_session.scalars(select(Item))).all())
+    calls_before = len((await db_session.scalars(select(LLMCall))).all())
+
+    settings = get_settings().model_copy(update={"impersonation_enabled": True})
+    app.dependency_overrides[get_app_settings] = lambda: settings
+    try:
+        r = await admin_client.post(
+            f"{API}/admin/impersonate",
+            json={"learner_id": str(api_learner.id), "reason": "checking why reviews look empty"},
+        )
+        assert r.status_code == 200, r.text
+        anon_client.headers["authorization"] = f"Bearer {r.json()['token']}"
+
+        due = (await anon_client.get(f"{API}/reviews/due")).json()
+    finally:
+        app.dependency_overrides.pop(get_app_settings, None)
+
+    assert [d["kc_id"] for d in due] == [str(kc.id)]
+    assert due[0]["item"] is None
+    assert len((await db_session.scalars(select(LLMCall))).all()) == calls_before
+    assert len((await db_session.scalars(select(Item))).all()) == items_before
+    # And the learner's own call still resolves it, so the visit's answer is not the only one.
+    assert (await api_client.get(f"{API}/reviews/due")).json()[0]["item"] is not None
 
 
 async def test_due_reviews_endpoint_reuses_a_flashcard_the_learner_has_not_seen(

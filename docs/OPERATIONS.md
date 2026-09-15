@@ -91,9 +91,29 @@ quiet learners last, so the cap removes exactly them, and a truncated page looks
 complete one without it. **Administrator session only**, not the ops token: the token is a
 shared secret in a monitor's configuration and this is not an aggregate.
 
-The portal is at `/app/admin`, offered in the nav only to an administrator. Read-only —
-suspending an account or impersonating a learner are decisions with their own audit
-requirements, and P10's impersonation half is not started.
+The portal is at `/app/admin`, offered in the nav only to an administrator.
+
+### Viewing a learner's account
+
+`POST /api/v1/admin/impersonate` with `{learner_id, reason}` returns a token that authenticates
+as that learner. **Off by default** — set `GURU_IMPERSONATION_ENABLED=true` to allow it; with it
+off the endpoint answers 404, because a capability nobody enabled should not announce itself.
+
+| Property | What it means |
+| --- | --- |
+| Read-only | Any request other than `GET`, `HEAD` or `OPTIONS` answers 403. That holds only while reads are reads: the review queue generates items on a GET, so a visit gets the queue without them, and a new GET that writes would need the same. Support needs to *see* the account; writing as somebody else puts evidence in their record that they did not create, and no amount of audit makes that recoverable. |
+| Never an administrator | The visit is refused by the admin and operator gates even when the target learner is themselves an administrator — otherwise it is a way to launder one administrator's actions through another's name. |
+| Time-boxed | `GURU_IMPERSONATION_TTL_MINUTES` (default 15), on the visit's own clock. Your own session is untouched throughout, so ending a visit cannot sign you out. |
+| Recorded first | The audit row is written in the same transaction that issues the token. There is no path that grants access and then fails to log it. |
+| Ended however it ends | `POST /auth/logout` while holding the visit's token, or `DELETE /api/v1/admin/impersonations/{id}` as the administrator (the portal's *Stop viewing*), each end it and stamp the record. Every way a session ends goes through one function, so an end cannot go unrecorded because somebody logged out instead of calling the polite endpoint. A row with no end expired. |
+
+`GET /api/v1/admin/impersonations` is the log, and it answers whether or not the capability is
+currently enabled: turning the switch off withdraws the power, it does not erase the record.
+The learner sees their own half in `GET /api/v1/me/export`.
+
+Deleting a learner's account clears their id and handle from the rows naming them and keeps the
+rest — what survives is that a named administrator viewed somebody, when, for how long, and the
+reason they gave. `app/services/retention.py` states both halves.
 
 ## Health, readiness, and what to alert on
 
