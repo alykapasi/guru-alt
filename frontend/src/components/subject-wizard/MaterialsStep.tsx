@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Upload } from "lucide-react";
-import { useSources } from "../../api/hooks";
+import { useAllSources } from "../../api/hooks";
 import { UploadForm } from "../uploads/UploadForm";
 
 export interface MaterialsStepProps {
@@ -10,7 +10,12 @@ export interface MaterialsStepProps {
 }
 
 export function MaterialsStep({ value, onChange, onNext }: MaterialsStepProps) {
-  const { data: sources, isLoading } = useSources(undefined);
+  // `useAllSources`, not `useSources`. The two differ in what they mean by `undefined`: the
+  // New Chat picker's hook reads it as "no subject chosen yet" and disables itself, so passing
+  // it here meant the query never ran. The step rendered neither the list nor its own "no
+  // materials yet" message — just a gap — and grounding a curriculum in your own document was
+  // unreachable from the UI no matter how many you had uploaded.
+  const { data: sources, isLoading } = useAllSources(undefined);
   const [showUploadForm, setShowUploadForm] = useState(false);
 
   function toggleSource(id: string) {

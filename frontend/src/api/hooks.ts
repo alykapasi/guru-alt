@@ -79,8 +79,30 @@ export function useSources(subjectId: string | undefined) {
   });
 }
 
-/** For the Uploads page — every source, or those scoped to one subject; unlike useSources
- * (gated behind a chosen subject for the New Chat picker), this is always enabled. */
+/** How often to re-ask while a document is still being ingested. */
+const INGESTION_POLL_MS = 2000;
+
+/** Whether anything in this list is still being worked on.
+ *
+ * Exported so the rule can be tested without a rendered page, and named rather than inlined
+ * because it is the condition that decides whether the library is a live view or a snapshot.
+ */
+export function stillIngesting(sources: { status: string }[] | undefined): boolean {
+  return (sources ?? []).some((s) => s.status === "pending" || s.status === "processing");
+}
+
+/** For the Uploads page and the subject wizard's materials step — every source, or those
+ * scoped to one subject; unlike useSources (gated behind a chosen subject for the New Chat
+ * picker), this is always enabled.
+ *
+ * It polls while anything is in flight, and that is not a refinement. Uploading returns as
+ * soon as the bytes are stored; extraction, chunking and embedding happen in a queued job
+ * afterwards. So the status this first renders is always "pending", and without a refetch it
+ * stays "pending" for the rest of the session — no error, no spinner resolving, nothing
+ * moving — and the only way a learner can find out their document is ready is to reload the
+ * page. The interval stops as soon as nothing is in flight, so a settled library costs
+ * nothing.
+ */
 export function useAllSources(subjectId: string | undefined) {
   return useQuery({
     queryKey: ["sources", "all", subjectId],
@@ -91,6 +113,7 @@ export function useAllSources(subjectId: string | undefined) {
       if (error) throw error;
       return data;
     },
+    refetchInterval: (query) => (stillIngesting(query.state.data) ? INGESTION_POLL_MS : false),
   });
 }
 
