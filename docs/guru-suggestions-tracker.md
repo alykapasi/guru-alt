@@ -1531,7 +1531,8 @@ for a same-site deployment and is exactly the assumption to revisit if the app i
 cross-site. The admin portal P10 pairs with this **is** built now (see the P10 entry): there is
 an authorization tier, `/ops/*` is behind it, and a session picks up a grant or a revoke without
 being reissued — which is the narrow answer to the rotation item above, since nothing about the
-privilege is carried in the token. Audited impersonation is still not started.
+privilege is carried in the token. Audited impersonation is built too — read-only, time-boxed and
+off by default (see P10).
 
 ### S28 — Say what to do when there are no sources, and stop contradicting it
 
@@ -1930,6 +1931,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-15 | Twenty-second pass, same branch: **the rest of the product driven in a browser** — S58 (`f84d244`, `63937f0`, `cd41787`, `9959a75`). The journeys stopped at the chat turn, and the obstacle was the stand-in rather than effort: curriculum design, objective selection, item writing and grading all parse the reply as JSON, and `FakeProvider` answers everything with one sentence, so each took its parse-failure path. **`ShapedProvider`** reads the system prompt, recognises which job it is, and answers in that shape — derived from the request where cheap, so a journey can assert that what the learner typed shaped what came back; anything unrecognised falls through to prose, which is correct for a conversational turn and the right failure for a drifted prompt. Three tests hold the coupling nothing else would notice breaking: each real prompt claimed by *exactly* one shape, a sweep of every `*SYSTEM_PROMPT` in `app` requiring that the conversational ones match nothing, and no shape matching nothing. The production guard now refuses the whole family, with a test walking the registry's real provider table. **Eleven journeys**: the wizard end to end, a graded practice round, and a real file through real storage and a real worker — the last needing Redis and MinIO in the CI job, brought up from the project's own compose file. **Three defects found, all on the happy path.** The subject wizard could never see any material: the step called a hook that disables itself when given no subject, so it rendered neither the list nor its own empty message, and grounding a curriculum in your own documents was unreachable from the UI. The library never said a document was ready — ingestion finishes in a queued job and `refetchInterval` appeared nowhere in `frontend/src`, so the page showed "pending" forever. And the stand-in's first failing diagnosis was a kind the product deliberately drops, so the S09 "say why it failed" path could not have been exercised at all. **Plus one wrong assumption of ours:** the curriculum journey first asserted the subject is named after the sentence the learner typed. It is not — "Looks good" accepts the gate's *refined proposal*, which is the entire reason the gate exists. `uv run poe check` green (1557 passed, 6 skipped); `npm run test`, `lint` and `build` green; four consecutive clean journey runs. |
 | 2026-09-15 | Twenty-third pass, same branch: **S27's larger half — the structure of a technical document** (`2a0bf1d`, `995d7fb`, `5adc809`). The measurement side landed last pass; the thing doing the damage had not moved. Normalization collapsed *all* whitespace, so a four-line function came out as one line with `return 0.0` and `return score * weight` side by side and nothing left to say one was inside a branch, and a table came out as a run of numbers — none of it recoverable, because the flattening happened *before* the chunk was written, so the embedding, the retrieval snippet and any lesson from that chunk were all working from text the document did not contain. Line breaks and column tabs survive now, indentation is kept verbatim (nothing can tell a code block from a layout-indented paragraph, and noise can be read past where flattened structure cannot be recovered), and a window ends at the best boundary in reach rather than wherever the count ran out. **Looking for where the structure was being lost found three more defects, two of them data loss rather than degradation.** A Word file's tables were never ingested at all — `document.paragraphs` returns only top-level paragraphs, so a report whose numbers live in tables was ingested as its prose and nothing else, reported `done`. A PowerPoint table is a `GraphicFrame` with no text frame and was skipped the same way, as were grouped shapes. And a spreadsheet dropped empty cells, shifting every later value one column left, so a learner asking about Q2 could be answered with Q3's figure in a perfectly well-formed sentence. All three now render through one `table_text`. `uv run poe check` green (1598 passed, 6 skipped). 20 mutations, all applied and all killed — but the first sweeps were worth more than the second: one reported ten survivors that were really a broken harness (`--timeout` is not a registered pytest option here, so every run died before collecting and ten absent summaries read as ten passes), one reported six PATTERN MISSING rather than six passes after the per-adapter code was collapsed into a shared renderer, and two genuine survivors corrected a misleading comment and exposed an untested bound. |
 | 2026-09-15 | Twenty-fourth pass, same branch: **the deployment gets an administrator, and a page that shows what it is doing** — P10 (`f529199`, `81b3998`, `8c76925`, `1620ccd`, `1fa9714`). S21 recorded that there was no admin role and no authorization *tier* and left it, which blocked everything above it: a portal needs somebody allowed to open it. `learners.is_admin` is that tier, granted outside the API (`poe grant-admin`) because the API's own answer to "who may grant admin" is "an administrator" and a deployment starts with none; it is read off the row each request, so a grant and a revoke both land on sessions already open — verified live, the same cookie going 403 to 200 to 403 with no sign-in in between. **`/ops/*` was open to anybody who knew the path**, justified by "read by an orchestrator and a monitor", which conflated *polled by a machine* with *safe for a stranger* — it returns the bill, the backlog, and a list of what is broken. It takes an administrator or `GURU_OPS_TOKEN` now; `/health` and `/ready` stay open, because a probe that can fail on authentication takes healthy instances out of rotation for the wrong reason. The token is not convenience: resolving a session is a database read, so sessions alone would lose these endpoints in exactly the weather they exist for. **The calls a learner actually waits on had never been timed.** `latency_ms` has been NULL for every stream since S48 on sound reasoning — a stream has no single end — but the streamed calls *are* the tutoring turn and the refinement gate, so a latency report from this table would have described grading and embedding and omitted every turn anybody complains about; `first_token_ms` answers the other half without collapsing the two. The portal refuses to round off the numbers that lie quietly: an empty timing reads "Not measured" and carries its population, spend says when it is a floor. `uv run poe check` green (1639 passed, 6 skipped); 69 frontend tests, both new journeys green. 31 mutations, all applied and all killed; two survived a first sweep and both were the same mistake in a *test* — a p95 never asserted to differ from a p50, and an unpriced count tested one-for-one, which a count of the priced calls satisfies equally. **The browser journey found a defect on its first run:** the roster is ordered by cost and capped, so the learners with no calls — the rows the query goes out of its way to include — sort last and fell off silently; against 188 accounts the freshly registered learner was simply not on the page, and a hundred rows out of two hundred looks exactly like a hundred out of a hundred. The total is reported now. |
+| 2026-09-15 | Twenty-fifth pass, same branch: **scoped impersonation with mandatory audit** — P10's other half (@@SHAS@@). A visit is a second credential, so the administrator's own session is untouched; it is refused every method but a read at `get_current_learner`, refused by the admin and operator gates even onto an administrator's account, lasts fifteen minutes on its own clock, and is off unless `GURU_IMPERSONATION_ENABLED` is set. The `impersonations` row is written in the transaction that issues the token, every way a session ends stamps it, and it outlives both accounts. `uv run poe check` green (1663 passed, 6 skipped); `poe db-check` clean; `npm run lint`, `npm run build` and 77 frontend tests green. Migration `0049`. 20 backend mutations, all applied and all killed; mutations — the first sweep this project has run over the browser — all killed. **Three defects found before commit, none by a test that existed.** *Stop viewing* sent its `DELETE` still carrying the visit's bearer, which the route refuses, so the record stayed open and the session live while the browser forgot the token and looked fine; its test stubbed `fetch` to answer 200, and the API had been verified live only from the command line. `GET /reviews/due` generates a flashcard and bills the model call to the learner, through the one method a visit is allowed; a visit gets the queue without items now, and the other GET handlers were searched for the same shape rather than proven clean. The access log printed "NaNd ago" for every visit that had ended. **A killed mutation sweep left its mutation in the tree** — `POST`, `PUT` and `DELETE` listed as read methods, the whole scope removed — and it was found by checking each mutation's original text before staging, not by a test. Also two sightings of S76's `test_retrieval_eval_gate` flake in this pass, each the only failure in a full run and each green on the next. |
 
 ## Remaining architecture autopsy — source pass
 
@@ -4017,6 +4019,11 @@ until its next regenerate.
 
 ### S76 — Establish whether the vector arm of retrieval actually returns what it should
 
+> **Fresh sightings, 2026-09-15.** Twice in one pass, in full `poe check` runs on the P10
+> impersonation work — each time the only failure, and each time green on the next full run (the
+> first also in isolation). It collects before any of that pass's new tests, so nothing the pass
+> added runs ahead of it. Still order-dependent, still unexplained.
+>
 > **Fresh sighting, 2026-09-12.** `tests/eval/test_eval.py::test_retrieval_eval_gate` failed
 > once during a full-suite run and then passed three times in isolation, on the parent commit,
 > and on a re-run of the whole suite. Still order-dependent, still not reproduced on demand,
@@ -4245,10 +4252,78 @@ failure the rest of this work is careful about — a number without the populati
 it took a browser to see it. The journey also drives `poe grant-admin`, which had nothing
 exercising it end to end.
 
-**Not done.** Scoped impersonation with mandatory audit — the other half of P10 — is not started,
-and the portal is read-only for that reason: suspending an account or acting as a learner are
-decisions with their own audit requirements, and a portal that can only look cannot yet be used
-to do something nobody recorded. There is still no *curation* tier, so "who may publish a shared
+**Implemented — an administrator can view a learner's account, and do nothing else with it.**
+`POST /admin/impersonate` takes a learner and a reason and returns a *second* credential: the
+administrator's own session is untouched, so ending a visit cannot sign them out and losing its
+token costs them nothing. It answers 404 unless `GURU_IMPERSONATION_ENABLED` is set. The scope
+is three refusals, each made in one place rather than scattered through routes. A visit is
+refused every method but `GET`, `HEAD` and `OPTIONS` at `get_current_learner`, the dependency
+every learner route already goes through. It is refused by the admin and operator gates even
+when the account it views belongs to an administrator — otherwise it launders one
+administrator's actions through another's name. And it lasts `GURU_IMPERSONATION_TTL_MINUTES`
+(15) on its own clock: resolving a session touches `last_used_at` and never `expires_at`, so
+using a visit does not extend it.
+
+**Implemented — the record is written with the credential, and outlives both accounts.** The
+`impersonations` row is written in the transaction that issues the token, so no path grants
+access and then fails to log it. A reason of at least a sentence is required, refused at the
+schema *and* the service, because the service is callable from somewhere other than this route.
+Every way the session ends stamps the record — `logout` and `logout-all` through the one function
+that ends sessions, and the portal's *Stop viewing* through `DELETE /admin/impersonations/{id}`
+as the administrator — so a row with no `ended_at` expired. The foreign keys are SET NULL and the
+handles are copied as text, so closing either account keeps the fact that a named administrator
+looked at somebody, when, and why; deleting the learner clears their half. The log reads whether
+or not the capability is on, because switching it off withdraws the power rather than hiding what
+was done while it was on, and the learner sees their own half in the export.
+
+**Implemented — in the browser, a banner that cannot be missed.** The token lives in memory only:
+`sessionStorage` would survive a reload and be readable by any script on the page, which is what
+the httpOnly session cookie exists to prevent. The typed client and the hand-rolled SSE helper
+both attach it per request, and every shell carries a banner naming the account, saying read
+only, and holding the way out. The roster gains *View as*, which asks for the reason first.
+
+**Three defects found before commit, none of them by a test that existed.**
+
+- ***Stop viewing* stopped nothing.** The banner sent its `DELETE` and *then* dropped the token,
+  so the request carried the visit's own bearer — and the route takes an administrator and
+  refuses a visit. It answered 403, the record stayed open and the session stayed live, while the
+  browser forgot the token and looked as if it had worked. The test agreed because its stubbed
+  `fetch` answered 200 to everything; it now asserts the header that goes out, not the outcome.
+  The API had been verified live end to end, and the defect lived entirely in the browser.
+- **A GET that writes.** Read-only by method is exactly as strong as every GET being a read, and
+  `GET /reviews/due` is not: resolving a due review generates a flashcard when the bank has none,
+  billing a model call to the learner and committing an item into their bank. A visit gets the
+  queue without the items now. The forty GET handlers were searched for the same shape and this
+  was the only hit — a search, not a guarantee.
+- **The access log read "NaNd ago"** for every visit that had ended. Most timestamps are naive UTC
+  and the page appended a "Z"; the visit's own clock is zoned.
+
+**Measured.** 20 backend mutations across the scope, the audit and the seam, all applied and all
+killed. The frontend gets its own sweep for the first time — 6 mutations over
+the banner, both bearer paths, the in-memory store and the timestamp, all killed. The first
+backend sweep found two survivors hiding each other: the reason floor is enforced twice, so
+removing either check still produced a 422 and both tests passed. The tests now assert *which*
+layer answered (a validation error's `detail` is a list, a handler's is a string) and call the
+service directly. A later rerun was killed by the shell's time limit partway through and **left
+its second mutation in the working tree** — `POST`, `PUT` and `DELETE` listed as read methods,
+which is the entire scope removed. It was found by checking that each mutation's original text
+was back before anything was staged, which is now the step after any sweep that does not finish.
+
+**Not done — impersonation.** Read-only rests on GET handlers being reads and nothing makes that
+structural: a GET that lazily writes, added later, passes the method rule, and the search that
+found the review queue read handler bodies, not the services they call. Making it structural
+means a read-only transaction for a visit's requests, which collides with session resolution
+writing `last_used_at` on the same connection. The learner is not told: the visit's session
+appears in their session list with nothing marking it (`SessionRead` has no such field), and the
+export is the only place they would learn an administrator looked. No browser journey drives a
+visit, and the defect above is exactly what one would have found first. If *Stop viewing*'s
+request fails, or the page is reloaded, the token is gone and the visit runs out its clock, so
+the record reads "expired" rather than "ended". The reason is free text with a floor of a
+sentence — no ticket reference, no second approver, and no scope narrower than the whole account.
+
+**Not done — the admin tier.** The portal can start a read-only visit and still cannot suspend an
+account or act as a learner; those remain decisions with their own audit requirements. There is
+still no *curation* tier, so "who may publish a shared
 subject" remains S25's open question rather than this one's answer. `first_token_ms` measures the
 model's contribution to a slow turn and nothing measures the product's, so the attribution the
 pair was built for is still half-made — a turn is slow between the request arriving and the first
@@ -4264,7 +4339,9 @@ answers "what is this costing and who is here", not "is anybody learning".
 [app/services/admin.py](../app/services/admin.py), [app/services/spend.py](../app/services/spend.py),
 [app/llm/registry.py](../app/llm/registry.py), [app/workers/grant_admin.py](../app/workers/grant_admin.py),
 [frontend/src/pages/Admin.tsx](../frontend/src/pages/Admin.tsx),
-[frontend/e2e/admin.spec.ts](../frontend/e2e/admin.spec.ts).
+[frontend/e2e/admin.spec.ts](../frontend/e2e/admin.spec.ts),
+[app/services/impersonation.py](../app/services/impersonation.py), [app/services/auth.py](../app/services/auth.py),
+[frontend/src/components/ImpersonationBanner.tsx](../frontend/src/components/ImpersonationBanner.tsx).
 
 ## Implementation order for consideration
 
