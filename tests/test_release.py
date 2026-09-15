@@ -14,6 +14,8 @@ from app.core.release import (
     enforce_production_settings,
     production_problems,
 )
+from app.llm.providers import DETERMINISTIC_PROVIDERS
+from app.llm.registry import build_llm_client
 from app.models.learner import Learner
 from app.models.source import Source, SourceKind, SourceStatus
 from app.services.ingestion import backlog
@@ -73,6 +75,11 @@ def test_a_correct_production_config_starts() -> None:
         # every answer is canned, so nothing downstream reports it as broken.
         ({"model_smart": "fake:fake-1"}, "GURU_MODEL_SMART"),
         ({"model_embed": "FAKE:fake-1"}, "GURU_MODEL_EMBED"),
+        # The shaped stand-in is the worse of the two here, not the better: it answers a
+        # curriculum request with a real curriculum and a grading request with a real-looking
+        # grade, so a production deployment routed to it produces a product that looks like it
+        # is teaching rather than one that is obviously broken.
+        ({"model_smart": "shaped:shaped-1"}, "GURU_MODEL_SMART"),
         (
             {"session_cookie_samesite": "none", "session_cookie_secure": False},
             "GURU_SESSION_COOKIE_SAMESITE=none",
@@ -88,10 +95,29 @@ def test_each_development_default_refuses_production(overrides: dict, expected: 
 def test_every_faked_role_is_named_not_just_the_first() -> None:
     """An operator who fixes SMART and restarts into the same refusal for GENIUS has learned
     the list one outage at a time, which is what this module exists to prevent."""
-    problems = production_problems(_prod(model_smart="fake:fake-1", model_genius="fake:fake-1"))
-    faked = [p for p in problems if "fake provider" in p]
+    problems = production_problems(_prod(model_smart="fake:fake-1", model_genius="shaped:shaped-1"))
+    faked = [p for p in problems if "stand-in provider" in p]
     assert len(faked) == 1
     assert "GURU_MODEL_SMART" in faked[0] and "GURU_MODEL_GENIUS" in faked[0]
+
+
+def test_no_deterministic_provider_can_be_registered_without_being_refused() -> None:
+    """The guard reads a set of provider *names*, so a third stand-in added to the registry and
+    left out of that set would be routable in production and reported by nothing.
+
+    This walks the registry's real provider table instead of restating the set, which is the
+    only version of this check that a future addition cannot pass by being forgotten.
+    """
+    providers = build_llm_client(_prod(model_smart="anthropic:claude"))._providers
+    deterministic = {
+        name for name, provider in providers.items() if getattr(provider, "deterministic", False)
+    }
+
+    assert deterministic, "the registry no longer registers any stand-in — update this test"
+    assert deterministic <= DETERMINISTIC_PROVIDERS
+    for name in deterministic:
+        problems = production_problems(_prod(model_smart=f"{name}:m"))
+        assert any("GURU_MODEL_SMART" in problem for problem in problems), name
 
 
 def test_every_problem_is_reported_at_once() -> None:

@@ -10,7 +10,13 @@ from dataclasses import dataclass
 
 from app.core.config import Settings
 from app.llm.base import LLMProvider
-from app.llm.providers import AnthropicProvider, FakeProvider, FakeTurn, OpenAICompatProvider
+from app.llm.providers import (
+    AnthropicProvider,
+    FakeProvider,
+    FakeTurn,
+    OpenAICompatProvider,
+    ShapedProvider,
+)
 from app.llm.types import ChatChunk, ChatMessage, ChatResponse, EmbedResult, ModelRole, ToolDef
 
 
@@ -157,6 +163,11 @@ def build_llm_client(settings: Settings) -> LLMClient:
         # pointing at it, on the same reasoning as the dev-login seam: a stack answering from a
         # canned reply looks exactly like a stack that is working.
         "fake": FakeProvider(),
+        # The same seam, for the callers the plain fake cannot serve: curriculum design, item
+        # writing and grading all parse the reply as JSON, so one canned sentence sends every
+        # one of them down its parse-failure path. This answers each in its own shape, which is
+        # what lets a browser journey reach a generated curriculum or a graded answer at all.
+        "shaped": ShapedProvider(),
     }
     roles = {
         ModelRole.FAST: _parse_spec(settings.model_fast),

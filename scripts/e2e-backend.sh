@@ -8,8 +8,11 @@
 # no third DSN to keep in sync.
 #
 # No model behind it because a journey that calls a real provider is neither offline nor
-# repeatable, and would bill for every CI run. Every role routes to the deterministic fake
-# provider; `app/core/release.py` refuses to start production that way.
+# repeatable, and would bill for every CI run. Every role routes to the deterministic `shaped`
+# provider, which answers each caller in the shape that caller parses — the plain `fake` returns
+# one canned sentence, which is right for a tutoring turn and sends curriculum design, item
+# writing and grading straight down their parse-failure paths, so no journey past the chat one
+# could reach anything. `app/core/release.py` refuses to start production on either.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -17,11 +20,11 @@ cd "$(dirname "$0")/.."
 export GURU_ENV=dev
 GURU_DATABASE_URL="$(uv run python -m tests.testdb --suffix _e2e --print-url)"
 export GURU_DATABASE_URL
-export GURU_MODEL_FAST=fake:fake-1
-export GURU_MODEL_SMART=fake:fake-1
-export GURU_MODEL_GENIUS=fake:fake-1
-export GURU_MODEL_VISION=fake:fake-1
-export GURU_MODEL_EMBED=fake:fake-1
+export GURU_MODEL_FAST=shaped:shaped-1
+export GURU_MODEL_SMART=shaped:shaped-1
+export GURU_MODEL_GENIUS=shaped:shaped-1
+export GURU_MODEL_VISION=shaped:shaped-1
+export GURU_MODEL_EMBED=shaped:shaped-1
 # Deliberately no GURU_DEV_AUTO_LOGIN. The journeys register through the form, which is both
 # the path a first user takes and the only one available: the development sign-in button is
 # compiled out of the production bundle these run against. Leaving the seam off also lets the

@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from app.core import mail
 from app.core.config import AppEnv, Settings
+from app.llm.providers import DETERMINISTIC_PROVIDERS
 
 # The docker-compose credentials. Present in production means nobody set the real ones.
 _DEV_BLOB_KEYS = {"minioadmin"}
@@ -90,15 +91,18 @@ def production_problems(settings: Settings) -> list[str]:
     if not settings.openrouter_api_key and not settings.anthropic_api_key:
         problems.append("no model provider key is set (GURU_OPENROUTER_API_KEY/ANTHROPIC_API_KEY)")
 
-    # The deterministic provider exists so a browser journey can drive the stack without a
-    # model. In production it is the worst kind of failure: every request succeeds, every page
-    # renders, and every answer is a canned sentence — indistinguishable from working, which no
-    # health check or readiness probe would ever report.
-    faked = sorted(role for role, spec in _role_specs(settings).items() if spec == "fake")
+    # The deterministic providers exist so a browser journey can drive the stack without a
+    # model. In production either is the worst kind of failure: every request succeeds, every
+    # page renders, and every answer is invented here — indistinguishable from working, which
+    # no health check or readiness probe would ever report. Checked against the whole family
+    # rather than the one name, so adding a stand-in does not quietly widen the hole.
+    faked = sorted(
+        role for role, spec in _role_specs(settings).items() if spec in DETERMINISTIC_PROVIDERS
+    )
     if faked:
         problems.append(
-            f"{', '.join(faked)} resolve(s) to the deterministic fake provider — every answer "
-            "would be a canned sentence and nothing would report it as broken"
+            f"{', '.join(faked)} resolve(s) to a deterministic stand-in provider — every answer "
+            "would be written by the test double and nothing would report it as broken"
         )
 
     # Auth (S21). The development sign-in seam issues a session for the dev learner with no
