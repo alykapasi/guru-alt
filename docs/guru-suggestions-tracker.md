@@ -1528,8 +1528,10 @@ do not rotate their token on privilege change, and there is no absolute lifetime
 the sliding TTL. The learner cannot change their own email or password through the API. CSRF
 rests on `SameSite=lax` plus an explicit CORS allowlist rather than a token, which is adequate
 for a same-site deployment and is exactly the assumption to revisit if the app is ever served
-cross-site. And the admin portal and audited impersonation that P10 pairs with this are not
-started.
+cross-site. The admin portal P10 pairs with this **is** built now (see the P10 entry): there is
+an authorization tier, `/ops/*` is behind it, and a session picks up a grant or a revoke without
+being reissued — which is the narrow answer to the rotation item above, since nothing about the
+privilege is carried in the token. Audited impersonation is still not started.
 
 ### S28 — Say what to do when there are no sources, and stop contradicting it
 
@@ -1927,6 +1929,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-15 | Twenty-first pass, same branch: **the knowledge-graph section completed** — S24 (`965fa42`), S25 (`5aa59f5`), S27 (`7ca84c1`). The three items that had never been started. **S24:** a concept now has one identity across subjects, and the deliberate limit is the decision that matters — sharing a canonical name is evidence about *names*, so mastery does not transfer; "Functions" in Calculus and in a programming course reach the same key, and silently marking the second mastered would stop the product teaching something the learner had never seen, invisibly. The cross-subject prerequisite turned out not to be a policy at all but a crash: the foreign component reached the topological sort, which had no tiebreak entry for it, and comparing a UUID against the integers used for local components raised `TypeError` — so such an edge did not weaken a plan's ordering, it meant no plan at all. **S25:** subjects now have an owner, NULL meaning curated; a stranger's subject answers 404 rather than 403 because 403 confirms it exists; both ends of a prerequisite edge are checked, since an edge constrains the order both components are taught in. It made the retention statement wrong, which needed a fourth disposition — one table now holds both a learner's rows and nobody's, and "deleted" and "retained" are each false about half of it. **S27:** the `confidence: 1.0` written on every chunk, computed by nothing and read by nothing, is replaced by measured indicators of damage — with no single score and no threshold, both refused on the record, and the documented limitation (two interleaved columns read clean) turned into a test rather than left as prose. `uv run poe check` green (1527 passed, 6 skipped). 22 mutations across the three, all applied and all killed; four survived a first sweep and every one was a real gap, including **dead authorisation code** — a 404 branch no caller could reach, removed rather than kept, because an unreachable authorisation check reads as a protection that is never exercised. |
 | 2026-09-15 | Twenty-second pass, same branch: **the rest of the product driven in a browser** — S58 (`f84d244`, `63937f0`, `cd41787`, `9959a75`). The journeys stopped at the chat turn, and the obstacle was the stand-in rather than effort: curriculum design, objective selection, item writing and grading all parse the reply as JSON, and `FakeProvider` answers everything with one sentence, so each took its parse-failure path. **`ShapedProvider`** reads the system prompt, recognises which job it is, and answers in that shape — derived from the request where cheap, so a journey can assert that what the learner typed shaped what came back; anything unrecognised falls through to prose, which is correct for a conversational turn and the right failure for a drifted prompt. Three tests hold the coupling nothing else would notice breaking: each real prompt claimed by *exactly* one shape, a sweep of every `*SYSTEM_PROMPT` in `app` requiring that the conversational ones match nothing, and no shape matching nothing. The production guard now refuses the whole family, with a test walking the registry's real provider table. **Eleven journeys**: the wizard end to end, a graded practice round, and a real file through real storage and a real worker — the last needing Redis and MinIO in the CI job, brought up from the project's own compose file. **Three defects found, all on the happy path.** The subject wizard could never see any material: the step called a hook that disables itself when given no subject, so it rendered neither the list nor its own empty message, and grounding a curriculum in your own documents was unreachable from the UI. The library never said a document was ready — ingestion finishes in a queued job and `refetchInterval` appeared nowhere in `frontend/src`, so the page showed "pending" forever. And the stand-in's first failing diagnosis was a kind the product deliberately drops, so the S09 "say why it failed" path could not have been exercised at all. **Plus one wrong assumption of ours:** the curriculum journey first asserted the subject is named after the sentence the learner typed. It is not — "Looks good" accepts the gate's *refined proposal*, which is the entire reason the gate exists. `uv run poe check` green (1557 passed, 6 skipped); `npm run test`, `lint` and `build` green; four consecutive clean journey runs. |
 | 2026-09-15 | Twenty-third pass, same branch: **S27's larger half — the structure of a technical document** (`2a0bf1d`, `995d7fb`, `5adc809`). The measurement side landed last pass; the thing doing the damage had not moved. Normalization collapsed *all* whitespace, so a four-line function came out as one line with `return 0.0` and `return score * weight` side by side and nothing left to say one was inside a branch, and a table came out as a run of numbers — none of it recoverable, because the flattening happened *before* the chunk was written, so the embedding, the retrieval snippet and any lesson from that chunk were all working from text the document did not contain. Line breaks and column tabs survive now, indentation is kept verbatim (nothing can tell a code block from a layout-indented paragraph, and noise can be read past where flattened structure cannot be recovered), and a window ends at the best boundary in reach rather than wherever the count ran out. **Looking for where the structure was being lost found three more defects, two of them data loss rather than degradation.** A Word file's tables were never ingested at all — `document.paragraphs` returns only top-level paragraphs, so a report whose numbers live in tables was ingested as its prose and nothing else, reported `done`. A PowerPoint table is a `GraphicFrame` with no text frame and was skipped the same way, as were grouped shapes. And a spreadsheet dropped empty cells, shifting every later value one column left, so a learner asking about Q2 could be answered with Q3's figure in a perfectly well-formed sentence. All three now render through one `table_text`. `uv run poe check` green (1598 passed, 6 skipped). 20 mutations, all applied and all killed — but the first sweeps were worth more than the second: one reported ten survivors that were really a broken harness (`--timeout` is not a registered pytest option here, so every run died before collecting and ten absent summaries read as ten passes), one reported six PATTERN MISSING rather than six passes after the per-adapter code was collapsed into a shared renderer, and two genuine survivors corrected a misleading comment and exposed an untested bound. |
+| 2026-09-15 | Twenty-fourth pass, same branch: **the deployment gets an administrator, and a page that shows what it is doing** — P10 (`f529199`, `81b3998`, `8c76925`, `1620ccd`, `1fa9714`). S21 recorded that there was no admin role and no authorization *tier* and left it, which blocked everything above it: a portal needs somebody allowed to open it. `learners.is_admin` is that tier, granted outside the API (`poe grant-admin`) because the API's own answer to "who may grant admin" is "an administrator" and a deployment starts with none; it is read off the row each request, so a grant and a revoke both land on sessions already open — verified live, the same cookie going 403 to 200 to 403 with no sign-in in between. **`/ops/*` was open to anybody who knew the path**, justified by "read by an orchestrator and a monitor", which conflated *polled by a machine* with *safe for a stranger* — it returns the bill, the backlog, and a list of what is broken. It takes an administrator or `GURU_OPS_TOKEN` now; `/health` and `/ready` stay open, because a probe that can fail on authentication takes healthy instances out of rotation for the wrong reason. The token is not convenience: resolving a session is a database read, so sessions alone would lose these endpoints in exactly the weather they exist for. **The calls a learner actually waits on had never been timed.** `latency_ms` has been NULL for every stream since S48 on sound reasoning — a stream has no single end — but the streamed calls *are* the tutoring turn and the refinement gate, so a latency report from this table would have described grading and embedding and omitted every turn anybody complains about; `first_token_ms` answers the other half without collapsing the two. The portal refuses to round off the numbers that lie quietly: an empty timing reads "Not measured" and carries its population, spend says when it is a floor. `uv run poe check` green (1639 passed, 6 skipped); 69 frontend tests, both new journeys green. 31 mutations, all applied and all killed; two survived a first sweep and both were the same mistake in a *test* — a p95 never asserted to differ from a p50, and an unpriced count tested one-for-one, which a count of the priced calls satisfies equally. **The browser journey found a defect on its first run:** the roster is ordered by cost and capped, so the learners with no calls — the rows the query goes out of its way to include — sort last and fell off silently; against 188 accounts the freshly registered learner was simply not on the page, and a hundred rows out of two hundred looks exactly like a hundred out of a hundred. The total is reported now. |
 
 ## Remaining architecture autopsy — source pass
 
@@ -4164,6 +4167,104 @@ nothing does so automatically.
 **Code:** [app/rag/textnorm.py](../app/rag/textnorm.py), [app/rag/simhash.py](../app/rag/simhash.py),
 [app/services/ingestion.py](../app/services/ingestion.py), [app/services/retention.py](../app/services/retention.py),
 [tests/eval/dedup/separation.py](../tests/eval/dedup/separation.py).
+
+### P10 — Give the deployment an administrator, and show them what it is doing
+
+**Status:** Implemented (branch `fix/tracker-repairs-and-next`) · **Priority:** Alpha
+
+**Implemented — there is an authorization tier now, and there was not one before.** S21 recorded
+this plainly and left it: "there is no admin role and no authorization *tier*". Nothing above it
+could be built while that held — a portal needs somebody allowed to open it. `learners.is_admin`
+is that tier and two levels is deliberately all of it; a role table nobody populates is a
+permission model that exists only in the schema. The column is NOT NULL defaulting to false,
+because the conservative failure is a deployment with no administrator yet rather than one where
+everybody already is. The first is granted by hand (`uv run poe grant-admin <email>`, `--revoke`
+to take it back), which has to live outside the API: the API's own answer to "who may grant
+admin" is "an administrator", and a deployment starts with none.
+
+The flag is read off the learner row on every request rather than stamped into the session, so a
+grant and a revoke both take effect on sessions already open. Verified live — the same cookie
+went 403 → 200 → 403 across a grant and a revoke with no sign-in in between. That is also a
+narrower answer to one of S21's own open items: authorization does not need the session token to
+rotate on a privilege change, because nothing about the privilege is carried in the token.
+
+**Implemented — `/ops/*` was open to anybody who knew the path.** Its docstring justified that
+with "read by an orchestrator and a monitor, neither of which holds a learner session", which
+conflated *polled by a machine* with *safe for a stranger*. What those endpoints return is this
+deployment's bill, how much work is backed up, and a list of what is broken right now. They take
+an administrator's session or an `X-Ops-Token` matching `GURU_OPS_TOKEN` now. `/health` and
+`/ready` stay open, because an orchestrator genuinely holds no credential and a probe that can
+fail on authentication takes healthy instances out of rotation for a reason unrelated to their
+health.
+
+The token is not convenience. Resolving a session is a database read, so a deployment relying on
+sessions alone loses `/ops/*` in exactly the weather they exist for — when the database is the
+thing that is wrong, nobody can authenticate to ask what is wrong. Production refuses to start
+without it, on that reasoning. `/admin/learners` deliberately does *not* accept it: the token is
+a shared static secret in a monitor's configuration, it reads aggregates, and who your learners
+are is not an aggregate.
+
+**Implemented — the calls a learner actually waits on are timed at last.** `llm_calls.latency_ms`
+has been NULL for every streamed call since S48, and the reasoning was sound: a stream has no
+single end, and time-to-first-token and time-to-completion are different questions one column
+would blur. What was not thought through is *which* calls stream. The tutoring turn does. So does
+the refinement gate. So the only calls anybody sits and waits for were the only ones with no
+timing at all, and a latency report drawn from this table would have described grading,
+curriculum design and embedding — the work nobody is in front of — and silently omitted every
+turn whose slowness a person ever complains about. The number exists to attribute a slow turn to
+a slow model rather than a slow product, and the turn was the gap in it.
+
+`first_token_ms` answers the other half rather than collapsing both into one column. A row carries
+one timing or the other, never both, and which one it has says what kind of call it was.
+Time-to-completion for a stream is still not recorded and is still the ambiguous one — it would
+be as much a claim about how long the answer was as about how fast the model is.
+
+**Implemented — the portal, at `/app/admin`.** Spend and both timings over a chosen window, the
+same split by role and by model, and the learner list. It refuses to round off the two numbers
+that lie quietly: an empty timing reads "Not measured" rather than "0 ms" and carries the calls
+it was computed over, and spend says plainly when unpriced calls make it a floor. The nav link is
+offered only to an administrator and the route redirects one who is not — neither is the security
+boundary, but showing everybody a door that answers 403 is how a product teaches people it is
+broken.
+
+**Measured.** 31 mutations across the tier, the timings, the roster and the page; all applied and
+all killed. Two survived the first sweep and both were the same mistake in a *test*: a p95 was
+never asserted to differ from a p50, because every fixture had one latency value — so the tail,
+the only reason to report a p95, was untested; and the unpriced count was tested one-for-one, an
+assertion that a count of the *priced* calls satisfies just as well. Two mutations reported
+PATTERN MISSING rather than passing, which is the guard working — the formatter had moved the
+code out from under them.
+
+**The browser journey found a defect on its first run.** The roster is ordered by cost and capped
+at a hundred, so the learners with no calls — the ones the query goes out of its way to include,
+because somebody who registered and never came back is the most informative row on the page —
+sort last and fall off first. Against the journey database's 188 accounts the freshly registered
+learner simply was not there, and nothing said so: a hundred rows out of two hundred looks
+exactly like a hundred rows out of a hundred. The roster reports its total now. It is the same
+failure the rest of this work is careful about — a number without the population behind it — and
+it took a browser to see it. The journey also drives `poe grant-admin`, which had nothing
+exercising it end to end.
+
+**Not done.** Scoped impersonation with mandatory audit — the other half of P10 — is not started,
+and the portal is read-only for that reason: suspending an account or acting as a learner are
+decisions with their own audit requirements, and a portal that can only look cannot yet be used
+to do something nobody recorded. There is still no *curation* tier, so "who may publish a shared
+subject" remains S25's open question rather than this one's answer. `first_token_ms` measures the
+model's contribution to a slow turn and nothing measures the product's, so the attribution the
+pair was built for is still half-made — a turn is slow between the request arriving and the first
+token reaching the browser, and only the model's share of that is recorded. Nothing alerts on
+latency; it is a number on a page, like the budget was before P11 gave it a watcher. The ops
+token is a single shared secret with no rotation and no per-operator attribution, which is
+adequate for a monitor and is exactly the assumption to revisit when more than one person holds
+it. And the portal has no cohort view, no retention curve and no per-learner drill-down: it
+answers "what is this costing and who is here", not "is anybody learning".
+
+**Code:** [app/models/learner.py](../app/models/learner.py), [app/api/deps.py](../app/api/deps.py),
+[app/api/v1/admin.py](../app/api/v1/admin.py), [app/api/v1/ops.py](../app/api/v1/ops.py),
+[app/services/admin.py](../app/services/admin.py), [app/services/spend.py](../app/services/spend.py),
+[app/llm/registry.py](../app/llm/registry.py), [app/workers/grant_admin.py](../app/workers/grant_admin.py),
+[frontend/src/pages/Admin.tsx](../frontend/src/pages/Admin.tsx),
+[frontend/e2e/admin.spec.ts](../frontend/e2e/admin.spec.ts).
 
 ## Implementation order for consideration
 
