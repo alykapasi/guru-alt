@@ -140,6 +140,15 @@ class Settings(BaseSettings):
     # None = host-only, which is right unless the API and the app are on sibling subdomains.
     session_cookie_domain: str | None = None
 
+    # The operational endpoints' second credential (P10). They are read by an administrator
+    # through the portal *and* by a monitor, and the monitor is the reason this exists rather
+    # than an admin session being the only way in: resolving a session is a database read, so
+    # an instance whose database is sick cannot authenticate the very administrator who needs
+    # to ask it what is wrong. A static token answers without touching a row. Sent as
+    # ``X-Ops-Token``; unset means the endpoints admit administrators only, and
+    # ``app.core.release`` refuses to start production that way.
+    ops_token: str | None = None
+
     # Spend watch (S60). Cost has been recorded per call since Phase 1 and capped per learner
     # since S47; nothing looked at the total, so the failure mode was a bill discovered monthly.
     # None = report spend but assert nothing about it.

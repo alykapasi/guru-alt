@@ -42,6 +42,7 @@ def _prod(**overrides: object) -> Settings:
         anthropic_api_key="sk-ant-real",
         dev_auto_login=False,
         session_cookie_secure=True,
+        ops_token="a-real-ops-token",
     )
     return base.model_copy(update=overrides) if overrides else base
 
@@ -70,6 +71,9 @@ def test_a_correct_production_config_starts() -> None:
         ({"anthropic_api_key": "", "openrouter_api_key": ""}, "no model provider key"),
         # S21: a session issued with no credential, for anybody who finds the endpoint.
         ({"dev_auto_login": True}, "GURU_DEV_AUTO_LOGIN"),
+        # P10: without it `/ops/*` admits only a session, and resolving one is a database
+        # read — so the endpoints that say why the database is sick go dark with it.
+        ({"ops_token": None}, "GURU_OPS_TOKEN"),
         ({"session_cookie_secure": False}, "GURU_SESSION_COOKIE_SECURE"),
         # S58: the provider the browser journeys route through. Every request succeeds and
         # every answer is canned, so nothing downstream reports it as broken.

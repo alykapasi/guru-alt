@@ -173,3 +173,19 @@ async def anon_client(db_session: AsyncSession, engine: AsyncEngine) -> AsyncIte
     """The same app with no credential attached."""
     async with _app_client(db_session, engine) as client:
         yield client
+
+
+@pytest_asyncio.fixture
+async def admin_client(db_session: AsyncSession, engine: AsyncEngine) -> AsyncIterator[AsyncClient]:
+    """A client signed in as an administrator (P10).
+
+    Its own learner rather than promoting ``api_learner``: a test that used one client for
+    both would stop being able to show that an ordinary learner is refused, which is the
+    half of the boundary worth asserting.
+    """
+    learner = Learner(handle=f"admin-{uuid.uuid4().hex[:8]}", display_name="Admin", is_admin=True)
+    db_session.add(learner)
+    await db_session.flush()
+    async with _app_client(db_session, engine) as client:
+        await sign_in(client, db_session, learner)
+        yield client

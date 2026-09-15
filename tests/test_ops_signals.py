@@ -118,9 +118,9 @@ async def test_spend_past_the_budget_says_so(db_session: AsyncSession) -> None:
     assert report.over_budget is True
 
 
-async def test_the_spend_endpoint_is_open_to_a_monitor(anon_client: AsyncClient) -> None:
-    """Read by a poller that holds no learner session, like the other ops endpoints."""
-    r = await anon_client.get(f"{API}/ops/spend")
+async def test_the_spend_endpoint_serves_an_operator(admin_client: AsyncClient) -> None:
+    """Who may ask is `test_admin_access.py`; this is that the answer arrives at all."""
+    r = await admin_client.get(f"{API}/ops/spend")
     assert r.status_code == 200
     assert "cost_usd" in r.json()
 
@@ -276,11 +276,11 @@ def test_an_over_budget_alert_says_when_the_figure_is_a_floor() -> None:
 
 
 async def test_the_alerts_endpoint_answers_200_even_while_firing(
-    anon_client: AsyncClient,
+    admin_client: AsyncClient,
 ) -> None:
     """Readiness is the endpoint that 503s. Taking an instance out of rotation because its
     bill is high would be the wrong response to the right signal."""
-    r = await anon_client.get(f"{API}/ops/alerts")
+    r = await admin_client.get(f"{API}/ops/alerts")
     assert r.status_code == 200
     assert "firing" in r.json() and "checked" in r.json()
 

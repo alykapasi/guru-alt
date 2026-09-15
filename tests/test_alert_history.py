@@ -163,11 +163,11 @@ async def test_history_comes_back_newest_first_and_can_be_narrowed(
 
 
 async def test_the_history_endpoint_serves_what_was_recorded(
-    api_client: AsyncClient, db_session: AsyncSession
+    admin_client: AsyncClient, db_session: AsyncSession
 ) -> None:
     await alert_history.record(db_session, _report(_alert()))
 
-    response = await api_client.get(f"{API}/ops/alerts/history")
+    response = await admin_client.get(f"{API}/ops/alerts/history")
 
     assert response.status_code == 200
     body = response.json()

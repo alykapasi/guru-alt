@@ -48,6 +48,7 @@ Secrets that must be set explicitly in production:
 | `GURU_CORS_ORIGINS` | The real frontend origin, not `*` |
 | `GURU_SESSION_COOKIE_SECURE=true` | Without it the session cookie is sent over plain HTTP, where anything on the path can read and replay it |
 | `GURU_DEV_AUTO_LOGIN=false` | `POST /auth/dev-login` issues a session with **no credential** — it is not a weak password, it is no password |
+| `GURU_OPS_TOKEN` | The monitor's credential for `/api/v1/ops/*`. Without it those reads admit only an administrator's session — which the database has to resolve, and the database is one of the things they exist to diagnose |
 
 ### Identity (S21)
 
@@ -65,6 +66,22 @@ distinguishable from a token that never existed.
 Set `GURU_SESSION_COOKIE_SAMESITE=none` **only** alongside `GURU_SESSION_COOKIE_SECURE=true`,
 and only when the app and API are genuinely cross-site; `lax` is correct when they share a
 registrable domain, and it is the browser's own CSRF protection.
+
+## Who may read the operational endpoints
+
+`/health` and `/api/v1/ready` are **open**. An orchestrator holds no credential, they carry no
+business fact, and a probe that could fail on authentication would take healthy instances out
+of rotation for a reason unrelated to their health.
+
+Everything under `/api/v1/ops` takes one of two credentials:
+
+- **An administrator's session** — a normal signed-in learner with `is_admin`, which is what
+  the portal at `/app/admin` uses. Grant the first one with `uv run poe grant-admin <email>`
+  (`--revoke` takes it back); it has to be done from outside the API, because the API's own
+  answer to "who may grant admin" is "an administrator", and a deployment starts with none.
+- **`X-Ops-Token`**, matching `GURU_OPS_TOKEN` — for a monitor. A poller should not hold a
+  credential that expires, and resolving a session is a database read: when the database is
+  the thing that is wrong, the session route cannot answer and this one still can. Set it.
 
 ## Health, readiness, and what to alert on
 

@@ -7,6 +7,7 @@ request when there is none. Nothing above it changed: every route already receiv
 ``Learner`` / ``learner_id``, which is what made this a swap rather than a rewire.
 """
 
+import hmac
 import uuid
 from collections.abc import Awaitable, Callable
 from functools import lru_cache
@@ -164,3 +165,53 @@ async def get_current_learner(
 
 
 CurrentLearner = Annotated[Learner, Depends(get_current_learner)]
+
+
+async def get_current_admin(learner: CurrentLearner) -> Learner:
+    """The learner this request is authenticated as, if they administer this deployment (P10).
+
+    403 rather than 401, and rather than the 404 that would hide the route: the caller has
+    already proved who they are, so there is nothing left to conceal from them and nothing
+    they could usefully retry with a different credential. Telling them plainly that this is
+    not theirs is the answer that does not send somebody hunting for a broken session.
+    """
+    if not learner.is_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "not an administrator")
+    return learner
+
+
+CurrentAdmin = Annotated[Learner, Depends(get_current_admin)]
+
+
+async def require_operator(request: Request, session: SessionDep, settings: SettingsDep) -> None:
+    """Admit an administrator's session, or a monitor holding the ops token (P10).
+
+    Two credentials because there are two callers and they fail in different weather. An
+    administrator reading the portal is a session, which is a database row; a monitor polling
+    every minute is a machine, which should not hold one that expires. The token also survives
+    the case the endpoints exist for — a database too sick to resolve a session is exactly
+    when somebody needs to read why — so it is checked first and without a query.
+
+    ``/health`` and ``/ready`` are deliberately *not* behind this. They carry no business fact,
+    an orchestrator holds no credential, and a readiness probe that can fail on authentication
+    takes healthy instances out of rotation for the wrong reason.
+    """
+    expected = settings.ops_token
+    if expected is not None:
+        offered = request.headers.get("x-ops-token", "")
+        if offered and hmac.compare_digest(offered, expected):
+            return
+
+    token = session_token_from(request, settings)
+    learner = await auth.resolve(session, token) if token else None
+    if learner is None:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not learner.is_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "not an administrator")
+
+
+OperatorDep = Depends(require_operator)

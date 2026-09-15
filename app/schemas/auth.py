@@ -34,6 +34,10 @@ class LearnerRead(BaseModel):
     handle: str
     display_name: str | None
     email: str | None
+    # Exposed because the app has to know whether to offer the portal at all (P10). It is not
+    # what authorizes anything — the API refuses a non-administrator whatever the browser
+    # renders — it is what keeps a learner from being shown a door that answers 403.
+    is_admin: bool = False
 
 
 class SessionRead(BaseModel):

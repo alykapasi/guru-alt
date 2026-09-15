@@ -213,11 +213,19 @@ async def test_a_learner_route_refuses_a_request_with_no_session(
     assert r.headers.get("www-authenticate") == "Bearer"
 
 
-async def test_the_operational_endpoints_stay_open(anon_client: AsyncClient) -> None:
-    """Read by an orchestrator and a monitor, neither of which holds a learner session (S60)."""
+async def test_the_probes_stay_open_and_the_operational_reads_do_not(
+    anon_client: AsyncClient,
+) -> None:
+    """Liveness and readiness are read by an orchestrator that holds no credential (S60).
+
+    Everything under `/ops` used to be open on the same reasoning, which conflated "polled by
+    a machine" with "safe for anybody" — the queue depth, the bill and the list of what is
+    broken are operator facts. They take an administrator or the ops token now (P10); the
+    boundary has its own suite in `test_admin_access.py`.
+    """
     assert (await anon_client.get(f"{API}/ready")).status_code in (200, 503)
-    assert (await anon_client.get(f"{API}/ops/ingestion")).status_code == 200
     assert (await anon_client.get("/health")).status_code == 200
+    assert (await anon_client.get(f"{API}/ops/ingestion")).status_code == 401
 
 
 async def test_a_made_up_token_is_refused(anon_client: AsyncClient) -> None:

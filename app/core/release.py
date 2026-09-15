@@ -116,6 +116,17 @@ def production_problems(settings: Settings) -> list[str]:
             "token would be written to the application log instead of being delivered"
         )
 
+    # The operational endpoints admit an administrator's session or the ops token (P10). A
+    # session is a database read, so a deployment relying on sessions alone loses `/ops/*` in
+    # precisely the weather they exist for: when the database is the thing that is wrong,
+    # nobody can authenticate to ask what is wrong. The token is the credential that does not
+    # depend on the subsystem being diagnosed.
+    if not settings.ops_token:
+        problems.append(
+            "GURU_OPS_TOKEN is unset — the operational endpoints would then admit only an "
+            "administrator session, which a sick database cannot resolve"
+        )
+
     if settings.dev_auto_login:
         problems.append(
             "GURU_DEV_AUTO_LOGIN is on — /auth/dev-login issues a session with no credential"
