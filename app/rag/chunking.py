@@ -57,20 +57,25 @@ _BOUNDARIES = ("\n\n", "\n", " ")
 
 
 def _collapse(run: re.Match[str]) -> str:
-    """One tab if the run contained one, otherwise one space.
+    """Just the tabs if the run had any, otherwise one space.
 
-    A tab inside a line is a column boundary — a spreadsheet row, a table lifted out of a PDF —
-    and collapsing it to a space is what left a table as a run of numbers even once the rows
-    survived. A run of plain spaces carries no such claim, so it becomes one space.
+    A tab inside a line is a column boundary — a spreadsheet row, a table lifted out of a
+    document — and collapsing it to a space is what left a table as a run of numbers even once
+    the rows survived. The count is kept rather than reduced to one, because consecutive tabs
+    are *empty cells*: squeezing them would shift every column after the gap and quietly
+    misalign the row, which is the same loss in a subtler form. Surrounding spaces go; a run of
+    plain spaces carries no such claim and becomes one space.
     """
-    return "\t" if "\t" in run.group() else " "
+    tabs = run.group().count("\t")
+    return "\t" * tabs if tabs else " "
 
 
 def normalize(text: str) -> str:
     """Tidy whitespace without flattening the document.
 
-    Within a line: a run of spaces becomes one space, a run containing a tab becomes one tab
-    (it is a column boundary), and trailing whitespace goes.
+    Within a line: a run of spaces becomes one space, a run containing tabs keeps just those
+    tabs (they are column boundaries, and consecutive ones are empty cells), and trailing
+    whitespace goes.
     Across lines: nothing is joined, and a run of blank lines becomes a single blank line.
     Leading indentation survives untouched — see the module docstring for why that is worth
     the layout noise it carries into prose.

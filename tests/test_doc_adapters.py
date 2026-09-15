@@ -96,6 +96,20 @@ def _docx(paragraphs: list[str]) -> bytes:
     return buf.getvalue()
 
 
+def _docx_with_table(intro: str, rows: list[list[str]], outro: str) -> bytes:
+    """A document whose table sits between two paragraphs, which is where reports put them."""
+    document = Document()
+    document.add_paragraph(intro)
+    table = document.add_table(rows=len(rows), cols=len(rows[0]))
+    for r, row in enumerate(rows):
+        for c, value in enumerate(row):
+            table.cell(r, c).text = value
+    document.add_paragraph(outro)
+    buf = io.BytesIO()
+    document.save(buf)
+    return buf.getvalue()
+
+
 def _pptx(slides: list[str]) -> bytes:
     prs = Presentation()
     blank = prs.slide_layouts[6]
@@ -144,6 +158,91 @@ async def test_docx_adapter_joins_paragraphs(tmp_path: Path) -> None:
     assert "First paragraph" in units[0].text and "Second paragraph" in units[0].text
 
 
+async def test_docx_adapter_reads_tables_it_used_to_drop_entirely(tmp_path: Path) -> None:
+    """`document.paragraphs` returns only the body's top-level paragraphs, so every cell of
+    every table was absent from ingestion — not mangled, gone, with the source reported `done`
+    and nothing anywhere saying the figures never arrived."""
+    units = await DocxAdapter().extract(
+        _path(
+            tmp_path,
+            _docx_with_table(
+                "Quarterly results follow.",
+                [["Region", "Q1", "Q2"], ["North", "1200", "1450"]],
+                "End of report.",
+            ),
+        ),
+        meta={},
+        ctx=ExtractContext(),
+    )
+
+    assert len(units) == 1
+    assert "1450" in units[0].text
+
+
+async def test_docx_table_rows_keep_their_columns_and_their_place(tmp_path: Path) -> None:
+    """Order matters as much as presence: a table belongs under the paragraph that introduced
+    it, and appending every table at the end would file them all under the last one."""
+    units = await DocxAdapter().extract(
+        _path(
+            tmp_path,
+            _docx_with_table(
+                "Quarterly results follow.",
+                [["Region", "Q1", "Q2"], ["North", "1200", "1450"]],
+                "End of report.",
+            ),
+        ),
+        meta={},
+        ctx=ExtractContext(),
+    )
+
+    assert units[0].text.splitlines() == [
+        "Quarterly results follow.",
+        "Region\tQ1\tQ2",
+        "North\t1200\t1450",
+        "End of report.",
+    ]
+
+
+async def test_docx_keeps_an_empty_cell_rather_than_shifting_the_row(tmp_path: Path) -> None:
+    """A dropped empty cell moves every later value one column left, which turns a gap into
+    wrong data — the row still parses, and Q2's figure now sits under Q1."""
+    units = await DocxAdapter().extract(
+        _path(
+            tmp_path,
+            _docx_with_table("Results", [["Region", "Q1", "Q2"], ["North", "", "1450"]], "End."),
+        ),
+        meta={},
+        ctx=ExtractContext(),
+    )
+
+    assert "North\t\t1450" in units[0].text
+
+
+async def test_docx_keeps_a_multi_paragraph_cell_on_one_row(tmp_path: Path) -> None:
+    """A cell can hold several paragraphs, and `cell.text` joins them with a newline. Left
+    alone that newline ends the row early: the rest of the cell becomes its own line with no
+    columns at all, and every column after it in the real row is orphaned."""
+    document = Document()
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Region"
+    table.cell(0, 1).text = "Note"
+    table.cell(1, 0).text = "North"
+    cell = table.cell(1, 1)
+    cell.text = "first line"
+    cell.add_paragraph("second line")
+    buf = io.BytesIO()
+    document.save(buf)
+
+    units = await DocxAdapter().extract(
+        _path(tmp_path, buf.getvalue()), meta={}, ctx=ExtractContext()
+    )
+
+    assert units[0].text.splitlines() == [
+        "Region\tNote",
+        "North\tfirst line second line",
+    ]
+
+
 async def test_pptx_adapter_extracts_one_unit_per_slide(tmp_path: Path) -> None:
     units = await PptxAdapter().extract(
         _path(tmp_path, _pptx(["Slide one bullet", "Slide two bullet"])),
@@ -164,6 +263,40 @@ async def test_xlsx_adapter_extracts_one_unit_per_sheet(tmp_path: Path) -> None:
     assert len(units) == 1
     assert units[0].locator == {"sheet": "Scores"}
     assert "Alice" in units[0].text and "90" in units[0].text
+
+
+async def test_xlsx_rows_are_tab_separated_so_the_columns_survive(tmp_path: Path) -> None:
+    """A spreadsheet is a table and almost nothing else. Joining the cells with a space left
+    nothing to say where one column ended, which is how a table became a run of numbers."""
+    units = await XlsxAdapter().extract(
+        _path(tmp_path, _xlsx("Q", [["Region", "Q1", "Q2"], ["North", 1200, 1450]])),
+        meta={},
+        ctx=ExtractContext(),
+    )
+
+    assert units[0].text.splitlines() == ["Region\tQ1\tQ2", "North\t1200\t1450"]
+
+
+async def test_xlsx_keeps_an_empty_cell_rather_than_shifting_the_row(tmp_path: Path) -> None:
+    """`if cell is not None` dropped the gap and moved every later value left, so a learner
+    asking about Q2 could be answered with Q3's figure."""
+    units = await XlsxAdapter().extract(
+        _path(tmp_path, _xlsx("Q", [["Region", "Q1", "Q2"], ["North", None, 1450]])),
+        meta={},
+        ctx=ExtractContext(),
+    )
+
+    assert units[0].text.splitlines()[1] == "North\t\t1450"
+
+
+async def test_xlsx_drops_a_blank_row_because_it_displaces_no_column(tmp_path: Path) -> None:
+    units = await XlsxAdapter().extract(
+        _path(tmp_path, _xlsx("Q", [["Region", "Q1"], [None, None], ["North", 1200]])),
+        meta={},
+        ctx=ExtractContext(),
+    )
+
+    assert units[0].text.splitlines() == ["Region\tQ1", "North\t1200"]
 
 
 def test_registry_dispatches_by_content_type() -> None:
@@ -205,6 +338,38 @@ async def test_ingest_pdf_records_page_provenance(db_session: AsyncSession) -> N
     assert len(chunks) >= 2
     assert chunks[0].provenance["method"] == "pdf"
     assert {c.provenance["page"] for c in chunks} == {1, 2}
+
+
+async def test_an_ingested_spreadsheet_is_stored_with_its_columns(
+    db_session: AsyncSession,
+) -> None:
+    """The claim end to end, on the text that is actually stored. The adapter and the chunker
+    each had to stop destroying the table, and asserting on either alone would leave the other
+    free to undo it — which is how it stood before: the adapter joined cells with a space, and
+    normalization would have flattened a tab anyway."""
+    store = InMemoryBlobStore()
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+
+    source = await ingestion.create_source(
+        db_session,
+        store,
+        learner_id=learner.id,
+        kind=SourceKind.FILE,
+        origin="results.xlsx",
+        content_type=XLSX_CT,
+        data=_xlsx("Q", [["Region", "Q1", "Q2"], ["North", None, 1450], ["South", 980, 1010]]),
+    )
+    await ingestion.ingest_source(db_session, store, fake_llm_client(), source.id)
+
+    chunk = await db_session.scalar(select(Chunk).where(Chunk.source_id == source.id))
+    assert chunk is not None
+    assert chunk.text.splitlines() == [
+        "Region\tQ1\tQ2",
+        "North\t\t1450",
+        "South\t980\t1010",
+    ]
 
 
 # --- scanned-PDF OCR fallback -----------------------------------------------
