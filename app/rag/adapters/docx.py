@@ -22,28 +22,13 @@ from docx.document import Document as DocumentObject
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
-from app.rag.adapters.base import ExtractContext, ExtractedUnit
+from app.rag.adapters.base import ExtractContext, ExtractedUnit, table_text
 
 _CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
-# Tab-separated, because that is what survives normalization as a column boundary — see
-# `app.rag.chunking._collapse`. A cell's own line breaks are flattened to spaces so that one
-# row stays one line and the column count a reader sees is the column count the table had.
-_COLUMN = "\t"
-
-
-def _row_text(row_cells: list[str]) -> str:
-    return _COLUMN.join(cell.replace("\n", " ").strip() for cell in row_cells)
-
 
 def _table_text(table: Table) -> str:
-    """One line per row, cells tab-separated, empty cells kept.
-
-    Kept rather than skipped: dropping an empty cell shifts every column after it, so a row
-    with a gap in the middle silently becomes a row with different columns.
-    """
-    rows = [_row_text([cell.text for cell in row.cells]) for row in table.rows]
-    return "\n".join(row for row in rows if row.strip(_COLUMN).strip())
+    return table_text([cell.text for cell in row.cells] for row in table.rows)
 
 
 def _blocks(document: DocumentObject) -> list[str]:

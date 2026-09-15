@@ -254,6 +254,57 @@ async def test_pptx_adapter_extracts_one_unit_per_slide(tmp_path: Path) -> None:
     assert units[1].locator == {"slide": 2}
 
 
+def _pptx_with_table(heading: str, rows: list[list[str]]) -> bytes:
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    box = slide.shapes.add_textbox(Inches(1), Inches(0.5), Inches(4), Inches(1))
+    box.text_frame.text = heading
+    frame = slide.shapes.add_table(
+        len(rows), len(rows[0]), Inches(1), Inches(2), Inches(4), Inches(1)
+    )
+    for r, row in enumerate(rows):
+        for c, value in enumerate(row):
+            frame.table.cell(r, c).text = value
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
+async def test_pptx_reads_a_table_it_used_to_skip_entirely(tmp_path: Path) -> None:
+    """A table is a `GraphicFrame`, which has no text frame — so the shape walk skipped it and
+    every table on every slide was absent from ingestion, the same hole Word had."""
+    units = await PptxAdapter().extract(
+        _path(
+            tmp_path, _pptx_with_table("Quarterly results", [["Region", "Q1"], ["North", "1200"]])
+        ),
+        meta={},
+        ctx=ExtractContext(),
+    )
+
+    assert units[0].text.splitlines() == ["Quarterly results", "Region\tQ1", "North\t1200"]
+
+
+async def test_pptx_reads_through_a_group(tmp_path: Path) -> None:
+    """A group holds the shapes and the shapes hold the text, so anything a deck author had
+    grouped disappeared with it — silently, as a slide with less on it than it had."""
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    first = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(2), Inches(1))
+    first.text_frame.text = "Inside a group"
+    second = slide.shapes.add_textbox(Inches(1), Inches(2), Inches(2), Inches(1))
+    second.text_frame.text = "Also grouped"
+    slide.shapes.add_group_shape([first, second])
+    buf = io.BytesIO()
+    prs.save(buf)
+
+    units = await PptxAdapter().extract(
+        _path(tmp_path, buf.getvalue()), meta={}, ctx=ExtractContext()
+    )
+
+    assert "Inside a group" in units[0].text
+    assert "Also grouped" in units[0].text
+
+
 async def test_xlsx_adapter_extracts_one_unit_per_sheet(tmp_path: Path) -> None:
     units = await XlsxAdapter().extract(
         _path(tmp_path, _xlsx("Scores", [["Name", "Score"], ["Alice", 90]])),

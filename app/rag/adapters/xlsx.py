@@ -16,11 +16,9 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from app.rag.adapters.base import ExtractContext, ExtractedUnit
+from app.rag.adapters.base import ExtractContext, ExtractedUnit, table_text
 
 _CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
-_COLUMN = "\t"
 
 
 class XlsxAdapter:
@@ -37,13 +35,10 @@ class XlsxAdapter:
             try:
                 units: list[ExtractedUnit] = []
                 for worksheet in workbook.worksheets:
-                    rows = [
-                        _COLUMN.join("" if cell is None else str(cell) for cell in row)
+                    text = table_text(
+                        ["" if cell is None else str(cell) for cell in row]
                         for row in worksheet.iter_rows(values_only=True)
-                    ]
-                    # A row of nothing but separators is an empty row, and dropping it is not
-                    # the same as dropping an empty cell: no column is displaced by it.
-                    text = "\n".join(row for row in rows if row.strip(_COLUMN).strip())
+                    )
                     if text.strip():
                         units.append(ExtractedUnit(text=text, locator={"sheet": worksheet.title}))
                 return units
