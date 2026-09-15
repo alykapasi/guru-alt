@@ -964,14 +964,56 @@ gap: nothing asserted that a replacement character *on its own* is enough to rep
 something was found, so dropping it from `any_indicator` changed nothing — the field would have
 kept working for the other four signals while the fifth silently stopped counting.
 
-**Not done, and this is the larger half.** Nothing yet *preserves* technical structure: chunking
-still collapses whitespace into 1,000-character windows, so a table becomes a run of numbers
-with no columns, a derivation loses its line breaks, and a code block loses its indentation —
-all of which read as clean text to every indicator here. There is no evaluation on equations,
-tables, code or derivations against known-correct extractions, because there is no labelled set
-to evaluate against; building one is the reading that would settle both the OCR threshold and
-what these indicator values are worth. And the indicators are recorded but consume nothing:
-retrieval does not down-rank a damaged chunk and generation is not told it is citing one.
+**The larger half — structure — is now preserved, and finding out where it was being destroyed
+turned up three defects rather than one.** Normalization collapsed *all* whitespace, every
+newline and every indent, to a single space, so a four-line function came out as one line with
+`return 0.0` and `return score * weight` side by side and nothing left to say one was inside a
+branch; a table came out as a run of numbers. None of it was recoverable, because the
+flattening happened *before* the chunk was written — the embedding, the retrieval snippet and
+any lesson written from that chunk were all working from text the document did not contain.
+Line breaks and column tabs now survive, leading indentation is kept verbatim, and a window
+ends at the best boundary in reach rather than wherever the count ran out.
+
+Two decisions are worth recording. Indentation is kept even though nothing here can tell a code
+block from a paragraph a PDF indented for layout: the choice is between carrying some layout
+noise into prose and destroying the meaning of every code block, and noise can be read past
+where flattened structure cannot be recovered. And the *next* window is pulled back to a line
+start, because the overlap otherwise lands mid-line and the fragment arrives with its
+indentation cut off — reading as top level when it was three levels deep, which is the same lie
+reintroduced one line at a time.
+
+**Two document adapters were not degrading their tables but dropping them.** `document.paragraphs`
+returns only a Word file's top-level paragraphs, so every cell of every table was absent from
+ingestion — a report whose numbers live in tables was ingested as its prose and nothing else,
+with the source reported `done` and nothing anywhere saying the figures never arrived. A
+PowerPoint table is a `GraphicFrame` with no text frame, so the shape walk skipped it, and a
+grouped shape hid its contents the same way. A spreadsheet's rows lost both their columns
+(cells joined with a space) and their alignment (`if cell is not None` dropped empty cells, so
+every later value shifted one column left — a learner asking about Q2 could be answered with
+Q3's figure, and the answer would look perfectly well-formed). All three now render through one
+`table_text`, because three adapters with the same two ways to destroy a table is three chances
+to get it wrong, and two of them already had.
+
+**Measured.** 10 mutations on the chunker and 10 on the adapters, all applied and all killed —
+after first sweeps that were instructive in three different ways. One sweep reported ten
+survivors that were really one broken harness: `--timeout` is not a registered pytest option
+here, so every run died before collecting and ten absent summaries read as ten passes. Another
+reported six PATTERN MISSING rather than six passes, because those mutations still targeted
+per-adapter code that had just been collapsed into the shared renderer — the guard doing its
+job. And two genuine survivors: an equivalent mutant that corrected a comment (swapping the
+whitespace class back to `\s+` changes nothing, because `normalize` splits on newlines before it
+runs, so the *split* preserves lines and the class only stops that becoming load-bearing alone),
+and a real gap where the bound on how far a window start may be pulled back had no test.
+
+**Still open.** This keeps the shape without understanding it: a markdown table and a code fence
+are both just lines, a fenced block longer than a window is still cut in half, and nothing marks
+a chunk as structured so retrieval could treat it differently. PDF tables are whatever the
+extractor's layout heuristics produce — a table in a PDF has no structure to read, only
+positions to guess from. There is still no evaluation on equations, tables, code or derivations
+against known-correct extractions, because there is no labelled set to evaluate against;
+building one is the reading that would settle both the OCR threshold and what the damage
+indicators are worth. And the indicators still consume nothing: retrieval does not down-rank a
+damaged chunk and generation is not told it is citing one.
 
 **Evidence:** PDF extraction fell back to OCR on a text-length heuristic; chunking collapses
 whitespace into 1,000-character windows; the pipeline assigned confidence 1.0 to every chunk.
@@ -1884,6 +1926,7 @@ All repository links below are pinned to the reviewed commit.
 | 2026-09-15 | Twentieth pass, same branch: **the product driven in a real browser** — S58 (`3c06281`, `935a2a0`, `a7bfaf2`). The last of the three gaps S58 opened with. Three Playwright journeys against Chromium, running the real API and the *built* bundle, covering what is invisible to both suites on either side of them: the backend tests drive the turn function directly and never serialise an SSE frame, the component tests render the chat against a mocked client and never make a request, and the seam between them — the event stream, the credentialed cross-origin fetch, the cookie the browser decides whether to send — is exactly where a change breaks the product while both suites stay green. **The model had to go**: a journey calling a real provider is neither offline nor repeatable, so the deterministic provider is reachable by naming it in a role map, through the existing routing rather than a parallel switch, with production refusing to start when any role points at it — a stack answering from a canned sentence looks exactly like a stack that is working. **No retries, and that earned itself immediately**: the reload journey failed about one run in five, and the cause was the test racing the commit rather than the product losing turns — the reply on screen during a stream is the live buffer, and an interrupted reply is discarded by design. Eight clean runs after the fix. 4 mutations, all killed; the auth-gate one had to be rewritten because the first form did not compile, so the run produced no summary and the sweep read the absence of a failure as a pass — the third time on this branch that a mutation which never reached a running system reported as evidence. `uv run poe check` green (1469 passed, 6 skipped). Browser journeys now run as a tenth CI gate. **What they do not yet cover:** upload, curriculum generation and practice, because those parse structured model output and the deterministic provider returns one sentence. |
 | 2026-09-15 | Twenty-first pass, same branch: **the knowledge-graph section completed** — S24 (`965fa42`), S25 (`5aa59f5`), S27 (`7ca84c1`). The three items that had never been started. **S24:** a concept now has one identity across subjects, and the deliberate limit is the decision that matters — sharing a canonical name is evidence about *names*, so mastery does not transfer; "Functions" in Calculus and in a programming course reach the same key, and silently marking the second mastered would stop the product teaching something the learner had never seen, invisibly. The cross-subject prerequisite turned out not to be a policy at all but a crash: the foreign component reached the topological sort, which had no tiebreak entry for it, and comparing a UUID against the integers used for local components raised `TypeError` — so such an edge did not weaken a plan's ordering, it meant no plan at all. **S25:** subjects now have an owner, NULL meaning curated; a stranger's subject answers 404 rather than 403 because 403 confirms it exists; both ends of a prerequisite edge are checked, since an edge constrains the order both components are taught in. It made the retention statement wrong, which needed a fourth disposition — one table now holds both a learner's rows and nobody's, and "deleted" and "retained" are each false about half of it. **S27:** the `confidence: 1.0` written on every chunk, computed by nothing and read by nothing, is replaced by measured indicators of damage — with no single score and no threshold, both refused on the record, and the documented limitation (two interleaved columns read clean) turned into a test rather than left as prose. `uv run poe check` green (1527 passed, 6 skipped). 22 mutations across the three, all applied and all killed; four survived a first sweep and every one was a real gap, including **dead authorisation code** — a 404 branch no caller could reach, removed rather than kept, because an unreachable authorisation check reads as a protection that is never exercised. |
 | 2026-09-15 | Twenty-second pass, same branch: **the rest of the product driven in a browser** — S58 (`f84d244`, `63937f0`, `cd41787`, `9959a75`). The journeys stopped at the chat turn, and the obstacle was the stand-in rather than effort: curriculum design, objective selection, item writing and grading all parse the reply as JSON, and `FakeProvider` answers everything with one sentence, so each took its parse-failure path. **`ShapedProvider`** reads the system prompt, recognises which job it is, and answers in that shape — derived from the request where cheap, so a journey can assert that what the learner typed shaped what came back; anything unrecognised falls through to prose, which is correct for a conversational turn and the right failure for a drifted prompt. Three tests hold the coupling nothing else would notice breaking: each real prompt claimed by *exactly* one shape, a sweep of every `*SYSTEM_PROMPT` in `app` requiring that the conversational ones match nothing, and no shape matching nothing. The production guard now refuses the whole family, with a test walking the registry's real provider table. **Eleven journeys**: the wizard end to end, a graded practice round, and a real file through real storage and a real worker — the last needing Redis and MinIO in the CI job, brought up from the project's own compose file. **Three defects found, all on the happy path.** The subject wizard could never see any material: the step called a hook that disables itself when given no subject, so it rendered neither the list nor its own empty message, and grounding a curriculum in your own documents was unreachable from the UI. The library never said a document was ready — ingestion finishes in a queued job and `refetchInterval` appeared nowhere in `frontend/src`, so the page showed "pending" forever. And the stand-in's first failing diagnosis was a kind the product deliberately drops, so the S09 "say why it failed" path could not have been exercised at all. **Plus one wrong assumption of ours:** the curriculum journey first asserted the subject is named after the sentence the learner typed. It is not — "Looks good" accepts the gate's *refined proposal*, which is the entire reason the gate exists. `uv run poe check` green (1557 passed, 6 skipped); `npm run test`, `lint` and `build` green; four consecutive clean journey runs. |
+| 2026-09-15 | Twenty-third pass, same branch: **S27's larger half — the structure of a technical document** (`2a0bf1d`, `995d7fb`, `5adc809`). The measurement side landed last pass; the thing doing the damage had not moved. Normalization collapsed *all* whitespace, so a four-line function came out as one line with `return 0.0` and `return score * weight` side by side and nothing left to say one was inside a branch, and a table came out as a run of numbers — none of it recoverable, because the flattening happened *before* the chunk was written, so the embedding, the retrieval snippet and any lesson from that chunk were all working from text the document did not contain. Line breaks and column tabs survive now, indentation is kept verbatim (nothing can tell a code block from a layout-indented paragraph, and noise can be read past where flattened structure cannot be recovered), and a window ends at the best boundary in reach rather than wherever the count ran out. **Looking for where the structure was being lost found three more defects, two of them data loss rather than degradation.** A Word file's tables were never ingested at all — `document.paragraphs` returns only top-level paragraphs, so a report whose numbers live in tables was ingested as its prose and nothing else, reported `done`. A PowerPoint table is a `GraphicFrame` with no text frame and was skipped the same way, as were grouped shapes. And a spreadsheet dropped empty cells, shifting every later value one column left, so a learner asking about Q2 could be answered with Q3's figure in a perfectly well-formed sentence. All three now render through one `table_text`. `uv run poe check` green (1598 passed, 6 skipped). 20 mutations, all applied and all killed — but the first sweeps were worth more than the second: one reported ten survivors that were really a broken harness (`--timeout` is not a registered pytest option here, so every run died before collecting and ten absent summaries read as ten passes), one reported six PATTERN MISSING rather than six passes after the per-adapter code was collapsed into a shared renderer, and two genuine survivors corrected a misleading comment and exposed an untested bound. |
 
 ## Remaining architecture autopsy — source pass
 
