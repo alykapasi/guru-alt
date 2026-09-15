@@ -99,8 +99,11 @@ async def _chunk_count(session: AsyncSession, source_id: uuid.UUID) -> int:
 # --- chunking (pure) --------------------------------------------------------
 
 
-def test_normalize_collapses_whitespace() -> None:
-    assert normalize("a\n\n  b\tc ") == "a b c"
+def test_normalize_collapses_runs_within_a_line_but_keeps_the_lines() -> None:
+    """It used to return "a b c" for this, and that is the S27 defect: collapsing every
+    newline flattened a table into a run of numbers and a code block into one line. Runs of
+    spaces inside a line still collapse, which was always the right half."""
+    assert normalize("a\n\n  b   c ") == "a\n\n  b c"
 
 
 def test_normalize_strips_nul_bytes() -> None:
