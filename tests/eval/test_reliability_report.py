@@ -6,15 +6,22 @@ replay through to the printed text, because the recurring defect in this codebas
 function covered directly while its call site is covered not at all.
 """
 
+import sys
 from pathlib import Path
 
+import pytest
+
 from tests.eval.datasets.calibration import replay
+from tests.eval.datasets.models import CalibrationDataset
 from tests.eval.datasets.synth import synthetic_dataset
 from tests.eval.reliability import agreement, metrics
 from tests.eval.reliability.report import (
     calibration_from,
     render_agreement,
     render_calibration,
+)
+from tests.eval.reliability.report import (
+    main as report_main,
 )
 
 
@@ -99,3 +106,54 @@ def test_binarising_is_stated_on_the_page_because_it_changes_the_question() -> N
     out = render_calibration(metrics.assess([(0.8, 0.7), (0.8, 0.9)], binarise_at=0.8), source="s")
 
     assert "binarised at 0.8" in out
+
+
+def test_every_section_reports_its_absence_rather_than_inventing_a_number(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole command on a dataset that does not exist — which is the state it is in today.
+
+    Each section has to say it has nothing, because the failure being guarded against is a
+    report that looks like a reading. The constants section is the exception and prints a real
+    count: it needs no learners, which is precisely why it is the only part of the spine that
+    produces a finding right now.
+    """
+    monkeypatch.setattr(sys, "argv", ["report", "--dataset", "/tmp/guru-absent-dataset.json"])
+
+    report_main()
+    out = capsys.readouterr().out
+
+    assert "no scorable points" in out
+    assert "nothing to compare" in out
+    assert "Generator difficulty\n  nothing to score" in out
+    assert "Uncalibrated constants" in out and "inventoried" in out
+    assert "skipped — pass --grade" in out
+
+
+def test_the_dataset_is_read_once_and_shared_by_every_section(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three sections scoring three separate reads of a file somebody may be mining in the
+    background is a way to publish a disagreement between them as a finding."""
+    dataset = synthetic_dataset(n_learners=6, n_items=6, seed=8)
+    path = Path("/tmp/guru-report-shared.json")
+    dataset.to_file(path)
+    reads = 0
+    real = CalibrationDataset.from_file
+
+    def counted(p):
+        nonlocal reads
+        reads += 1
+        return real(p)
+
+    monkeypatch.setattr(CalibrationDataset, "from_file", staticmethod(counted))
+    monkeypatch.setattr(sys, "argv", ["report", "--dataset", str(path)])
+    try:
+        report_main()
+    finally:
+        path.unlink(missing_ok=True)
+
+    out = capsys.readouterr().out
+    assert reads == 1, f"read the dataset {reads} times"
+    assert "Estimator calibration" in out and "Estimator comparison" in out
+    assert "Generator difficulty" in out

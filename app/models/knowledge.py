@@ -14,13 +14,31 @@ from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 
 
 class Subject(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """A top-level domain (e.g. "Calculus")."""
+    """A top-level domain (e.g. "Calculus"), either curated or one learner's own (S25).
+
+    ``owner_learner_id`` is the boundary between the two, and the null is meaningful rather
+    than missing data: **NULL means curated** — shared, visible to everyone, and not editable
+    through the learner API. A learner id means a private curriculum, visible only to that
+    learner and editable only by them.
+
+    Before this every subject was global and unscoped: listing returned everybody's, a
+    duplicate name was rejected across all learners so the first person to study Calculus
+    took the name from everyone after them, and any authenticated learner could add topics,
+    components and prerequisite edges to any subject — including one somebody else was
+    actively being taught from.
+    """
 
     __tablename__ = "subjects"
 
     slug: Mapped[str] = mapped_column(unique=True, index=True)
     name: Mapped[str]
     description: Mapped[str | None] = mapped_column(default=None)
+    # CASCADE: a learner's own curriculum is theirs, and closing the account takes it. Curated
+    # subjects carry NULL here and are untouched by any account deletion — see
+    # `app.services.retention`, which states both halves.
+    owner_learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="CASCADE"), default=None, index=True
+    )
 
     topics: Mapped[list["Topic"]] = relationship(
         back_populates="subject", cascade="all, delete-orphan"
@@ -44,6 +62,32 @@ class Topic(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     kcs: Mapped[list["KC"]] = relationship(back_populates="topic", cascade="all, delete-orphan")
 
 
+class Concept(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One thing that can be known, independent of which subject teaches it (S24).
+
+    A ``KC`` is a *presentation* of a concept inside one topic of one subject. Derivatives
+    taught in Calculus and derivatives taught in Physics are two presentations, and before
+    this they were two unrelated ids with nothing recording that they were about the same
+    thing — so a learner who had studied one looked, to every query in the system, exactly
+    like a learner who had studied neither.
+
+    **What sharing a concept does and does not mean.** It means the two presentations are
+    claimed to be about the same thing, on the evidence of their names. It does *not* mean
+    mastery transfers: evidence stays per-presentation, because "Functions" in Calculus and
+    "Functions" in a programming course share a name and almost nothing else, and a system
+    that silently marked the second mastered because of the first would stop teaching
+    something the learner had never seen — a failure invisible to every check downstream.
+    The identity is reported so a person can act on it; it is not applied on their behalf.
+    """
+
+    __tablename__ = "concepts"
+
+    # Canonical form of the name (see ``knowledge.concept_key``). Unique, because the whole
+    # point is that two presentations reaching the same key reach the same row.
+    key: Mapped[str] = mapped_column(unique=True, index=True)
+    name: Mapped[str]
+
+
 class KC(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """A knowledge component — the smallest unit of "knowing" we track."""
 
@@ -56,6 +100,12 @@ class KC(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     slug: Mapped[str]
     name: Mapped[str]
     description: Mapped[str | None] = mapped_column(default=None)
+    # Nullable, and SET NULL rather than CASCADE: a KC whose concept row went away is a KC
+    # whose identity is unknown, which is the truth — deleting it with the concept would
+    # destroy the curriculum over a bookkeeping row.
+    concept_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("concepts.id", ondelete="SET NULL"), default=None, index=True
+    )
 
     topic: Mapped["Topic"] = relationship(back_populates="kcs")
 

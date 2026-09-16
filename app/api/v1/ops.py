@@ -1,15 +1,26 @@
 """Operational signals: is this instance ready, and is work moving? (S60)
 
-Deliberately unauthenticated and deliberately thin. These are read by an orchestrator and a
-monitor, neither of which holds a learner session, and both of which poll — so nothing here
-does per-learner work, and nothing here returns anything about a learner.
+Deliberately thin. Nothing here does per-learner work and nothing here returns anything about
+a learner, because all of it is polled.
+
+``/ready`` stays open; everything under ``/ops`` no longer is (P10). The split is not about
+how sensitive the numbers feel — it is about who asks. A readiness probe is an orchestrator
+with no credential, and one that could fail on authentication would take healthy instances out
+of rotation for a reason unrelated to their health. The rest answers questions an operator
+asks and a stranger should not get for free: what this deployment spends, how much work is
+backed up, and which of its parts is broken right now. See ``require_operator`` for the two
+credentials that open them.
 """
+
+from typing import Annotated
 
 from fastapi import APIRouter, Query, Response, status
 
-from app.api.deps import BlobStoreDep, SessionDep, SettingsDep
+from app.api.deps import BlobStoreDep, OperatorDep, SessionDep, SettingsDep
 from app.core.alerts import AlertReport, evaluate
 from app.core.readiness import ReadinessReport, readiness
+from app.schemas.ops import AlertTransitionRead
+from app.services import alert_history
 from app.services.ingestion import IngestionBacklog, backlog
 from app.services.spend import SpendWindow
 from app.services.spend import window as spend_window
@@ -32,7 +43,7 @@ async def ready(session: SessionDep, store: BlobStoreDep, response: Response):
     return report
 
 
-@router.get("/ops/ingestion", response_model=IngestionBacklog)
+@router.get("/ops/ingestion", response_model=IngestionBacklog, dependencies=[OperatorDep])
 async def ingestion_backlog(session: SessionDep, settings: SettingsDep):
     """Queue depth, the age of the oldest waiting source, and lease health.
 
@@ -44,7 +55,7 @@ async def ingestion_backlog(session: SessionDep, settings: SettingsDep):
     return await backlog(session, settings=settings)
 
 
-@router.get("/ops/spend", response_model=SpendWindow)
+@router.get("/ops/spend", response_model=SpendWindow, dependencies=[OperatorDep])
 async def spend(
     session: SessionDep,
     settings: SettingsDep,
@@ -60,7 +71,27 @@ async def spend(
     return await spend_window(session, settings=settings, hours=hours)
 
 
-@router.get("/ops/alerts", response_model=AlertReport)
+@router.get(
+    "/ops/alerts/history",
+    response_model=list[AlertTransitionRead],
+    dependencies=[OperatorDep],
+)
+async def alert_history_(
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    name: Annotated[str | None, Query()] = None,
+):
+    """When conditions started and stopped firing, newest first (P11).
+
+    The endpoint above answers "is anything wrong now"; this answers "was anything wrong at
+    three in the morning", which is the question an operator actually has and which an
+    on-demand predicate cannot answer at all. Rows are *transitions*, so the list is as long as
+    the number of things that happened rather than the number of times anybody polled.
+    """
+    return await alert_history.history(session, limit=limit, name=name)
+
+
+@router.get("/ops/alerts", response_model=AlertReport, dependencies=[OperatorDep])
 async def alerts(session: SessionDep, store: BlobStoreDep, settings: SettingsDep):
     """Which conditions are worth acting on right now, and what to do about each (S60).
 

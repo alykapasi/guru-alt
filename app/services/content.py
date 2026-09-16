@@ -25,10 +25,12 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.learning import citation_support
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
 from app.llm.registry import ModelSpec
 from app.models.content import ContentBlock, ContentType
 from app.models.knowledge import KC, Topic
+from app.models.source import Chunk
 from app.rag import retrieval
 from app.rag.retrieval import RetrievalHit
 from app.services.llm_log import log_llm_call
@@ -56,8 +58,24 @@ _GUIDANCE: dict[ContentType, str] = {
 _SYSTEM_PROMPT = (
     "You are an expert instructional author. Using ONLY the numbered context snippets, write "
     "{guidance} for the learning objective. Ground every claim in the context and cite the "
-    "snippets you used by their index. Respond with ONLY a JSON object of the form "
+    "snippets you used by their index. If the snippets disagree with one another, say so in "
+    "the body and cite both rather than silently choosing one. Respond with ONLY a JSON "
+    "object of the form "
     '{{"body": "<the content>", "citations": [<indices of snippets used>]}} and nothing else.'
+)
+
+# The instruction for a request with nothing retrieved (S28). Previously one system prompt
+# served both cases — "using ONLY the numbered context snippets" — while the user message for
+# an empty retrieval said "write from general knowledge and cite nothing". The model was told
+# to do two incompatible things in the same request, and which one it obeyed was not decided
+# anywhere. This states the situation once, in the place that describes the task.
+_UNGROUNDED_SYSTEM_PROMPT = (
+    "You are an expert instructional author. No source material was retrieved for this "
+    "learning objective, so write {guidance} from established general knowledge. Say plainly "
+    "within the body that it does not draw on the learner's own materials. Cite nothing: "
+    "there are no snippets, so any index would point at material that does not exist. Respond "
+    'with ONLY a JSON object of the form {{"body": "<the content>", "citations": []}} and '
+    "nothing else."
 )
 
 
@@ -109,7 +127,8 @@ async def generate_block(
         limit=grounding_k,
     )
     role = _ROLE_BY_TYPE[block_type]
-    system = _SYSTEM_PROMPT.format(guidance=_GUIDANCE[block_type])
+    template = _SYSTEM_PROMPT if grounding else _UNGROUNDED_SYSTEM_PROMPT
+    system = template.format(guidance=_GUIDANCE[block_type])
     user = _build_prompt(kc, grounding)
     cache_key = _cache_key(
         learner_id,
@@ -134,6 +153,7 @@ async def generate_block(
         citations=_resolve_citations(parsed.citations, grounding),
         cache_key=cache_key,
         model=llm.spec(role).model,
+        grounding_count=len(grounding),
     )
     session.add(block)
     await log_llm_call(learner_id=learner_id, role=str(role), spec=llm.spec(role), usage=usage)
@@ -156,6 +176,50 @@ async def assemble(
         )
         for block_type in types
     ]
+
+
+async def check_block_citations(
+    session: AsyncSession,
+    llm: LLMClient,
+    *,
+    learner_id: uuid.UUID,
+    block_id: uuid.UUID,
+) -> citation_support.SupportReport:
+    """Check whether a stored block's claims are carried by the passages it cited (S28).
+
+    Explicitly invoked and paid for, never part of generation: it is a model call on the SMART
+    tier per block, and nothing in the system has decided what rate of unsupported claims is
+    tolerable. Measuring first, gating later — if at all.
+
+    Cited chunks are re-read from the database rather than trusted from the block, and a
+    citation whose chunk has since been deleted simply drops out. Re-ingestion replaces chunks,
+    so a block outliving its grounding is ordinary rather than exceptional, and checking it
+    against passages that no longer exist would be checking it against nothing.
+    """
+    block = await session.get(ContentBlock, block_id)
+    if block is None or block.learner_id != learner_id:
+        raise LookupError(f"content block {block_id} not found")
+
+    ids = [uuid.UUID(c["chunk_id"]) for c in block.citations if c.get("chunk_id")]
+    rows = (
+        list((await session.scalars(select(Chunk).where(Chunk.id.in_(ids)))).all()) if ids else []
+    )
+    by_id = {chunk.id: chunk for chunk in rows}
+    passages = [
+        citation_support.CitedPassage(chunk_id=chunk.id, source_id=chunk.source_id, text=chunk.text)
+        for chunk in (by_id.get(i) for i in ids)
+        if chunk is not None
+    ]
+
+    report, usage = await citation_support.check_support(llm, body=block.body, passages=passages)
+    if usage.total_tokens:
+        await log_llm_call(
+            learner_id=learner_id,
+            role=str(citation_support.SUPPORT_ROLE),
+            spec=llm.spec(citation_support.SUPPORT_ROLE),
+            usage=usage,
+        )
+    return report
 
 
 async def list_blocks(
@@ -199,11 +263,16 @@ async def _generate(
 
 
 def _build_prompt(kc: KC, grounding: list[RetrievalHit]) -> str:
+    """The user message: the objective, and the snippets if there are any.
+
+    With nothing retrieved there is no context section at all, rather than a parenthetical
+    telling the model what to do instead. Instructions belong in the system prompt — a user
+    message that also gave them is how the two came to disagree (S28).
+    """
     objective = _kc_query(kc)
-    if grounding:
-        context = "\n\n".join(f"[{i}] {hit.text}" for i, hit in enumerate(grounding))
-    else:
-        context = "(no context retrieved; write from general knowledge and cite nothing)"
+    if not grounding:
+        return f"Learning objective:\n{objective}"
+    context = "\n\n".join(f"[{i}] {hit.text}" for i, hit in enumerate(grounding))
     return f"Learning objective:\n{objective}\n\nContext snippets:\n{context}"
 
 

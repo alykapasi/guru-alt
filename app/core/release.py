@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from app.core import mail
 from app.core.config import AppEnv, Settings
+from app.llm.providers import DETERMINISTIC_PROVIDERS
 
 # The docker-compose credentials. Present in production means nobody set the real ones.
 _DEV_BLOB_KEYS = {"minioadmin"}
@@ -30,6 +31,23 @@ class MisconfiguredForProduction(RuntimeError):
         self.problems = problems
         joined = "\n  - ".join(problems)
         super().__init__(f"refusing to start in prod:\n  - {joined}")
+
+
+def _role_specs(settings: Settings) -> dict[str, str]:
+    """Each role's configured provider, by env-var name, without building a client.
+
+    Read off the settings rather than through ``build_llm_client`` on purpose: this runs
+    *before* the app starts, and a routing check that first has to construct provider SDK
+    clients would fail for reasons that have nothing to do with the routing.
+    """
+    names = {
+        "GURU_MODEL_FAST": settings.model_fast,
+        "GURU_MODEL_SMART": settings.model_smart,
+        "GURU_MODEL_GENIUS": settings.model_genius,
+        "GURU_MODEL_VISION": settings.model_vision,
+        "GURU_MODEL_EMBED": settings.model_embed,
+    }
+    return {name: spec.split(":", 1)[0].strip().lower() for name, spec in names.items()}
 
 
 def _host_of(url: str) -> str:
@@ -73,6 +91,20 @@ def production_problems(settings: Settings) -> list[str]:
     if not settings.openrouter_api_key and not settings.anthropic_api_key:
         problems.append("no model provider key is set (GURU_OPENROUTER_API_KEY/ANTHROPIC_API_KEY)")
 
+    # The deterministic providers exist so a browser journey can drive the stack without a
+    # model. In production either is the worst kind of failure: every request succeeds, every
+    # page renders, and every answer is invented here — indistinguishable from working, which
+    # no health check or readiness probe would ever report. Checked against the whole family
+    # rather than the one name, so adding a stand-in does not quietly widen the hole.
+    faked = sorted(
+        role for role, spec in _role_specs(settings).items() if spec in DETERMINISTIC_PROVIDERS
+    )
+    if faked:
+        problems.append(
+            f"{', '.join(faked)} resolve(s) to a deterministic stand-in provider — every answer "
+            "would be written by the test double and nothing would report it as broken"
+        )
+
     # Auth (S21). The development sign-in seam issues a session for the dev learner with no
     # credential at all, so leaving it on in production is not a weak password — it is no
     # password, for anybody who finds the endpoint.
@@ -82,6 +114,17 @@ def production_problems(settings: Settings) -> list[str]:
         problems.append(
             "GURU_PASSWORD_RESET_ENABLED is on with no production mail transport — the reset "
             "token would be written to the application log instead of being delivered"
+        )
+
+    # The operational endpoints admit an administrator's session or the ops token (P10). A
+    # session is a database read, so a deployment relying on sessions alone loses `/ops/*` in
+    # precisely the weather they exist for: when the database is the thing that is wrong,
+    # nobody can authenticate to ask what is wrong. The token is the credential that does not
+    # depend on the subsystem being diagnosed.
+    if not settings.ops_token:
+        problems.append(
+            "GURU_OPS_TOKEN is unset — the operational endpoints would then admit only an "
+            "administrator session, which a sick database cannot resolve"
         )
 
     if settings.dev_auto_login:

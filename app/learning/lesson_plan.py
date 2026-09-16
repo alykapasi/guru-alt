@@ -198,7 +198,16 @@ def topo_sort(
         indegree[edge.kc_id] += 1
 
     def _key(n: uuid.UUID) -> Any:
-        return tiebreak.get(n, n)
+        """Total, and the same shape for every node — which the fallback used not to be.
+
+        ``tiebreak`` maps this subject's KCs to integers, so returning the bare UUID for a KC
+        it does not cover produced a list mixing ints and UUIDs, and sorting that raises
+        ``TypeError``. The docstring above promises these are tolerated, so a cross-subject
+        prerequisite reaching here did not order the plan badly — it stopped the plan existing
+        (S24). Unknown nodes now sort after known ones, deterministically by id.
+        """
+        known = tiebreak.get(n)
+        return (0, known, "") if known is not None else (1, 0, str(n))
 
     ready = sorted((n for n in nodes if indegree[n] == 0), key=_key)
     ordered: list[uuid.UUID] = []

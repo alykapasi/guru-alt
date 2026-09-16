@@ -4,12 +4,19 @@ Code calls ``client.stream(ModelRole.SMART, messages)``; the registry resolves t
 to a `(provider, model)` from settings and dispatches. Swapping a model is a config edit.
 """
 
+import time
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 
 from app.core.config import Settings
 from app.llm.base import LLMProvider
-from app.llm.providers import AnthropicProvider, FakeProvider, FakeTurn, OpenAICompatProvider
+from app.llm.providers import (
+    AnthropicProvider,
+    FakeProvider,
+    FakeTurn,
+    OpenAICompatProvider,
+    ShapedProvider,
+)
 from app.llm.types import ChatChunk, ChatMessage, ChatResponse, EmbedResult, ModelRole, ToolDef
 
 
@@ -54,6 +61,21 @@ def _validate(providers: dict[str, LLMProvider], roles: dict[ModelRole, ModelSpe
             )
 
 
+def _timed[T: (ChatResponse, EmbedResult)](result: T, started: float) -> T:
+    """Attach the elapsed provider time to the usage travelling with ``result``.
+
+    Measured here rather than at each call site: this is the one place every non-streaming
+    provider call passes through, so timing it means no service has to remember to, and none
+    can measure a different span from the others. Streaming is deliberately not timed — there
+    is no single end to a stream, and time-to-first-token and time-to-completion are different
+    questions that one number would blur (S48, S51).
+    """
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    return result.model_copy(
+        update={"usage": result.usage.model_copy(update={"latency_ms": elapsed_ms})}
+    )
+
+
 class LLMClient:
     def __init__(
         self,
@@ -89,11 +111,13 @@ class LLMClient:
         tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
         provider, model = self._resolve(role)
-        return await provider.complete(
+        started = time.perf_counter()
+        response = await provider.complete(
             model=model, messages=messages, system=system, max_tokens=max_tokens, tools=tools
         )
+        return _timed(response, started)
 
-    def stream(
+    async def stream(
         self,
         role: ModelRole,
         messages: Sequence[ChatMessage],
@@ -102,14 +126,47 @@ class LLMClient:
         max_tokens: int = 1024,
         tools: Sequence[ToolDef] | None = None,
     ) -> AsyncIterator[ChatChunk]:
+        """Stream a completion, timing how long the first token took to arrive (P10).
+
+        Streaming was left untimed because a stream has no single end and one number would
+        blur time-to-first-token with time-to-completion (S48). That reasoning holds, and the
+        consequence of stopping there did not: the streamed calls are the tutoring turn and
+        the refinement gate, so the only calls a learner actually waits on were the only ones
+        with no timing at all. A latency report built on what was recorded would have covered
+        grading, curriculum design and embedding — the work nobody is sitting in front of —
+        and silently omitted every turn whose slowness anyone ever complains about.
+
+        So the blur is avoided by measuring the other thing rather than by measuring nothing.
+        Time-to-completion for a stream is still not recorded and is still the ambiguous one;
+        it would be as much a claim about how long the answer was as about how fast the model
+        is. Measured here for the same reason completions are: this is the one place every
+        call passes through, so no caller has to remember and none can measure a different
+        span from the others.
+        """
         provider, model = self._resolve(role)
-        return provider.stream(
+        started = time.perf_counter()
+        first_token_ms: int | None = None
+        async for chunk in provider.stream(
             model=model, messages=messages, system=system, max_tokens=max_tokens, tools=tools
-        )
+        ):
+            if first_token_ms is None and chunk.text:
+                first_token_ms = int((time.perf_counter() - started) * 1000)
+            if chunk.usage is None:
+                yield chunk
+            else:
+                # The terminal chunk carries the usage that becomes the accounting row, so the
+                # measurement has to ride on that one or it never reaches `llm_calls`.
+                yield chunk.model_copy(
+                    update={
+                        "usage": chunk.usage.model_copy(update={"first_token_ms": first_token_ms})
+                    }
+                )
 
     async def embed(self, role: ModelRole, texts: Sequence[str]) -> EmbedResult:
         provider, model = self._resolve(role)
-        return await provider.embed(model=model, texts=texts)
+        started = time.perf_counter()
+        result = await provider.embed(model=model, texts=texts)
+        return _timed(result, started)
 
 
 def build_llm_client(settings: Settings) -> LLMClient:
@@ -130,6 +187,18 @@ def build_llm_client(settings: Settings) -> LLMClient:
             **limits,
         ),
         "anthropic": AnthropicProvider(api_key=settings.anthropic_api_key, **limits),
+        # Reachable by naming it in a role map (`GURU_MODEL_SMART=fake:fake-1`), which is what
+        # lets a browser journey drive the whole stack without a model. It is registered here
+        # rather than behind a separate switch so it goes through the same routing every other
+        # provider does — and `app.core.release` refuses to start production with any role
+        # pointing at it, on the same reasoning as the dev-login seam: a stack answering from a
+        # canned reply looks exactly like a stack that is working.
+        "fake": FakeProvider(),
+        # The same seam, for the callers the plain fake cannot serve: curriculum design, item
+        # writing and grading all parse the reply as JSON, so one canned sentence sends every
+        # one of them down its parse-failure path. This answers each in its own shape, which is
+        # what lets a browser journey reach a generated curriculum or a graded answer at all.
+        "shaped": ShapedProvider(),
     }
     roles = {
         ModelRole.FAST: _parse_spec(settings.model_fast),

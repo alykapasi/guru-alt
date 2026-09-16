@@ -154,7 +154,23 @@ async def generate_lesson_plan(
     # follows is justified by the constraints that remain, rather than being an order
     # topo_sort invented for components it could not place.
     stored_edges = await knowledge_svc.list_edges_for_subject(session, subject_id)
-    kept, dropped = prerequisites.acyclic([(e.prereq_kc_id, e.kc_id) for e in stored_edges])
+    # A prerequisite living in another subject cannot be ordered inside this plan — the plan is
+    # a sequence of *this* subject's components, and there is no step that could teach it. It is
+    # dropped here, explicitly, rather than carried into the closure: doing the latter put a KC
+    # with no tiebreak entry into the sort and raised `TypeError`, so a cross-subject edge did
+    # not weaken the ordering, it stopped the plan existing (S24). What is dropped is reported
+    # by `knowledge.cross_subject_prerequisites`, on the same report-don't-repair reasoning S23
+    # settled on for cycles: which subject should absorb the other's component is a curriculum
+    # decision the graph cannot make.
+    foreign = [e for e in stored_edges if e.prereq_kc_id not in all_kc_ids]
+    if foreign:
+        log.warning(
+            "lesson_plan.cross_subject_prerequisites_dropped",
+            subject_id=str(subject_id),
+            dropped=[(str(e.prereq_kc_id), str(e.kc_id)) for e in foreign],
+        )
+    local_edges = [e for e in stored_edges if e.prereq_kc_id in all_kc_ids]
+    kept, dropped = prerequisites.acyclic([(e.prereq_kc_id, e.kc_id) for e in local_edges])
     if dropped:
         log.warning(
             "lesson_plan.cyclic_prerequisites_dropped",

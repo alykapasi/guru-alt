@@ -18,7 +18,7 @@ from app.models.learner import Learner
 from app.models.source import Source, SourceKind, SourceStatus
 from app.services import blob_integrity
 from app.services.ingestion import IngestionBacklog
-from app.services.spend import SpendWindow, window
+from app.services.spend import Latency, SpendWindow, window
 from app.storage.memory import InMemoryBlobStore
 
 API = "/api/v1"
@@ -29,7 +29,16 @@ def _naive_now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-async def _call(session: AsyncSession, *, cost: float | None, role="smart", model="m", age_h=0.0):
+async def _call(
+    session: AsyncSession,
+    *,
+    cost: float | None,
+    role="smart",
+    model="m",
+    age_h=0.0,
+    latency_ms: int | None = None,
+    first_token_ms: int | None = None,
+):
     session.add(
         LLMCall(
             role=role,
@@ -38,6 +47,8 @@ async def _call(session: AsyncSession, *, cost: float | None, role="smart", mode
             input_tokens=10,
             output_tokens=5,
             cost_usd=cost,
+            latency_ms=latency_ms,
+            first_token_ms=first_token_ms,
             created_at=_naive_now() - timedelta(hours=age_h),
         )
     )
@@ -118,9 +129,89 @@ async def test_spend_past_the_budget_says_so(db_session: AsyncSession) -> None:
     assert report.over_budget is True
 
 
-async def test_the_spend_endpoint_is_open_to_a_monitor(anon_client: AsyncClient) -> None:
-    """Read by a poller that holds no learner session, like the other ops endpoints."""
-    r = await anon_client.get(f"{API}/ops/spend")
+# --- latency, beside the cost it belongs with (P10) ---------------------------------------------
+
+
+async def test_a_percentile_says_how_many_calls_it_was_computed_over(
+    db_session: AsyncSession,
+) -> None:
+    """The count is the point. A completion carries `latency_ms` and a stream carries
+    `first_token_ms`, so each percentile covers part of the traffic — one printed without its
+    population reads as a claim about all of it, which is the `unpriced_calls` mistake again.
+    """
+    await _call(db_session, cost=1.0, latency_ms=100)
+    await _call(db_session, cost=1.0, latency_ms=300)
+    await _call(db_session, cost=1.0, first_token_ms=40)
+    await _call(db_session, cost=1.0)  # neither: a hand-built usage
+
+    report = await window(db_session, settings=Settings(), hours=24)
+
+    assert report.calls == 4
+    assert report.completion.calls == 2
+    assert report.first_token.calls == 1
+    assert report.completion.p50_ms == 200  # interpolated between 100 and 300
+    assert report.first_token.p50_ms == 40
+
+
+async def test_p95_is_not_p50_under_another_name(db_session: AsyncSession) -> None:
+    """A tail is the only reason to report a p95 at all. Nine fast calls and one slow one is
+    the shape that matters — a median that looks fine over a deployment where one turn in ten
+    takes four seconds, which is the turn somebody complains about."""
+    for _ in range(9):
+        await _call(db_session, cost=1.0, latency_ms=100)
+    await _call(db_session, cost=1.0, latency_ms=4000)
+
+    report = await window(db_session, settings=Settings(), hours=24)
+
+    assert report.completion.p50_ms == 100
+    assert report.completion.p95_ms is not None
+    assert report.completion.p95_ms > 2000
+
+
+async def test_no_timed_call_means_no_percentile_rather_than_zero(
+    db_session: AsyncSession,
+) -> None:
+    """Zero would read as an instantaneous deployment rather than an unmeasured one."""
+    await _call(db_session, cost=1.0)
+
+    report = await window(db_session, settings=Settings(), hours=24)
+
+    assert report.completion.calls == 0
+    assert report.completion.p50_ms is None
+    assert report.completion.p95_ms is None
+
+
+async def test_the_streamed_calls_are_reported_apart_from_the_completions(
+    db_session: AsyncSession,
+) -> None:
+    """The whole reason `first_token_ms` exists: the streamed calls are the slow-feeling ones,
+    and averaging them in with a fast embedding call would hide exactly that."""
+    await _call(db_session, cost=1.0, role="embed", model="nomic", latency_ms=20)
+    await _call(db_session, cost=1.0, role="smart", model="sonnet", first_token_ms=2000)
+
+    report = await window(db_session, settings=Settings(), hours=24)
+
+    embed = next(b for b in report.by_role if b.name == "embed")
+    smart = next(b for b in report.by_role if b.name == "smart")
+    assert embed.completion.p50_ms == 20 and embed.first_token.calls == 0
+    assert smart.first_token.p50_ms == 2000 and smart.completion.calls == 0
+
+
+async def test_latency_respects_the_window_like_everything_else(
+    db_session: AsyncSession,
+) -> None:
+    await _call(db_session, cost=1.0, latency_ms=9999, age_h=48)
+    await _call(db_session, cost=1.0, latency_ms=50, age_h=1)
+
+    report = await window(db_session, settings=Settings(), hours=24)
+
+    assert report.completion.calls == 1
+    assert report.completion.p95_ms == 50
+
+
+async def test_the_spend_endpoint_serves_an_operator(admin_client: AsyncClient) -> None:
+    """Who may ask is `test_admin_access.py`; this is that the answer arrives at all."""
+    r = await admin_client.get(f"{API}/ops/spend")
     assert r.status_code == 200
     assert "cost_usd" in r.json()
 
@@ -158,6 +249,11 @@ def _backlog(
     )
 
 
+def _no_latency() -> Latency:
+    """No calls, so no percentile — the alerts are about cost, not time."""
+    return Latency(calls=0, p50_ms=None, p95_ms=None)
+
+
 def _spend(
     *,
     cost_usd: float = 0.0,
@@ -175,6 +271,8 @@ def _spend(
         unpriced_calls=unpriced_calls,
         budget_usd=budget_usd,
         over_budget=over_budget,
+        completion=_no_latency(),
+        first_token=_no_latency(),
         by_role=[],
         by_model=[],
     )
@@ -276,11 +374,11 @@ def test_an_over_budget_alert_says_when_the_figure_is_a_floor() -> None:
 
 
 async def test_the_alerts_endpoint_answers_200_even_while_firing(
-    anon_client: AsyncClient,
+    admin_client: AsyncClient,
 ) -> None:
     """Readiness is the endpoint that 503s. Taking an instance out of rotation because its
     bill is high would be the wrong response to the right signal."""
-    r = await anon_client.get(f"{API}/ops/alerts")
+    r = await admin_client.get(f"{API}/ops/alerts")
     assert r.status_code == 200
     assert "firing" in r.json() and "checked" in r.json()
 

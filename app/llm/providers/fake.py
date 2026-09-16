@@ -34,6 +34,9 @@ class FakeProvider:
 
     name = "fake"
     supports_embeddings = True
+    deterministic = True
+    """Answers without a model. `app.core.release` refuses to start production with any role
+    routed to a provider marked this way — see `DETERMINISTIC_PROVIDERS`."""
 
     def __init__(
         self,

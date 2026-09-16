@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 
-from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
+from app.api.deps import Authenticated, CurrentLearner, LLMClientDep, SessionDep
 from app.core.config import get_settings
 from app.learning.grading import InvalidResponse, SelfGradeError
 from app.learning.rubric_grading import RubricGradingError
@@ -87,13 +87,22 @@ async def answer_item(
 
 
 @router.get("/reviews/due", response_model=list[ReviewItemRead])
-async def due_reviews(session: SessionDep, learner: CurrentLearner, llm: LLMClientDep):
+async def due_reviews(
+    session: SessionDep, learner: CurrentLearner, who: Authenticated, llm: LLMClientDep
+):
     """KCs whose FSRS-scheduled review has come due, soonest first, each paired with an
     answerable item where one was eagerly resolved — a flashcard normally, an open question
     where the component keeps failing (see ``session_runner.due_review_items`` and the
-    ``reviews_due_item_limit`` cost bound)."""
+    ``reviews_due_item_limit`` cost bound).
+
+    An administrator viewing the account (P10) gets the queue without the items. Resolving
+    one can generate it, which bills a model call to the learner and commits an item to
+    their bank, and this is a GET: the one method a visit is allowed, so the method rule
+    alone would let it through.
+    """
+    limit = 0 if who.impersonated_by_id is not None else get_settings().reviews_due_item_limit
     pairs = await session_runner_svc.due_review_items(
-        session, llm, learner_id=learner.id, item_limit=get_settings().reviews_due_item_limit
+        session, llm, learner_id=learner.id, item_limit=limit
     )
     return [
         ReviewItemRead(

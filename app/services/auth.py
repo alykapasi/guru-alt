@@ -20,6 +20,7 @@ present while being absent.
 """
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -29,7 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import security
-from app.models.auth import LearnerSession, PasswordResetToken, SignInAttempt
+from app.models.auth import Impersonation, LearnerSession, PasswordResetToken, SignInAttempt
 from app.models.learner import Learner
 
 # How stale ``last_used_at`` is allowed to get. Writing it on every request turns an indexed
@@ -161,8 +162,23 @@ async def issue(
     return IssuedSession(token=token, session_id=row.id, expires_at=row.expires_at)
 
 
-async def resolve(session: AsyncSession, token: str) -> Learner | None:
-    """The learner this token authenticates, or ``None``.
+@dataclass(frozen=True)
+class Authenticated:
+    """Who a token authenticates, and on whose behalf.
+
+    ``impersonated_by_id`` is not None when an administrator is holding a session onto this
+    learner's account (P10). It travels with the learner rather than being looked up again,
+    because every caller that has to *restrict* the request already has the session row in
+    hand here — and a rule enforced by remembering to ask a second question is a rule that
+    gets forgotten at the next endpoint.
+    """
+
+    learner: Learner
+    impersonated_by_id: uuid.UUID | None
+
+
+async def resolve_session(session: AsyncSession, token: str) -> Authenticated | None:
+    """The learner this token authenticates and how, or ``None``.
 
     ``None`` covers every reason equally — unknown, expired, revoked, or belonging to a
     learner who no longer exists — because the caller's response to all of them is the same
@@ -182,7 +198,30 @@ async def resolve(session: AsyncSession, token: str) -> Learner | None:
     if now - row.last_used_at >= LAST_USED_RESOLUTION:
         row.last_used_at = now
         await session.commit()
-    return learner
+    return Authenticated(learner=learner, impersonated_by_id=row.impersonated_by_id)
+
+
+async def resolve(session: AsyncSession, token: str) -> Learner | None:
+    """The learner this token authenticates, or ``None``. Says nothing about who is holding it."""
+    resolved = await resolve_session(session, token)
+    return resolved.learner if resolved is not None else None
+
+
+async def _close_impersonations(session: AsyncSession, session_ids: Sequence[uuid.UUID]) -> None:
+    """Stamp the audit rows for sessions that have just been revoked (P10).
+
+    Here rather than in the impersonation service, because *every* way a session ends has to
+    close its record — and there is exactly one of those, which is this module. An end recorded
+    only by the endpoint that happens to be called politely is an end that goes unrecorded the
+    first time somebody signs out instead.
+    """
+    if not session_ids:
+        return
+    await session.execute(
+        update(Impersonation)
+        .where(Impersonation.session_id.in_(session_ids), Impersonation.ended_at.is_(None))
+        .values(ended_at=datetime.now(UTC))
+    )
 
 
 async def revoke(session: AsyncSession, token: str) -> bool:
@@ -195,9 +234,12 @@ async def revoke(session: AsyncSession, token: str) -> bool:
             LearnerSession.revoked_at.is_(None),
         )
         .values(revoked_at=now)
+        .returning(LearnerSession.id)
     )
+    ended = list(result.scalars())
+    await _close_impersonations(session, ended)
     await session.commit()
-    return bool(cast("CursorResult[Any]", result).rowcount)
+    return bool(ended)
 
 
 async def revoke_all(session: AsyncSession, learner_id: uuid.UUID) -> int:
@@ -207,9 +249,12 @@ async def revoke_all(session: AsyncSession, learner_id: uuid.UUID) -> int:
         update(LearnerSession)
         .where(LearnerSession.learner_id == learner_id, LearnerSession.revoked_at.is_(None))
         .values(revoked_at=now)
+        .returning(LearnerSession.id)
     )
+    ended = list(result.scalars())
+    await _close_impersonations(session, ended)
     await session.commit()
-    return int(cast("CursorResult[Any]", result).rowcount)
+    return len(ended)
 
 
 async def purge_expired(session: AsyncSession, *, keep_revoked_for: timedelta) -> int:

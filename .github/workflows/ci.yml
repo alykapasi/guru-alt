@@ -124,6 +124,59 @@ jobs:
           uv run alembic downgrade base
           uv run alembic upgrade head
 
+  # Delivery through a real broker, which the default suite cannot show: it runs on
+  # `InMemoryBroker`, which never serialises a message, never writes it anywhere and never
+  # reads it back on another connection (S58). Its own job rather than a step in `test`,
+  # because it is the only one needing Redis and bundling it would start a broker for every
+  # run of the suite.
+  queue:
+    name: queue
+    runs-on: ubuntu-latest
+
+    env:
+      GURU_ENV: test
+      GURU_DATABASE_URL: postgresql+asyncpg://guru:guru@localhost:5432/guru
+      GURU_REDIS_URL: redis://localhost:6379/0
+      # The gate these tests skip behind, so a laptop without Redis still runs a green suite
+      # and CI still covers the path.
+      GURU_QUEUE_TESTS: "1"
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: guru
+          POSTGRES_PASSWORD: guru
+          POSTGRES_DB: guru
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U guru -d guru"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-backend
+
+      # The suite's conftest reaches for its own database on import, so it has to exist even
+      # for a test that never touches it.
+      - name: Create the suite's database
+        run: uv run poe test-db-init
+
+      - name: Queue integration
+        run: uv run pytest tests/test_queue_integration.py -v
+
   # The frontend's typed client is generated from the backend's OpenAPI document, so the two
   # are a contract with two sides and, until recently, no gate: a backend change that removed
   # a field or renamed a route could merge while the frontend kept compiling against the
@@ -183,7 +236,92 @@ jobs:
       - name: Build
         run: npm run build
 
-  # One check that is green only when all eight are. Splitting the gates multiplies the names
+  # The half of the product no other gate can reach (S58). The backend tests drive the turn
+  # function directly and never serialise an SSE frame; the component tests render the chat
+  # against a mocked client and never make a request. The seam between them — the event
+  # stream, the credentialed cross-origin fetch, the cookie the browser decides whether to
+  # send — is exactly where a change breaks the product while both suites stay green.
+  #
+  # Both toolchains, because it runs the real API against the real built bundle. No Redis and
+  # no object store: these journeys touch neither, and starting them would be starting
+  # dependencies to watch them idle.
+  e2e:
+    name: browser journeys
+    runs-on: ubuntu-latest
+
+    env:
+      GURU_ENV: dev
+      GURU_DATABASE_URL: postgresql+asyncpg://guru:guru@localhost:5432/guru
+      GURU_REDIS_URL: redis://localhost:6379/0
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: guru
+          POSTGRES_PASSWORD: guru
+          POSTGRES_DB: guru
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U guru -d guru"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      # The upload journey's file is ingested by a queued job, so this job needs somewhere for
+      # that job to queue. `scripts/e2e-backend.sh` runs the worker that drains it.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-backend
+      - uses: ./.github/actions/setup-frontend
+
+      # Where the uploaded bytes actually go. Brought up from the project's own compose file
+      # rather than restated here, so the journey environment is the one a developer runs and
+      # there is no second definition to keep in step. It cannot be a `services:` container:
+      # MinIO needs a command (`server /data`) and a service container can only be given an
+      # image and its environment. `run --rm` on the bootstrap blocks until the bucket exists,
+      # so the first upload cannot race the bucket being created.
+      - name: Object store for uploads
+        run: |
+          docker compose up -d minio
+          docker compose run --rm minio-bootstrap
+
+      # Chromium only, and `--with-deps` because the runner image has none of the shared
+      # libraries a browser needs. One engine is a deliberate limit: these journeys are here
+      # to cover the seam between the halves of the product, not to survey rendering engines.
+      - name: Install the browser
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+
+      # Playwright starts the API and the preview server itself (see playwright.config.ts) and
+      # waits for both to answer, so there is no sleep here and no race on startup.
+      - name: Browser journeys
+        run: npm run e2e
+        working-directory: frontend
+
+      # Traces and video are captured only for a failure, so this uploads the evidence for a
+      # red run and nothing at all for a green one.
+      - name: Upload the failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          retention-days: 7
+
+  # One check that is green only when all nine are. Splitting the gates multiplies the names
   # a branch-protection rule would have to list, and a rule that lists them by name silently
   # stops covering a gate the day one is renamed or added. This job is the stable name to
   # require; the eight above are where you look when it goes red.
@@ -196,10 +334,12 @@ jobs:
       - type-check
       - test
       - migrations
+      - queue
       - api-contract
       - frontend-lint
       - frontend-test
       - frontend-build
+      - e2e
 
     steps:
       - name: Summarise the gates
@@ -211,15 +351,17 @@ jobs:
             echo "| type-check | ${{ needs['type-check'].result }} |"
             echo "| test | ${{ needs.test.result }} |"
             echo "| migrations | ${{ needs.migrations.result }} |"
+            echo "| queue | ${{ needs.queue.result }} |"
             echo "| api contract | ${{ needs['api-contract'].result }} |"
             echo "| frontend lint | ${{ needs['frontend-lint'].result }} |"
             echo "| frontend test | ${{ needs['frontend-test'].result }} |"
             echo "| frontend build | ${{ needs['frontend-build'].result }} |"
+            echo "| browser journeys | ${{ needs.e2e.result }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # `success()` is not enough on its own here: with `if: always()` this job runs even when
       # a dependency was skipped or cancelled, and a skipped gate is an un-run gate, not a
-      # passed one. Anything other than success in any of the eight fails this check.
+      # passed one. Anything other than success in any of the nine fails this check.
       - name: Fail unless every gate succeeded
         if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
         run: |

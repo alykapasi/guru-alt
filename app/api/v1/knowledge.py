@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import CurrentLearner, RetagEnqueuerDep, SessionDep
+from app.models.knowledge import Subject
 from app.schemas.knowledge import (
     KCCreate,
     KCDetail,
@@ -51,13 +52,65 @@ async def _conflict_409(session: SessionDep) -> AsyncIterator[None]:
         ) from exc
 
 
+async def _visible_subject(session, subject_id: uuid.UUID, learner) -> Subject:
+    """The subject, if this learner may see it at all (S25).
+
+    A subject owned by somebody else answers 404 rather than 403, and the difference is the
+    point: 403 would confirm that a subject with that id exists, which is exactly what a
+    learner must not be able to learn about another learner's private curriculum. Absent and
+    not-yours are deliberately indistinguishable.
+    """
+    subject = await svc.get_subject(session, subject_id)
+    if subject is None or not svc.is_visible_to(subject, learner.id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
+    return subject
+
+
+def _require_writable(subject: Subject, learner) -> None:
+    """Raise unless this learner may change ``subject``'s graph.
+
+    **Only ever called on a subject the caller can already see**, which is what leaves exactly
+    one failing case here: a curated subject, which openly exists and is read-only through this
+    API. Saying so plainly is useful and gives nothing away.
+
+    Another learner's subject never reaches this — visibility rejected it as a 404 first, and
+    that ordering is the design rather than an accident. An earlier version also handled it
+    here, as a 404 for symmetry, and mutation testing showed the branch was unreachable: dead
+    authorisation code, which is worse than none, because it reads as a protection that is
+    never exercised and nothing would notice if it stopped working.
+    """
+    if not svc.is_writable_by(subject, learner.id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "curated subjects are read-only; create your own subject to change its graph",
+        )
+
+
+async def _writable_subject_of_topic(session, topic_id: uuid.UUID, learner) -> Subject:
+    subject = await svc.subject_of_topic(session, topic_id)
+    if subject is None or not svc.is_visible_to(subject, learner.id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "topic not found")
+    _require_writable(subject, learner)
+    return subject
+
+
+async def _writable_subject_of_kc(session, kc_id: uuid.UUID, learner, *, missing: str) -> Subject:
+    subject = await svc.subject_of_kc(session, kc_id)
+    if subject is None or not svc.is_visible_to(subject, learner.id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, missing)
+    _require_writable(subject, learner)
+    return subject
+
+
 # --- Subjects ---------------------------------------------------------------
 
 
 @router.post("/subjects", response_model=SubjectRead, status_code=status.HTTP_201_CREATED)
-async def create_subject(data: SubjectCreate, session: SessionDep, _: CurrentLearner):
+async def create_subject(data: SubjectCreate, session: SessionDep, learner: CurrentLearner):
+    """A subject created through this route belongs to its creator (S25). Curated subjects
+    carry no owner and are not created here — nothing a learner can reach makes one."""
     async with _conflict_409(session):
-        return await svc.create_subject(session, data)
+        return await svc.create_subject(session, data, owner_learner_id=learner.id)
 
 
 @router.post("/subjects/commit", response_model=SubjectRead, status_code=status.HTTP_201_CREATED)
@@ -71,7 +124,7 @@ async def commit_subject(
 
     Returns 409 if a subject with this name already exists (case-insensitive).
     """
-    if await svc.subject_name_exists(session, request.subject_name):
+    if await svc.subject_name_exists(session, request.subject_name, owner_learner_id=learner.id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="subject with this name already exists",
@@ -126,9 +179,66 @@ async def subject_prerequisite_conflicts(
     up only in a log line. An empty list is the ordinary answer and means the stored graph
     justifies the order the learner is taught in.
     """
-    if await svc.get_subject(session, subject_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
+    await _visible_subject(session, subject_id, learner)
     return await svc.sacrificed_prerequisites(session, subject_id)
+
+
+class ForeignPrerequisiteRead(BaseModel):
+    """A prerequisite this subject declares on a component another subject owns (S24)."""
+
+    prereq_kc_id: uuid.UUID
+    prereq_name: str
+    prereq_subject_id: uuid.UUID
+    prereq_subject_name: str
+    kc_id: uuid.UUID
+    kc_name: str
+    met_elsewhere: bool
+
+
+@router.get(
+    "/subjects/{subject_id}/cross-subject-prerequisites",
+    response_model=list[ForeignPrerequisiteRead],
+)
+async def subject_cross_subject_prerequisites(
+    subject_id: uuid.UUID, session: SessionDep, learner: CurrentLearner
+):
+    """Prerequisites of this subject that live in another subject (S24).
+
+    A lesson plan sequences one subject's components, so a prerequisite outside it has no step
+    that could teach it and planning drops the edge. That is a real weakening of the ordering
+    and it used to be invisible — worse than invisible, since carrying the foreign component
+    into the sort raised `TypeError` and no plan was produced at all.
+
+    `met_elsewhere` says whether this learner has any presentation of that concept in their
+    history. Deliberately not "has mastered it": two components share a concept on the evidence
+    of their names, and treating that as transferred mastery would stop the product teaching
+    something the learner has never seen.
+
+    An empty list is the ordinary answer.
+    """
+    await _visible_subject(session, subject_id, learner)
+    return await svc.cross_subject_prerequisites(session, subject_id, learner_id=learner.id)
+
+
+@router.delete("/kcs/{kc_id}/prerequisites/{prereq_kc_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_prerequisite(
+    kc_id: uuid.UUID,
+    prereq_kc_id: uuid.UUID,
+    session: SessionDep,
+    learner: CurrentLearner,
+):
+    """Remove one prerequisite edge — the repair path for a graph a plan could not honour.
+
+    The conflict endpoint above reports which edges a plan had to sacrifice and deliberately
+    changes nothing, because a cycle means two components each claim to come first and which
+    claim is wrong is not something the graph knows. This is how a person acts on that report.
+
+    404 only when the edge does not exist *and* neither does the KC — deleting an edge that is
+    already gone succeeds, so a retried request behaves like the one that got through. Only the
+    subject's owner may do it: editing the graph is editing the curriculum (S25).
+    """
+    await _writable_subject_of_kc(session, kc_id, learner, missing="kc not found")
+    await svc.remove_prerequisite(session, kc_id=kc_id, prereq_kc_id=prereq_kc_id)
 
 
 @router.get("/subjects/{subject_id}/coverage", response_model=list[KCCoverageRead])
@@ -138,22 +248,19 @@ async def subject_coverage(subject_id: uuid.UUID, session: SessionDep, learner: 
     A zero here means the KC can only be taught from the model's own knowledge, with no
     citable passage behind it — which is the more actionable half of the answer.
     """
-    if await svc.get_subject(session, subject_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
+    await _visible_subject(session, subject_id, learner)
     return await svc.kc_coverage(session, learner_id=learner.id, subject_id=subject_id)
 
 
 @router.get("/subjects", response_model=list[SubjectRead])
-async def list_subjects(session: SessionDep, _: CurrentLearner):
-    return await svc.list_subjects(session)
+async def list_subjects(session: SessionDep, learner: CurrentLearner):
+    """Curated subjects and this learner's own — not everybody's (S25)."""
+    return await svc.list_subjects(session, learner_id=learner.id)
 
 
 @router.get("/subjects/{subject_id}", response_model=SubjectRead)
-async def get_subject(subject_id: uuid.UUID, session: SessionDep, _: CurrentLearner):
-    subject = await svc.get_subject(session, subject_id)
-    if subject is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
-    return subject
+async def get_subject(subject_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+    return await _visible_subject(session, subject_id, learner)
 
 
 # --- Topics -----------------------------------------------------------------
@@ -165,18 +272,16 @@ async def get_subject(subject_id: uuid.UUID, session: SessionDep, _: CurrentLear
     status_code=status.HTTP_201_CREATED,
 )
 async def create_topic(
-    subject_id: uuid.UUID, data: TopicCreate, session: SessionDep, _: CurrentLearner
+    subject_id: uuid.UUID, data: TopicCreate, session: SessionDep, learner: CurrentLearner
 ):
-    if await svc.get_subject(session, subject_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
+    _require_writable(await _visible_subject(session, subject_id, learner), learner)
     async with _conflict_409(session):
         return await svc.create_topic(session, subject_id, data)
 
 
 @router.get("/subjects/{subject_id}/topics", response_model=list[TopicRead])
-async def list_topics(subject_id: uuid.UUID, session: SessionDep, _: CurrentLearner):
-    if await svc.get_subject(session, subject_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
+async def list_topics(subject_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+    await _visible_subject(session, subject_id, learner)
     return await svc.list_topics(session, subject_id)
 
 
@@ -184,24 +289,27 @@ async def list_topics(subject_id: uuid.UUID, session: SessionDep, _: CurrentLear
 
 
 @router.post("/topics/{topic_id}/kcs", response_model=KCRead, status_code=status.HTTP_201_CREATED)
-async def create_kc(topic_id: uuid.UUID, data: KCCreate, session: SessionDep, _: CurrentLearner):
-    if await svc.get_topic(session, topic_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "topic not found")
+async def create_kc(
+    topic_id: uuid.UUID, data: KCCreate, session: SessionDep, learner: CurrentLearner
+):
+    await _writable_subject_of_topic(session, topic_id, learner)
     async with _conflict_409(session):
         return await svc.create_kc(session, topic_id, data)
 
 
 @router.get("/topics/{topic_id}/kcs", response_model=list[KCRead])
-async def list_kcs(topic_id: uuid.UUID, session: SessionDep, _: CurrentLearner):
-    if await svc.get_topic(session, topic_id) is None:
+async def list_kcs(topic_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+    subject = await svc.subject_of_topic(session, topic_id)
+    if subject is None or not svc.is_visible_to(subject, learner.id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "topic not found")
     return await svc.list_kcs(session, topic_id)
 
 
 @router.get("/kcs/{kc_id}", response_model=KCDetail)
-async def get_kc(kc_id: uuid.UUID, session: SessionDep, _: CurrentLearner):
+async def get_kc(kc_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
     kc = await svc.get_kc(session, kc_id)
-    if kc is None:
+    subject = await svc.subject_of_kc(session, kc_id)
+    if kc is None or subject is None or not svc.is_visible_to(subject, learner.id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "kc not found")
     edges = await svc.list_prerequisites(session, kc_id)
     return KCDetail(
@@ -226,14 +334,19 @@ async def add_prerequisite(
     kc_id: uuid.UUID,
     data: PrerequisiteCreate,
     session: SessionDep,
-    _: CurrentLearner,
+    learner: CurrentLearner,
 ):
     if kc_id == data.prereq_kc_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "a KC cannot be its own prerequisite")
-    if await svc.get_kc(session, kc_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "kc not found")
-    if await svc.get_kc(session, data.prereq_kc_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "prerequisite kc not found")
+    # Both ends are checked, not just the dependent. An edge constrains the order both
+    # components are taught in, so writing one into a subject the caller does not own is a
+    # change to somebody else's curriculum however this end is addressed (S25). The
+    # prerequisite may legitimately live in another of the caller's subjects — that is S24's
+    # cross-subject edge, and it is theirs to create.
+    await _writable_subject_of_kc(session, kc_id, learner, missing="kc not found")
+    await _writable_subject_of_kc(
+        session, data.prereq_kc_id, learner, missing="prerequisite kc not found"
+    )
     # 409 rather than the 400 a self-prerequisite gets, and the difference is real: a
     # self-loop is wrong in isolation, while this edge is only wrong against the graph that
     # happens to be stored. Until this check existed a client could build any longer cycle

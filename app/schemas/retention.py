@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 class StoreRetentionRead(BaseModel):
     table: str
-    disposition: str  # deleted | anonymised | retained
+    disposition: str  # deleted | anonymised | retained | partly deleted
     reason: str
 
 

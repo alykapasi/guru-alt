@@ -128,12 +128,19 @@ export function useChatConversation(conversationId: string | undefined) {
         abortRef.current = null;
       }
 
+      // The pending buffer is dropped as soon as the persisted transcript has landed, and not
+      // a moment later. It used to be cleared after all three refetches, so between the
+      // messages query resolving and the last of them finishing, the reply was on screen
+      // *twice* — once from the live buffer and once from the database. Locally that window is
+      // a few milliseconds and invisible; on CI's slower runner a browser journey caught two
+      // copies of the same paragraph, which is what a learner on a slow connection would see.
       await queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
+      setPending(null);
       // Always, not only on commit: the turn just recorded the conversation's phase, and a
-      // stale cached phase is exactly the bug this replaced.
+      // stale cached phase is exactly the bug this replaced. These two change nothing the
+      // transcript renders, so they are no longer between the learner and their reply.
       await queryClient.invalidateQueries({ queryKey: ["conversations"] });
       await queryClient.invalidateQueries({ queryKey: ["turns", conversationId] });
-      setPending(null);
     },
     [conversationId, queryClient],
   );

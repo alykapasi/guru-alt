@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# The API the browser journeys drive (S58): its own database, and no model behind it.
+#
+# Its own database because the journey *commits* — it signs in, writes messages, uploads
+# sources — so it cannot use the suite's transactional fixtures, and pointing it at either the
+# developer's database or the suite's would let a browser run and a test run corrupt each
+# other's assertions. Derived from GURU_DATABASE_URL the same way the suite's is, so there is
+# no third DSN to keep in sync.
+#
+# No model behind it because a journey that calls a real provider is neither offline nor
+# repeatable, and would bill for every CI run. Every role routes to the deterministic `shaped`
+# provider, which answers each caller in the shape that caller parses — the plain `fake` returns
+# one canned sentence, which is right for a tutoring turn and sends curriculum design, item
+# writing and grading straight down their parse-failure paths, so no journey past the chat one
+# could reach anything. `app/core/release.py` refuses to start production on either.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+export GURU_ENV=dev
+GURU_DATABASE_URL="$(uv run python -m tests.testdb --suffix _e2e --print-url)"
+export GURU_DATABASE_URL
+export GURU_MODEL_FAST=shaped:shaped-1
+export GURU_MODEL_SMART=shaped:shaped-1
+export GURU_MODEL_GENIUS=shaped:shaped-1
+export GURU_MODEL_VISION=shaped:shaped-1
+export GURU_MODEL_EMBED=shaped:shaped-1
+# Deliberately no GURU_DEV_AUTO_LOGIN. The journeys register through the form, which is both
+# the path a first user takes and the only one available: the development sign-in button is
+# compiled out of the production bundle these run against. Leaving the seam off also lets the
+# first journey assert that a signed-out browser is turned away.
+
+# An ingestion worker beside the API, because the upload journey is about what the learner
+# waits for. The upload itself is synchronous — the bytes reach the object store and the row is
+# committed inside the request — but everything that makes a source usable happens in a queued
+# job, so without a worker the library would sit on "pending" forever and the journey could
+# only assert that a file was accepted. Run as a child rather than a separate server entry:
+# Playwright's `webServer` needs a URL or a port to poll for readiness, and a worker has
+# neither. The trap is what stops it outliving the run, so this does not `exec` the API.
+uv run taskiq worker app.workers.broker:broker app.workers.tasks --workers 1 &
+WORKER_PID=$!
+trap 'kill "$WORKER_PID" 2>/dev/null || true' EXIT INT TERM
+
+uv run uvicorn app.main:app --host 127.0.0.1 --port "${GURU_E2E_API_PORT:-8000}" --log-level warning

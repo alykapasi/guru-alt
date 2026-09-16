@@ -48,6 +48,7 @@ Secrets that must be set explicitly in production:
 | `GURU_CORS_ORIGINS` | The real frontend origin, not `*` |
 | `GURU_SESSION_COOKIE_SECURE=true` | Without it the session cookie is sent over plain HTTP, where anything on the path can read and replay it |
 | `GURU_DEV_AUTO_LOGIN=false` | `POST /auth/dev-login` issues a session with **no credential** — it is not a weak password, it is no password |
+| `GURU_OPS_TOKEN` | The monitor's credential for `/api/v1/ops/*`. Without it those reads admit only an administrator's session — which the database has to resolve, and the database is one of the things they exist to diagnose |
 
 ### Identity (S21)
 
@@ -65,6 +66,54 @@ distinguishable from a token that never existed.
 Set `GURU_SESSION_COOKIE_SAMESITE=none` **only** alongside `GURU_SESSION_COOKIE_SECURE=true`,
 and only when the app and API are genuinely cross-site; `lax` is correct when they share a
 registrable domain, and it is the browser's own CSRF protection.
+
+## Who may read the operational endpoints
+
+`/health` and `/api/v1/ready` are **open**. An orchestrator holds no credential, they carry no
+business fact, and a probe that could fail on authentication would take healthy instances out
+of rotation for a reason unrelated to their health.
+
+Everything under `/api/v1/ops` takes one of two credentials:
+
+- **An administrator's session** — a normal signed-in learner with `is_admin`, which is what
+  the portal at `/app/admin` uses. Grant the first one with `uv run poe grant-admin <email>`
+  (`--revoke` takes it back); it has to be done from outside the API, because the API's own
+  answer to "who may grant admin" is "an administrator", and a deployment starts with none.
+- **`X-Ops-Token`**, matching `GURU_OPS_TOKEN` — for a monitor. A poller should not hold a
+  credential that expires, and resolving a session is a database read: when the database is
+  the thing that is wrong, the session route cannot answer and this one still can. Set it.
+
+`/api/v1/admin/learners` is who is here: every account, most expensive first, with the calls,
+cost and last activity inside the window. A learner with no calls is listed with zeroes — that
+is the row worth reading, and a query that left them out would make the alpha look healthier
+than it is. `total` is every account rather than the number returned: the ordering puts those
+quiet learners last, so the cap removes exactly them, and a truncated page looks like a
+complete one without it. **Administrator session only**, not the ops token: the token is a
+shared secret in a monitor's configuration and this is not an aggregate.
+
+The portal is at `/app/admin`, offered in the nav only to an administrator.
+
+### Viewing a learner's account
+
+`POST /api/v1/admin/impersonate` with `{learner_id, reason}` returns a token that authenticates
+as that learner. **Off by default** — set `GURU_IMPERSONATION_ENABLED=true` to allow it; with it
+off the endpoint answers 404, because a capability nobody enabled should not announce itself.
+
+| Property | What it means |
+| --- | --- |
+| Read-only | Any request other than `GET`, `HEAD` or `OPTIONS` answers 403. That holds only while reads are reads: the review queue generates items on a GET, so a visit gets the queue without them, and a new GET that writes would need the same. Support needs to *see* the account; writing as somebody else puts evidence in their record that they did not create, and no amount of audit makes that recoverable. |
+| Never an administrator | The visit is refused by the admin and operator gates even when the target learner is themselves an administrator — otherwise it is a way to launder one administrator's actions through another's name. |
+| Time-boxed | `GURU_IMPERSONATION_TTL_MINUTES` (default 15), on the visit's own clock. Your own session is untouched throughout, so ending a visit cannot sign you out. |
+| Recorded first | The audit row is written in the same transaction that issues the token. There is no path that grants access and then fails to log it. |
+| Ended however it ends | `POST /auth/logout` while holding the visit's token, or `DELETE /api/v1/admin/impersonations/{id}` as the administrator (the portal's *Stop viewing*), each end it and stamp the record. Every way a session ends goes through one function, so an end cannot go unrecorded because somebody logged out instead of calling the polite endpoint. A row with no end expired. |
+
+`GET /api/v1/admin/impersonations` is the log, and it answers whether or not the capability is
+currently enabled: turning the switch off withdraws the power, it does not erase the record.
+The learner sees their own half in `GET /api/v1/me/export`.
+
+Deleting a learner's account clears their id and handle from the rows naming them and keeps the
+rest — what survives is that a named administrator viewed somebody, when, for how long, and the
+reason they gave. `app/services/retention.py` states both halves.
 
 ## Health, readiness, and what to alert on
 
@@ -85,9 +134,16 @@ nothing is processed at all.
 | `expired_leases` > 0 for longer than `GURU_INGEST_RECONCILE_INTERVAL_SECONDS` | The reconciler is not running | `uv run poe reconcile-ingestion` to sweep now, then find out why the worker's timer is not firing. |
 | `failed` rising | Sources exhausting `ingest_max_attempts` | Read `sources.error`; these are parked, not retried. |
 
-`/api/v1/ops/spend` is the bill so far. Cost and token use are logged per call (`llm_calls`,
-tagged by role and model); this totals a window and splits it by role and by model. Set
-`GURU_SPEND_BUDGET_USD` and `GURU_SPEND_WINDOW_HOURS` to make it assert something.
+`/api/v1/ops/spend` is the bill so far **and how long the models took**. Cost, tokens and
+timing are logged per call (`llm_calls`, tagged by role and model); this totals a window and
+splits it by role and by model. Set `GURU_SPEND_BUDGET_USD` and `GURU_SPEND_WINDOW_HOURS` to
+make it assert something.
+
+> Two timings, and they are not interchangeable. `completion` is how long a non-streamed call
+> took end to end. `first_token` is how long a streamed call took to *start* — the tutoring
+> turn and the refinement gate, the calls a learner is sitting in front of. Each reports the
+> `calls` it was computed over, because each covers part of the traffic and a p95 without its
+> population reads as a claim about all of it.
 
 > `cost_usd` is a **floor** whenever `unpriced_calls` is non-zero. A NULL price means the model
 > has no known one, which is deliberately not the same as 0.00 — a local model that genuinely

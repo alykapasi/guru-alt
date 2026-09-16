@@ -18,6 +18,7 @@ from app.llm.providers import FakeProvider
 from app.llm.registry import LLMClient, ModelSpec
 from app.llm.types import ModelRole
 from app.models.knowledge import KC, KCEdge
+from app.models.learner import Learner
 from app.services import knowledge as svc
 
 # --- the pure layer ---------------------------------------------------------
@@ -160,13 +161,20 @@ async def test_parsing_survives_a_missing_requires_field() -> None:
 
 
 async def _commit(session: AsyncSession, topics: list[dict]) -> uuid.UUID:
+    # A real learner row, not a fabricated id. The parameter used to be advisory — it only
+    # gated source reassignment — so an id belonging to nobody was harmless. Since S25 the
+    # committed subject is *owned* by it, and an owner who does not exist is a foreign-key
+    # violation, which is the constraint working rather than a test to route around.
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    session.add(learner)
+    await session.flush()
     result = await svc.create_subject_with_graph(
         session,
         subject_name=f"Subj {uuid.uuid4().hex[:6]}",
         subject_description="d",
         topics_data=topics,
         source_ids=None,
-        learner_id=uuid.uuid4(),
+        learner_id=learner.id,
     )
     return result.subject.id
 

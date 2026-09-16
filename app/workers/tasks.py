@@ -14,17 +14,21 @@ from datetime import timedelta
 from taskiq import TaskiqEvents, TaskiqState
 
 from app.agent import checkpointing
+from app.core.alerts import evaluate
 from app.core.config import get_settings
 from app.core.db import SessionFactory
+from app.core.readiness import readiness
 from app.llm import build_llm_client
 from app.models.source import Source
 from app.rag import pipeline
 from app.rag.demux import build_demuxer
 from app.rag.transcription import build_transcriber
+from app.services import alert_history, ingestion
 from app.services import auth as auth_svc
 from app.services import checkpoints as checkpoints_svc
-from app.services import ingestion
 from app.services import memory as memory_svc
+from app.services.ingestion import backlog
+from app.services.spend import window as spend_window
 from app.storage import build_blob_store
 from app.workers.broker import broker
 
@@ -132,6 +136,51 @@ async def _purge_checkpoints_once() -> None:
         logger.info("discarded %d abandoned checkpoint thread(s)", discarded)
 
 
+async def _alerts_once() -> None:
+    """Evaluate every alert condition and record what changed (P11).
+
+    The predicate existed and nothing ran it, so a condition could fire and resolve between two
+    glances at a dashboard nobody was looking at. This is what runs it.
+
+    Transitions are logged as well as stored, at the severity they carry, because the log is
+    the delivery channel this codebase already has: anything shipping logs can alert on a line,
+    and choosing a pager or a webhook is a deployment decision that should not have to be made
+    before the conditions are watched at all. One line per *change*, never per poll — delivering
+    the firing set every minute would page somebody sixty times for one incident.
+    """
+    settings = get_settings()
+    store = build_blob_store(settings)
+    async with SessionFactory() as session:
+        report = evaluate(
+            readiness=await readiness(session, store),
+            backlog=await backlog(session, settings=settings),
+            spend=await spend_window(session, settings=settings),
+            settings=settings,
+        )
+        changed = await alert_history.record(session, report)
+    for row in changed:
+        if row.firing:
+            log = logger.error if row.severity == "critical" else logger.warning
+            log("alert firing: %s — %s | action: %s", row.name, row.detail, row.action)
+        else:
+            logger.info("alert resolved: %s", row.name)
+
+
+async def _alerts_loop(interval: int) -> None:
+    """Watch the alert conditions forever, surviving its own failures like the sweeps above.
+
+    A failure here is itself a monitoring outage, so it is logged at exception level and the
+    loop continues: a watcher that dies on one bad evaluation is worse than no watcher, because
+    the absence of alerts still reads as "nothing wrong".
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await _alerts_once()
+        except Exception:
+            logger.exception("alert evaluation failed; will retry")
+
+
 async def _purge_checkpoints_loop(interval: int) -> None:
     """Sweep abandoned checkpoints forever, surviving its own failures like the others."""
     while True:
@@ -161,6 +210,17 @@ async def _start_reconciler(state: TaskiqState) -> None:
 
 async def _stop_reconciler(state: TaskiqState) -> None:
     await _cancel(getattr(state, "reconciler", None))
+
+
+async def _start_alerts(state: TaskiqState) -> None:
+    interval = get_settings().alert_poll_interval_seconds
+    if interval <= 0:
+        return
+    state.alerts = asyncio.create_task(_alerts_loop(interval))
+
+
+async def _stop_alerts(state: TaskiqState) -> None:
+    await _cancel(getattr(state, "alerts", None))
 
 
 async def _start_session_purge(state: TaskiqState) -> None:
@@ -220,3 +280,5 @@ broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_session_purge)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_session_purge)
 broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_checkpoint_purge)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_checkpoint_purge)
+broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_alerts)
+broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_alerts)

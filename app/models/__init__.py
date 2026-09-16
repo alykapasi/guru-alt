@@ -14,11 +14,13 @@ from app.models.learning import LearnerKCState, LearningEvent
 from app.models.lesson_plan import LessonPlan
 from app.models.memory import Memory, MemoryKind
 from app.models.note import Note, NoteRender, NoteRevision
+from app.models.ops import AlertTransition
 from app.models.profile import LearnerProfile, ProfileDimension
 from app.models.source import Chunk, ChunkKC, Source, SourceKind, SourceStatus
 
 __all__ = [
     "KC",
+    "AlertTransition",
     "Chunk",
     "ChunkKC",
     "ContentBlock",

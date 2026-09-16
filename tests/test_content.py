@@ -434,3 +434,103 @@ async def test_an_untagged_source_still_grounds_the_block(db_session: AsyncSessi
 
     assert untagged.subject_id is None
     assert [c["chunk_id"] for c in block.citations] == [str(chunk.id)]
+
+
+# --- insufficient sources (S28) ---------------------------------------------
+
+
+def _spy_on_prompts(client, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str | None, str]]:
+    """Record the (system, user) pair each generation actually sends.
+
+    Patching the instance rather than wrapping it in a stand-in: `generate_block` is annotated
+    `llm: LLMClient` and beartype checks that at runtime, so a duck-typed double is rejected.
+    """
+    seen: list[tuple[str | None, str]] = []
+    original = client.complete
+
+    async def spy(role, messages, *, system=None, **kwargs):
+        seen.append((system, messages[0].content))
+        return await original(role, messages, system=system, **kwargs)
+
+    monkeypatch.setattr(client, "complete", spy)
+    return seen
+
+
+async def test_with_nothing_retrieved_the_model_is_not_told_to_use_only_the_snippets(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The contradiction this removes: the system prompt said "using ONLY the numbered context
+    snippets" while the user message for an empty retrieval said "write from general knowledge".
+    Both were sent in the same request, and which one the model obeyed was decided nowhere."""
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)  # no sources seeded at all
+    client = _client()
+    seen = _spy_on_prompts(client, monkeypatch)
+
+    await svc.generate_block(
+        db_session, client, learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    system, user = seen[0]
+    assert system is not None
+    assert "No source material was retrieved" in system
+    assert "ONLY the numbered context snippets" not in system
+    assert "Context snippets:" not in user, "no empty section, and no instructions in the user turn"
+    assert "general knowledge" not in user, "that instruction belongs to the system prompt now"
+
+
+async def test_with_grounding_the_source_only_instruction_is_the_one_sent(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+    await _seed_grounding(db_session, learner)
+    client = _client()
+    seen = _spy_on_prompts(client, monkeypatch)
+
+    await svc.generate_block(
+        db_session, client, learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    system, user = seen[0]
+    assert system is not None
+    assert "ONLY the numbered context snippets" in system
+    assert "No source material was retrieved" not in system
+    assert "Context snippets:" in user
+
+
+async def test_grounding_count_records_what_was_offered_not_what_was_cited(
+    db_session: AsyncSession,
+) -> None:
+    """Why the column is a count and not a flag derived from `citations`.
+
+    A model handed two snippets that cites neither produces the same empty `citations` as one
+    given nothing at all. Those are different facts — the first is about the model, the second
+    about the sources — and only the second says the block is not drawn from the learner's
+    material.
+    """
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+    await _seed_grounding(db_session, learner)
+    cites_nothing = _client(json.dumps({"body": "Mitochondria make ATP.", "citations": []}))
+
+    block = await svc.generate_block(
+        db_session, cites_nothing, learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    assert block.citations == []
+    assert block.grounding_count == 2, "two chunks were offered, however many were used"
+
+
+async def test_a_block_written_without_sources_records_zero_grounding(
+    db_session: AsyncSession,
+) -> None:
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+
+    block = await svc.generate_block(
+        db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    assert block.grounding_count == 0
+    assert block.citations == []
