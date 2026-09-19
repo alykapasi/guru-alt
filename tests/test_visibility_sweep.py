@@ -393,6 +393,21 @@ CASES: list[Case] = [
         ("subject",),
         lambda c, t, o: c.get(f"{API}/subjects/{t.subject}/mastery"),
     ),
+    # --- content ---
+    Case(
+        "POST",
+        "/api/v1/content/generate",
+        "kc_id",
+        ("kc",),
+        lambda c, t, o: c.post(f"{API}/content/generate", json={"kc_id": str(t.kc)}),
+    ),
+    Case(
+        "GET",
+        "/api/v1/content/kc/{kc_id}",
+        "kc_id",
+        ("kc",),
+        lambda c, t, o: c.get(f"{API}/content/kc/{t.kc}"),
+    ),
 ]
 
 
