@@ -408,6 +408,75 @@ CASES: list[Case] = [
         ("kc",),
         lambda c, t, o: c.get(f"{API}/content/kc/{t.kc}"),
     ),
+    # --- sources and retrieval -------------------------------------------------------------
+    Case(
+        "POST",
+        "/api/v1/sources/upload",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.post(
+            f"{API}/sources/upload",
+            files={"file": ("notes.txt", b"private notes", "text/plain")},
+            data={"subject_id": str(t.subject)},
+        ),
+    ),
+    Case(
+        "POST",
+        "/api/v1/sources/upload",
+        "topic_id",
+        ("topic",),
+        lambda c, t, o: c.post(
+            f"{API}/sources/upload",
+            files={"file": ("notes.txt", b"private notes", "text/plain")},
+            data={"topic_id": str(t.topic)},
+        ),
+    ),
+    Case(
+        "POST",
+        "/api/v1/sources/link",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.post(
+            f"{API}/sources/link",
+            json={"url": "https://example.com/a", "subject_id": str(t.subject)},
+        ),
+        owner_exempt="every caller gets the same 403: URL intake is disabled in v0 (V06)",
+    ),
+    Case(
+        "POST",
+        "/api/v1/sources/link",
+        "topic_id",
+        ("topic",),
+        lambda c, t, o: c.post(
+            f"{API}/sources/link", json={"url": "https://example.com/a", "topic_id": str(t.topic)}
+        ),
+        owner_exempt="every caller gets the same 403: URL intake is disabled in v0 (V06)",
+    ),
+    Case(
+        "GET",
+        "/api/v1/sources",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.get(f"{API}/sources", params={"subject_id": str(t.subject)}),
+    ),
+    Case(
+        "POST",
+        "/api/v1/retrieve",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.post(
+            f"{API}/retrieve", json={"query": "anything", "subject_id": str(t.subject)}
+        ),
+    ),
+    Case(
+        "POST",
+        "/api/v1/retrieve",
+        "topic_id",
+        ("topic",),
+        lambda c, t, o: c.post(
+            f"{API}/retrieve", json={"query": "anything", "topic_id": str(t.topic)}
+        ),
+    ),
 ]
 
 
@@ -438,3 +507,47 @@ async def test_a_strangers_graph_id_is_answered_as_if_it_did_not_exist(
         owner, world.a_ids, case.sends
     ) != _normalised(reference, random_ids, case.sends)
     assert reached, f"{case.key}: the owner got the not-found answer too; the case never runs"
+
+
+async def test_a_scope_error_never_names_a_strangers_subject(
+    world: World, api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The old message named the subject a topic belongs to, which let anybody map a stranger's
+    topic to their subject by uploading against it."""
+    await sign_in(api_client, db_session, world.b)
+
+    r = await api_client.post(
+        f"{API}/sources/upload",
+        files={"file": ("notes.txt", b"private notes", "text/plain")},
+        data={"subject_id": str(world.b_ids.subject), "topic_id": str(world.a_ids.topic)},
+    )
+
+    assert r.status_code == 422
+    assert str(world.a_ids.subject) not in r.text
+
+
+async def test_a_mismatched_scope_names_only_what_was_sent(
+    world: World, api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Both ids visible, but the topic is not in the subject: the message may name both, and
+    nothing else."""
+    tag = uuid.uuid4().hex[:8]
+    curated = Subject(slug=f"c-{tag}", name=f"Curated {tag}", owner_learner_id=None)
+    db_session.add(curated)
+    await db_session.flush()
+    curated_topic = Topic(subject_id=curated.id, slug=f"ct-{tag}", name="Curated topic")
+    db_session.add(curated_topic)
+    await db_session.commit()
+    await sign_in(api_client, db_session, world.b)
+
+    r = await api_client.post(
+        f"{API}/sources/upload",
+        files={"file": ("notes.txt", b"private notes", "text/plain")},
+        data={"subject_id": str(world.b_ids.subject), "topic_id": str(curated_topic.id)},
+    )
+
+    assert r.status_code == 422
+    assert r.json() == {
+        "detail": f"topic {curated_topic.id} does not belong to subject {world.b_ids.subject}"
+    }
+    assert str(curated.id) not in r.text

@@ -93,7 +93,7 @@ async def create_source(
     """
     _require_file_source(kind)
     subject_id, topic_id = await knowledge.resolve_source_scope(
-        session, subject_id=subject_id, topic_id=topic_id
+        session, learner_id=learner_id, subject_id=subject_id, topic_id=topic_id
     )
     source = Source(
         learner_id=learner_id,
@@ -193,7 +193,7 @@ async def create_or_reuse_source(
     """
     _require_file_source(kind)
     subject_id, topic_id = await knowledge.resolve_source_scope(
-        session, subject_id=subject_id, topic_id=topic_id
+        session, learner_id=learner_id, subject_id=subject_id, topic_id=topic_id
     )
     existing = await find_duplicate(
         session,

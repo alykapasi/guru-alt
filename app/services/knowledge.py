@@ -334,6 +334,7 @@ class ScopeConflict(ValueError):
 async def resolve_source_scope(
     session: AsyncSession,
     *,
+    learner_id: uuid.UUID,
     subject_id: uuid.UUID | None,
     topic_id: uuid.UUID | None,
 ) -> tuple[uuid.UUID | None, uuid.UUID | None]:
@@ -346,16 +347,25 @@ async def resolve_source_scope(
 
     A topic given without a subject is not an error; the topic determines the subject, so it
     is filled in rather than rejected.
+
+    Both ids pass the visibility gate first (S25). A stranger's private subject or topic is
+    refused exactly like one that does not exist. Every message names only ids the caller sent:
+    the old one named the subject a topic belongs to, which told anybody who uploaded against a
+    stranger's topic whose curriculum it was.
     """
+    if subject_id is not None:
+        try:
+            await require_visible_subject(session, subject_id, learner_id)
+        except NotVisible as exc:
+            raise ScopeConflict(f"subject {subject_id} does not exist") from exc
     if topic_id is None:
         return subject_id, None
-    topic = await session.get(Topic, topic_id)
-    if topic is None:
-        raise ScopeConflict(f"topic {topic_id} does not exist")
+    try:
+        _, topic = await require_visible_topic(session, topic_id, learner_id)
+    except NotVisible as exc:
+        raise ScopeConflict(f"topic {topic_id} does not exist") from exc
     if subject_id is not None and topic.subject_id != subject_id:
-        raise ScopeConflict(
-            f"topic {topic_id} belongs to subject {topic.subject_id}, not {subject_id}"
-        )
+        raise ScopeConflict(f"topic {topic_id} does not belong to subject {subject_id}")
     return topic.subject_id, topic_id
 
 
