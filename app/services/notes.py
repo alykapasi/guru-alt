@@ -26,6 +26,7 @@ from app.models.knowledge import KC, Subject, Topic
 from app.models.learning import LearningEvent
 from app.models.note import WATERMARK_EPOCH, Note, NoteRender, NoteRevision
 from app.models.profile import ProfileDimension
+from app.services import knowledge as knowledge_svc
 from app.services.llm_log import log_llm_call
 
 log = structlog.get_logger(__name__)
@@ -44,6 +45,8 @@ class NoteView:
     stale: bool
     revision_ordinal: int | None
     updated_at: datetime | None
+    learner_authored_md: str | None = None
+    generated_md: str | None = None
 
 
 def _now() -> datetime:
@@ -58,6 +61,25 @@ async def get_note(
     return await session.scalar(
         select(Note).where(Note.learner_id == learner_id, Note.topic_id == topic_id)
     )
+
+
+async def _require_visible_topic(
+    session: AsyncSession, learner_id: uuid.UUID, topic: Topic
+) -> None:
+    subject = await knowledge_svc.get_subject(session, topic.subject_id)
+    if subject is None or not knowledge_svc.is_visible_to(subject, learner_id):
+        raise PermissionError("topic not found")
+
+
+async def _locked_note(session: AsyncSession, note: Note) -> Note:
+    current = await session.scalar(
+        select(Note)
+        .where(Note.id == note.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    assert current is not None
+    return current
 
 
 async def _dimension_value(session: AsyncSession, learner_id: uuid.UUID, key: str) -> object:
@@ -161,6 +183,25 @@ async def _is_stale(
     return False
 
 
+def _surrounding(atoms: list[dict], baseline: dict) -> str:
+    additions = [a for a in atoms if a["id"] not in baseline]
+    suggestions = [a for a in atoms if a["id"] in baseline and a["md"] != baseline[a["id"]]]
+    parts = []
+    if additions:
+        parts.append("## Automatic additions\n\n" + note_distill.mechanical_render(additions))
+    if suggestions:
+        parts.append(
+            "## Suggested updates to your notes\n\n" + note_distill.mechanical_render(suggestions)
+        )
+    return "\n\n".join(parts)
+
+
+def _compose(authored: str | None, generated: str) -> str:
+    if authored is None:
+        return generated
+    return authored + ("\n\n" + generated if generated else "")
+
+
 async def _view(
     session: AsyncSession, learner_id: uuid.UUID, topic: Topic, note: Note | None
 ) -> NoteView:
@@ -169,6 +210,10 @@ async def _view(
     if note is not None and note.revision_ordinal > 0:
         render_row = await _current_render(session, note, fmt)
         content = render_row.content_md if render_row is not None else None
+        if note.learner_authored_md is not None:
+            content = _compose(
+                note.learner_authored_md, _surrounding(note.substrate, note.authored_baseline)
+            )
     return NoteView(
         topic_id=topic.id,
         content_md=content,
@@ -179,11 +224,18 @@ async def _view(
             note.revision_ordinal if note is not None and note.revision_ordinal > 0 else None
         ),
         updated_at=note.updated_at if note is not None else None,
+        learner_authored_md=note.learner_authored_md if note is not None else None,
+        generated_md=(
+            _surrounding(note.substrate, note.authored_baseline)
+            if note is not None and note.learner_authored_md is not None
+            else content
+        ),
     )
 
 
 async def note_view(session: AsyncSession, learner_id: uuid.UUID, topic: Topic) -> NoteView:
     """Pure read — never calls a model, never writes."""
+    await _require_visible_topic(session, learner_id, topic)
     return await _view(session, learner_id, topic, await get_note(session, learner_id, topic.id))
 
 
@@ -330,13 +382,25 @@ async def _topic_context(session: AsyncSession, topic: Topic) -> note_distill.To
 async def _render_and_cache(
     session: AsyncSession, llm: LLMClient, learner_id: uuid.UUID, note: Note, fmt: str
 ) -> NoteRender:
-    """Cache a rendering of the current substrate, falling back when the model cannot give one.
+    """Cache generated notes or exact authored notes with separate surrounding content.
 
     The substrate is the note; a render is a projection of it. So a failed, empty or severed
     render is never a reason for a learner to be shown a blank or half a note — the
     deterministic ``mechanical_render`` of the same atoms is always available and always
     complete. It reads plainer, and it is the whole note.
     """
+    if note.learner_authored_md is not None:
+        row = NoteRender(
+            note_id=note.id,
+            revision_ordinal=note.revision_ordinal,
+            format=fmt,
+            content_md=_compose(
+                note.learner_authored_md, _surrounding(note.substrate, note.authored_baseline)
+            ),
+        )
+        session.add(row)
+        await session.flush()
+        return row
     content: str | None = None
     try:
         content, usage = await note_distill.render(
@@ -386,6 +450,8 @@ async def _commit_new_revision(
             substrate=atoms,
             cause=cause,
             learner_edit_md=learner_edit_md,
+            learner_authored_md=note.learner_authored_md,
+            authored_baseline=note.authored_baseline,
         )
     )
     await session.execute(delete(NoteRender).where(NoteRender.note_id == note.id))
@@ -396,7 +462,9 @@ async def refresh_note(
     session: AsyncSession, llm: LLMClient, learner_id: uuid.UUID, topic: Topic
 ) -> NoteView:
     """The catch-up: distill anything past the per-stream cursors, then ensure a render exists."""
+    await _require_visible_topic(session, learner_id, topic)
     note = await get_note(session, learner_id, topic.id)
+    base_revision = note.revision_ordinal if note is not None else None
     fmt = await effective_format(session, learner_id, note)
     messages_watermark, events_watermark = _cursors(note)
 
@@ -405,6 +473,8 @@ async def refresh_note(
     ):
         # Render-only heal (render missing for a current substrate), or nothing to do.
         if note is not None and note.revision_ordinal > 0:
+            note = await _locked_note(session, note)
+            fmt = await effective_format(session, learner_id, note)
             if await _current_render(session, note, fmt) is None:
                 await _render_and_cache(session, llm, learner_id, note, fmt)
                 await session.commit()
@@ -412,17 +482,31 @@ async def refresh_note(
 
     gathered = await _gather(session, learner_id, topic, messages_watermark, events_watermark)
     atoms = note.substrate if note is not None else []
-    result, usage = await note_distill.distill(
-        llm,
-        topic=await _topic_context(session, topic),
-        atoms=atoms,
-        transcript=gathered.transcript,
-        outcomes=gathered.outcomes,
-        refs=gathered.refs,
-    )
-    await log_llm_call(
-        learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
-    )
+    try:
+        result, usage = await note_distill.distill(
+            llm,
+            topic=await _topic_context(session, topic),
+            atoms=atoms,
+            transcript=gathered.transcript,
+            outcomes=gathered.outcomes,
+            refs=gathered.refs,
+        )
+        await log_llm_call(
+            learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
+        )
+    except Exception as exc:
+        log.warning("notes.distill_failed", topic_id=str(topic.id), error=str(exc))
+        if note is not None:
+            await session.refresh(note)
+        return await _view(session, learner_id, topic, note)
+
+    if note is not None:
+        note = await _locked_note(session, note)
+        if note.revision_ordinal != base_revision:
+            # The result was based on an old revision. Keep both activity cursors
+            # pending for a new catch-up, and show the edit/restore that won.
+            return await _view(session, learner_id, topic, note)
+        fmt = await effective_format(session, learner_id, note)
 
     if result is None:
         # Parse failure or learner-atom violation: keep everything, stay stale, retry later.
@@ -467,38 +551,36 @@ async def absorb_edit(
     content_md: str,
     *,
     expected_revision_ordinal: int | None = None,
+    include_generated: bool = True,
 ) -> NoteView | None:
-    """Fold a learner's edit into the substrate. None = no note yet, or absorb failed.
+    """Save exact learner Markdown independently of the generated atom substrate.
 
-    ``expected_revision_ordinal`` is the revision the learner was editing. Supplying it turns a
-    concurrent change — a refresh, or another tab — into an explicit
-    :class:`RevisionConflict` instead of silently absorbing an edit against a note that no
-    longer looks like what they saw. Checked again immediately before the write, so a change
-    landing during the model call is caught too.
+    Adopting the generated display resets its baseline; editing only the authored
+    section leaves automatic additions visible. Saving never needs an LLM.
     """
+    await _require_visible_topic(session, learner_id, topic)
     note = await get_note(session, learner_id, topic.id)
     if note is None or note.revision_ordinal == 0:
         return None
     if expected_revision_ordinal is not None and note.revision_ordinal != expected_revision_ordinal:
         raise RevisionConflict(note.revision_ordinal)
-    fmt = await effective_format(session, learner_id, note)
-    render_row = await _current_render(session, note, fmt)
-    previous = (
-        render_row.content_md if render_row else note_distill.mechanical_render(note.substrate)
+    # Lock the revision through the write; saving exact learner text needs no model call.
+    note = await session.scalar(
+        select(Note)
+        .where(Note.id == note.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
-    atoms, usage = await note_distill.absorb(
-        llm, atoms=note.substrate, previous_render=previous, edited_md=content_md
-    )
-    await log_llm_call(
-        learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
-    )
-    if atoms is None:
-        return None  # note untouched; the paid call is already recorded independently
-    # Re-check after the model call: absorb takes seconds, and a refresh can land inside it.
-    await session.refresh(note)
+    assert note is not None
     if expected_revision_ordinal is not None and note.revision_ordinal != expected_revision_ordinal:
         raise RevisionConflict(note.revision_ordinal)
-    await _commit_new_revision(session, note, atoms, "learner_edit", learner_edit_md=content_md)
+    fmt = await effective_format(session, learner_id, note)
+    if include_generated or note.learner_authored_md is None:
+        note.authored_baseline = {a["id"]: a["md"] for a in note.substrate}
+    note.learner_authored_md = content_md
+    await _commit_new_revision(
+        session, note, note.substrate, "learner_edit", learner_edit_md=content_md
+    )
     await _render_and_cache(session, llm, learner_id, note, fmt)
     await session.commit()
     await session.refresh(note)  # note was updated; onupdate=func.now() expired updated_at
@@ -513,6 +595,7 @@ async def set_format(
     note_format: str | None,
 ) -> NoteView:
     """Set (or clear, None=auto) the explicit format; render the new format if missing."""
+    await _require_visible_topic(session, learner_id, topic)
     note = await get_note(session, learner_id, topic.id)
     if note is None:
         note = Note(
@@ -524,6 +607,8 @@ async def set_format(
         )
         session.add(note)
         await session.flush()
+    else:
+        note = await _locked_note(session, note)
     note.format = note_format
     fmt = await effective_format(session, learner_id, note)
     if note.revision_ordinal > 0 and await _current_render(session, note, fmt) is None:
@@ -536,6 +621,7 @@ async def set_format(
 async def list_revisions(
     session: AsyncSession, learner_id: uuid.UUID, topic: Topic
 ) -> list[NoteRevision]:
+    await _require_visible_topic(session, learner_id, topic)
     note = await get_note(session, learner_id, topic.id)
     if note is None:
         return []
@@ -548,6 +634,7 @@ async def list_revisions(
 async def _revision(
     session: AsyncSession, learner_id: uuid.UUID, topic: Topic, ordinal: int
 ) -> NoteRevision | None:
+    await _require_visible_topic(session, learner_id, topic)
     note = await get_note(session, learner_id, topic.id)
     if note is None:
         return None
@@ -559,26 +646,44 @@ async def _revision(
 async def revision_source(
     session: AsyncSession, learner_id: uuid.UUID, topic: Topic, ordinal: int
 ) -> tuple[str, str | None] | None:
-    """(the substrate rendered mechanically, the learner's own submitted markdown if any).
-
-    The second is what they actually typed on a ``learner_edit`` revision — absorb reinterprets
-    an edit, so this is the only place the original survives.
-    """
+    """Compose a saved authored snapshot with its independently generated surroundings."""
     revision = await _revision(session, learner_id, topic, ordinal)
     if revision is None:
         return None
-    return note_distill.mechanical_render(revision.substrate), revision.learner_edit_md
+    return _compose(
+        revision.learner_authored_md,
+        _surrounding(revision.substrate, revision.authored_baseline)
+        if revision.learner_authored_md is not None
+        else note_distill.mechanical_render(revision.substrate),
+    ), revision.learner_edit_md
 
 
 async def restore_revision(
-    session: AsyncSession, llm: LLMClient, learner_id: uuid.UUID, topic: Topic, ordinal: int
+    session: AsyncSession,
+    llm: LLMClient,
+    learner_id: uuid.UUID,
+    topic: Topic,
+    ordinal: int,
+    *,
+    expected_revision_ordinal: int | None = None,
 ) -> NoteView | None:
-    """Copy an old revision's substrate forward as a NEW revision — history is never rewritten."""
+    """Copy authored text and generated substrate forward as a new revision."""
     revision = await _revision(session, learner_id, topic, ordinal)
     if revision is None:
         return None
     note = await get_note(session, learner_id, topic.id)
     assert note is not None  # _revision resolved through it
+    note = await session.scalar(
+        select(Note)
+        .where(Note.id == note.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    assert note is not None
+    if expected_revision_ordinal is not None and note.revision_ordinal != expected_revision_ordinal:
+        raise RevisionConflict(note.revision_ordinal)
+    note.learner_authored_md = revision.learner_authored_md
+    note.authored_baseline = revision.authored_baseline
     await _commit_new_revision(session, note, revision.substrate, "restore")
     fmt = await effective_format(session, learner_id, note)
     await _render_and_cache(session, llm, learner_id, note, fmt)
@@ -602,6 +707,9 @@ async def notes_index(
     an existence test against a watermark is exactly a comparison against the newest row, and
     one grouped `max` answers it for every topic at once.
     """
+    subject = await knowledge_svc.get_subject(session, subject_id)
+    if subject is None or not knowledge_svc.is_visible_to(subject, learner_id):
+        raise PermissionError("subject not found")
     topics = (
         await session.scalars(
             select(Topic).where(Topic.subject_id == subject_id).order_by(Topic.name)

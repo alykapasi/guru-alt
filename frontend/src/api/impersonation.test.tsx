@@ -109,7 +109,7 @@ describe("the banner", () => {
     renderBanner();
 
     expect(screen.getByText("alice")).toBeInTheDocument();
-    expect(screen.getByText(/read only/i)).toBeInTheDocument();
+    expect(screen.getByText(/actions are recorded/i)).toBeInTheDocument();
   });
 
   it("ends the visit as the administrator, not as the account being viewed", async () => {

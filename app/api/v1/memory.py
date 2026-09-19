@@ -30,7 +30,7 @@ async def write_back(
     learner: CurrentLearner,
     enqueue: MemoryWriteBackEnqueuerDep,
 ):
-    conversation = await chat_svc.get_conversation(session, conversation_id)
+    conversation = await chat_svc.get_conversation(session, conversation_id, learner_id=learner.id)
     if conversation is None or conversation.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
     await enqueue(conversation_id)

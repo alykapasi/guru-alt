@@ -236,7 +236,9 @@ async def _setup(session: AsyncSession) -> tuple[Learner, list[KC]]:
 
 
 async def _answer(session: AsyncSession, learner: Learner, kcs: list[KC], reply: str, attempt=None):
-    row = Item(item_type=ItemType.SHORT, stem="Explain the normal equations.")
+    row = Item(
+        owner_learner_id=learner.id, item_type=ItemType.SHORT, stem="Explain the normal equations."
+    )
     session.add(row)
     await session.flush()
     session.add_all([ItemKC(item_id=row.id, kc_id=kc.id) for kc in kcs])
@@ -311,7 +313,9 @@ async def test_an_objective_item_offers_no_diagnosis(db_session: AsyncSession) -
     """An MCQ knows the answer was wrong and nothing about why. Manufacturing a reason from
     that would be the failure this item exists to fix, committed on purpose."""
     learner, kcs = await _setup(db_session)
-    row = Item(item_type=ItemType.MCQ, stem="q", answer_key={"correct": 0})
+    row = Item(
+        owner_learner_id=learner.id, item_type=ItemType.MCQ, stem="q", answer_key={"correct": 0}
+    )
     db_session.add(row)
     await db_session.flush()
     db_session.add(ItemKC(item_id=row.id, kc_id=kcs[0].id))

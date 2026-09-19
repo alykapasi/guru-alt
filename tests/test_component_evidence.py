@@ -342,7 +342,11 @@ async def test_a_reply_with_no_stem_still_yields_nothing(db_session: AsyncSessio
 async def _answer_short(
     session: AsyncSession, learner: Learner, kcs: list[KC], reply: str, attempt_id=None
 ):
-    row = Item(item_type=ItemType.SHORT, stem="Solve the least-squares problem.")
+    row = Item(
+        owner_learner_id=learner.id,
+        item_type=ItemType.SHORT,
+        stem="Solve the least-squares problem.",
+    )
     session.add(row)
     await session.flush()
     session.add_all([ItemKC(item_id=row.id, kc_id=kc.id) for kc in kcs])

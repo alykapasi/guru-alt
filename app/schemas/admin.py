@@ -51,3 +51,16 @@ class ImpersonationStarted(BaseModel):
     learner_id: uuid.UUID
     learner_handle: str
     impersonation: ImpersonationRead
+
+
+class AdminActionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    impersonation_id: uuid.UUID
+    method: str
+    route: str
+    resource_ids: dict[str, str]
+    status_code: int | None
+    created_at: datetime
+    completed_at: datetime | None

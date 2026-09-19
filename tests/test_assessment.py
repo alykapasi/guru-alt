@@ -71,8 +71,13 @@ def _mcq_body(kc_id: uuid.UUID) -> dict:
 
 async def test_find_item_for_kc_filters_by_type(db_session: AsyncSession) -> None:
     (kc,) = await _seed_kcs(db_session)
-    mcq = Item(item_type=ItemType.MCQ, stem="Q1", answer_key={"choices": ["a", "b"], "correct": 0})
-    flashcard = Item(item_type=ItemType.FLASHCARD, stem="Q2", answer_key=None)
+    mcq = Item(
+        visibility="curated",
+        item_type=ItemType.MCQ,
+        stem="Q1",
+        answer_key={"choices": ["a", "b"], "correct": 0},
+    )
+    flashcard = Item(visibility="curated", item_type=ItemType.FLASHCARD, stem="Q2", answer_key=None)
     db_session.add_all([mcq, flashcard])
     await db_session.flush()
     db_session.add_all(
@@ -188,9 +193,9 @@ async def test_objective_item_requires_answer_key_422(
     assert r.status_code == 422
 
 
-async def test_create_item_unknown_kc_400(api_client: AsyncClient) -> None:
+async def test_create_item_unknown_kc_404(api_client: AsyncClient) -> None:
     r = await api_client.post(f"{API}/items", json=_mcq_body(uuid.uuid4()))
-    assert r.status_code == 400
+    assert r.status_code == 404
 
 
 # --- the answer loop --------------------------------------------------------
@@ -314,7 +319,7 @@ async def test_due_reviews_endpoint(
     assert "answer_key" not in due[0]["item"]
 
 
-async def test_an_administrator_viewing_the_account_reads_the_queue_without_generating(
+async def test_an_administrator_sudo_resolves_review_items_with_audit(
     api_client: AsyncClient,
     admin_client: AsyncClient,
     anon_client: AsyncClient,
@@ -322,9 +327,7 @@ async def test_an_administrator_viewing_the_account_reads_the_queue_without_gene
     db_session: AsyncSession,
     fake_flashcard_llm: None,
 ) -> None:
-    """A visit (P10) is read-only by method, and this is a GET that can write: resolving a due
-    review generates a flashcard when the bank has none, which bills a model call to the learner
-    and commits an item they never asked for. The visit sees what is due and nothing is made."""
+    """Broad admin access resolves the same bounded review items as learner access."""
     (kc,) = await _seed_kcs(db_session)
     item_id = (await api_client.post(f"{API}/items", json=_mcq_body(kc.id))).json()["id"]
     await api_client.post(f"{API}/items/{item_id}/answer", json={"response": {"choice": 1}})
@@ -350,9 +353,9 @@ async def test_an_administrator_viewing_the_account_reads_the_queue_without_gene
         app.dependency_overrides.pop(get_app_settings, None)
 
     assert [d["kc_id"] for d in due] == [str(kc.id)]
-    assert due[0]["item"] is None
-    assert len((await db_session.scalars(select(LLMCall))).all()) == calls_before
-    assert len((await db_session.scalars(select(Item))).all()) == items_before
+    assert due[0]["item"] is not None
+    assert len((await db_session.scalars(select(LLMCall))).all()) == calls_before + 1
+    assert len((await db_session.scalars(select(Item))).all()) == items_before + 1
     # And the learner's own call still resolves it, so the visit's answer is not the only one.
     assert (await api_client.get(f"{API}/reviews/due")).json()[0]["item"] is not None
 

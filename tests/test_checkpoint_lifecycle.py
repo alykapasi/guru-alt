@@ -144,12 +144,16 @@ async def test_pruning_discards_one_thread_per_stale_conversation(
 
 
 async def _item_for(session: AsyncSession, kc: KC):
-    return await assessment_svc.create_item(
+    item = await assessment_svc.create_item(
         session,
         ItemCreate(
             item_type=ItemType.SHORT, stem="Explain velocity.", kcs=[ItemKCRef(kc_id=kc.id)]
         ),
+        owner_learner_id=None,
     )
+    item.visibility = "curated"
+    await session.commit()
+    return item
 
 
 async def test_an_ordinary_paused_question_is_still_worth_asking(

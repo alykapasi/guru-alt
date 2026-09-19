@@ -1,32 +1,9 @@
-"""An administrator's read-only visit to a learner's account, always recorded (P10).
+"""Short-lived alpha administrator access with a durable visit and action audit.
 
-Support needs to see what the learner sees. The two ways of doing that without this are asking
-for their password and reading the database by hand: the first is never acceptable, the second
-leaves no record that anybody looked, and both of them describe what a product does before
-somebody decides that acting as another person deserves rules.
-
-Three rules, and each is a failure this exists to prevent rather than a precaution:
-
-**The record is written in the same transaction as the credential.** There is no code path that
-grants access and then logs it, so there is no code path where the logging is the part that
-failed. That is the whole difference between "we log impersonations" and "impersonation is
-logged".
-
-**The session is read-only.** Enforced at the one dependency every authenticated route goes
-through (``app.api.deps.get_current_learner``), not per route, because a rule each new endpoint
-has to remember is a rule that is eventually not remembered. Support needs to *see* the
-account; writing as somebody else puts evidence in their record that they did not create, and
-no amount of audit makes that recoverable — the learner's own history becomes something they
-cannot trust.
-
-**It is never an administrator.** An impersonated session is refused by the admin and operator
-gates whatever the target learner's own flag says. Otherwise impersonating an administrator is
-a way for an administrator to launder their own actions through somebody else's name.
-
-The seam: the whole capability is off unless ``GURU_IMPERSONATION_ENABLED`` is set, and with it
-off the endpoints answer 404 rather than 403 — a capability that is not enabled should not
-announce itself. It is an alpha affordance, and the flag is what makes removing it later a
-deployment change rather than an argument.
+Credentials and visit records are issued atomically. Each authenticated borrowed request
+records durable intent before the endpoint runs. The actor must remain an administrator,
+and borrowed accounts never pass admin/operator gates. Learning evidence remains distinct.
+The feature switch is an operational kill switch, including for already issued credentials.
 """
 
 from __future__ import annotations
@@ -87,7 +64,7 @@ async def begin(
     reason: str,
     ttl: timedelta,
 ) -> Began:
-    """Start a recorded, read-only session onto ``learner_id`` on behalf of ``admin``.
+    """Start a recorded administrator session onto ``learner_id`` on behalf of ``admin``.
 
     The administrator's own session is not touched: this issues a *second* credential rather
     than transforming the first. Ending the visit therefore cannot log them out, and losing the

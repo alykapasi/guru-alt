@@ -287,6 +287,7 @@ async def test_get_active_step_context_with_subject_id_does_not_fall_back(
 
 async def _mcq_item(session: AsyncSession, kc_id: uuid.UUID) -> Item:
     item = Item(
+        visibility="curated",
         item_type=ItemType.MCQ,
         stem="Q",
         answer_key={"choices": ["a", "b"], "correct": 0},

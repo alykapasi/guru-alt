@@ -120,7 +120,9 @@ async def _open_check(session: AsyncSession) -> tuple[Learner, Conversation, Ite
     """A conversation with a posed, unanswered check — the state every gate test starts from."""
     learner = await _learner(session)
     kc = await _kc(session)
-    item, _ = await item_generation.generate_short_item(session, fake_llm_client(SHORT_REPLY), kc)
+    item, _ = await item_generation.generate_short_item(
+        session, fake_llm_client(SHORT_REPLY), kc, owner_learner_id=learner.id
+    )
     assert item is not None
     conversation = Conversation(
         learner_id=learner.id,
@@ -298,7 +300,7 @@ async def test_a_stale_item_pointer_without_the_phase_is_not_a_question(
     learner = await _learner(db_session)
     kc = await _kc(db_session)
     item, _ = await item_generation.generate_short_item(
-        db_session, fake_llm_client(SHORT_REPLY), kc
+        db_session, fake_llm_client(SHORT_REPLY), kc, owner_learner_id=learner.id
     )
     assert item is not None
     conversation = Conversation(
@@ -389,7 +391,7 @@ async def test_a_posed_check_is_marked_so_the_router_records_it(
     learner = await _learner(db_session)
     subject, kc = await _planned_subject(db_session, learner.id)
     item, _ = await item_generation.generate_short_item(
-        db_session, fake_llm_client(SHORT_REPLY), kc
+        db_session, fake_llm_client(SHORT_REPLY), kc, owner_learner_id=learner.id
     )
     assert item is not None
     conversation = Conversation(learner_id=learner.id, subject_id=subject.id, goal="learn")
@@ -419,7 +421,7 @@ async def test_a_general_conversation_is_grounded_but_never_checked(
     learner = await _learner(db_session)
     _subject, kc = await _planned_subject(db_session, learner.id)
     item, _ = await item_generation.generate_short_item(
-        db_session, fake_llm_client(SHORT_REPLY), kc
+        db_session, fake_llm_client(SHORT_REPLY), kc, owner_learner_id=learner.id
     )
     assert item is not None
     conversation = Conversation(learner_id=learner.id, subject_id=None, goal="learn")
@@ -444,7 +446,7 @@ async def test_a_new_check_starts_with_no_help_recorded_against_it(
     learner = await _learner(db_session)
     subject, kc = await _planned_subject(db_session, learner.id)
     item, _ = await item_generation.generate_short_item(
-        db_session, fake_llm_client(SHORT_REPLY), kc
+        db_session, fake_llm_client(SHORT_REPLY), kc, owner_learner_id=learner.id
     )
     assert item is not None
     conversation = Conversation(
@@ -469,7 +471,7 @@ async def test_an_open_check_is_not_replaced_by_a_fresh_one(
     learner = await _learner(db_session)
     subject, kc = await _planned_subject(db_session, learner.id)
     posed, _ = await item_generation.generate_short_item(
-        db_session, fake_llm_client(SHORT_REPLY), kc
+        db_session, fake_llm_client(SHORT_REPLY), kc, owner_learner_id=learner.id
     )
     assert posed is not None
     conversation = Conversation(
@@ -502,7 +504,7 @@ async def test_the_turn_that_grades_an_answer_does_not_immediately_ask_another(
     learner = await _learner(db_session)
     subject, kc = await _planned_subject(db_session, learner.id)
     posed, _ = await item_generation.generate_short_item(
-        db_session, fake_llm_client(SHORT_REPLY), kc
+        db_session, fake_llm_client(SHORT_REPLY), kc, owner_learner_id=learner.id
     )
     assert posed is not None
     conversation = Conversation(
@@ -542,6 +544,7 @@ async def test_a_check_that_cannot_be_answered_in_prose_is_not_graded(
             json.dumps({"stem": "Which?", "choices": ["a", "b", "c", "d"], "correct": 1})
         ),
         kc,
+        owner_learner_id=learner.id,
     )
     assert mcq is not None
     conversation = Conversation(
@@ -908,7 +911,7 @@ async def test_the_graded_result_reaches_the_client_on_the_stream(
     """End to end: the report is only worth building if it leaves the server."""
     kc = await _kc(db_session)
     item, _ = await item_generation.generate_short_item(
-        db_session, fake_llm_client(SHORT_REPLY), kc
+        db_session, fake_llm_client(SHORT_REPLY), kc, owner_learner_id=api_learner.id
     )
     assert item is not None
     conversation = Conversation(
@@ -975,7 +978,7 @@ async def test_the_report_is_still_there_after_the_stream_is_gone(
     a mark they were given yesterday needs the account rather than the row."""
     kc = await _kc(db_session)
     item, _ = await item_generation.generate_short_item(
-        db_session, fake_llm_client(SHORT_REPLY), kc
+        db_session, fake_llm_client(SHORT_REPLY), kc, owner_learner_id=api_learner.id
     )
     assert item is not None
     conversation = Conversation(
@@ -1111,7 +1114,7 @@ async def test_a_declaration_does_not_displace_a_check_already_open(
     topic = await db_session.get(Topic, kc.topic_id)
     assert topic is not None
     item, _ = await item_generation.generate_short_item(
-        db_session, fake_llm_client(SHORT_REPLY), kc
+        db_session, fake_llm_client(SHORT_REPLY), kc, owner_learner_id=api_learner.id
     )
     assert item is not None
     conversation = Conversation(

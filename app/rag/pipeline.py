@@ -127,6 +127,7 @@ async def _same_text_source(session: AsyncSession, source: Source) -> Source | N
         select(Source)
         .where(
             Source.learner_id == source.learner_id,
+            Source.kind == source.kind,
             Source.text_sha256 == source.text_sha256,
             Source.status == SourceStatus.DONE,
             Source.id != source.id,

@@ -55,7 +55,7 @@ export function useImpersonations() {
 
 export class VisitRefused extends Error {}
 
-/** Start a read-only visit to a learner's account.
+/** Start an audited administrator visit to a learner's account.
  *
  * The cache is cleared on success, not invalidated: everything in it was fetched as the
  * administrator, and a stale read of their own dashboard rendering under a banner that names
@@ -87,6 +87,23 @@ export function useStartVisit() {
         expiresAt: data.expires_at,
       });
       queryClient.clear();
+    },
+  });
+}
+
+export function useAdminActions(visitId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["admin", "actions", visitId],
+    enabled,
+    queryFn: async () => {
+      const { data, error } = await api.GET(
+        "/api/v1/admin/impersonations/{impersonation_id}/actions",
+        {
+          params: { path: { impersonation_id: visitId } },
+        },
+      );
+      if (error) throw error;
+      return data;
     },
   });
 }

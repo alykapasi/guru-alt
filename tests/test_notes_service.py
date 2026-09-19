@@ -525,3 +525,130 @@ async def test_an_empty_render_does_not_become_the_learners_note(
 
     assert (view.content_md or "").strip() != ""
     assert "Vectors add tip-to-tail." in (view.content_md or "")
+
+
+async def test_edit_is_exact_without_model_reinterpretation(db_session: AsyncSession) -> None:
+    learner, topic, kc = await _seed(db_session)
+    await _add_observation(db_session, learner, kc)
+    await notes_svc.refresh_note(db_session, _distill_then_render(ATOMS), learner.id, topic)
+    typed = "# 私の notes 🧠\n\n2. β before \u03b1  \n1. e\u0301 ≠ é\n\n```py\nx = '<raw>'\n```\n\n"
+    view = await notes_svc.absorb_edit(
+        db_session,
+        fake_llm_client('{"atoms": []}'),
+        learner.id,
+        topic,
+        typed,
+        expected_revision_ordinal=1,
+    )
+    assert view is not None
+    assert view.content_md == typed
+
+
+async def test_private_topic_cannot_generate_another_learners_notes(
+    db_session: AsyncSession,
+) -> None:
+    import pytest
+
+    owner, topic, _kc = await _seed(db_session)
+    subject = await db_session.get(Subject, topic.subject_id)
+    assert subject is not None
+    subject.owner_learner_id = owner.id
+    stranger = Learner(handle=f"other-{uuid.uuid4().hex[:8]}")
+    db_session.add(stranger)
+    await db_session.flush()
+    with pytest.raises(PermissionError):
+        await notes_svc.refresh_note(db_session, fake_llm_client(script=[]), stranger.id, topic)
+
+
+async def test_catchup_keeps_exact_edit_and_records_suggestions(db_session: AsyncSession) -> None:
+    learner, topic, kc = await _seed(db_session)
+    await _add_observation(db_session, learner, kc)
+    await notes_svc.refresh_note(db_session, _distill_then_render(ATOMS), learner.id, topic)
+    typed = "# e\u0301 手書き 🧠\n\n- second  \n- first\n\n"
+    await notes_svc.absorb_edit(db_session, fake_llm_client(script=[]), learner.id, topic, typed)
+    await _event_at(db_session, learner, kc, _now() + timedelta(seconds=1))
+    changed = [
+        {**ATOMS[0], "md": "A proposed rewording."},
+        {**ATOMS[0], "id": "a-new", "md": "New learning."},
+    ]
+    view = await notes_svc.refresh_note(
+        db_session, _distill_then_render(changed), learner.id, topic
+    )
+    assert view.learner_authored_md == typed
+    assert (view.content_md or "").startswith(typed)
+    assert "Automatic additions" in (view.generated_md or "")
+    assert "Suggested updates" in (view.generated_md or "")
+    assert "New learning." in (view.generated_md or "")
+    assert "A proposed rewording." in (view.generated_md or "")
+    source = await notes_svc.revision_source(db_session, learner.id, topic, 3)
+    assert source is not None and source[0].startswith(typed)
+    restored = await notes_svc.restore_revision(
+        db_session, fake_llm_client(script=[]), learner.id, topic, 2, expected_revision_ordinal=3
+    )
+    assert restored is not None and restored.content_md == typed
+    assert restored.generated_md == ""
+
+
+async def test_catchup_discards_result_if_an_edit_wins_during_model_call(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    learner, topic, kc = await _seed(db_session)
+    await _add_observation(db_session, learner, kc)
+    await notes_svc.refresh_note(db_session, _distill_then_render(ATOMS), learner.id, topic)
+    await _event_at(db_session, learner, kc, _now() + timedelta(seconds=1))
+    note = await notes_svc.get_note(db_session, learner.id, topic.id)
+    assert note is not None
+    old_cursor = note.events_watermark
+    original_distill = note_distill.distill
+
+    async def edit_then_return(*args, **kwargs):
+        # Independent identity map on the same fixture transaction simulates an edit
+        # committing while this refresh retains the old Note object across its model call.
+        async with AsyncSession(
+            bind=db_session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint"
+        ) as other:
+            saved = await notes_svc.absorb_edit(
+                other,
+                fake_llm_client(script=[]),
+                learner.id,
+                topic,
+                "exact winner 🧠\n",
+                expected_revision_ordinal=1,
+            )
+            assert saved is not None
+        return await original_distill(*args, **kwargs)
+
+    monkeypatch.setattr(note_distill, "distill", edit_then_return)
+    view = await notes_svc.refresh_note(
+        db_session, _distill_then_render([{**ATOMS[0], "md": "stale rewrite"}]), learner.id, topic
+    )
+    assert view.revision_ordinal == 2
+    assert view.content_md == "exact winner 🧠\n"
+    assert view.stale is True
+    assert note.events_watermark == old_cursor
+    assert [rev.cause for rev in await notes_svc.list_revisions(db_session, learner.id, topic)] == [
+        "distill",
+        "learner_edit",
+    ]
+
+
+async def test_provider_outage_during_catchup_preserves_exact_authored_note(
+    db_session: AsyncSession,
+) -> None:
+    class UnavailableProvider(FakeProvider):
+        async def complete(self, **kwargs) -> ChatResponse:
+            raise RuntimeError("offline provider outage")
+
+    learner, topic, kc = await _seed(db_session)
+    await _add_observation(db_session, learner, kc)
+    await notes_svc.refresh_note(db_session, _distill_then_render(ATOMS), learner.id, topic)
+    typed = "# exact 🧠\n\n\tkeep these spaces  \n"
+    await notes_svc.absorb_edit(db_session, fake_llm_client(script=[]), learner.id, topic, typed)
+    await _event_at(db_session, learner, kc, _now() + timedelta(seconds=1))
+    view = await notes_svc.refresh_note(
+        db_session, _client(UnavailableProvider()), learner.id, topic
+    )
+    assert view.content_md == typed and view.stale is True
+    assert view.revision_ordinal == 2
+    source = await notes_svc.revision_source(db_session, learner.id, topic, 2)
+    assert source == (typed, typed)

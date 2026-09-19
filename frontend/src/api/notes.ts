@@ -10,6 +10,8 @@ export type NoteFormat = "outline" | "narrative" | "mnemonic" | "worked_examples
 export interface NoteRead {
   topic_id: string;
   content_md: string | null;
+  learner_authored_md: string | null;
+  generated_md: string | null;
   format: NoteFormat | null;
   effective_format: NoteFormat;
   stale: boolean;
@@ -34,7 +36,7 @@ export interface NoteRevisionRead {
 export interface NoteRevisionSource {
   ordinal: number;
   content_md: string;
-  /** What the learner actually typed, on a `learner_edit` revision; null on any other. */
+  /** Raw edit submission; exact authored text is also retained through later revision snapshots. */
   learner_edit_md: string | null;
 }
 
@@ -107,11 +109,16 @@ export function useRefreshNote(topicId: string) {
 export function useEditNote(topicId: string) {
   const invalidate = useInvalidateNote(topicId);
   return useMutation({
-    mutationFn: (edit: { contentMd: string; expectedRevisionOrdinal: number | null }) =>
+    mutationFn: (edit: {
+      contentMd: string;
+      expectedRevisionOrdinal: number | null;
+      includeGenerated?: boolean;
+    }) =>
       jfetch<NoteRead>(`/topics/${topicId}/note`, {
         method: "PUT",
         body: JSON.stringify({
           content_md: edit.contentMd,
+          include_generated: edit.includeGenerated ?? false,
           expected_revision_ordinal: edit.expectedRevisionOrdinal,
         }),
       }),
@@ -150,9 +157,10 @@ export function useRevisionSource(topicId: string, ordinal: number | null) {
 export function useRestoreRevision(topicId: string) {
   const invalidate = useInvalidateNote(topicId);
   return useMutation({
-    mutationFn: (ordinal: number) =>
-      jfetch<NoteRead>(`/topics/${topicId}/note/revisions/${ordinal}/restore`, {
+    mutationFn: (request: { ordinal: number; expectedRevisionOrdinal: number | null }) =>
+      jfetch<NoteRead>(`/topics/${topicId}/note/revisions/${request.ordinal}/restore`, {
         method: "POST",
+        body: JSON.stringify({ expected_revision_ordinal: request.expectedRevisionOrdinal }),
       }),
     onSuccess: invalidate,
   });

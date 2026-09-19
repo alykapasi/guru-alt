@@ -218,7 +218,9 @@ async def _generate_and_log(
     generator: item_generation.GeneratorFn,
     target_difficulty: float | None = None,
 ) -> Item | None:
-    item, usage = await generator(session, llm, kc, target_difficulty=target_difficulty)
+    item, usage = await generator(
+        session, llm, kc, owner_learner_id=learner_id, target_difficulty=target_difficulty
+    )
     if usage.total_tokens:
         await log_llm_call(
             learner_id=learner_id,
@@ -309,7 +311,10 @@ async def due_review_items(
     results: list[tuple[ReviewItem, Item | None]] = []
     # Sequential, not gathered: item_for_kc can call session.commit() on this one shared
     # AsyncSession, and concurrent operations on a single session are unsafe.
-    for i, review in enumerate(reviews):
+    for review in reviews:
+        if not await assessment_svc._kcs_authorized(session, [review.kc_id], learner_id):
+            continue
+        i = len(results)
         item = None
         if i < item_limit:
             kc = await session.get(KC, review.kc_id)

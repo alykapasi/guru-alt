@@ -19,7 +19,7 @@ from app.agent.egress import carries_retrieved_text
 from app.agent.untrusted import as_untrusted
 from app.core.config import get_settings
 from app.llm import LLMClient, ToolDef
-from app.rag.fetch import Fetcher, FetchError, safe_fetch
+from app.rag.fetch import Fetcher, FetchError
 from app.rag.retrieval import RetrievalHit, retrieve
 from app.services.turn_common import format_grounding
 
@@ -81,11 +81,13 @@ def build_tools(
     subject_id: uuid.UUID | None = None,
     source_ids: Sequence[uuid.UUID] | None = None,
     citations: CitationAccumulator | None = None,
-    fetch: Fetcher = safe_fetch,
 ) -> list[Tool]:
     """The tool set for one turn. ``citations`` defaults to a fresh, throwaway accumulator when
     the caller doesn't need to read it back (e.g. most existing tests) — pass one explicitly
-    (``run_agentic_turn`` does) to collect what was cited across the whole turn."""
+    (``run_agentic_turn`` does) to collect what was cited across the whole turn.
+
+    v0 only searches stored materials. External web tools are never registered.
+    """
     citations = citations if citations is not None else CitationAccumulator()
     return [
         _search_materials_tool(
@@ -96,7 +98,6 @@ def build_tools(
             source_ids=source_ids,
             citations=citations,
         ),
-        _fetch_webpage_tool(fetch=fetch, retrieved=citations),
     ]
 
 
@@ -159,6 +160,8 @@ def _extract_text(data: bytes, content_type: str) -> str:
 
 
 def _fetch_webpage_tool(*, fetch: Fetcher, retrieved: CitationAccumulator) -> Tool:
+    """Dormant pre-v0 helper; not registered with the tutor while web access is deferred."""
+
     async def execute(args: dict[str, object]) -> ToolResult:
         url = args.get("url")
         if not isinstance(url, str) or not url.strip():

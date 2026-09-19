@@ -34,6 +34,18 @@ function renderList(props: Partial<Parameters<typeof MessageList>[0]> = {}) {
   );
 }
 
+it("labels administrator messages and replies in persisted history", () => {
+  const admin = { ...message("admin", "Admin request"), admin_actor_id: "actor" };
+  const reply = {
+    ...message("reply", "Admin response"),
+    role: "assistant",
+    admin_action_id: "action",
+  };
+  renderList({ messages: [admin, reply] });
+  expect(screen.getByText("Admin")).toBeInTheDocument();
+  expect(screen.getByText("Reply to admin")).toBeInTheDocument();
+});
+
 describe("MessageList", () => {
   it("offers no way back when the page is the whole conversation", () => {
     renderList({ hasEarlier: false });

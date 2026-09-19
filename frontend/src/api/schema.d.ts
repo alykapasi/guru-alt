@@ -32,7 +32,7 @@ export interface paths {
         put?: never;
         /**
          * Impersonate
-         * @description Start a recorded, read-only session onto one learner's account (P10).
+         * @description Start a recorded administrator session onto one learner's account (P10).
          *
          *     404 rather than 403 when the capability is switched off, because a capability a deployment
          *     has not enabled should not announce that it exists.
@@ -97,6 +97,23 @@ export interface paths {
          *     off must not leave a live visit that nobody can close.
          */
         delete: operations["end_impersonation_api_v1_admin_impersonations__impersonation_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/impersonations/{impersonation_id}/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Actions */
+        get: operations["actions_api_v1_admin_impersonations__impersonation_id__actions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1085,10 +1102,8 @@ export interface paths {
          *     where the component keeps failing (see ``session_runner.due_review_items`` and the
          *     ``reviews_due_item_limit`` cost bound).
          *
-         *     An administrator viewing the account (P10) gets the queue without the items. Resolving
-         *     one can generate it, which bills a model call to the learner and commits an item to
-         *     their bank, and this is a GET: the one method a visit is allowed, so the method rule
-         *     alone would let it through.
+         *     Administrator access resolves the same items under the configured cost bound; the
+         *     authenticated request records its action intent before this endpoint runs.
          */
         get: operations["due_reviews_api_v1_reviews_due_get"];
         put?: never;
@@ -1131,7 +1146,8 @@ export interface paths {
         put?: never;
         /**
          * Link Source
-         * @description Register a web page for ingestion. The page is fetched in the background job.
+         * @deprecated
+         * @description URL ingestion is disabled in v0. Retained to explain the restriction to old clients.
          */
         post: operations["link_source_api_v1_sources_link_post"];
         delete?: never;
@@ -1660,6 +1676,36 @@ export interface components {
             observations_prior_7d: number;
             /** Streak Days */
             streak_days: number;
+        };
+        /** AdminActionRead */
+        AdminActionRead: {
+            /** Completed At */
+            completed_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Impersonation Id
+             * Format: uuid
+             */
+            impersonation_id: string;
+            /** Method */
+            method: string;
+            /** Resource Ids */
+            resource_ids: {
+                [key: string]: string;
+            };
+            /** Route */
+            route: string;
+            /** Status Code */
+            status_code: number | null;
         };
         /**
          * Alert
@@ -2702,6 +2748,10 @@ export interface components {
         };
         /** MessageRead */
         MessageRead: {
+            /** Admin Action Id */
+            admin_action_id?: string | null;
+            /** Admin Actor Id */
+            admin_actor_id?: string | null;
             check_result?: components["schemas"]["CheckResultRead"] | null;
             /** Citations */
             citations: {
@@ -2726,7 +2776,7 @@ export interface components {
         };
         /**
          * NoteEditRequest
-         * @description A learner's edit of the rendered note.
+         * @description A learner's exact Markdown, optionally adopting the generated display.
          *
          *     ``expected_revision_ordinal`` is the revision they were looking at. Sending it turns a
          *     concurrent change — a refresh, or the same note open in another tab — into a 409 instead of
@@ -2737,6 +2787,11 @@ export interface components {
             content_md: string;
             /** Expected Revision Ordinal */
             expected_revision_ordinal?: number | null;
+            /**
+             * Include Generated
+             * @default true
+             */
+            include_generated: boolean;
         };
         /** NoteFormatRequest */
         NoteFormatRequest: {
@@ -2770,6 +2825,10 @@ export interface components {
             effective_format: "outline" | "narrative" | "mnemonic" | "worked_examples";
             /** Format */
             format: ("outline" | "narrative" | "mnemonic" | "worked_examples") | null;
+            /** Generated Md */
+            generated_md?: string | null;
+            /** Learner Authored Md */
+            learner_authored_md?: string | null;
             /** Revision Ordinal */
             revision_ordinal: number | null;
             /** Stale */
@@ -2781,6 +2840,11 @@ export interface components {
             topic_id: string;
             /** Updated At */
             updated_at: string | null;
+        };
+        /** NoteRestoreRequest */
+        NoteRestoreRequest: {
+            /** Expected Revision Ordinal */
+            expected_revision_ordinal: number;
         };
         /** NoteRevisionRead */
         NoteRevisionRead: {
@@ -2796,10 +2860,10 @@ export interface components {
         };
         /**
          * NoteRevisionSource
-         * @description A revision's substrate, plus the learner's own words where the revision was their edit.
+         * @description A revision's exact authored text and independent generated surroundings.
          *
-         *     ``content_md`` is the substrate rendered mechanically — what the system made of the note.
-         *     ``learner_edit_md`` is what they submitted, unmodified, and is null on any other revision.
+         *     ``content_md`` composes the saved authored text with mechanical generated content;
+         *     ``learner_edit_md`` is the raw submission on an edit revision, otherwise null.
          */
         NoteRevisionSource: {
             /** Content Md */
@@ -3469,6 +3533,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ImpersonationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    actions_api_v1_admin_impersonations__impersonation_id__actions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                impersonation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminActionRead"][];
                 };
             };
             /** @description Validation Error */
@@ -4939,12 +5034,12 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
-            202: {
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SourceRead"];
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -5858,7 +5953,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NoteRestoreRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

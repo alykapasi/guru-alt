@@ -96,6 +96,8 @@ class MessageRead(BaseModel):
     role: str
     content: str
     model: str | None
+    admin_actor_id: uuid.UUID | None = None
+    admin_action_id: uuid.UUID | None = None
     # Each entry: {"marker": int, "chunk_id": str, "source_id": str} — see Message.citations.
     citations: list[dict]
     # The grade this reply reported, for the turns that marked an answer (S15). Null on every

@@ -50,7 +50,12 @@ async def _load_own_messages(session: AsyncSession, learner_id: uuid.UUID) -> li
             await session.scalars(
                 select(Message)
                 .join(Conversation, Message.conversation_id == Conversation.id)
-                .where(Conversation.learner_id == learner_id, Message.role == "user")
+                .where(
+                    Conversation.learner_id == learner_id,
+                    Message.role == "user",
+                    Message.admin_actor_id.is_(None),
+                    Message.admin_action_id.is_(None),
+                )
                 .order_by(Message.created_at)
             )
         ).all()

@@ -164,7 +164,13 @@ async def _kc(session: AsyncSession) -> tuple[Subject, KC]:
 
 
 async def _item(session: AsyncSession, kc: KC, stem: str, level: float) -> Item:
-    item = Item(item_type=ItemType.MCQ, stem=stem, difficulty=level, answer_key={"correct": 0})
+    item = Item(
+        visibility="curated",
+        item_type=ItemType.MCQ,
+        stem=stem,
+        difficulty=level,
+        answer_key={"correct": 0},
+    )
     session.add(item)
     await session.flush()
     session.add(ItemKC(item_id=item.id, kc_id=kc.id, weight=1.0))
@@ -235,7 +241,10 @@ async def test_without_a_target_selection_is_exactly_what_s14_left(
     learner = await _learner(db_session)
     _, kc = await _kc(db_session)
     first = await _item(db_session, kc, "first", 2.5)
-    await _item(db_session, kc, "second", 0.0)
+    second = await _item(db_session, kc, "second", 0.0)
+    first.created_at = T0.replace(tzinfo=None)
+    second.created_at = T0.replace(tzinfo=None) + timedelta(seconds=1)
+    await db_session.flush()
 
     # No target: creation order decides, so the badly pitched item still comes first.
     untargeted = await assessment_svc.find_item_for_kc(db_session, kc.id, learner_id=learner.id)

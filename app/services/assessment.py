@@ -19,14 +19,20 @@ import uuid
 from collections.abc import Sequence
 
 import structlog
-from sqlalchemy import String, cast, func, or_, select
+from sqlalchemy import String, and_, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.learning import mastery, rubric_grading
 from app.learning.diagnosis import Diagnosis
-from app.learning.grading import GradeResult, NotAutoGradable, auto_grade, grade_flashcard
+from app.learning.grading import (
+    GradeResult,
+    InvalidResponse,
+    NotAutoGradable,
+    auto_grade,
+    grade_flashcard,
+)
 from app.learning.item_presentation import public_presentation
 from app.learning.mastery import Observation
 from app.learning.rubric_grading import GRADING_ROLE
@@ -35,12 +41,14 @@ from app.models.assessment import (
     AUTO_GRADABLE,
     RUBRIC_GRADABLE,
     SELF_GRADABLE,
+    AssessmentVisibility,
     Item,
     ItemKC,
     ItemOrigin,
     ItemType,
+    Rubric,
 )
-from app.models.knowledge import KC
+from app.models.knowledge import KC, Subject, Topic
 from app.models.learning import LearnerKCState, LearningEvent
 from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRead, ItemRead
 from app.services import knowledge as knowledge_svc
@@ -51,16 +59,29 @@ log = structlog.get_logger(__name__)
 
 
 async def create_item(
-    session: AsyncSession, data: ItemCreate, *, author_learner_id: uuid.UUID | None = None
+    session: AsyncSession,
+    data: ItemCreate,
+    *,
+    author_learner_id: uuid.UUID | None = None,
+    owner_learner_id: uuid.UUID | None = None,
 ) -> Item:
-    """Persist one item. With an ``author_learner_id`` it is that learner's alone (S33).
+    """Persist a private item; a missing owner quarantines it, never publishes it.
 
-    ``None`` means the platform's own generators wrote it, which is the only provenance that
-    puts an item in the shared bank. There is deliberately no way to promote a learner's item
-    into that bank: nothing in the system can yet establish who is entitled to author an
-    assessment other people are graded against (S25, and real auth in Phase 10).
+    Generated provenance and author identity are independent of sharing authority.
+    Publication requires a separate reviewed platform path, absent from this API.
     """
+    owner = owner_learner_id or author_learner_id
+    if owner is not None:
+        if not await _kcs_authorized(session, [k.kc_id for k in data.kcs], owner):
+            raise InvalidResponse("unknown or inaccessible kc_id")
+        if (
+            data.rubric_id is not None
+            and await get_rubric_for(session, data.rubric_id, learner_id=owner) is None
+        ):
+            raise InvalidResponse("unknown or inaccessible rubric_id")
     item = Item(
+        owner_learner_id=owner,
+        visibility=AssessmentVisibility.PRIVATE,
         item_type=data.item_type,
         stem=data.stem,
         answer_key=data.answer_key,
@@ -80,7 +101,38 @@ def _assessable_by(learner_id: uuid.UUID):
 
     One predicate, used by every read path, so a new one cannot forget it.
     """
-    return or_(Item.origin == ItemOrigin.GENERATED, Item.author_learner_id == learner_id)
+    unauthorized = (
+        select(ItemKC.id)
+        .join(KC, KC.id == ItemKC.kc_id)
+        .join(Topic, Topic.id == KC.topic_id)
+        .join(Subject, Subject.id == Topic.subject_id)
+        .where(
+            ItemKC.item_id == Item.id,
+            Subject.owner_learner_id.is_not(None),
+            Subject.owner_learner_id != learner_id,
+        )
+        .exists()
+    )
+    rubric_allowed = (
+        select(Rubric.id)
+        .join(KC, KC.id == Rubric.kc_id)
+        .join(Topic, Topic.id == KC.topic_id)
+        .join(Subject, Subject.id == Topic.subject_id)
+        .where(
+            Rubric.id == Item.rubric_id,
+            or_(
+                Rubric.visibility == AssessmentVisibility.CURATED,
+                Rubric.owner_learner_id == learner_id,
+            ),
+            or_(Subject.owner_learner_id.is_(None), Subject.owner_learner_id == learner_id),
+        )
+        .exists()
+    )
+    return and_(
+        or_(Item.visibility == AssessmentVisibility.CURATED, Item.owner_learner_id == learner_id),
+        ~unauthorized,
+        or_(Item.rubric_id.is_(None), rubric_allowed),
+    )
 
 
 async def get_item(session: AsyncSession, item_id: uuid.UUID) -> Item | None:
@@ -94,17 +146,99 @@ async def get_item(session: AsyncSession, item_id: uuid.UUID) -> Item | None:
 
 
 async def get_item_for(
-    session: AsyncSession, item_id: uuid.UUID, *, learner_id: uuid.UUID
+    session: AsyncSession,
+    item_id: uuid.UUID,
+    *,
+    learner_id: uuid.UUID,
+    subject_id: uuid.UUID | None = None,
 ) -> Item | None:
     """One item, if this learner may see it — otherwise ``None``, indistinguishable from
     absent. Another learner's private item should not be readable *or* answerable: the stem
     and, for MCQs, the choices are exposed (S54), and answering it would write a mastery
     observation from a question nobody vouched for."""
-    return await session.scalar(
+    if subject_id is not None and not await _item_in_subject(session, item_id, subject_id):
+        return None
+    item = await session.scalar(
         select(Item)
         .where(Item.id == item_id, _assessable_by(learner_id))
         .options(selectinload(Item.kc_links), selectinload(Item.rubric))
     )
+
+    if (
+        item is not None
+        and item.rubric_id is not None
+        and await get_rubric_for(session, item.rubric_id, learner_id=learner_id) is None
+    ):
+        return None
+    return item
+
+
+async def _kcs_authorized(
+    session: AsyncSession, kc_ids: list[uuid.UUID], learner_id: uuid.UUID
+) -> bool:
+    allowed = (
+        await session.scalars(
+            select(KC.id)
+            .join(Topic)
+            .join(Subject)
+            .where(
+                KC.id.in_(kc_ids),
+                or_(Subject.owner_learner_id.is_(None), Subject.owner_learner_id == learner_id),
+            )
+        )
+    ).all()
+    return set(allowed) == set(kc_ids)
+
+
+async def ensure_kcs_authorized(
+    session: AsyncSession, kc_ids: list[uuid.UUID], learner_id: uuid.UUID | None
+) -> None:
+    """Reject foreign curriculum before its content is used in a model prompt."""
+    if learner_id is not None:
+        allowed = await _kcs_authorized(session, kc_ids, learner_id)
+    else:
+        ids = (
+            await session.scalars(
+                select(KC.id)
+                .join(Topic)
+                .join(Subject)
+                .where(KC.id.in_(kc_ids), Subject.owner_learner_id.is_(None))
+            )
+        ).all()
+        allowed = set(ids) == set(kc_ids)
+    if not allowed:
+        raise InvalidResponse("unknown or inaccessible kc_id")
+
+
+async def _item_in_subject(
+    session: AsyncSession, item_id: uuid.UUID, subject_id: uuid.UUID
+) -> bool:
+    subjects = (
+        await session.scalars(
+            select(Topic.subject_id)
+            .join(KC, KC.topic_id == Topic.id)
+            .join(ItemKC, ItemKC.kc_id == KC.id)
+            .where(ItemKC.item_id == item_id)
+        )
+    ).all()
+    return bool(subjects) and set(subjects) == {subject_id}
+
+
+async def get_rubric_for(
+    session: AsyncSession, rubric_id: uuid.UUID, *, learner_id: uuid.UUID
+) -> Rubric | None:
+    rubric = await session.scalar(
+        select(Rubric).where(
+            Rubric.id == rubric_id,
+            or_(
+                Rubric.visibility == AssessmentVisibility.CURATED,
+                Rubric.owner_learner_id == learner_id,
+            ),
+        )
+    )
+    if rubric is None or not await _kcs_authorized(session, [rubric.kc_id], learner_id):
+        return None
+    return rubric
 
 
 async def find_item_for_kc(
@@ -223,6 +357,8 @@ async def answer_item(
     earlier attempts at this same item in this sitting, counted here rather than trusted from
     the request. See :mod:`app.learning.assistance`.
     """
+    if await get_item_for(session, item.id, learner_id=learner_id) is None:
+        raise InvalidResponse("item not found")
     kc_weights = {link.kc_id: link.weight for link in item.kc_links}
     if submission.attempt_id is not None:
         replayed = await _recorded_grade(session, learner_id, submission.attempt_id)
@@ -231,6 +367,18 @@ async def answer_item(
             # if that request's plan revision failed, this one brings the plan up to date.
             await _revise_plans(session, learner_id, kc_weights)
             return replayed, await _states_for(session, learner_id, kc_weights)
+        if (
+            await session.scalar(
+                select(LearningEvent.id)
+                .where(
+                    LearningEvent.learner_id == learner_id,
+                    LearningEvent.attempt_id == submission.attempt_id,
+                )
+                .limit(1)
+            )
+            is not None
+        ):
+            raise InvalidResponse("attempt id belongs to another actor; submit a new attempt id")
     result = await _grade(session, learner_id, item, submission, llm=llm)
     observation = Observation(
         learner_id=learner_id,
@@ -268,6 +416,21 @@ async def answer_item(
             else None
         )
         if replayed is None:
+            if (
+                submission.attempt_id is not None
+                and await session.scalar(
+                    select(LearningEvent.id)
+                    .where(
+                        LearningEvent.learner_id == learner_id,
+                        LearningEvent.attempt_id == submission.attempt_id,
+                    )
+                    .limit(1)
+                )
+                is not None
+            ):
+                raise InvalidResponse(
+                    "attempt id belongs to another actor; submit a new attempt id"
+                ) from None
             raise  # not the idempotency index — a real constraint violation
         result = replayed
     # Mastery is ground truth and must land regardless; the plan is a derived projection, so
@@ -355,6 +518,8 @@ async def _recorded_grade(
             select(LearningEvent).where(
                 LearningEvent.learner_id == learner_id,
                 LearningEvent.attempt_id == attempt_id,
+                LearningEvent.event_type
+                == ("admin_observation" if session.info.get("admin_actor_id") else "observation"),
             )
         )
     ).all()

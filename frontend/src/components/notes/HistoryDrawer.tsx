@@ -15,13 +15,14 @@ const CAUSE_LABELS: Record<NoteRevisionRead["cause"], string> = {
 
 interface Props {
   topicId: string;
+  expectedRevisionOrdinal: number | null;
   open: boolean;
   onClose: () => void;
 }
 
-/** Slide-over listing every revision; viewing shows the mechanical source, restore is a new
+/** Slide-over listing every revision; viewing shows the exact authored snapshot and generated surroundings, restore is a new
  * revision (history is never rewritten server-side). */
-export function HistoryDrawer({ topicId, open, onClose }: Props) {
+export function HistoryDrawer({ topicId, expectedRevisionOrdinal, open, onClose }: Props) {
   const [viewing, setViewing] = useState<number | null>(null);
   const { data: revisions } = useRevisions(topicId, open);
   const { data: source } = useRevisionSource(topicId, viewing);
@@ -39,6 +40,11 @@ export function HistoryDrawer({ topicId, open, onClose }: Props) {
           <X size={16} />
         </button>
       </div>
+      {restore.isError && (
+        <p role="alert" className="text-error">
+          {restore.error.message}
+        </p>
+      )}
       <ul className="flex flex-col gap-2">
         {revisions
           ?.slice()
@@ -67,7 +73,10 @@ export function HistoryDrawer({ topicId, open, onClose }: Props) {
                           `Restore revision #${rev.ordinal}? Your current note stays in history.`,
                         )
                       ) {
-                        restore.mutate(rev.ordinal, { onSuccess: onClose });
+                        restore.mutate(
+                          { ordinal: rev.ordinal, expectedRevisionOrdinal },
+                          { onSuccess: onClose },
+                        );
                       }
                     }}
                   >

@@ -44,7 +44,11 @@ def workflow_config(thread_id: str) -> RunnableConfig:
 
 
 def build_workflow_graph(
-    llm: LLMClient, session: AsyncSession, *, learner_id: uuid.UUID
+    llm: LLMClient,
+    session: AsyncSession,
+    *,
+    learner_id: uuid.UUID,
+    subject_id: uuid.UUID | None = None,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
     async def _stream(messages: list[ChatMessage], system: str, max_tokens: int) -> dict[str, Any]:
         """Shared body for ``present``/``respond`` — one SMART call, streamed."""
@@ -73,7 +77,9 @@ def build_workflow_graph(
         return {"messages": messages, "response_text": response_text}
 
     async def grade(state: WorkflowState) -> dict[str, Any]:
-        item = await assessment_svc.get_item(session, uuid.UUID(state["item_id"]))
+        item = await assessment_svc.get_item_for(
+            session, uuid.UUID(state["item_id"]), learner_id=learner_id, subject_id=subject_id
+        )
         if item is None:
             return {"score": 0.0, "correct": False, "rounds": state["rounds"] + 1}
         kc_ids = [link.kc_id for link in item.kc_links]

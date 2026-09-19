@@ -5,6 +5,28 @@
 > what order*. Built for the working rhythm: **plan → small change → check in → repeat.** Each phase
 > is independently shippable and verifiable. Check off items as they land.
 
+> **Active v0 delivery sequence, 2026-09-16:** use [V0_DECISIONS.md](./V0_DECISIONS.md#delivery-sequence)
+> for the remaining work across the historical phases below. The target is independent invited-adult
+> use after founder testing. Authentication and several hardening slices already exist; the
+> Phase 10/11 labels below are historical and do not mean that every listed capability is absent.
+> Detailed tracker updates and current code establish what has shipped. The new decisions are not
+> complete merely because they are approved.
+
+> **v0 web restriction implemented, 2026-09-18:** URL import/retry endpoints reject requests,
+> legacy queued URL jobs terminate without web access, and tutor tools only search stored material.
+> File uploads and existing stored sources remain usable. The historical web-ingestion and live-tool
+> milestones below describe earlier implementation, now disabled for v0. Focused offline service/API
+> and frontend checks cover this restriction; browser network capture and real Redis delivery remain
+> unmeasured.
+
+> **Audited alpha sudo implemented, 2026-09-18:** authenticated administrators can make short-lived,
+> reason-required broad account visits without learner opt-in, behind the default-off
+> `GURU_IMPERSONATION_ENABLED` switch. Durable action intent/outcomes, live revocation checks,
+> distinct admin practice/placement/detour events, and attributed chat history preserve who acted
+> without treating admin activity as learner evidence. Profile/memory inference excludes attributed
+> chat. Historical transcripts are not backfilled. This completes a bounded alpha-admin slice;
+> the remaining v0 workstreams and release gates are still open.
+
 **Working agreement**
 
 - Keep changes small and reviewable; check in with the maintainer between slices.

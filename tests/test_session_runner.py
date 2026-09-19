@@ -78,7 +78,7 @@ async def test_next_item_reuses_an_existing_bank_item(db_session: AsyncSession) 
         db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
     )
     existing, _ = await item_generation.generate_mcq_item(
-        db_session, fake_llm_client(MCQ_REPLY), root
+        db_session, fake_llm_client(MCQ_REPLY), root, owner_learner_id=learner.id
     )
     assert existing is not None
 
@@ -197,7 +197,7 @@ async def test_next_item_preferred_type_generation_wins_over_any_type_reuse(
         db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
     )
     existing_mcq, _ = await item_generation.generate_mcq_item(
-        db_session, fake_llm_client(MCQ_REPLY), root
+        db_session, fake_llm_client(MCQ_REPLY), root, owner_learner_id=learner.id
     )
     assert existing_mcq is not None
 
@@ -231,7 +231,7 @@ async def test_next_item_preferred_type_generation_failure_falls_back_to_any_typ
         db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
     )
     existing_mcq, _ = await item_generation.generate_mcq_item(
-        db_session, fake_llm_client(MCQ_REPLY), root
+        db_session, fake_llm_client(MCQ_REPLY), root, owner_learner_id=learner.id
     )
     assert existing_mcq is not None
 
@@ -260,14 +260,14 @@ async def test_next_item_none_on_malformed_generation_reply(db_session: AsyncSes
 
 
 async def test_short_answer_item_for_kc_reuses_a_seeded_bank_item(db_session: AsyncSession) -> None:
-    _learner, _subject, root, _dependent = await _graph(db_session)
+    learner, _subject, root, _dependent = await _graph(db_session)
     existing, _ = await item_generation.generate_short_item(
-        db_session, fake_llm_client(SHORT_REPLY), root
+        db_session, fake_llm_client(SHORT_REPLY), root, owner_learner_id=learner.id
     )
     assert existing is not None
 
     item = await svc.short_answer_item_for_kc(
-        db_session, fake_llm_client(), learner_id=uuid.uuid4(), kc=root
+        db_session, fake_llm_client(), learner_id=learner.id, kc=root
     )
     assert item is not None
     assert item.id == existing.id
@@ -300,7 +300,7 @@ async def test_short_answer_item_for_kc_no_mcq_fallback_on_generation_failure(
     bank item — the workflow's grading only makes sense against a SHORT item."""
     learner, _subject, root, _dependent = await _graph(db_session)
     existing_mcq, _ = await item_generation.generate_mcq_item(
-        db_session, fake_llm_client(MCQ_REPLY), root
+        db_session, fake_llm_client(MCQ_REPLY), root, owner_learner_id=learner.id
     )
     assert existing_mcq is not None
 
@@ -411,7 +411,7 @@ async def test_a_component_with_one_item_does_not_repeat_it(db_session: AsyncSes
     still moved the estimate up."""
     learner, _subject, root, _dependent = await _graph(db_session)
     seen, _ = await item_generation.generate_short_item(
-        db_session, fake_llm_client(SHORT_REPLY), root
+        db_session, fake_llm_client(SHORT_REPLY), root, owner_learner_id=learner.id
     )
     assert seen is not None
     await _fail_review(db_session, learner, root, 1.0)
@@ -437,7 +437,7 @@ async def test_an_unseen_bank_item_is_still_reused_for_free(db_session: AsyncSes
     free win and paying to invent another would be waste."""
     learner, _subject, root, _dependent = await _graph(db_session)
     unseen, _ = await item_generation.generate_short_item(
-        db_session, fake_llm_client(SHORT_REPLY), root
+        db_session, fake_llm_client(SHORT_REPLY), root, owner_learner_id=learner.id
     )
     assert unseen is not None
     calls_before = len((await db_session.scalars(select(LLMCall))).all())
@@ -454,7 +454,7 @@ async def test_a_repeated_question_beats_no_question_at_all(db_session: AsyncSes
     item must not end the session. Worse evidence is still evidence; nothing is not."""
     learner, _subject, root, _dependent = await _graph(db_session)
     seen, _ = await item_generation.generate_short_item(
-        db_session, fake_llm_client(SHORT_REPLY), root
+        db_session, fake_llm_client(SHORT_REPLY), root, owner_learner_id=learner.id
     )
     assert seen is not None
     db_session.add(

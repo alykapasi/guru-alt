@@ -31,7 +31,7 @@ from app.models.source import Source, SourceKind, SourceStatus
 from app.rag import pipeline
 from app.rag import simhash as simhash_mod
 from app.rag.demux import MediaDemuxer
-from app.rag.fetch import Fetcher, FetchError, FetchTransportError, default_fetch
+from app.rag.fetch import FetchError, FetchTransportError
 from app.rag.transcription import Transcriber
 from app.services import knowledge
 from app.storage import DEFAULT_CONTENT_TYPE, BlobStore
@@ -39,6 +39,20 @@ from app.storage import DEFAULT_CONTENT_TYPE, BlobStore
 logger = logging.getLogger(__name__)
 
 _HASH_CHUNK = 1024 * 1024  # 1 MiB — stream large files past the hasher without buffering them
+
+WEB_DISABLED_REASON = "URL ingestion and web access are disabled in Guru v0. Upload a file instead."
+
+
+class WebIngestionDisabled(pipeline.IngestionError):
+    """A terminal product restriction, including for jobs queued before v0."""
+
+    def __init__(self) -> None:
+        super().__init__(WEB_DISABLED_REASON)
+
+
+def _require_file_source(kind: str) -> None:
+    if kind == SourceKind.URL:
+        raise WebIngestionDisabled()
 
 
 def digest_of(data: bytes | Path) -> str:
@@ -77,6 +91,7 @@ async def create_source(
     ``content_sha256`` lets a caller that has already digested the bytes — to check for a
     duplicate before getting here — avoid reading a large upload off disk a second time.
     """
+    _require_file_source(kind)
     subject_id, topic_id = await knowledge.resolve_source_scope(
         session, subject_id=subject_id, topic_id=topic_id
     )
@@ -140,6 +155,7 @@ async def find_duplicate(
         select(Source)
         .where(
             Source.learner_id == learner_id,
+            Source.kind == SourceKind.FILE,
             Source.content_sha256 == content_sha256,
             Source.subject_id.is_(subject_id)
             if subject_id is None
@@ -175,6 +191,7 @@ async def create_or_reuse_source(
     of a claim. Re-uploading the file is the obvious way to retry it, and refusing to would
     leave a learner re-sending a document that silently does nothing.
     """
+    _require_file_source(kind)
     subject_id, topic_id = await knowledge.resolve_source_scope(
         session, subject_id=subject_id, topic_id=topic_id
     )
@@ -265,23 +282,8 @@ async def create_url_source(
     subject_id: uuid.UUID | None = None,
     topic_id: uuid.UUID | None = None,
 ) -> Source:
-    """Record a pending URL source. The fetch happens in the ingestion job."""
-    subject_id, topic_id = await knowledge.resolve_source_scope(
-        session, subject_id=subject_id, topic_id=topic_id
-    )
-    source = Source(
-        learner_id=learner_id,
-        kind=SourceKind.URL,
-        origin=url,
-        content_type=None,
-        status=SourceStatus.PENDING,
-        subject_id=subject_id,
-        topic_id=topic_id,
-        meta={"url": url},
-    )
-    session.add(source)
-    await session.commit()
-    return source
+    """Reject legacy callers without persisting a source or contacting the URL."""
+    raise WebIngestionDisabled()
 
 
 def lease_seconds(settings: Settings) -> int:
@@ -464,6 +466,7 @@ async def reset_for_reingest(session: AsyncSession, source_id: uuid.UUID) -> Sou
     source = await session.get(Source, source_id, populate_existing=True)
     if source is None:
         return None
+    _require_file_source(source.kind)
     if source.status == SourceStatus.PROCESSING and source.lease_expires_at is not None:
         live = await session.scalar(select(func.now() < source.lease_expires_at))
         if live:
@@ -484,7 +487,6 @@ async def ingest_source(
     *,
     transcriber: Transcriber | None = None,
     demuxer: MediaDemuxer | None = None,
-    fetch: Fetcher = default_fetch,
     settings: Settings | None = None,
 ) -> Source | None:
     """Claim ``source_id`` and run the pipeline, recording DONE or FAILED.
@@ -492,8 +494,8 @@ async def ingest_source(
     Returns ``None`` without doing anything if the source is not claimable (see
     ``claim_source``) — the caller must treat that as success, not as work to retry.
 
-    For an un-fetched URL source, fetch the page (robots-aware) into the blob store first;
-    a re-ingest reuses the stored bytes rather than re-hitting the URL. ``transcriber`` (ASR)
+    Legacy URL sources fail terminally without fetching or processing their stored blob.
+    File re-ingestion reuses the uploaded bytes. ``transcriber`` (ASR)
     and ``demuxer`` (video → audio track + keyframes) are used by the media path — built by the
     worker; None when no audio/video is expected.
 
@@ -508,9 +510,10 @@ async def ingest_source(
         return None
 
     try:
+        # Existing URL rows can still arrive through old queue messages or reconciliation.
+        # Even a previously downloaded blob must not be ingested as a URL in v0.
+        _require_file_source(source.kind)
         async with asyncio.timeout(settings.ingest_job_timeout_seconds):
-            if source.kind == SourceKind.URL and not source.blob_key:
-                await _fetch_into_blob(session, blobstore, source, fetch)
             count = await pipeline.run(
                 session,
                 blobstore,
@@ -530,20 +533,6 @@ async def ingest_source(
     source.meta = {**source.meta, "chunk_count": count}
     await session.commit()
     return source
-
-
-async def _fetch_into_blob(
-    session: AsyncSession, blobstore: BlobStore, source: Source, fetch: Fetcher
-) -> None:
-    """Fetch a URL source's page into the blob store, recording its content type."""
-    data, content_type = await fetch(source.origin)
-    digest = hashlib.sha256(data).hexdigest()
-    key = blob_key_for(digest)
-    await blobstore.put(key, data, content_type=content_type)
-    source.blob_key = key
-    source.content_sha256 = digest
-    source.content_type = content_type
-    await session.flush()
 
 
 def blob_key_for(content_sha256: str) -> str:

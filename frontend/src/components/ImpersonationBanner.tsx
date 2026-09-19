@@ -10,8 +10,7 @@ import { endVisit, useVisit } from "../api/impersonation";
  * stranger's account believing it is their own. So this is unmissable rather than tasteful —
  * it sits above the nav on every page of the app, names the account, and carries the way out.
  *
- * It says "read only" because that is a fact the viewer should be able to rely on rather than
- * discover when a button 403s. The API enforces it either way.
+ * It names administrator access and recorded actions so the actual actor stays visible.
  */
 export function ImpersonationBanner() {
   const visit = useVisit();
@@ -44,8 +43,8 @@ export function ImpersonationBanner() {
     >
       <Eye size={16} aria-hidden />
       <span>
-        Viewing <strong>{visit.learnerHandle}</strong>&rsquo;s account. Read only — nothing you do
-        here is recorded as theirs.
+        Admin access to <strong>{visit.learnerHandle}</strong>&rsquo;s account. Actions are recorded
+        against your administrator identity.
       </span>
       <button type="button" className="btn btn-xs" onClick={stop}>
         Stop viewing

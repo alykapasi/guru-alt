@@ -39,25 +39,28 @@ SELF_GRADABLE: frozenset[ItemType] = frozenset({ItemType.FLASHCARD})
 
 
 class ItemOrigin(StrEnum):
-    """Who authored an item — which decides who may be assessed with it (S33).
+    """Authorship provenance; visibility separately defines sharing authority."""
 
-    ``items`` is a global table, so any authenticated learner writing one used to add a
-    question *and its answer key* to a bank other learners are then examined against. Being
-    signed in is not authority to author someone else's assessment.
+    GENERATED = "generated"
+    LEARNER = "learner"
 
-    Stored as its own column rather than inferred from ``author_learner_id is None``: the FK
-    is ``ON DELETE SET NULL``, so deleting a learner would otherwise promote every private
-    item they wrote into the shared bank.
-    """
 
-    GENERATED = "generated"  # produced by the platform's own generators; shared
-    LEARNER = "learner"  # authored through POST /items; private to its author
+class AssessmentVisibility(StrEnum):
+    """Sharing authority is independent of authorship or generation provenance."""
+
+    PRIVATE = "private"
+    CURATED = "curated"
 
 
 class Rubric(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """Per-KC grading criteria consumed by LLM rubric grading (§7.6)."""
 
     __tablename__ = "rubrics"
+
+    visibility: Mapped[str] = mapped_column(default=AssessmentVisibility.PRIVATE, index=True)
+    owner_learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="CASCADE"), default=None, index=True
+    )
 
     kc_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("kcs.id", ondelete="CASCADE"), index=True)
     name: Mapped[str | None] = mapped_column(default=None)
@@ -69,6 +72,11 @@ class Item(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     __tablename__ = "items"
 
+    visibility: Mapped[str] = mapped_column(default=AssessmentVisibility.PRIVATE, index=True)
+    owner_learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="CASCADE"), default=None, index=True
+    )
+
     item_type: Mapped[str] = mapped_column(index=True)
     stem: Mapped[str]
     answer_key: Mapped[dict | None] = mapped_column(JSONB, default=None)
@@ -76,9 +84,7 @@ class Item(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     rubric_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("rubrics.id", ondelete="SET NULL"), default=None
     )
-    # Authority to assess with this item — see ItemOrigin. A learner-authored item is theirs
-    # alone; nothing here promotes one to the shared bank, because nothing in the system can
-    # yet establish who is entitled to (S25/Phase 10 auth own that).
+    # Provenance never grants publication authority.
     origin: Mapped[str] = mapped_column(index=True, default=ItemOrigin.GENERATED)
     author_learner_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("learners.id", ondelete="SET NULL"), index=True, default=None

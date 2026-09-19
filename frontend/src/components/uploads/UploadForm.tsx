@@ -1,18 +1,16 @@
 import { useRef, useState } from "react";
 import type { ChangeEvent } from "react";
-import { FileUp, Link2 } from "lucide-react";
-import { useLinkSource, useUploadSource } from "../../api/hooks";
+import { FileUp } from "lucide-react";
+import { useUploadSource } from "../../api/hooks";
 import type { components } from "../../api/schema";
 
 type Subject = components["schemas"]["SubjectRead"];
 
-/** Upload a file or link a web page for ingestion, optionally tagged to a subject at
+/** Upload a file for ingestion, optionally tagged to a subject at
  * upload time (untagged = general library material, per Source.subject_id being nullable). */
 export function UploadForm({ subjects }: { subjects: Subject[] }) {
   const upload = useUploadSource();
-  const link = useLinkSource();
   const [subjectId, setSubjectId] = useState("");
-  const [url, setUrl] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
@@ -20,15 +18,6 @@ export function UploadForm({ subjects }: { subjects: Subject[] }) {
     e.target.value = "";
     if (!file) return;
     upload.mutate({ file, subjectId: subjectId || undefined });
-  }
-
-  function submitLink() {
-    const trimmed = url.trim();
-    if (!trimmed) return;
-    link.mutate(
-      { url: trimmed, subjectId: subjectId || undefined },
-      { onSuccess: () => setUrl("") },
-    );
   }
 
   return (
@@ -61,32 +50,9 @@ export function UploadForm({ subjects }: { subjects: Subject[] }) {
           Upload a file
         </button>
         <input ref={fileInputRef} type="file" onChange={handleFileChange} className="hidden" />
-        <div className="flex items-center gap-2">
-          <input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                submitLink();
-              }
-            }}
-            placeholder="https://…"
-            className="input input-sm"
-          />
-          <button
-            onClick={submitLink}
-            disabled={!url.trim() || link.isPending}
-            className="btn btn-outline btn-sm"
-          >
-            <Link2 size={14} />
-            Add link
-          </button>
-        </div>
       </div>
       {upload.isPending && <p className="text-caption text-base-content/50">Uploading…</p>}
       {upload.isError && <p className="text-caption text-error">Upload failed — try again.</p>}
-      {link.isError && <p className="text-caption text-error">Couldn't add that link.</p>}
     </div>
   );
 }

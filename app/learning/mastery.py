@@ -239,6 +239,53 @@ async def record_observation(
     ``learning_event`` is written per KC — the replayable, KC-tagged substrate the learner
     profile (§7.8) and DKT (§7.5) consume later.
     """
+    if session.info.get("admin_actor_id"):
+        states = []
+        attempt_id = obs.attempt_id or uuid.uuid4()
+        for kc_id in obs.kc_weights:
+            state = await session.scalar(
+                select(LearnerKCState).where(
+                    LearnerKCState.learner_id == obs.learner_id, LearnerKCState.kc_id == kc_id
+                )
+            )
+            # Return an unpersisted population default where no learner evidence exists.
+            states.append(
+                state
+                if state is not None
+                else LearnerKCState(
+                    learner_id=obs.learner_id,
+                    kc_id=kc_id,
+                    ability=0.0,
+                    uncertainty=1.0,
+                    last_seen_at=None,
+                    fsrs_card=None,
+                    due_at=None,
+                )
+            )
+            session.add(
+                LearningEvent(
+                    learner_id=obs.learner_id,
+                    kc_id=kc_id,
+                    event_type="admin_observation",
+                    attempt_id=attempt_id,
+                    payload={
+                        "score": (obs.kc_scores or {}).get(kc_id, obs.score),
+                        "item_score": obs.score,
+                        "component_scored": obs.kc_scores is not None,
+                        "correct": obs.correct,
+                        "detail": obs.detail,
+                        "diagnosis": (obs.kc_diagnoses or {}).get(kc_id),
+                        "response": obs.response,
+                        "hints_used": obs.hints_used,
+                        "prior_attempts": obs.prior_attempts,
+                        "item_id": str(obs.item_id) if obs.item_id else None,
+                        "admin_actor_id": session.info["admin_actor_id"],
+                        "admin_action_id": session.info.get("admin_action_id"),
+                    },
+                )
+            )
+        await session.flush()
+        return states
     now = now or datetime.now(UTC)
     total_w = sum(obs.kc_weights.values())
     # Hints and re-asks make this a weaker measurement of unaided ability, so it moves the
@@ -382,6 +429,8 @@ async def seed_prior(
     overwrites real evidence (from an answered item or an earlier seed). Logs a
     ``LearningEvent`` like any other tracer write, for replayability.
     """
+    if session.info.get("admin_actor_id"):
+        return None
     existing = await session.scalar(
         select(LearnerKCState).where(
             LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id == kc_id
@@ -599,8 +648,10 @@ def record_detour(
         LearningEvent(
             learner_id=learner_id,
             kc_id=blocked_kc_id,
-            event_type=DETOUR_EVENT,
+            event_type="admin_detour" if session.info.get("admin_actor_id") else DETOUR_EVENT,
             payload={
+                "admin_actor_id": session.info.get("admin_actor_id"),
+                "admin_action_id": session.info.get("admin_action_id"),
                 "prereq_kc_id": str(prereq_kc_id),
                 "reason": reason,
                 "consecutive_failures": consecutive_failures,

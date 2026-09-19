@@ -62,13 +62,21 @@ async def is_awaiting_reply(
     subsequent turn, and the caller sees "not paused": the turn goes to ordinary chat, which is
     the same degradation the gate already uses for state that is genuinely gone.
     """
-    graph = build_workflow_graph(llm, session, learner_id=learner_id)
+    conversation = await session.get(Conversation, conversation_id)
+    if conversation is None or conversation.learner_id != learner_id:
+        return False
+    graph = build_workflow_graph(
+        llm, session, learner_id=learner_id, subject_id=conversation.subject_id
+    )
     config = workflow_config(str(conversation_id))
     snapshot = await graph.aget_state(config)
     if not snapshot.next:
         return False
     if await checkpoints.paused_practice_is_current(
-        session, learner_id=learner_id, item_id=snapshot.values.get("item_id")
+        session,
+        learner_id=learner_id,
+        item_id=snapshot.values.get("item_id"),
+        subject_id=conversation.subject_id,
     ):
         return True
     log.info("workflow.paused_state_stale", conversation_id=str(conversation_id))
@@ -110,7 +118,9 @@ async def run_workflow_turn(
         await add_message(session, conversation.id, ChatRole.USER.value, user_content)
         await session.commit()
 
-    graph = build_workflow_graph(llm, session, learner_id=learner_id)
+    graph = build_workflow_graph(
+        llm, session, learner_id=learner_id, subject_id=conversation.subject_id
+    )
     config = workflow_config(str(conversation.id))
     run_input: WorkflowState | Command
     # Retrieval-grounding only happens on the fresh (not resumed) start, when `present` builds
@@ -191,7 +201,12 @@ async def run_workflow_turn(
         return
 
     snapshot = await graph.aget_state(config)
-    item = await assessment_svc.get_item(session, uuid.UUID(snapshot.values["item_id"]))
+    item = await assessment_svc.get_item_for(
+        session,
+        uuid.UUID(snapshot.values["item_id"]),
+        learner_id=learner_id,
+        subject_id=conversation.subject_id,
+    )
     item_read = item_to_read(item) if item is not None else None
 
     # The report for the attempt this turn graded, if it graded one. Absent on the opening

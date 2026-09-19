@@ -176,6 +176,10 @@ class Message(UUIDPrimaryKeyMixin, Base):
     role: Mapped[str] = mapped_column(index=True)  # user | assistant | system
     content: Mapped[str] = mapped_column(Text)
     model: Mapped[str | None] = mapped_column(default=None)  # set on assistant turns
+    # Immutable actor snapshots, deliberately without FKs: account/audit deletion cannot
+    # make an administrator's transcript activity appear to be the learner's own.
+    admin_actor_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
+    admin_action_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     # Each entry: {"marker": int, "chunk_id": str, "source_id": str} — the literal [N] marker
     # as it appears in `content`, mapped to the chunk it cites. Mirrors ContentBlock.citations'
     # shape (thin references, not the chunk text inline — see app/services/turn_common.py).

@@ -138,22 +138,6 @@ export function useUploadSource() {
   });
 }
 
-export function useLinkSource() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ url, subjectId }: { url: string; subjectId?: string }) => {
-      const { data, error } = await api.POST("/api/v1/sources/link", {
-        body: { url, subject_id: subjectId },
-      });
-      if (error) throw error;
-      return data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["sources"] });
-    },
-  });
-}
-
 /** For the citation pane — the cited chunk's source (filename/URL), alongside useChunk. */
 export function useSource(sourceId: string | undefined) {
   return useQuery({

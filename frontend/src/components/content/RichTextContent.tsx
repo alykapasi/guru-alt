@@ -88,6 +88,28 @@ export default function RichTextContent({
         );
       },
       // Model output and uploaded material can both carry links we did not write.
+      img: ({ node, src, alt, ...props }) => {
+        void node;
+        // External content is disabled in v0. An image request is still web access,
+        // even when it originates in rendered model output rather than a tutor tool.
+        let local = false;
+        if (
+          typeof src === "string" &&
+          src &&
+          (!/^[a-z][a-z0-9+.-]*:/i.test(src) || /^https?:\/\//i.test(src))
+        ) {
+          try {
+            const url = new URL(src, window.location.href);
+            local = url.origin === window.location.origin && /^https?:$/.test(url.protocol);
+          } catch {
+            // Invalid URLs also stay inert.
+          }
+        }
+        if (!local) {
+          return <span>{alt || "External image"}</span>;
+        }
+        return <img {...props} src={src} alt={alt} />;
+      },
       a: ({ node, ...props }) => {
         void node;
         return (

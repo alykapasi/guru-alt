@@ -42,11 +42,15 @@ async def add_message(
     citations: list[dict] | None = None,
     check_result: CheckResultRead | None = None,
 ) -> Message:
+    actor = session.info.get("admin_actor_id")
+    action = session.info.get("admin_action_id")
     message = Message(
         conversation_id=conversation_id,
         role=role,
         content=content,
         model=model,
+        admin_actor_id=uuid.UUID(str(actor)) if actor is not None else None,
+        admin_action_id=uuid.UUID(str(action)) if action is not None else None,
         citations=citations or [],
         # Dumped here rather than by each caller, so the two flows cannot store the same
         # report in two shapes.

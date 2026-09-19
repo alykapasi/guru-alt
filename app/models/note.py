@@ -1,10 +1,11 @@
 """Notes: the durable, per-learner learning artifact (MASTERPLAN §4.9, Phase 8).
 
-``Note.substrate`` is the meta-wiki: a format-neutral JSONB list of KC-tagged *atoms*
-(``{"id", "kind": concept|example|callout|learner, "kc_ids", "md", "provenance"}``) — the
-source of truth distillation and edit-absorption update. Rendered notes are cached
-projections of it (``NoteRender``), regenerated freely per format. Distinct from
-``ContentBlock`` (shared across learners) and ``Memory`` (facts about the learner).
+``Note.learner_authored_md`` is the exact learner-authored Markdown. Generated,
+KC-tagged atoms remain independently in ``substrate`` with their provenance.
+``authored_baseline`` records atom text already incorporated into a learner edit,
+so later additions and conflicting generated rewrites stay surrounding content.
+Every revision snapshots both sources; cached renders are disposable projections.
+Distinct from shared ``ContentBlock`` and facts about the learner in ``Memory``.
 """
 
 import uuid
@@ -40,6 +41,8 @@ class Note(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     topic_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("topics.id", ondelete="CASCADE"), index=True
     )
+    learner_authored_md: Mapped[str | None] = mapped_column(Text, default=None)
+    authored_baseline: Mapped[dict] = mapped_column(JSONB, default=dict)
     substrate: Mapped[list] = mapped_column(JSONB, default=list)
     messages_watermark: Mapped[datetime] = mapped_column(default=WATERMARK_EPOCH)
     events_watermark: Mapped[datetime] = mapped_column(default=WATERMARK_EPOCH)
@@ -50,7 +53,7 @@ class Note(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 
 class NoteRevision(UUIDPrimaryKeyMixin, Base):
-    """Append-only substrate snapshot per change. History is never rewritten."""
+    """Append-only generated and authored snapshot. History is never rewritten."""
 
     __tablename__ = "note_revisions"
     __table_args__ = (UniqueConstraint("note_id", "ordinal"),)
@@ -59,6 +62,8 @@ class NoteRevision(UUIDPrimaryKeyMixin, Base):
         ForeignKey("notes.id", ondelete="CASCADE"), index=True
     )
     ordinal: Mapped[int] = mapped_column()
+    learner_authored_md: Mapped[str | None] = mapped_column(Text, default=None)
+    authored_baseline: Mapped[dict] = mapped_column(JSONB, default=dict)
     substrate: Mapped[list] = mapped_column(JSONB, default=list)
     cause: Mapped[str] = mapped_column()  # distill | learner_edit | restore
     # Exactly what the learner submitted, on a learner_edit revision. Absorb *reinterprets* an
