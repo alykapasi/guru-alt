@@ -67,6 +67,7 @@ async def _learner_and_subject_with_active_step(
             stem="Explain photosynthesis in your own words.",
             kcs=[ItemKCRef(kc_id=kc.id)],
         ),
+        owner_learner_id=learner.id,
     )
     await lesson_plan_svc.generate_lesson_plan(
         session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None

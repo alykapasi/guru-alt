@@ -9,7 +9,7 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.tools import Tool, build_tools
+from app.agent.tools import CitationAccumulator, Tool, _fetch_webpage_tool, build_tools
 from app.agent.untrusted import untrusted_body
 from app.core.config import get_settings
 from app.llm import ModelRole
@@ -117,7 +117,7 @@ async def test_search_materials_no_hits_is_not_an_error(db_session: AsyncSession
     assert "No relevant passages" in result.content
 
 
-# --- fetch_webpage ------------------------------------------------------------------------
+# --- dormant fetch_webpage helper (never registered in v0) ------------------------------------------------------------------------
 
 _HTML = b"""<html><head><title>Cells</title></head><body>
 <nav>Home About Contact</nav>
@@ -153,10 +153,7 @@ def _fetch_webpage(tools: list[Tool]) -> Tool:
 
 
 async def test_fetch_webpage_extracts_readable_text_from_html(db_session: AsyncSession) -> None:
-    learner = await _learner(db_session)
-    tools = build_tools(
-        db_session, fake_llm_client(), learner_id=learner.id, fetch=_fake_html_fetch
-    )
+    tools = [_fetch_webpage_tool(fetch=_fake_html_fetch, retrieved=CitationAccumulator())]
 
     result = await _fetch_webpage(tools).execute({"url": "https://example.com/cell"})
 
@@ -168,10 +165,7 @@ async def test_fetch_webpage_extracts_readable_text_from_html(db_session: AsyncS
 async def test_fetch_webpage_falls_back_to_plain_decode_for_non_html(
     db_session: AsyncSession,
 ) -> None:
-    learner = await _learner(db_session)
-    tools = build_tools(
-        db_session, fake_llm_client(), learner_id=learner.id, fetch=_fake_text_fetch
-    )
+    tools = [_fetch_webpage_tool(fetch=_fake_text_fetch, retrieved=CitationAccumulator())]
 
     result = await _fetch_webpage(tools).execute({"url": "https://example.com/notes.txt"})
 
@@ -182,8 +176,7 @@ async def test_fetch_webpage_falls_back_to_plain_decode_for_non_html(
 async def test_fetch_webpage_unsupported_content_type_is_a_tool_error(
     db_session: AsyncSession,
 ) -> None:
-    learner = await _learner(db_session)
-    tools = build_tools(db_session, fake_llm_client(), learner_id=learner.id, fetch=_fake_pdf_fetch)
+    tools = [_fetch_webpage_tool(fetch=_fake_pdf_fetch, retrieved=CitationAccumulator())]
 
     result = await _fetch_webpage(tools).execute({"url": "https://example.com/doc.pdf"})
     assert result.is_error
@@ -192,10 +185,7 @@ async def test_fetch_webpage_unsupported_content_type_is_a_tool_error(
 async def test_fetch_webpage_missing_url_is_a_tool_error_not_an_exception(
     db_session: AsyncSession,
 ) -> None:
-    learner = await _learner(db_session)
-    tools = build_tools(
-        db_session, fake_llm_client(), learner_id=learner.id, fetch=_fake_html_fetch
-    )
+    tools = [_fetch_webpage_tool(fetch=_fake_html_fetch, retrieved=CitationAccumulator())]
 
     result = await _fetch_webpage(tools).execute({})
     assert result.is_error
@@ -204,8 +194,7 @@ async def test_fetch_webpage_missing_url_is_a_tool_error_not_an_exception(
 async def test_fetch_webpage_blocked_fetch_degrades_gracefully(db_session: AsyncSession) -> None:
     """The concrete regression test for 'prompt injection tells the model to fetch an
     internal URL' — a blocked fetch must degrade the turn, never crash it."""
-    learner = await _learner(db_session)
-    tools = build_tools(db_session, fake_llm_client(), learner_id=learner.id, fetch=_blocked_fetch)
+    tools = [_fetch_webpage_tool(fetch=_blocked_fetch, retrieved=CitationAccumulator())]
 
     result = await _fetch_webpage(tools).execute({"url": "http://169.254.169.254/"})
 
@@ -220,10 +209,7 @@ async def test_fetch_webpage_truncates_to_the_configured_cap(db_session: AsyncSe
     async def _fake_long_fetch(url: str) -> tuple[bytes, str]:
         return long_text.encode(), "text/plain"
 
-    learner = await _learner(db_session)
-    tools = build_tools(
-        db_session, fake_llm_client(), learner_id=learner.id, fetch=_fake_long_fetch
-    )
+    tools = [_fetch_webpage_tool(fetch=_fake_long_fetch, retrieved=CitationAccumulator())]
 
     result = await _fetch_webpage(tools).execute({"url": "https://example.com/long"})
 

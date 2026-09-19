@@ -156,11 +156,6 @@ curl -X POST localhost:8000/api/v1/sources/upload \
   -F "file=@/path/to/lecture.pdf" \
   -F "subject_id=<uuid>"
 
-# Register a web page
-curl -X POST localhost:8000/api/v1/sources/link \
-  -H 'content-type: application/json' \
-  -d '{"url":"https://example.com/article"}'
-
 # Watch it progress
 curl -s localhost:8000/api/v1/sources | jq '.[] | {id, origin, status, error}'
 curl -s localhost:8000/api/v1/sources/<source_id>/chunks | jq 'length'
@@ -179,7 +174,12 @@ curl -X POST localhost:8000/api/v1/retrieve \
 | Scanned PDF (image pages) | a multimodal `VISION` model |
 | Audio | `uv sync --extra asr` (faster-whisper) |
 | Video | the `asr` extra **and** `ffmpeg`/`ffprobe` on `PATH` |
-| Web link | outbound network |
+| Web link | disabled in v0; upload a local file instead |
+
+`POST /sources/link` remains as a deprecated compatibility endpoint returning 403. URL retries also
+return 403. Legacy queued URL jobs fail terminally without fetching or extracting content, retaining
+their existing blobs and chunks. Stored sources and citations remain readable; the tutor only
+searches stored material. Markdown images cannot automatically request external content.
 
 Tuning knobs (`ocr_concurrency`, `embed_batch_size`, `embed_concurrency`, `kc_tag_concurrency`,
 `kc_tag_min_confidence`, `max_upload_bytes`) all live in `app/core/config.py` with inline rationale.
@@ -426,6 +426,37 @@ logs set `GURU_LOG_JSON=true`. Raise detail with `GURU_LOG_LEVEL=DEBUG`; set `GU
 see every SQL statement.
 
 ---
+
+## Alpha administration and audited sudo
+
+The admin portal supports broad account visits by authenticated administrators. Enable
+`GURU_IMPERSONATION_ENABLED=true` explicitly; the default is false and acts as an operational kill
+switch. Learner opt-in is not required. A visit requires a reason and expires after
+`GURU_IMPERSONATION_TTL_MINUTES` (default: 15). The administrator's own session stays separate from
+the borrowed account credential. Authentication checks the current switch, administrator role,
+account existence, and session validity, so disabling the capability, removing the role, or deleting
+the administrator prevents further use.
+
+`POST /api/v1/admin/impersonate` starts a visit. Administrators can inspect visit history at
+`GET /api/v1/admin/impersonations`, end one with
+`DELETE /api/v1/admin/impersonations/{impersonation_id}`, and inspect its actions at
+`GET /api/v1/admin/impersonations/{impersonation_id}/actions`. History and ending visits remain
+available when the capability is disabled.
+
+Each visited-account action records durable intent before the endpoint acts: method, route template,
+path resource IDs, creation time, and its visit's actual actor/effective learner/reason. A completed
+response records status and completion time. Endpoint rollback, refusals, and server failures do not
+erase the intent. An interrupted response stream remains pending for inspection, including a stream
+whose middleware emitted a terminal body before raising. Pending intent proves an action started;
+it does not establish that every possible mutation completed. Administrator deletion revokes issued
+borrowed sessions through cascading session references while preserving historical audit snapshots.
+
+Admin practice and detours use distinct events; admin placement does not seed learner priors.
+None changes the learner's measured ability, uncertainty, or FSRS retention schedule. Admin chat messages and replies show **Admin** and
+**Reply to admin**, retain actor/action UUID snapshots without foreign keys, and are excluded from
+inferred learner profile and memory extraction. Earlier transcripts retain null attribution; no
+historical authorship is inferred or backfilled. These controls implement the alpha sudo slice;
+remaining private ownership, release hardening, and operational work still apply.
 
 ## 10. Cost control
 

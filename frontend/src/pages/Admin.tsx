@@ -1,6 +1,12 @@
 import { useState } from "react";
 import { Gauge } from "lucide-react";
-import { useImpersonations, useLearnerRoster, useSpend, useStartVisit } from "../api/admin";
+import {
+  useAdminActions,
+  useImpersonations,
+  useLearnerRoster,
+  useSpend,
+  useStartVisit,
+} from "../api/admin";
 import type { components } from "../api/schema";
 
 type Latency = components["schemas"]["Latency"];
@@ -154,8 +160,8 @@ function ViewAsDialog({ learner, onClose }: { learner: LearnerUsage; onClose: ()
         {/* No number: the limit is `GURU_IMPERSONATION_TTL_MINUTES`, and a page that printed
             "15 minutes" would be wrong for any deployment that changed it. */}
         <p className="text-body text-base-content/70">
-          Read only, and it expires on its own. It is recorded against your name before you get in,
-          and {learner.display_name || learner.handle} can see it in their own data export.
+          Admin access expires on its own. Your actions are recorded against your name, and{" "}
+          {learner.display_name || learner.handle} can see it in their own data export.
         </p>
         <label className="flex flex-col gap-1">
           <span className="text-caption text-base-content/70">Why are you looking?</span>
@@ -187,6 +193,32 @@ function ViewAsDialog({ learner, onClose }: { learner: LearnerUsage; onClose: ()
  * administrator has to go somewhere else to read is one they do not read. `ended_at` is blank
  * for a visit nobody closed — it expired instead, which is what `expires_at` bounds, and
  * printing a wall-clock end nobody performed would be inventing an event. */
+function ActionLog({ visitId }: { visitId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const actions = useAdminActions(visitId, expanded);
+  return (
+    <div>
+      <button className="btn btn-xs" onClick={() => setExpanded(!expanded)}>
+        Action log
+      </button>
+      {expanded &&
+        (actions.isError ? (
+          <p>Could not read actions.</p>
+        ) : actions.isLoading ? (
+          <p>Loading…</p>
+        ) : (
+          <ul>
+            {actions.data?.map((action) => (
+              <li key={action.id}>
+                {action.method} {action.route} · {action.status_code ?? "incomplete"}
+              </li>
+            ))}
+          </ul>
+        ))}
+    </div>
+  );
+}
+
 function AccessLog() {
   const log = useImpersonations();
 
@@ -211,6 +243,7 @@ function AccessLog() {
             <th className="pb-2 pr-4 font-normal">Reason</th>
             <th className="pb-2 pr-4 font-normal">Started</th>
             <th className="pb-2 font-normal">Ended</th>
+            <th className="pb-2 font-normal">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -230,6 +263,9 @@ function AccessLog() {
                 ) : (
                   <span className="text-base-content/40">expired</span>
                 )}
+              </td>
+              <td className="py-2">
+                <ActionLog visitId={row.id} />
               </td>
             </tr>
           ))}

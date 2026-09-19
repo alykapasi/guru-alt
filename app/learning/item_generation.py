@@ -3,9 +3,8 @@ session runner's type-aware resolution — see ``app.services.session_runner``).
 
 Mirrors ``app/learning/kc_tagging.py``'s shape: a cheap FAST-role call, a JSON-only prompt,
 tolerant best-effort parsing (an unparseable or invalid reply yields no item rather than
-failing the caller). Generated items are ordinary, learner-unscoped ``Item`` rows — once
-created for a KC they join the shared bank permanently, so later placements/lessons reuse
-them instead of paying to regenerate.
+failing the caller). Generated items and criteria are private to the requesting learner.
+An omitted owner quarantines an item, so internal callers cannot accidentally publish it.
 
 Flashcard generation captures the model's answer into ``answer_key={"back": ...}`` even
 though nothing reads it today — self-rated grading (``grading.grade_flashcard``) trusts the
@@ -31,6 +30,7 @@ scale and moves with the learner.
 """
 
 import json
+import uuid
 from typing import Protocol, runtime_checkable
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -78,10 +78,12 @@ async def generate_mcq_item(
     llm: LLMClient,
     kc: KC,
     *,
+    owner_learner_id: uuid.UUID | None = None,
     target_difficulty: float | None = None,
     max_tokens: int = 256,
 ) -> tuple[Item | None, Usage]:
     """Generate and persist one MCQ item for ``kc``, or ``(None, usage)`` on a bad reply."""
+    await assessment_svc.ensure_kcs_authorized(session, [kc.id], owner_learner_id)
     completion = await llm.complete(
         GENERATION_ROLE,
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
@@ -101,6 +103,7 @@ async def generate_mcq_item(
             answer_key={"choices": choices, "correct": correct},
             difficulty=_recorded_difficulty(target_difficulty),
         ),
+        owner_learner_id=owner_learner_id,
     )
     return item, completion.usage
 
@@ -118,10 +121,12 @@ async def generate_fill_blank_item(
     llm: LLMClient,
     kc: KC,
     *,
+    owner_learner_id: uuid.UUID | None = None,
     target_difficulty: float | None = None,
     max_tokens: int = 256,
 ) -> tuple[Item | None, Usage]:
     """Generate and persist one fill-in-the-blank item for ``kc``, or ``(None, usage)``."""
+    await assessment_svc.ensure_kcs_authorized(session, [kc.id], owner_learner_id)
     completion = await llm.complete(
         GENERATION_ROLE,
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
@@ -141,6 +146,7 @@ async def generate_fill_blank_item(
             answer_key={"blanks": [answer]},
             difficulty=_recorded_difficulty(target_difficulty),
         ),
+        owner_learner_id=owner_learner_id,
     )
     return item, completion.usage
 
@@ -159,6 +165,7 @@ async def generate_short_item(
     llm: LLMClient,
     kc: KC,
     *,
+    owner_learner_id: uuid.UUID | None = None,
     target_difficulty: float | None = None,
     max_tokens: int = 256,
 ) -> tuple[Item | None, Usage]:
@@ -177,6 +184,7 @@ async def generate_short_item(
 
     No ``answer_key`` — ``ItemCreate`` only requires one for auto-gradable types.
     """
+    await assessment_svc.ensure_kcs_authorized(session, [kc.id], owner_learner_id)
     completion = await llm.complete(
         GENERATION_ROLE,
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
@@ -191,6 +199,7 @@ async def generate_short_item(
     if criteria:
         rubric = Rubric(
             kc_id=kc.id,
+            owner_learner_id=owner_learner_id,
             name=f"Generated criteria for {kc.name}"[:255],
             criteria={"criteria": criteria},
         )
@@ -206,6 +215,7 @@ async def generate_short_item(
             difficulty=_recorded_difficulty(target_difficulty),
             rubric_id=rubric_id,
         ),
+        owner_learner_id=owner_learner_id,
     )
     return item, completion.usage
 
@@ -222,6 +232,7 @@ async def generate_flashcard_item(
     llm: LLMClient,
     kc: KC,
     *,
+    owner_learner_id: uuid.UUID | None = None,
     target_difficulty: float | None = None,
     max_tokens: int = 256,
 ) -> tuple[Item | None, Usage]:
@@ -230,6 +241,7 @@ async def generate_flashcard_item(
     The learner self-rates recall (``grading.grade_flashcard``) — the generated ``answer`` is
     stored but not otherwise consumed yet (see module docstring).
     """
+    await assessment_svc.ensure_kcs_authorized(session, [kc.id], owner_learner_id)
     completion = await llm.complete(
         GENERATION_ROLE,
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
@@ -249,6 +261,7 @@ async def generate_flashcard_item(
             answer_key={"back": answer} if answer else None,
             difficulty=_recorded_difficulty(target_difficulty),
         ),
+        owner_learner_id=owner_learner_id,
     )
     return item, completion.usage
 
@@ -269,6 +282,7 @@ class GeneratorFn(Protocol):
         llm: LLMClient,
         kc: KC,
         *,
+        owner_learner_id: uuid.UUID | None = None,
         target_difficulty: float | None = None,
     ) -> tuple[Item | None, Usage]: ...
 

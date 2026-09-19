@@ -9,6 +9,7 @@ drove the estimate up.
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -17,6 +18,7 @@ from app.learning.mastery import Observation
 from app.models.assessment import Item, ItemKC, ItemType
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
+from app.models.learning import LearningEvent
 from app.services import analytics as analytics_svc
 from app.services import assessment as svc
 from tests.querycount import count_queries
@@ -45,7 +47,16 @@ async def _kc(session: AsyncSession) -> tuple[Subject, KC]:
 
 
 async def _item(session: AsyncSession, kc: KC, stem: str) -> Item:
-    item = Item(item_type=ItemType.MCQ, stem=stem, difficulty=0.0, answer_key={"correct": 0})
+    sequence = session.info.get("item_fixture_sequence", 0)
+    session.info["item_fixture_sequence"] = sequence + 1
+    item = Item(
+        visibility="curated",
+        created_at=T0.replace(tzinfo=None) + timedelta(seconds=sequence),
+        item_type=ItemType.MCQ,
+        stem=stem,
+        difficulty=0.0,
+        answer_key={"correct": 0},
+    )
     session.add(item)
     await session.flush()
     session.add(ItemKC(item_id=item.id, kc_id=kc.id, weight=1.0))
@@ -75,6 +86,18 @@ async def _answer(
         ),
         now=when,
     )
+    await session.flush()
+    event = await session.scalar(
+        select(LearningEvent)
+        .where(
+            LearningEvent.learner_id == learner.id,
+            LearningEvent.payload["item_id"].astext == str(item.id),
+        )
+        .order_by(LearningEvent.created_at.desc())
+        .limit(1)
+    )
+    assert event is not None
+    event.created_at = when.replace(tzinfo=None)
     await session.flush()
 
 

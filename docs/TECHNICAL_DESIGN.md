@@ -189,7 +189,12 @@ source ─▶ adapter (extract) ─▶ normalize ─▶ chunk ─▶ embed (EMBE
 | PDF / DOCX / PPTX / XLSX / TXT | text+structure extraction (e.g. PyMuPDF, python-docx/pptx, openpyxl; `unstructured`/`docling` as umbrella) |
 | Handwritten / scanned notes | **vision-LLM OCR** (best on handwriting); printed text may fall back to Tesseract |
 | Audio / video | **ASR** (Whisper / faster-whisper); video → demux audio (+ optional keyframes for slides) |
-| Public weblinks | fetch + readability extraction (e.g. trafilatura); respect robots; static first, dynamic later |
+| Public weblinks | Disabled in v0, including explicit URL imports and tutor web tools. Existing stored material remains readable. |
+
+The URL compatibility endpoint and retry path return 403. Creation services reject URL sources,
+and workers mark legacy queued URL jobs terminally failed before extraction while preserving stored
+blobs/chunks. File deduplication cannot reuse legacy URL sources. The tutor registers only internal
+material search, and rendered Markdown suppresses automatic external image requests.
 
 Every chunk carries **provenance** (source id, locator — page/timestamp/url, extraction method,
 confidence) for citations and the privacy/compliance gate.

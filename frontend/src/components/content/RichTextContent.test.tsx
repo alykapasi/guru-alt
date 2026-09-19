@@ -180,3 +180,19 @@ describe("citations", () => {
     expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
   });
 });
+
+it("does not load external Markdown images in v0", () => {
+  const { container } = render(
+    <RichText content="![Diagram](https://example.com/track.png) ![Other](//example.com/other.png) ![Scheme](https:example.com/other.png) ![HTTP](http:example.com/track.png)" />,
+  );
+  expect(container.querySelector("img")).toBeNull();
+  expect(screen.getByText("Diagram")).toBeInTheDocument();
+});
+
+it("still renders same-origin Markdown images", () => {
+  render(<RichText content="![Local diagram](/diagrams/local.png)" />);
+  expect(screen.getByRole("img", { name: "Local diagram" })).toHaveAttribute(
+    "src",
+    "/diagrams/local.png",
+  );
+});

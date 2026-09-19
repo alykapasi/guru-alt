@@ -144,13 +144,6 @@ def session_token_from(request: Request, settings: Settings) -> str | None:
     return request.cookies.get(settings.session_cookie_name) or None
 
 
-# The methods an impersonated session may use (P10). Everything else is refused, at this one
-# dependency rather than route by route: a rule each new endpoint has to remember is a rule
-# that is eventually not remembered, and the endpoint that forgets it is the one that writes
-# something into a learner's record which the learner did not do.
-_READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
-
-
 async def get_authenticated(
     request: Request, session: SessionDep, settings: SettingsDep
 ) -> auth.Authenticated:
@@ -160,14 +153,26 @@ async def get_authenticated(
     belonging to a deleted account — produces the same response, because the caller can do the
     same one thing about all of them, and telling them apart is free reconnaissance.
     """
+    session.info.pop("admin_actor_id", None)
+    session.info.pop("admin_action_id", None)
     token = session_token_from(request, settings)
-    resolved = await auth.resolve_session(session, token) if token else None
+    resolved = (
+        await auth.resolve_session(
+            session, token, impersonation_enabled=settings.impersonation_enabled
+        )
+        if token
+        else None
+    )
     if resolved is None:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             "not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if resolved.impersonated_by_id is not None:
+        from app.services.admin_audit import begin_action
+
+        await begin_action(request, session, resolved)
     return resolved
 
 
@@ -175,19 +180,7 @@ Authenticated = Annotated[auth.Authenticated, Depends(get_authenticated)]
 
 
 async def get_current_learner(request: Request, who: Authenticated) -> Learner:
-    """The learner this request acts as, refusing a write made on somebody else's behalf (P10).
-
-    `/auth/logout` deliberately does not depend on this, which is what lets an administrator
-    end a visit through the path that already exists rather than through an exception carved
-    into the rule. `/auth/logout-all` does depend on it, and so an impersonated session cannot
-    sign the learner out of their other devices — which is correct: that is an action on their
-    account, not a view of it.
-    """
-    if who.impersonated_by_id is not None and request.method not in _READ_ONLY_METHODS:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "this session is viewing an account, not acting on it",
-        )
+    """The effective learner; authenticated sudo requests already have durable audit intent."""
     return who.learner
 
 
@@ -236,8 +229,16 @@ async def require_operator(request: Request, session: SessionDep, settings: Sett
         if offered and hmac.compare_digest(offered, expected):
             return
 
+    session.info.pop("admin_actor_id", None)
+    session.info.pop("admin_action_id", None)
     token = session_token_from(request, settings)
-    resolved = await auth.resolve_session(session, token) if token else None
+    resolved = (
+        await auth.resolve_session(
+            session, token, impersonation_enabled=settings.impersonation_enabled
+        )
+        if token
+        else None
+    )
     if resolved is None:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,

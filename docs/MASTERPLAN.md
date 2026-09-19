@@ -5,6 +5,13 @@
 > [ROADMAP.md](./ROADMAP.md); deeper engineering detail lives in
 > [TECHNICAL_DESIGN.md](./TECHNICAL_DESIGN.md). When a decision here changes, update this file first.
 
+> **v0 decisions, 2026-09-16:** [V0_DECISIONS.md](./V0_DECISIONS.md) records the maintainer-approved
+> invited-alpha scope and supersedes conflicting historical descriptions below: private generated
+> curricula/content, explicit learner control, self-rated flashcards as retention evidence, exact
+> note-edit preservation, broad audited alpha-admin access, and all URL ingestion/web access disabled for
+> v0. Goal status will use `ability - 2 * current_uncertainty`, with sustained-evidence duration
+> calibrated from data. Paid evaluation and operating choices are deferred until the product is built. This is accepted direction, not implementation status.
+
 ---
 
 ## 1. Vision & Mission

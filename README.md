@@ -11,6 +11,9 @@ knowledge graph, a continuous mastery model, and an evidence-based learner profi
 > [docs/RUNBOOK.md](docs/RUNBOOK.md) (how to develop against it) ·
 > [docs/OPERATIONS.md](docs/OPERATIONS.md) (how to deploy, monitor, and recover it).
 
+> **Current v0 direction:** [docs/V0_DECISIONS.md](docs/V0_DECISIONS.md) records the accepted
+> invited-alpha decisions, remaining delivery work, and unresolved operating configuration.
+
 Note: "alt" is a version suffix for the current build, not part of the product name.
 
 ---
@@ -31,10 +34,17 @@ Note: "alt" is a version suffix for the current build, not part of the product n
 | Frontend MVP (React + Vite) | ✅ Phase 7 |
 | Notes (durable learning artifact) | ✅ Phase 8 |
 | Eval sweeps + MLflow (9a) · real-data datasets (9b) · DSPy optimization (9c) | 🚧 Phase 9 |
-| Auth + admin portal · hardening | ☐ Phases 10–11 |
+| Session authentication + recovery foundations | Implemented; production mail and further hardening remain |
+| Alpha admin portal + audited sudo | Implemented; default-off operational switch; further hardening remains |
 
-**Auth is deliberately stubbed** behind a seam (`learner_id` is threaded everywhere already) until
-Phase 10 — this is not yet a multi-tenant system.
+**Authentication resolves real learner sessions.** A separate development-only sign-in endpoint is
+available when configured. Private curriculum ownership, production mail,
+and remaining operational work are still required before the invited-alpha target is complete.
+
+Authenticated alpha administrators can make short-lived, reason-required account visits with broad
+account access when `GURU_IMPERSONATION_ENABLED=true` (default: false). Visits and individual actions
+are audited. Admin practice remains distinct from learner ability/retention evidence, and admin chat
+history is labeled and excluded from inferred learner profile/memory updates.
 
 ---
 
@@ -46,15 +56,16 @@ Phase 10 — this is not yet a multi-tenant system.
   **learner profile** (how they learn, not VARK).
 - **Tutoring** in three composable modes — chat, agentic (tool-calling), and a fixed guided-practice
   workflow — all as LangGraph graphs.
-- **Multimodal ingestion** — documents, vision-LLM OCR, Whisper ASR (audio/video), and web links →
+- **Multimodal ingestion** — documents, vision-LLM OCR, Whisper ASR (audio/video) →
   normalize → chunk → embed → store with provenance, then hybrid retrieval (vector + full-text +
-  metadata). Per-chunk KC auto-tagging scopes chunks to the graph.
+  metadata). Per-chunk KC auto-tagging scopes chunks to the graph. URL imports and tutor web access
+  are disabled in v0; previously stored material remains available.
 - **Notes** — per-learner, per-topic artifacts that grow as the learner studies, with format
   projections (outline / narrative / mnemonic / worked-examples) and full revision history.
 - **Evaluation suite** — a golden/live eval harness, a config-sweep + ablation runner with MLflow
   tracking, real-data dataset mining, and DSPy prompt compilation with measured deltas.
-- **52 API endpoints** across 12 routers, and a React frontend covering chat, lessons/sessions,
-  dashboard, uploads, and notes.
+- **Versioned API and React frontend** covering sign-in, chat, lessons/sessions, dashboard,
+  uploads, notes, and learner memory.
 
 ---
 
@@ -63,7 +74,7 @@ Phase 10 — this is not yet a multi-tenant system.
 Layered FastAPI backend. The load-bearing rule: **application code references LLMs by *role*, never
 by model name, and never calls a provider SDK directly.**
 
-```
+```text
 API routers  →  services  →  { learning engine · agent graphs · rag · memory }  →  llm registry  →  provider
 ```
 
@@ -77,7 +88,7 @@ Key seams (each swappable without touching callers):
 | `app/rag/` **`Transcriber` / `Demuxer`** | ASR and video demux, so CI runs offline against fakes. |
 | `app/storage/` **blob store** | S3-compatible object storage (MinIO in dev). |
 | `app/workers/` **taskiq broker** | Redis queue in dev/prod, in-memory for tests. |
-| `get_current_learner` | Stubbed auth — swapped for a real resolver in Phase 10. |
+| `get_current_learner` | Resolves a real session token to its learner; refuses unauthenticated requests. |
 
 ---
 

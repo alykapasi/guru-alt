@@ -148,7 +148,9 @@ async def test_unknown_topic_404(api_client: AsyncClient) -> None:
 
 async def test_restore_unknown_revision_404(api_client: AsyncClient) -> None:
     _, topic_id, _ = await _subject_topic_kc(api_client)
-    r = await api_client.post(f"{API}/topics/{topic_id}/note/revisions/7/restore")
+    r = await api_client.post(
+        f"{API}/topics/{topic_id}/note/revisions/7/restore", json={"expected_revision_ordinal": 1}
+    )
     assert r.status_code == 404
 
 
@@ -183,7 +185,7 @@ async def test_edit_note_success_creates_learner_edit_revision(
     assert r.status_code == 200
     data = r.json()
     assert data["revision_ordinal"] == 2
-    assert data["content_md"] == EDITED_RENDERED
+    assert data["content_md"] == "my edited note"
 
     r = await api_client.get(f"{API}/topics/{topic_id}/note/revisions")
     assert [rev["cause"] for rev in r.json()] == ["distill", "learner_edit"]
@@ -203,7 +205,9 @@ async def test_restore_revision_success_creates_new_revision(
 
     # Restore back to revision 1 (pre-edit): copies forward as a NEW revision, never rewrites.
     _override_llm([FakeTurn(text=RENDERED)])
-    r = await api_client.post(f"{API}/topics/{topic_id}/note/revisions/1/restore")
+    r = await api_client.post(
+        f"{API}/topics/{topic_id}/note/revisions/1/restore", json={"expected_revision_ordinal": 2}
+    )
     assert r.status_code == 200
     data = r.json()
     assert data["revision_ordinal"] == 3
@@ -286,3 +290,128 @@ async def test_the_words_the_learner_typed_are_recoverable(
     # The distilled revision before it was not the learner's writing and claims nothing.
     r = await api_client.get(f"{API}/topics/{topic_id}/note/revisions/1")
     assert r.json()["learner_edit_md"] is None
+
+
+async def test_exact_unicode_note_survives_api_catchup_format_history_restore(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None, api_learner: Learner
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import delete, select
+
+    from app.models.note import Note, NoteRender
+
+    _, topic_id, kc_id = await _subject_topic_kc(api_client)
+    await _make_stale(db_session, kc_id, api_learner)
+    await api_client.post(f"{API}/topics/{topic_id}/note/refresh")
+    typed = "# 漢字 🧠\r\n\r\n2. β  \r\n1. e\u0301 ≠ é\r\n\r\n```unclosed\r\n<literal>\r\n"
+    _override_llm([])  # Saving arbitrary Markdown must not depend on any model.
+    response = await api_client.put(
+        f"{API}/topics/{topic_id}/note", json={"content_md": typed, "expected_revision_ordinal": 1}
+    )
+    assert response.status_code == 200
+    assert response.json()["content_md"].encode() == typed.encode()
+    assert response.json()["learner_authored_md"] == typed
+    assert response.json()["generated_md"] == ""
+
+    note = await db_session.scalar(select(Note).where(Note.topic_id == uuid.UUID(topic_id)))
+    assert note is not None
+    await db_session.execute(delete(NoteRender).where(NoteRender.note_id == note.id))
+    # Reads and missing-render healing must retain the original even with a dead renderer.
+    response = await api_client.get(f"{API}/topics/{topic_id}/note")
+    assert response.json()["content_md"] == typed
+    response = await api_client.post(f"{API}/topics/{topic_id}/note/refresh")
+    assert response.json()["content_md"] == typed
+    response = await api_client.patch(
+        f"{API}/topics/{topic_id}/note/format", json={"format": "narrative"}
+    )
+    assert response.json()["content_md"] == typed
+
+    db_session.add(
+        LearningEvent(
+            learner_id=api_learner.id,
+            kc_id=uuid.UUID(kc_id),
+            event_type="observation",
+            payload={"score": 1.0},
+            created_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(seconds=1),
+        )
+    )
+    await db_session.flush()
+    _override_llm([FakeTurn(text="unusable model reply")])
+    failed = await api_client.post(f"{API}/topics/{topic_id}/note/refresh")
+    assert failed.json()["content_md"] == typed and failed.json()["stale"] is True
+    _override_llm(
+        [
+            FakeTurn(
+                text=json.dumps(
+                    {
+                        "atoms": [
+                            *note.substrate,
+                            {
+                                "id": "new",
+                                "kind": "concept",
+                                "kc_ids": [],
+                                "md": "New addition",
+                                "provenance": {"refs": ["o1"]},
+                            },
+                        ]
+                    }
+                )
+            )
+        ]
+    )
+    caught_up = await api_client.post(f"{API}/topics/{topic_id}/note/refresh")
+    assert caught_up.status_code == 200
+    assert caught_up.json()["learner_authored_md"].encode() == typed.encode()
+    assert "New addition" in caught_up.json()["generated_md"]
+    source = await api_client.get(f"{API}/topics/{topic_id}/note/revisions/3")
+    assert source.json()["content_md"].startswith(typed)
+    # Editing the authored section alone leaves the additions separate.
+    response = await api_client.put(
+        f"{API}/topics/{topic_id}/note",
+        json={"content_md": typed, "include_generated": False, "expected_revision_ordinal": 3},
+    )
+    assert "New addition" in response.json()["generated_md"]
+    stale = await api_client.post(
+        f"{API}/topics/{topic_id}/note/revisions/2/restore", json={"expected_revision_ordinal": 3}
+    )
+    assert stale.status_code == 409
+    response = await api_client.post(
+        f"{API}/topics/{topic_id}/note/revisions/2/restore", json={"expected_revision_ordinal": 4}
+    )
+    assert response.status_code == 200
+    assert response.json()["content_md"].encode() == typed.encode()
+    assert response.json()["generated_md"] == ""
+    source = await api_client.get(f"{API}/topics/{topic_id}/note/revisions/5")
+    assert source.json()["content_md"] == typed
+
+
+async def test_notes_api_does_not_expose_another_learners_private_topics(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    from app.models.knowledge import Subject, Topic
+
+    other = Learner(handle=f"private-{uuid.uuid4().hex[:8]}")
+    db_session.add(other)
+    await db_session.flush()
+    subject = Subject(
+        slug=f"private-{uuid.uuid4().hex[:8]}", name="Secret subject", owner_learner_id=other.id
+    )
+    db_session.add(subject)
+    await db_session.flush()
+    topic = Topic(subject_id=subject.id, slug="secret", name="Secret topic")
+    db_session.add(topic)
+    await db_session.flush()
+    _override_llm([])
+    for method, path, body in (
+        ("GET", f"/subjects/{subject.id}/notes", None),
+        ("GET", f"/topics/{topic.id}/note", None),
+        ("POST", f"/topics/{topic.id}/note/refresh", None),
+        ("PUT", f"/topics/{topic.id}/note", {"content_md": "edit"}),
+        ("PATCH", f"/topics/{topic.id}/note/format", {"format": "outline"}),
+        ("GET", f"/topics/{topic.id}/note/revisions", None),
+        ("GET", f"/topics/{topic.id}/note/revisions/1", None),
+        ("POST", f"/topics/{topic.id}/note/revisions/1/restore", {"expected_revision_ordinal": 1}),
+    ):
+        response = await api_client.request(method, API + path, json=body)
+        assert response.status_code == 404

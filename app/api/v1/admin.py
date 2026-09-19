@@ -20,7 +20,12 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.api.deps import CurrentAdmin, SessionDep, SettingsDep
-from app.schemas.admin import ImpersonationRead, ImpersonationRequest, ImpersonationStarted
+from app.schemas.admin import (
+    AdminActionRead,
+    ImpersonationRead,
+    ImpersonationRequest,
+    ImpersonationStarted,
+)
 from app.services import impersonation
 from app.services.admin import LearnerRoster, learner_usage
 
@@ -59,7 +64,7 @@ async def impersonate(
     session: SessionDep,
     settings: SettingsDep,
 ):
-    """Start a recorded, read-only session onto one learner's account (P10).
+    """Start a recorded administrator session onto one learner's account (P10).
 
     404 rather than 403 when the capability is switched off, because a capability a deployment
     has not enabled should not announce that it exists.
@@ -133,3 +138,20 @@ async def end_impersonation(
         return await impersonation.end(session, impersonation_id=impersonation_id)
     except impersonation.NoSuchImpersonation:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such visit") from None
+
+
+@router.get("/impersonations/{impersonation_id}/actions", response_model=list[AdminActionRead])
+async def actions(impersonation_id: uuid.UUID, _: CurrentAdmin, session: SessionDep):
+    from sqlalchemy import select
+
+    from app.models.auth import AdminAction, Impersonation
+
+    if await session.get(Impersonation, impersonation_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such visit")
+    return list(
+        await session.scalars(
+            select(AdminAction)
+            .where(AdminAction.impersonation_id == impersonation_id)
+            .order_by(AdminAction.created_at.desc(), AdminAction.id)
+        )
+    )

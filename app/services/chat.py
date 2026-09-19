@@ -134,6 +134,10 @@ async def create_conversation(
     subject_id: uuid.UUID | None = None,
     source_ids: Sequence[uuid.UUID] = (),
 ) -> Conversation:
+    if subject_id is not None:
+        subject = await knowledge_svc.get_subject(session, subject_id)
+        if subject is None or not knowledge_svc.is_visible_to(subject, learner_id):
+            raise PermissionError("subject not found")
     conversation = Conversation(
         learner_id=learner_id, title=title, kind=kind, subject_id=subject_id
     )
@@ -147,18 +151,27 @@ async def create_conversation(
 
 
 async def get_conversation(
-    session: AsyncSession, conversation_id: uuid.UUID
+    session: AsyncSession, conversation_id: uuid.UUID, *, learner_id: uuid.UUID | None = None
 ) -> Conversation | None:
     # populate_existing=True: without it, session.get() silently ignores the eager-load option
     # whenever the object is already in the session's identity map (e.g. a caller fetched it
     # separately first) — conversation_sources would stay unloaded and .source_ids would try an
     # unsupported sync lazy-load outside of any awaited ORM operation.
-    return await session.get(
+    conversation = await session.get(
         Conversation,
         conversation_id,
         options=[selectinload(Conversation.conversation_sources)],
         populate_existing=True,
     )
+    if conversation is None or learner_id is None:
+        return conversation
+    if conversation.learner_id != learner_id:
+        return None
+    if conversation.subject_id is not None:
+        subject = await knowledge_svc.get_subject(session, conversation.subject_id)
+        if subject is None or not knowledge_svc.is_visible_to(subject, learner_id):
+            return None
+    return conversation
 
 
 async def update_conversation_title(
@@ -275,7 +288,12 @@ async def _resolve_check(
         or conversation.active_item_id is None
     ):
         return None, None
-    item = await assessment_svc.get_item(session, conversation.active_item_id)
+    item = await assessment_svc.get_item_for(
+        session,
+        conversation.active_item_id,
+        learner_id=learner_id,
+        subject_id=conversation.subject_id,
+    )
     if item is None:
         # Belt and braces: ``active_item_id`` is ON DELETE SET NULL, so a deleted item clears
         # the pointer and the check above already caught it. This covers the read losing a race

@@ -12,7 +12,7 @@ keep. A row can be deleted. The cost is a lookup per request, which is one index
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, func
+from sqlalchemy import JSON, DateTime, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -43,17 +43,15 @@ class LearnerSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # The flag lives here rather than only on ``impersonations`` because every request resolves
     # this row already, and the alternative is a join on the hot path of every authenticated
     # call to answer a question whose answer is NULL for almost all of them. The audit row is
-    # the *record*; this is what the request path reads. SET NULL rather than CASCADE: deleting
-    # an administrator's account must not silently delete the sessions they opened onto other
-    # people's — it must strand them, and a stranded one is caught by the same expiry as any
-    # other.
+    # the *record*. Deleting the actor revokes their borrowed sessions via CASCADE;
+    # SET NULL would silently turn a borrowed token into an ordinary learner credential.
     impersonated_by_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("learners.id", ondelete="SET NULL"), index=True, default=None
+        ForeignKey("learners.id", ondelete="CASCADE"), index=True, default=None
     )
 
 
 class Impersonation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """One administrator's read-only visit to one learner's account, recorded (P10).
+    """One administrator's audited visit to one learner's account, recorded (P10).
 
     The audit is the *product*, not a side effect of it: ``impersonation.begin`` writes this
     row and issues the credential in the same transaction, so there is no path that grants
@@ -89,7 +87,10 @@ class Impersonation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # The credential this record issued. SET NULL because sessions are purged once they can no
     # longer authenticate anybody, and the audit must not be purged with them.
     session_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("learner_sessions.id", ondelete="SET NULL"), default=None
+        ForeignKey(
+            "learner_sessions.id", ondelete="SET NULL", deferrable=True, initially="DEFERRED"
+        ),
+        default=None,
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
@@ -143,3 +144,16 @@ class SignInAttempt(UUIDPrimaryKeyMixin, Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+
+
+class AdminAction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Durable request intent; no credentials, request bodies, or query strings."""
+
+    __tablename__ = "admin_actions"
+
+    impersonation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("impersonations.id"), index=True)
+    method: Mapped[str] = mapped_column()
+    route: Mapped[str] = mapped_column()
+    resource_ids: Mapped[dict[str, str]] = mapped_column(JSON)
+    status_code: Mapped[int | None] = mapped_column(default=None)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)

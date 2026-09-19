@@ -23,11 +23,11 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import structlog
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.assessment import Item
-from app.models.auth import Impersonation
+from app.models.assessment import Item, Rubric
+from app.models.auth import AdminAction, Impersonation
 from app.models.chat import Conversation, Message, Turn
 from app.models.content import ContentBlock
 from app.models.learner import Learner
@@ -81,6 +81,11 @@ RETENTION: tuple[StoreRetention, ...] = (
         "somebody, when, for how long, and the reason they gave.",
     ),
     StoreRetention(
+        "admin_actions",
+        "retained",
+        "Durable administrator action audit; bodies and credentials are never captured.",
+    ),
+    StoreRetention(
         "password_reset_tokens",
         "deleted",
         "Cascades from the learner (S21). A reset token is a bearer credential for an account: "
@@ -125,9 +130,14 @@ RETENTION: tuple[StoreRetention, ...] = (
     ),
     StoreRetention(
         "items",
-        "deleted",
-        "Only the ones this learner authored (S33). The FK is SET NULL, so a cascade would "
-        "have left their questions and answer keys behind with the author erased.",
+        "partly deleted",
+        "Owned generated and authored items are erased. Explicit platform-curated rows "
+        "remain shared; unknown historical rows remain quarantined.",
+    ),
+    StoreRetention(
+        "rubrics",
+        "partly deleted",
+        "Owned marking criteria cascade from the learner; explicit curated criteria remain.",
     ),
     StoreRetention(
         "llm_calls",
@@ -137,13 +147,13 @@ RETENTION: tuple[StoreRetention, ...] = (
         "learner content — role, model, token counts, cost.",
     ),
     StoreRetention(
-        "subjects/topics/kcs/kc_edges/items(generated)/rubrics",
+        "subjects/topics/kcs/kc_edges",
         "partly deleted",
         "Split by ownership since S25. A subject the learner created is theirs and goes with "
         "the account, taking its topics, components and prerequisite edges by cascade. A "
         "*curated* subject carries no owner, belongs to no one learner, and is retained — "
         "deleting one account must not empty the shared library for everybody else. The "
-        "generated question bank is retained either way; authored items are handled above.",
+        "shared graph is unaffected by deleting a learner.",
     ),
 )
 
@@ -217,10 +227,19 @@ async def export_learner(session: AsyncSession, learner_id: uuid.UUID) -> dict[s
         "content_blocks": await rows(ContentBlock, ContentBlock.learner_id == learner_id),
         "sources": await rows(Source, Source.learner_id == learner_id),
         "chunks": await rows(Chunk, Chunk.source_id.in_(source_ids)),
-        "authored_items": await rows(Item, Item.author_learner_id == learner_id),
+        "authored_items": await rows(
+            Item, or_(Item.author_learner_id == learner_id, Item.owner_learner_id == learner_id)
+        ),
+        "rubrics": await rows(Rubric, Rubric.owner_learner_id == learner_id),
         # Their half of P10's audit: who has viewed this account, when, and why. A record of
         # access that the person accessed cannot see is a record kept for somebody else.
         "impersonations": await rows(Impersonation, Impersonation.learner_id == learner_id),
+        "admin_actions": await rows(
+            AdminAction,
+            AdminAction.impersonation_id.in_(
+                select(Impersonation.id).where(Impersonation.learner_id == learner_id)
+            ),
+        ),
     }
 
 
@@ -248,7 +267,9 @@ async def delete_learner(
         if key
     ]
     authored = await session.execute(
-        delete(Item).where(Item.author_learner_id == learner_id).returning(Item.id)
+        delete(Item)
+        .where(or_(Item.author_learner_id == learner_id, Item.owner_learner_id == learner_id))
+        .returning(Item.id)
     )
     report.items_deleted = len(authored.all())
     # Before the learner row goes: the foreign key clears `learner_id` on its own, and after

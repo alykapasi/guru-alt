@@ -16,9 +16,9 @@ router = APIRouter(tags=["placement"])
 
 
 @router.get("/subjects/{subject_id}/placement/prompt", response_model=PlacementPromptRead)
-async def get_placement_prompt(subject_id: uuid.UUID, session: SessionDep, _: CurrentLearner):
+async def get_placement_prompt(subject_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
     subject = await knowledge_svc.get_subject(session, subject_id)
-    if subject is None:
+    if subject is None or not knowledge_svc.is_visible_to(subject, learner.id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
     return PlacementPromptRead(question=svc.BACKGROUND_QUESTION.format(subject=subject.name))
 
@@ -32,7 +32,7 @@ async def run_placement(
     llm: LLMClientDep,
 ):
     subject = await knowledge_svc.get_subject(session, subject_id)
-    if subject is None:
+    if subject is None or not knowledge_svc.is_visible_to(subject, learner.id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
     result = await svc.run_placement(
         session,

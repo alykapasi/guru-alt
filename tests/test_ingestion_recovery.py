@@ -291,27 +291,6 @@ def test_facts_about_the_source_are_terminal_and_facts_about_the_moment_are_not(
     assert not ingestion._is_terminal(ConnectionError("provider unreachable"))
 
 
-async def test_a_robots_block_is_not_retried(db_session: AsyncSession) -> None:
-    """It is a permanent fact about the URL; retrying re-asks a question already answered."""
-    store = InMemoryBlobStore()
-    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
-    db_session.add(learner)
-    await db_session.flush()
-    source = await ingestion.create_url_source(
-        db_session, learner_id=learner.id, url="https://example.com/x"
-    )
-
-    async def _blocked(url: str):
-        raise RobotsDisallowed(f"robots.txt disallows {url}")
-
-    result = await ingestion.ingest_source(
-        db_session, store, fake_llm_client(), source.id, fetch=_blocked
-    )
-
-    assert result is not None
-    assert result.status == SourceStatus.FAILED  # not PENDING: nothing would change
-
-
 # --- orphaned blobs ----------------------------------------------------------------------
 
 

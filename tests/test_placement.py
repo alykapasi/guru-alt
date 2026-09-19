@@ -115,7 +115,7 @@ async def test_run_placement_seeds_inferred_kc_and_light_tests_root(
 async def test_run_placement_reuses_existing_item_for_kc(db_session: AsyncSession) -> None:
     learner, subject, root, _dependent = await _graph(db_session)
     existing, _ = await svc.item_generation.generate_mcq_item(
-        db_session, _sequenced_client([MCQ_REPLY]), root
+        db_session, _sequenced_client([MCQ_REPLY]), root, owner_learner_id=learner.id
     )
     assert existing is not None
 
@@ -287,3 +287,52 @@ async def test_placement_endpoint_seeds_and_returns_items(
 
     r = await api_client.post(f"{API}/subjects/{uuid.uuid4()}/placement", json={"background": "x"})
     assert r.status_code == 404
+
+
+async def test_private_subject_placement_is_hidden_before_model_or_seed(
+    api_client, db_session, api_learner
+):
+    owner = Learner(handle=f"owner-{uuid.uuid4().hex[:8]}")
+    db_session.add(owner)
+    await db_session.flush()
+    _, subject, root, _ = await _graph(db_session)
+    subject.owner_learner_id = owner.id
+    await db_session.flush()
+    provider = _SequencedProvider([_inference_reply(kc_index=1), MCQ_REPLY])
+    client = LLMClient(
+        {"fake": provider}, {role: ModelSpec("fake", "fake-1") for role in ModelRole}
+    )
+    app.dependency_overrides[get_llm_client] = lambda: client
+    try:
+        assert (
+            await api_client.get(f"{API}/subjects/{subject.id}/placement/prompt")
+        ).status_code == 404
+        assert (
+            await api_client.post(
+                f"{API}/subjects/{subject.id}/placement", json={"background": "secret"}
+            )
+        ).status_code == 404
+        with pytest.raises(PermissionError):
+            await svc.run_placement(
+                db_session,
+                client,
+                learner_id=api_learner.id,
+                subject=subject,
+                background="secret",
+                light_test_size=1,
+            )
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+    assert provider._calls == 0
+    assert (
+        await db_session.scalar(
+            select(LearnerKCState).where(
+                LearnerKCState.learner_id == api_learner.id, LearnerKCState.kc_id == root.id
+            )
+        )
+        is None
+    )
+    assert (
+        await assessment_svc.find_item_for_kc(db_session, root.id, learner_id=api_learner.id)
+        is None
+    )

@@ -55,6 +55,8 @@ async def run_placement(
     background: str,
     light_test_size: int,
 ) -> PlacementResult:
+    if not knowledge_svc.is_visible_to(subject, learner_id):
+        raise PermissionError("subject not found")
     kcs = await knowledge_svc.list_kcs_for_subject(session, subject.id)
     if not kcs:
         return PlacementResult()
@@ -96,7 +98,7 @@ async def run_placement(
         )
         if item is None:
             item, gen_usage = await item_generation.generate_mcq_item(
-                session, llm, kc, target_difficulty=target
+                session, llm, kc, owner_learner_id=learner_id, target_difficulty=target
             )
             if gen_usage.total_tokens:
                 await log_llm_call(

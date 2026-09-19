@@ -14,6 +14,7 @@ from app.core.db import engine
 from app.core.logging import configure_logging
 from app.core.middleware import request_id_middleware
 from app.core.release import enforce_production_settings
+from app.services.admin_audit import AdminAuditMiddleware
 
 settings = get_settings()
 configure_logging(settings)
@@ -43,7 +44,9 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Guru API", version="0.1.0", lifespan=lifespan)
+
 app.middleware("http")(request_id_middleware)
+app.add_middleware(AdminAuditMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,

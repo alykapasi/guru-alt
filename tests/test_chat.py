@@ -451,7 +451,7 @@ async def test_subject_scoped_turn_grounds_and_serves_an_item_for_its_own_subjec
     # a conversational check is answered in prose, so only an open item can be posed as one
     # (S15) — an MCQ seeded here would be left in the bank and no check would be posed.
     seeded_item, _ = await item_generation.generate_short_item(
-        db_session, fake_llm_client(SHORT_REPLY), kc_a
+        db_session, fake_llm_client(SHORT_REPLY), kc_a, owner_learner_id=learner.id
     )
     assert seeded_item is not None
     _subject_b, _kc_b = await _seeded_subject(db_session, learner.id, "Biology", "Cells")
@@ -562,7 +562,7 @@ async def test_answering_a_served_item_through_the_real_endpoint_advances_the_ne
     # Pre-seed the bank so the check reuses this item rather than generating one through the
     # recording provider (whose canned reply isn't valid short-item JSON).
     seeded_item, _ = await item_generation.generate_short_item(
-        db_session, fake_llm_client(SHORT_REPLY), kc
+        db_session, fake_llm_client(SHORT_REPLY), kc, owner_learner_id=learner.id
     )
     assert seeded_item is not None
     db_session.add(
@@ -976,3 +976,34 @@ async def test_a_different_conversation_is_unaffected(
         assert r.status_code == 200
     finally:
         await claim.release()
+
+
+async def test_private_subject_cannot_create_or_drive_foreign_conversation(
+    api_client, db_session, api_learner, recording_llm
+):
+    owner = Learner(handle=f"owner-{uuid.uuid4().hex[:8]}")
+    db_session.add(owner)
+    await db_session.flush()
+    subject = Subject(
+        slug=f"secret-{uuid.uuid4().hex[:8]}", name="Secret", owner_learner_id=owner.id
+    )
+    db_session.add(subject)
+    await db_session.flush()
+    response = await api_client.post(
+        f"{API}/conversations", json={"title": "steal", "subject_id": str(subject.id)}
+    )
+    assert response.status_code == 404
+    with pytest.raises(PermissionError):
+        await chat_svc.create_conversation(
+            db_session, api_learner.id, "steal", subject_id=subject.id
+        )
+    legacy = Conversation(
+        learner_id=api_learner.id, title="legacy", subject_id=subject.id, goal="secret"
+    )
+    db_session.add(legacy)
+    await db_session.commit()
+    response = await api_client.post(
+        f"{API}/conversations/{legacy.id}/messages", json={"content": "reveal"}
+    )
+    assert response.status_code == 404
+    assert recording_llm == []

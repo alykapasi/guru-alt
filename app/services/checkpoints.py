@@ -78,7 +78,11 @@ async def prune(session: AsyncSession, *, older_than: timedelta) -> int:
 
 
 async def paused_practice_is_current(
-    session: AsyncSession, *, learner_id: uuid.UUID, item_id: str | None
+    session: AsyncSession,
+    *,
+    learner_id: uuid.UUID,
+    item_id: str | None,
+    subject_id: uuid.UUID | None = None,
 ) -> bool:
     """Whether a paused practice question is still one worth putting back in front of somebody.
 
@@ -107,7 +111,7 @@ async def paused_practice_is_current(
     # Scoped to the learner, and eager-loading the components: ``get_item_for`` answers "may
     # this learner still be assessed with this" (S33), which is the right question for a
     # question that has been sitting around — an item can change hands while it waits.
-    item = await get_item_for(session, parsed, learner_id=learner_id)
+    item = await get_item_for(session, parsed, learner_id=learner_id, subject_id=subject_id)
     if item is None:
         return False
     kc_ids = [link.kc_id for link in item.kc_links]

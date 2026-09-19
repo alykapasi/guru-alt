@@ -85,7 +85,7 @@ async def test_the_administrators_own_session_is_untouched(
 # --- the scope -------------------------------------------------------------------------------
 
 
-async def test_a_visit_cannot_write_to_the_account_it_is_viewing(
+async def test_a_visit_can_write_with_audit(
     admin_client: AsyncClient, anon_client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """The point of the whole design. Writing as somebody else puts evidence in their record
@@ -97,11 +97,10 @@ async def test_a_visit_cannot_write_to_the_account_it_is_viewing(
 
     assert (await anon_client.get(f"{API}/conversations")).status_code == 200
     r = await anon_client.post(f"{API}/conversations", json={})
-    assert r.status_code == 403
-    assert "not acting on it" in r.text
+    assert r.status_code == 201
 
 
-async def test_a_visit_cannot_sign_the_learner_out_of_their_other_devices(
+async def test_a_visit_can_sign_the_learner_out_of_other_devices(
     admin_client: AsyncClient, anon_client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """`logout-all` is an action on the account rather than a view of it."""
@@ -109,7 +108,7 @@ async def test_a_visit_cannot_sign_the_learner_out_of_their_other_devices(
     _, body = await _visit(admin_client, subject)
     anon_client.headers["authorization"] = f"Bearer {body['token']}"
 
-    assert (await anon_client.post(f"{API}/auth/logout-all")).status_code == 403
+    assert (await anon_client.post(f"{API}/auth/logout-all")).status_code == 204
 
 
 async def test_a_visit_is_never_an_administrator(
@@ -390,7 +389,7 @@ async def test_the_session_it_issued_is_marked_as_one(db_session: AsyncSession) 
         db_session, admin=admin, learner_id=subject.id, reason=REASON, ttl=timedelta(minutes=15)
     )
 
-    resolved = await auth.resolve_session(db_session, began.token)
+    resolved = await auth.resolve_session(db_session, began.token, impersonation_enabled=True)
     assert resolved is not None
     assert resolved.learner.id == subject.id
     assert resolved.impersonated_by_id == admin.id

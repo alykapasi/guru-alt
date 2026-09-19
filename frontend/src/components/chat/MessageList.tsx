@@ -5,6 +5,7 @@ import { CheckResultCard } from "./CheckResultCard";
 import type { components } from "../../api/schema";
 import type { CheckResult, Citation } from "../../api/sse";
 import type { PendingTurn } from "../../hooks/useChatConversation";
+import { visitToken } from "../../api/impersonation";
 
 type Message = components["schemas"]["MessageRead"];
 
@@ -60,6 +61,7 @@ export function MessageList({
         <div key={m.id} className="flex flex-col gap-3">
           <MessageBlock
             role={m.role}
+            adminAttributed={Boolean(m.admin_actor_id || m.admin_action_id)}
             content={m.content}
             citations={m.citations as unknown as Citation[]}
             onCitationClick={onCitationClick}
@@ -72,7 +74,11 @@ export function MessageList({
       ))}
       {pending && (
         <>
-          <MessageBlock role="user" content={pending.userContent} />
+          <MessageBlock
+            role="user"
+            content={pending.userContent}
+            adminAttributed={Boolean(visitToken())}
+          />
           {pending.toolCalls.length > 0 && (
             <div className="flex flex-wrap gap-2 pl-11">
               {pending.toolCalls.map((tool, i) => (
@@ -80,7 +86,12 @@ export function MessageList({
               ))}
             </div>
           )}
-          <MessageBlock role="assistant" content={pending.assistantText} streaming />
+          <MessageBlock
+            role="assistant"
+            content={pending.assistantText}
+            streaming
+            adminAttributed={Boolean(visitToken())}
+          />
         </>
       )}
       {awaitingGoalAccept && (

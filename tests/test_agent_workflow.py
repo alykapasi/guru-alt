@@ -48,6 +48,7 @@ async def _learner_and_item(session: AsyncSession) -> tuple[Learner, Item]:
             stem="Explain photosynthesis in your own words.",
             kcs=[ItemKCRef(kc_id=kc.id)],
         ),
+        owner_learner_id=learner.id,
     )
     return learner, item
 

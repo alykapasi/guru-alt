@@ -103,6 +103,7 @@ async def _learner_with_everything(session: AsyncSession) -> tuple[Learner, Conv
             json.dumps({"stem": "What is velocity?", "criteria": ["speed", "direction"]})
         ),
         kc,
+        owner_learner_id=learner.id,
     )
     assert item is not None
     conversation = Conversation(learner_id=learner.id, subject_id=subject.id, goal=GOAL)

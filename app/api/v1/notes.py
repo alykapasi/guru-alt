@@ -15,6 +15,7 @@ from app.schemas.note import (
     NoteFormatRequest,
     NoteIndexEntry,
     NoteRead,
+    NoteRestoreRequest,
     NoteRevisionRead,
     NoteRevisionSource,
 )
@@ -24,9 +25,10 @@ from app.services import notes as notes_svc
 router = APIRouter(tags=["notes"])
 
 
-async def _topic_404(session: SessionDep, topic_id: uuid.UUID) -> Topic:
+async def _topic_404(session: SessionDep, topic_id: uuid.UUID, learner_id: uuid.UUID) -> Topic:
     topic = await knowledge_svc.get_topic(session, topic_id)
-    if topic is None:
+    subject = await knowledge_svc.subject_of_topic(session, topic_id)
+    if topic is None or subject is None or not knowledge_svc.is_visible_to(subject, learner_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="topic not found")
     return topic
 
@@ -35,6 +37,8 @@ def _read(view: notes_svc.NoteView) -> NoteRead:
     return NoteRead(
         topic_id=view.topic_id,
         content_md=view.content_md,
+        learner_authored_md=view.learner_authored_md,
+        generated_md=view.generated_md,
         format=view.format,  # ty: ignore[invalid-argument-type]
         effective_format=view.effective_format,  # ty: ignore[invalid-argument-type]
         stale=view.stale,
@@ -46,14 +50,14 @@ def _read(view: notes_svc.NoteView) -> NoteRead:
 @router.get("/subjects/{subject_id}/notes", response_model=list[NoteIndexEntry])
 async def notes_index(subject_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
     subject = await knowledge_svc.get_subject(session, subject_id)
-    if subject is None:
+    if subject is None or not knowledge_svc.is_visible_to(subject, learner.id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="subject not found")
     return await notes_svc.notes_index(session, learner.id, subject_id)
 
 
 @router.get("/topics/{topic_id}/note", response_model=NoteRead)
 async def get_note(topic_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
-    topic = await _topic_404(session, topic_id)
+    topic = await _topic_404(session, topic_id, learner.id)
     return _read(await notes_svc.note_view(session, learner.id, topic))
 
 
@@ -61,7 +65,7 @@ async def get_note(topic_id: uuid.UUID, session: SessionDep, learner: CurrentLea
 async def refresh_note(
     topic_id: uuid.UUID, session: SessionDep, learner: CurrentLearner, llm: LLMClientDep
 ):
-    topic = await _topic_404(session, topic_id)
+    topic = await _topic_404(session, topic_id, learner.id)
     return _read(await notes_svc.refresh_note(session, llm, learner.id, topic))
 
 
@@ -73,7 +77,7 @@ async def edit_note(
     learner: CurrentLearner,
     llm: LLMClientDep,
 ):
-    topic = await _topic_404(session, topic_id)
+    topic = await _topic_404(session, topic_id, learner.id)
     if await notes_svc.get_note(session, learner.id, topic_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no note to edit yet")
     try:
@@ -84,6 +88,7 @@ async def edit_note(
             topic,
             request.content_md,
             expected_revision_ordinal=request.expected_revision_ordinal,
+            include_generated=request.include_generated,
         )
     except notes_svc.RevisionConflict as conflict:
         raise HTTPException(
@@ -109,13 +114,13 @@ async def set_format(
     learner: CurrentLearner,
     llm: LLMClientDep,
 ):
-    topic = await _topic_404(session, topic_id)
+    topic = await _topic_404(session, topic_id, learner.id)
     return _read(await notes_svc.set_format(session, llm, learner.id, topic, request.format))
 
 
 @router.get("/topics/{topic_id}/note/revisions", response_model=list[NoteRevisionRead])
 async def list_revisions(topic_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
-    topic = await _topic_404(session, topic_id)
+    topic = await _topic_404(session, topic_id, learner.id)
     return await notes_svc.list_revisions(session, learner.id, topic)
 
 
@@ -123,7 +128,7 @@ async def list_revisions(topic_id: uuid.UUID, session: SessionDep, learner: Curr
 async def revision_source(
     topic_id: uuid.UUID, ordinal: int, session: SessionDep, learner: CurrentLearner
 ):
-    topic = await _topic_404(session, topic_id)
+    topic = await _topic_404(session, topic_id, learner.id)
     source = await notes_svc.revision_source(session, learner.id, topic, ordinal)
     if source is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="revision not found")
@@ -140,9 +145,23 @@ async def restore_revision(
     session: SessionDep,
     learner: CurrentLearner,
     llm: LLMClientDep,
+    request: NoteRestoreRequest,
 ):
-    topic = await _topic_404(session, topic_id)
-    view = await notes_svc.restore_revision(session, llm, learner.id, topic, ordinal)
+    topic = await _topic_404(session, topic_id, learner.id)
+    try:
+        view = await notes_svc.restore_revision(
+            session,
+            llm,
+            learner.id,
+            topic,
+            ordinal,
+            expected_revision_ordinal=request.expected_revision_ordinal,
+        )
+    except notes_svc.RevisionConflict as conflict:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"This note changed (now at revision {conflict.current}). Reload before restoring.",
+        ) from conflict
     if view is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="revision not found")
     return _read(view)

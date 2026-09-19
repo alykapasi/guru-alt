@@ -12,7 +12,7 @@ import uuid
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.assessment import Item, ItemKC, ItemOrigin, ItemType
+from app.models.assessment import AssessmentVisibility, Item, ItemKC, ItemOrigin, ItemType
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
 from app.services import assessment as svc
@@ -50,6 +50,10 @@ async def _item(
         answer_key={"choices": ["a", "b"], "correct": 0},
         origin=origin,
         author_learner_id=author_learner_id,
+        owner_learner_id=author_learner_id,
+        visibility=AssessmentVisibility.CURATED
+        if origin == ItemOrigin.GENERATED
+        else AssessmentVisibility.PRIVATE,
     )
     session.add(item)
     await session.flush()

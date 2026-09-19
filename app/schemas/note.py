@@ -12,6 +12,8 @@ NoteFormat = Literal["outline", "narrative", "mnemonic", "worked_examples"]
 class NoteRead(BaseModel):
     topic_id: uuid.UUID
     content_md: str | None
+    learner_authored_md: str | None = None
+    generated_md: str | None = None
     format: NoteFormat | None
     effective_format: NoteFormat
     stale: bool
@@ -28,13 +30,14 @@ class NoteIndexEntry(BaseModel):
 
 
 class NoteEditRequest(BaseModel):
-    """A learner's edit of the rendered note.
+    """A learner's exact Markdown, optionally adopting the generated display.
 
     ``expected_revision_ordinal`` is the revision they were looking at. Sending it turns a
     concurrent change — a refresh, or the same note open in another tab — into a 409 instead of
     an edit silently absorbed against a note that no longer looks like what they edited.
     """
 
+    include_generated: bool = True
     content_md: str = Field(min_length=1)
     expected_revision_ordinal: int | None = Field(default=None, ge=1)
 
@@ -52,12 +55,16 @@ class NoteRevisionRead(BaseModel):
 
 
 class NoteRevisionSource(BaseModel):
-    """A revision's substrate, plus the learner's own words where the revision was their edit.
+    """A revision's exact authored text and independent generated surroundings.
 
-    ``content_md`` is the substrate rendered mechanically — what the system made of the note.
-    ``learner_edit_md`` is what they submitted, unmodified, and is null on any other revision.
+    ``content_md`` composes the saved authored text with mechanical generated content;
+    ``learner_edit_md`` is the raw submission on an edit revision, otherwise null.
     """
 
     ordinal: int
     content_md: str
     learner_edit_md: str | None = None
+
+
+class NoteRestoreRequest(BaseModel):
+    expected_revision_ordinal: int = Field(ge=1)

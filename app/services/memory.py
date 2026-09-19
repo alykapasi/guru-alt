@@ -156,7 +156,11 @@ async def _unprocessed_messages(
     an instant (``server_default=func.now()`` is transaction-start time) and a cursor that
     cannot order within an instant either re-reads or skips.
     """
-    stmt = select(Message).where(Message.conversation_id == conversation_id)
+    stmt = select(Message).where(
+        Message.conversation_id == conversation_id,
+        Message.admin_actor_id.is_(None),
+        Message.admin_action_id.is_(None),
+    )
     if after is not None:
         stmt = stmt.where(Message.created_at > after)
     rows = (await session.scalars(stmt.order_by(Message.created_at, Message.id).limit(limit))).all()

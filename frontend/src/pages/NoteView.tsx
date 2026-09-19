@@ -23,6 +23,7 @@ export function NoteView() {
   const setFormat = useSetFormat(id);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  const [includeGenerated, setIncludeGenerated] = useState(false);
   // The revision this draft was written against — sent on save so a note that changed
   // underneath (a background refresh, another tab) is a conflict rather than a silent
   // overwrite. The editor stays open on that error, so the text is never lost.
@@ -77,7 +78,8 @@ export function NoteView() {
               type="button"
               className="btn btn-ghost btn-sm"
               onClick={() => {
-                setDraft(note.content_md ?? "");
+                setDraft(note.learner_authored_md ?? note.content_md ?? "");
+                setIncludeGenerated(false);
                 setDraftBase(note.revision_ordinal);
                 setEditing(true);
               }}
@@ -97,12 +99,27 @@ export function NoteView() {
         <div className="alert alert-error">
           {edit.error instanceof Error
             ? edit.error.message
-            : "Edit could not be absorbed. Your note is unchanged — please try again."}
+            : "Your edit could not be saved. Please try again."}
         </div>
       )}
 
       {editing ? (
         <div className="flex flex-col gap-3">
+          <p className="text-caption text-base-content/60">
+            Your wording is saved exactly. Automatic additions stay separate until you include them.
+          </p>
+          {note.learner_authored_md !== null && note.generated_md && !includeGenerated && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm self-start"
+              onClick={() => {
+                setDraft(draft + "\n\n" + note.generated_md);
+                setIncludeGenerated(true);
+              }}
+            >
+              Include additions to edit them
+            </button>
+          )}
           <textarea
             className="textarea textarea-bordered min-h-96 w-full font-mono"
             value={draft}
@@ -115,7 +132,7 @@ export function NoteView() {
               disabled={edit.isPending || draft.trim().length === 0}
               onClick={() =>
                 edit.mutate(
-                  { contentMd: draft, expectedRevisionOrdinal: draftBase },
+                  { contentMd: draft, expectedRevisionOrdinal: draftBase, includeGenerated },
                   { onSuccess: () => setEditing(false) },
                 )
               }
@@ -132,8 +149,24 @@ export function NoteView() {
           </div>
         </div>
       ) : note.content_md !== null ? (
-        <article>
-          <RichText content={note.content_md} />
+        <article className="flex flex-col gap-6">
+          {note.learner_authored_md !== null ? (
+            <>
+              <section aria-label="Your exact notes">
+                <RichText content={note.learner_authored_md} />
+              </section>
+              {note.generated_md && (
+                <section
+                  aria-label="Automatic additions and suggestions"
+                  className="border-base-300 border-t pt-6"
+                >
+                  <RichText content={note.generated_md} />
+                </section>
+              )}
+            </>
+          ) : (
+            <RichText content={note.content_md} />
+          )}
         </article>
       ) : (
         !refresh.isPending && (
@@ -143,7 +176,12 @@ export function NoteView() {
         )
       )}
 
-      <HistoryDrawer topicId={id} open={historyOpen} onClose={() => setHistoryOpen(false)} />
+      <HistoryDrawer
+        topicId={id}
+        expectedRevisionOrdinal={note.revision_ordinal}
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+      />
     </div>
   );
 }

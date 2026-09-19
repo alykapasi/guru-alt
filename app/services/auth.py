@@ -175,9 +175,12 @@ class Authenticated:
 
     learner: Learner
     impersonated_by_id: uuid.UUID | None
+    session_id: uuid.UUID | None = None
 
 
-async def resolve_session(session: AsyncSession, token: str) -> Authenticated | None:
+async def resolve_session(
+    session: AsyncSession, token: str, *, impersonation_enabled: bool | None = None
+) -> Authenticated | None:
     """The learner this token authenticates and how, or ``None``.
 
     ``None`` covers every reason equally — unknown, expired, revoked, or belonging to a
@@ -195,10 +198,20 @@ async def resolve_session(session: AsyncSession, token: str) -> Authenticated | 
     learner = await session.get(Learner, row.learner_id)
     if learner is None:
         return None
+    if row.impersonated_by_id is not None:
+        if impersonation_enabled is None:
+            from app.core.config import get_settings
+
+            impersonation_enabled = get_settings().impersonation_enabled
+        admin = await session.get(Learner, row.impersonated_by_id, populate_existing=True)
+        if not impersonation_enabled or admin is None or not admin.is_admin:
+            return None
     if now - row.last_used_at >= LAST_USED_RESOLUTION:
         row.last_used_at = now
         await session.commit()
-    return Authenticated(learner=learner, impersonated_by_id=row.impersonated_by_id)
+    return Authenticated(
+        learner=learner, impersonated_by_id=row.impersonated_by_id, session_id=row.id
+    )
 
 
 async def resolve(session: AsyncSession, token: str) -> Learner | None:

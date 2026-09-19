@@ -371,3 +371,60 @@ async def test_recent_attempts_counts_sittings_not_rows(db_session: AsyncSession
         await mastery.recent_attempts_at_item(db_session, learner.id, item_id, within_minutes=0)
         == 0
     )
+
+
+async def test_admin_practice_is_recorded_without_changing_learner_evidence(
+    db_session: AsyncSession,
+) -> None:
+    learner, _, _, (kc,) = await _seed(db_session)
+    admin_id, action_id = uuid.uuid4(), uuid.uuid4()
+    db_session.info["admin_actor_id"] = str(admin_id)
+    db_session.info["admin_action_id"] = str(action_id)
+    (state,) = await mastery.record_observation(
+        db_session, Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=1.0)
+    )
+    assert state.ability == 0
+    assert state.uncertainty == DEFAULT_UNCERTAINTY
+    assert state.last_seen_at is None
+    assert state.fsrs_card is None
+    (event,) = await _events_for(db_session, kc.id)
+    assert event.event_type == "admin_observation"
+    assert event.payload["admin_actor_id"] == str(admin_id)
+    assert event.payload["admin_action_id"] == str(action_id)
+
+
+async def test_admin_attempt_creates_no_state_and_replays_its_actual_grade(
+    db_session: AsyncSession,
+) -> None:
+    from app.models.learning import LearnerKCState
+    from app.services.assessment import _recorded_grade
+
+    learner, _, _, (kc,) = await _seed(db_session)
+    attempt_id = uuid.uuid4()
+    db_session.info.update(admin_actor_id=str(uuid.uuid4()), admin_action_id=str(uuid.uuid4()))
+    await mastery.record_observation(
+        db_session,
+        Observation(
+            learner_id=learner.id,
+            kc_weights={kc.id: 1.0},
+            score=0.8,
+            kc_scores={kc.id: 0.6},
+            correct=False,
+            detail={"feedback": "Actual admin grade"},
+            attempt_id=attempt_id,
+        ),
+    )
+    assert (
+        await db_session.scalar(
+            select(LearnerKCState).where(LearnerKCState.learner_id == learner.id)
+        )
+        is None
+    )
+    grade = await _recorded_grade(db_session, learner.id, attempt_id)
+    assert grade is not None
+    assert grade.score == 0.8
+    assert grade.correct is False
+    assert grade.detail == {"feedback": "Actual admin grade"}
+    assert grade.component_scores == {kc.id: 0.6}
+    db_session.info.clear()
+    assert await _recorded_grade(db_session, learner.id, attempt_id) is None

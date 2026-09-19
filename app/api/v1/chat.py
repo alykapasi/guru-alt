@@ -62,7 +62,8 @@ async def create_conversation(
     data: ConversationCreate, session: SessionDep, learner: CurrentLearner
 ):
     if data.subject_id is not None:
-        if await knowledge_svc.get_subject(session, data.subject_id) is None:
+        subject = await knowledge_svc.get_subject(session, data.subject_id)
+        if subject is None or not knowledge_svc.is_visible_to(subject, learner.id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
     if data.kind == "session" and data.subject_id is None:
         raise HTTPException(
@@ -106,7 +107,7 @@ async def update_conversation(
     session: SessionDep,
     learner: CurrentLearner,
 ):
-    conversation = await svc.get_conversation(session, conversation_id)
+    conversation = await svc.get_conversation(session, conversation_id, learner_id=learner.id)
     if conversation is None or conversation.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
     return await svc.update_conversation_title(session, conversation, data.title)
@@ -116,7 +117,7 @@ async def update_conversation(
 async def delete_conversation(
     conversation_id: uuid.UUID, session: SessionDep, learner: CurrentLearner
 ):
-    conversation = await svc.get_conversation(session, conversation_id)
+    conversation = await svc.get_conversation(session, conversation_id, learner_id=learner.id)
     if conversation is None or conversation.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
     await svc.delete_conversation(session, conversation)
@@ -144,7 +145,7 @@ async def list_messages(
     cost grows with how much the learner has said, and the conversation big enough to break it
     is the one they care most about.
     """
-    conversation = await svc.get_conversation(session, conversation_id)
+    conversation = await svc.get_conversation(session, conversation_id, learner_id=learner.id)
     if conversation is None or conversation.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
     size = limit if limit is not None else settings.chat_transcript_page_size
@@ -341,7 +342,7 @@ async def list_turns(
     Reading this also reaps turns abandoned by a disconnect or a restart, so a stranded
     ``pending`` row is reported as ``cancelled`` rather than as work still in progress.
     """
-    conversation = await svc.get_conversation(session, conversation_id)
+    conversation = await svc.get_conversation(session, conversation_id, learner_id=learner.id)
     if conversation is None or conversation.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
     return await turn_svc.recent_turns(session, conversation_id, limit=max(1, min(limit, 50)))
@@ -367,7 +368,7 @@ async def send_message(
     from the same learner message, and repeating a completed one is refused rather than
     answered twice.
     """
-    conversation = await svc.get_conversation(session, conversation_id)
+    conversation = await svc.get_conversation(session, conversation_id, learner_id=learner.id)
     if conversation is None or conversation.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
 

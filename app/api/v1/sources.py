@@ -107,23 +107,13 @@ async def upload_source(
     return source
 
 
-@router.post("/sources/link", response_model=SourceRead, status_code=status.HTTP_202_ACCEPTED)
+@router.post("/sources/link", status_code=status.HTTP_403_FORBIDDEN, deprecated=True)
 async def link_source(
     data: LinkCreate,
-    session: SessionDep,
     learner: CurrentLearner,
-    enqueue: IngestionEnqueuerDep,
 ):
-    """Register a web page for ingestion. The page is fetched in the background job."""
-    source = await _scoped(svc.create_url_source)(
-        session,
-        learner_id=learner.id,
-        url=str(data.url),
-        subject_id=data.subject_id,
-        topic_id=data.topic_id,
-    )
-    await svc.dispatch(enqueue, source.id)
-    return source
+    """URL ingestion is disabled in v0. Retained to explain the restriction to old clients."""
+    raise HTTPException(status.HTTP_403_FORBIDDEN, svc.WEB_DISABLED_REASON)
 
 
 @router.post(
@@ -145,7 +135,10 @@ async def retry_source(
     source = await session.get(Source, source_id)
     if source is None or source.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
-    reset = await svc.reset_for_reingest(session, source_id)
+    try:
+        reset = await svc.reset_for_reingest(session, source_id)
+    except svc.WebIngestionDisabled as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     if reset is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "this source is being ingested right now")
     await svc.dispatch(enqueue, reset.id)

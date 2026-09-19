@@ -1,6 +1,6 @@
 # Guru — Running Suggestions and Decisions
 
-Last updated: 2026-09-09
+Last updated: 2026-09-19
 Repository: https://github.com/alykapasi/guru-alt
 Reviewed snapshot: `0d9b7f8abb1c623d0c46f3a53dda210a4790289f`
 
@@ -17,6 +17,81 @@ This is the ongoing record of suggestions, agreed direction, open decisions, and
 - The review itself changed no code. The implementation that followed is recorded per item and dated in the update history below (branch `fix/tracker-s54-s38`, PR #16); the reviewed snapshot above is unchanged so findings stay readable against the source they describe.
 
 Statuses: **Agreed direction**, **Accepted**, **Proposed**, **Open**, **Deferred**, **Implemented**, **Validated**, **Rejected**, **Superseded**.
+
+## v0 decision update — 2026-09-16
+
+The maintainer answered the remaining product/development questions. The accepted decisions and
+dependency-ordered workstreams are in [V0_DECISIONS.md](V0_DECISIONS.md). These override conflicting
+earlier proposals; existing implementation statuses are unchanged by this decision record.
+
+- Target independent invited-adult use after founder testing; retain unrestricted subjects and
+  calibration-first evaluation.
+- Make generated curricula/content private, with reviewed publication and confirmed concept links
+  across subjects; add explicit source-only behavior and learner preference controls.
+- Use self-rated flashcards for retention, preserve exact learner note edits, and make
+  archive/delete/forget and account-erasure behavior explicit.
+- Disable all URL ingestion and external web access for v0, including explicit learner links.
+  Crawling/discovery may return in v1/v2.
+- Give authenticated alpha administrators broad sudo access with an audit trail; learner-enabled
+  support sessions are superseded by this simpler alpha policy.
+- O03 now has a chosen direction: goal achievement is a time-sensitive threshold/confidence state,
+  with stronger status earned through sustained evidence, or explicit learner closure. The
+  margin is `ability - 2 * current_uncertainty`; calibrate sustained-evidence duration from data.
+- Propose paid-evaluation budgets, alpha caps, hosting, domain, mail, and providers later once the
+  product is built. Local implementation and offline tests proceed now.
+
+No runtime changes or new validation results are claimed by this update.
+
+### v0 web restriction implementation — 2026-09-18
+
+URL import and retry endpoints return 403; creation services reject URL sources without writes.
+Legacy queued URL jobs fail terminally before fetching/extraction, preserving existing blobs/chunks.
+File duplicate detection and text deduplication cannot reuse a legacy URL source. The tutor exposes
+only `search_materials`; the upload form accepts files, and Markdown suppresses automatic external
+image requests while preserving same-origin images. Existing stored sources/citations remain readable.
+
+Verified offline: 54 focused backend tests (web policy, agent tools, ingestion recovery, weblink
+helpers, prompt injection), 80 frontend tests, frontend production build and lint, backend lint and
+type checks. Dormant low-level fetch helpers remain tested without registering them as tutor tools.
+These checks establish service/API and rendered DOM behavior; no real-browser network capture or
+real Redis delivery test was performed for this slice. Full integrated backend/migration/contract
+checks are recorded separately after the concurrent alpha-admin changes stabilize.
+
+### Audited broad alpha sudo implementation — 2026-09-18
+
+Authenticated administrators can make short-lived, reason-required broad account visits without
+learner opt-in. `GURU_IMPERSONATION_ENABLED` defaults to false; enabling it is an explicit operating
+choice. Live switch/role/deletion checks prevent continued use after revocation. Each account action
+persists intent before mutation, with method/route/path resource IDs and creation time; completed
+responses add status/completion time. Refusals, rollback, and server failures preserve the audit;
+interrupted streams remain inspectably pending. Issued-session deletion cascades revoke credentials,
+while historical visit/action records preserve actor identity.
+
+Admin practice, placement, and detours do not change learner ability, uncertainty, or FSRS.
+Transcript actor/action snapshots label admin messages/replies and are excluded from inferred
+learner profile and memory extraction. Historical chat authorship is not inferred/backfilled.
+Focused attribution/profile/memory tests and frontend transcript tests pass; final combined backend,
+migration, and contract evidence is recorded by the integrated verification run. This is bounded
+software implementation, not completion of all v0 work or validation of educational outcomes.
+
+### v0 integration verification — 2026-09-19
+
+The committed API contract was regenerated from the current OpenAPI document and compared byte-for-byte
+with a temporary regeneration. Backend `ruff check`, `ruff format --check`, and `ty check` passed.
+The isolated PostgreSQL test database migrated to head; migration `0053` downgraded to `0052` and
+upgraded back to `0053`; `alembic check` found no model/migration drift. The repaired item-exposure
+chronology suite passed (16 tests). Frontend tests (83), lint, and production build passed.
+
+The full isolated backend suite is **not green**: `tests/eval/test_eval.py::test_retrieval_eval_gate`
+failed with retrieval pass rate `0.25` where `1.0` is required (three cases missed their expected
+top-k recall); the run otherwise reported 1702 passed and 6 skipped. This is unresolved verification,
+not evidence that retrieval behavior is acceptable. No real-browser network capture, real Redis delivery,
+or live-provider evaluation was performed in this pass.
+
+Private generated assessment/content ownership and exact note authorship are implemented in the current
+slice. Reviewed publication of private material and versioned item/rubric recording remain partial and
+are not claimed complete here. The checks above establish bounded code, migration, contract, and rendered
+frontend behavior; they do not validate educational outcomes or the deferred operating controls.
 
 ## Agreed direction
 
@@ -1828,7 +1903,7 @@ remaining true.
 | --- | --- | --- |
 | O01 | Who exactly are the first users, and in which subject or task? | **Answered 2026-09-13.** Adults who are well educated and either in very senior positions or in complex knowledge work. **The domain is deliberately unrestricted** — letting them study anything is the point of the product, so no first subject will be chosen. See the note below on what this forecloses. |
 | O02 | Are initial users primarily a closely involved test cohort, paying customers, or both? | Sustainable revenue matters; cohort arrangement and pricing remain open. |
-| O03 | Which independent capabilities define the first successful experience? | ML theory and forgotten linear algebra provide a reference case; acceptance criteria not yet chosen. |
+| O03 | Which independent capabilities define the first successful experience? | **Direction answered 2026-09-16:** time-sensitive confidence above a goal threshold; sustained evidence can establish stronger understanding; the learner can explicitly mark the goal done. Keep capabilities goal-specific and subjects unrestricted. The standard-deviation interpretation and calibrated duration/freshness criteria remain open; see [V02](V0_DECISIONS.md). |
 | O04 | How will learning gains, retention, transfer, grading reliability, and cost be measured? | **Answered 2026-09-13 — calibration first.** Establish *reliability* before *validity*: does a 70% prediction come true about 70% of the time, and do two graders agree? Thresholds still to be set, and the later designs (delayed unassisted probe, within-learner KC randomisation, expert-rated transfer) are deferred rather than rejected — see S59. |
 | O05 | What eventually funds free access? | Individual payments, institutions, sponsorship, or combinations remain possibilities, not commitments. |
 | O06 | Build an LMS or integrate with existing institutional systems? | Deferred until institutional requirements are understood. |
