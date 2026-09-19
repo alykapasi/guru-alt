@@ -396,6 +396,62 @@ def is_writable_by(subject: Subject, learner_id: uuid.UUID) -> bool:
     return subject.owner_learner_id == learner_id
 
 
+class NotVisible(LookupError):
+    """A graph id that names nothing, or names another learner's private material (S25).
+
+    One exception for both, on purpose. A caller who could tell them apart could map somebody
+    else's curriculum one id at a time. ``kind`` is what the id was meant to name, and the
+    message is the entire 404 body a route sends (see the handler in ``app.main``).
+    """
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(f"{kind} not found")
+        self.kind = kind
+
+
+async def require_visible_subject(
+    session: AsyncSession, subject_id: uuid.UUID, learner_id: uuid.UUID
+) -> Subject:
+    """The subject, if ``learner_id`` may see it; otherwise ``NotVisible``."""
+    subject = await session.get(Subject, subject_id)
+    if subject is None or not is_visible_to(subject, learner_id):
+        raise NotVisible("subject")
+    return subject
+
+
+async def require_visible_topic(
+    session: AsyncSession, topic_id: uuid.UUID, learner_id: uuid.UUID
+) -> tuple[Subject, Topic]:
+    """The topic and the subject that decides its visibility, or ``NotVisible``."""
+    row = (
+        await session.execute(
+            select(Subject, Topic)
+            .join(Topic, Topic.subject_id == Subject.id)
+            .where(Topic.id == topic_id)
+        )
+    ).first()
+    if row is None or not is_visible_to(row[0], learner_id):
+        raise NotVisible("topic")
+    return row[0], row[1]
+
+
+async def require_visible_kc(
+    session: AsyncSession, kc_id: uuid.UUID, learner_id: uuid.UUID
+) -> tuple[Subject, KC]:
+    """The component and the subject that decides its visibility, or ``NotVisible``."""
+    row = (
+        await session.execute(
+            select(Subject, KC)
+            .join(Topic, Topic.subject_id == Subject.id)
+            .join(KC, KC.topic_id == Topic.id)
+            .where(KC.id == kc_id)
+        )
+    ).first()
+    if row is None or not is_visible_to(row[0], learner_id):
+        raise NotVisible("kc")
+    return row[0], row[1]
+
+
 async def subject_of_topic(session: AsyncSession, topic_id: uuid.UUID) -> Subject | None:
     """The subject a topic belongs to — the unit ownership is decided at."""
     return await session.scalar(

@@ -66,9 +66,10 @@ async def get_note(
 async def _require_visible_topic(
     session: AsyncSession, learner_id: uuid.UUID, topic: Topic
 ) -> None:
-    subject = await knowledge_svc.get_subject(session, topic.subject_id)
-    if subject is None or not knowledge_svc.is_visible_to(subject, learner_id):
-        raise PermissionError("topic not found")
+    try:
+        await knowledge_svc.require_visible_topic(session, topic.id, learner_id)
+    except knowledge_svc.NotVisible as exc:
+        raise PermissionError("topic not found") from exc
 
 
 async def _locked_note(session: AsyncSession, note: Note) -> Note:

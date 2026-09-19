@@ -60,10 +60,7 @@ async def _visible_subject(session, subject_id: uuid.UUID, learner) -> Subject:
     learner must not be able to learn about another learner's private curriculum. Absent and
     not-yours are deliberately indistinguishable.
     """
-    subject = await svc.get_subject(session, subject_id)
-    if subject is None or not svc.is_visible_to(subject, learner.id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
-    return subject
+    return await svc.require_visible_subject(session, subject_id, learner.id)
 
 
 def _require_writable(subject: Subject, learner) -> None:
@@ -87,17 +84,18 @@ def _require_writable(subject: Subject, learner) -> None:
 
 
 async def _writable_subject_of_topic(session, topic_id: uuid.UUID, learner) -> Subject:
-    subject = await svc.subject_of_topic(session, topic_id)
-    if subject is None or not svc.is_visible_to(subject, learner.id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "topic not found")
+    subject, _ = await svc.require_visible_topic(session, topic_id, learner.id)
     _require_writable(subject, learner)
     return subject
 
 
 async def _writable_subject_of_kc(session, kc_id: uuid.UUID, learner, *, missing: str) -> Subject:
-    subject = await svc.subject_of_kc(session, kc_id)
-    if subject is None or not svc.is_visible_to(subject, learner.id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, missing)
+    # ``missing`` survives because the two ends of an edge answer differently: "kc not found"
+    # for the dependent, "prerequisite kc not found" for the prerequisite.
+    try:
+        subject, _ = await svc.require_visible_kc(session, kc_id, learner.id)
+    except svc.NotVisible as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, missing) from exc
     _require_writable(subject, learner)
     return subject
 
@@ -299,18 +297,13 @@ async def create_kc(
 
 @router.get("/topics/{topic_id}/kcs", response_model=list[KCRead])
 async def list_kcs(topic_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
-    subject = await svc.subject_of_topic(session, topic_id)
-    if subject is None or not svc.is_visible_to(subject, learner.id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "topic not found")
+    await svc.require_visible_topic(session, topic_id, learner.id)
     return await svc.list_kcs(session, topic_id)
 
 
 @router.get("/kcs/{kc_id}", response_model=KCDetail)
 async def get_kc(kc_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
-    kc = await svc.get_kc(session, kc_id)
-    subject = await svc.subject_of_kc(session, kc_id)
-    if kc is None or subject is None or not svc.is_visible_to(subject, learner.id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "kc not found")
+    _, kc = await svc.require_visible_kc(session, kc_id, learner.id)
     edges = await svc.list_prerequisites(session, kc_id)
     return KCDetail(
         id=kc.id,

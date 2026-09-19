@@ -3,8 +3,9 @@
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.agent import checkpointing
 from app.api.deps import get_llm_client
@@ -15,6 +16,7 @@ from app.core.logging import configure_logging
 from app.core.middleware import request_id_middleware
 from app.core.release import enforce_production_settings
 from app.services.admin_audit import AdminAuditMiddleware
+from app.services.knowledge import NotVisible
 
 settings = get_settings()
 configure_logging(settings)
@@ -44,6 +46,13 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Guru API", version="0.1.0", lifespan=lifespan)
+
+
+@app.exception_handler(NotVisible)
+async def _not_visible(_request: Request, exc: NotVisible) -> JSONResponse:
+    """The one 404 for a graph id the caller cannot see (S25). See ``knowledge.NotVisible``."""
+    return JSONResponse(status_code=404, content={"detail": str(exc)})
+
 
 app.middleware("http")(request_id_middleware)
 app.add_middleware(AdminAuditMiddleware)
