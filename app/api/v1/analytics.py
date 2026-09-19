@@ -2,7 +2,7 @@
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter
 
 from app.api.deps import CurrentLearner, SessionDep
 from app.schemas.analytics import ActivityRead, SubjectMasteryRead
@@ -14,8 +14,7 @@ router = APIRouter(tags=["analytics"])
 
 @router.get("/subjects/{subject_id}/mastery", response_model=SubjectMasteryRead)
 async def get_subject_mastery(subject_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
-    if await knowledge_svc.get_subject(session, subject_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
+    await knowledge_svc.require_visible_subject(session, subject_id, learner.id)
     return await svc.subject_mastery(session, learner.id, subject_id)
 
 
