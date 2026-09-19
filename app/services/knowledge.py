@@ -9,6 +9,7 @@ import re
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 import structlog
 from sqlalchemy import delete, func, or_, select
@@ -328,7 +329,12 @@ async def create_subject_with_graph(
 
 
 class ScopeConflict(ValueError):
-    """A source was scoped to a topic that does not belong to its subject."""
+    """A source's scope is inconsistent, or names a subject or topic the caller cannot see.
+
+    Raised both when a source is scoped to a topic that does not belong to its subject, and
+    when the supplied subject or topic is missing or another learner's private one (S25). The
+    message names only ids the caller sent.
+    """
 
 
 async def resolve_source_scope(
@@ -414,9 +420,9 @@ class NotVisible(LookupError):
     message is the entire 404 body a route sends (see the handler in ``app.main``).
     """
 
-    def __init__(self, kind: str) -> None:
+    def __init__(self, kind: Literal["subject", "topic", "kc"]) -> None:
         super().__init__(f"{kind} not found")
-        self.kind = kind
+        self.kind: Literal["subject", "topic", "kc"] = kind
 
 
 async def require_visible_subject(

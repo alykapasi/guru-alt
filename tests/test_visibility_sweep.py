@@ -67,6 +67,7 @@ class Case:
     sends: tuple[str, ...]  # the `Ids` attributes this call puts into the request
     call: Call
     owner_exempt: str | None = None  # why the owner's answer cannot differ, when it cannot
+    refusal: int = 404  # the status a stranger's (or missing) id gets refused with
 
     @property
     def key(self) -> str:
@@ -115,20 +116,32 @@ async def world(db_session: AsyncSession, api_learner: Learner) -> World:
     return World(a=api_learner, b=b, a_ids=a_ids, b_ids=b_ids)
 
 
+@dataclass
+class Enqueued:
+    """What each enqueuer stub was actually asked to enqueue, so a test can prove "nothing"."""
+
+    ingestion: list[uuid.UUID]
+    retag: list[uuid.UUID]
+
+
 @pytest.fixture(autouse=True)
-def _fakes() -> Iterator[None]:
+def _fakes() -> Iterator[Enqueued]:
     """Deterministic stand-ins for every paid or external dependency an owner call can reach."""
     store = InMemoryBlobStore()
+    enqueued = Enqueued(ingestion=[], retag=[])
 
-    async def _nothing(_id: uuid.UUID) -> None:
-        return None
+    async def _record_ingestion(id_: uuid.UUID) -> None:
+        enqueued.ingestion.append(id_)
+
+    async def _record_retag(id_: uuid.UUID) -> None:
+        enqueued.retag.append(id_)
 
     reply = json.dumps({"body": "A private explanation.", "citations": []})
     app.dependency_overrides[get_llm_client] = lambda: fake_llm_client(reply=reply)
     app.dependency_overrides[get_blob_store] = lambda: store
-    app.dependency_overrides[get_ingestion_enqueuer] = lambda: _nothing
-    app.dependency_overrides[get_retag_enqueuer] = lambda: _nothing
-    yield
+    app.dependency_overrides[get_ingestion_enqueuer] = lambda: _record_ingestion
+    app.dependency_overrides[get_retag_enqueuer] = lambda: _record_retag
+    yield enqueued
     for dep in (get_llm_client, get_blob_store, get_ingestion_enqueuer, get_retag_enqueuer):
         app.dependency_overrides.pop(dep, None)
 
@@ -256,6 +269,9 @@ CASES: list[Case] = [
         "prereq_kc_id",
         ("kc2",),
         lambda c, t, o: c.delete(f"{API}/kcs/{o.kc}/prerequisites/{t.kc2}"),
+        # deleting an edge is idempotent: a missing (or foreign) prereq_kc_id with a real,
+        # writable kc_id is a no-op success, not a refusal (see `remove_prerequisite`'s docstring)
+        refusal=204,
     ),
     # --- assessment ----------------------------------------------------------------------
     Case(
@@ -419,6 +435,7 @@ CASES: list[Case] = [
             files={"file": ("notes.txt", b"private notes", "text/plain")},
             data={"subject_id": str(t.subject)},
         ),
+        refusal=422,
     ),
     Case(
         "POST",
@@ -430,6 +447,7 @@ CASES: list[Case] = [
             files={"file": ("notes.txt", b"private notes", "text/plain")},
             data={"topic_id": str(t.topic)},
         ),
+        refusal=422,
     ),
     Case(
         "POST",
@@ -441,6 +459,7 @@ CASES: list[Case] = [
             json={"url": "https://example.com/a", "subject_id": str(t.subject)},
         ),
         owner_exempt="every caller gets the same 403: URL intake is disabled in v0 (V06)",
+        refusal=403,
     ),
     Case(
         "POST",
@@ -451,6 +470,7 @@ CASES: list[Case] = [
             f"{API}/sources/link", json={"url": "https://example.com/a", "topic_id": str(t.topic)}
         ),
         owner_exempt="every caller gets the same 403: URL intake is disabled in v0 (V06)",
+        refusal=403,
     ),
     Case(
         "GET",
@@ -482,27 +502,42 @@ CASES: list[Case] = [
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case.key)
 async def test_a_strangers_graph_id_is_answered_as_if_it_did_not_exist(
-    case: Case, world: World, api_client: AsyncClient, db_session: AsyncSession
+    case: Case, world: World, api_client: AsyncClient, db_session: AsyncSession, _fakes: Enqueued
 ) -> None:
     await sign_in(api_client, db_session, world.b)
     before = await _row_counts(db_session)
+    enqueued_before = (list(_fakes.ingestion), list(_fakes.retag))
     foreign = await case.call(api_client, world.a_ids, world.b_ids)
     after = await _row_counts(db_session)
     changed = {t: (before[t], after[t]) for t in before if before[t] != after[t]}
     assert not changed, f"{case.key}: a stranger's id changed rows {changed}"
+    assert (_fakes.ingestion, _fakes.retag) == enqueued_before, (
+        f"{case.key}: a stranger's id enqueued work"
+    )
 
     random_ids = _random_ids()
     reference = await case.call(api_client, random_ids, world.b_ids)
+    assert reference.status_code == case.refusal, (
+        f"{case.key}: expected a missing id to be refused with {case.refusal}, "
+        f"got {reference.status_code}"
+    )
     assert _normalised(foreign, world.a_ids, case.sends) == _normalised(
         reference, random_ids, case.sends
     ), f"{case.key}: a stranger's id is distinguishable from a missing one"
 
-    if case.owner_exempt is not None:
-        return
     await sign_in(api_client, db_session, world.a)
     owner_before = await _row_counts(db_session)
     owner = await case.call(api_client, world.a_ids, world.a_ids)
     owner_after = await _row_counts(db_session)
+
+    if case.owner_exempt is not None:
+        assert _normalised(owner, world.a_ids, case.sends) == _normalised(
+            reference, random_ids, case.sends
+        ), (
+            f"{case.key}: owner_exempt says {case.owner_exempt!r}, but the owner's answer now "
+            "differs from the reference — the exemption has expired and must be removed"
+        )
+        return
     reached = owner_after != owner_before or _normalised(
         owner, world.a_ids, case.sends
     ) != _normalised(reference, random_ids, case.sends)
@@ -553,54 +588,125 @@ async def test_a_mismatched_scope_names_only_what_was_sent(
     assert str(curated.id) not in r.text
 
 
-_ID_FIELDS = frozenset({"subject_id", "topic_id", "kc_id", "prereq_kc_id", "item_id"})
+_HTTP_METHODS = frozenset({"get", "put", "post", "delete", "patch", "options", "head", "trace"})
+
+# Every uuid-typed input in the live API that is not a subject/topic/kc/item id, confirmed
+# against `app.openapi()` (see the F1 fix report for how each was checked). One line each for
+# what it actually names — a new uuid input must be added here, or to `CASES`, or the guard
+# fails naming it.
+_NOT_GRAPH_IDS = frozenset(
+    {
+        "learner_id",  # POST /admin/impersonate's target learner, not a graph id
+        "impersonation_id",  # an admin impersonation session id
+        "source_id",  # a Source row id
+        "source_ids",  # Source row ids reassigned between subjects (conversations, commit, ...)
+        "conversation_id",  # a chat conversation id
+        "before",  # a message id used as a pagination cursor
+        "client_turn_id",  # idempotency key for a chat turn
+        "rubric_id",  # an item's optional rubric reference, not a graph id
+        "attempt_id",  # idempotency key for an answer submission
+        "chunk_id",  # a source chunk id
+        "block_id",  # a content block id
+        "memory_id",  # a learner memory row id
+    }
+)
 
 
-def _fields(
-    schema: dict, schemas: dict, seen: frozenset[str] = frozenset(), prefix: str = ""
-) -> set[str]:
-    """Every property path in a JSON schema: `kcs[].kc_id` for a field inside an array."""
+def _resolve(schema: dict, schemas: dict, seen: frozenset[str]) -> Iterator[dict]:
+    """Every concrete schema reachable from `schema` via `$ref`/`anyOf`/`allOf`/`oneOf`."""
     if "$ref" in schema:
         name = schema["$ref"].rsplit("/", 1)[-1]
         if name in seen:
-            return set()
-        return _fields(schemas[name], schemas, seen | {name}, prefix)
-    found: set[str] = set()
+            return
+        yield from _resolve(schemas[name], schemas, seen | {name})
+        return
     for key in ("anyOf", "allOf", "oneOf"):
         for sub in schema.get(key, []):
-            found |= _fields(sub, schemas, seen, prefix)
-    if "items" in schema:
-        found |= _fields(schema["items"], schemas, seen, prefix + "[]")
-    for name, sub in schema.get("properties", {}).items():
-        path = f"{prefix}.{name}" if prefix else name
-        found.add(path)
-        found |= _fields(sub, schemas, seen, path)
+            yield from _resolve(sub, schemas, seen)
+    yield schema
+
+
+def _is_uuid(schema: dict, schemas: dict) -> bool:
+    return any(
+        v.get("type") == "string" and v.get("format") == "uuid"
+        for v in _resolve(schema, schemas, frozenset())
+    )
+
+
+def _uuid_fields(
+    schema: dict, schemas: dict, seen: frozenset[str] = frozenset(), prefix: str = ""
+) -> set[str]:
+    """Every property path whose schema is `type: string, format: uuid`.
+
+    Classifies by type, not name, so a renamed field cannot escape the guard. Walks `$ref`,
+    `items` (marking `[]`), `anyOf`/`allOf`/`oneOf`, and dict values (`additionalProperties`,
+    marking `{}`) — `kcs[].kc_id` for a field inside an array, `topics{}.kc_id` for one inside a
+    dict's values.
+    """
+    found: set[str] = set()
+    for variant in _resolve(schema, schemas, seen):
+        if prefix and _is_uuid(variant, schemas):
+            found.add(prefix)
+        if "items" in variant:
+            found |= _uuid_fields(variant["items"], schemas, seen, prefix + "[]")
+        additional = variant.get("additionalProperties")
+        if isinstance(additional, dict):
+            found |= _uuid_fields(additional, schemas, seen, prefix + "{}")
+        for name, sub in variant.get("properties", {}).items():
+            path = f"{prefix}.{name}" if prefix else name
+            found |= _uuid_fields(sub, schemas, seen, path)
     return found
 
 
-def _graph_id_operations() -> set[tuple[str, str, str]]:
-    """(METHOD, path, field) for every operation accepting a graph or item id, anywhere."""
-    spec = app.openapi()
-    schemas = spec["components"]["schemas"]
+def _leaf_name(field: str) -> str:
+    """The plain field name a path like `kcs[].kc_id` or `source_ids[]` ends in."""
+    trimmed = field
+    while trimmed.endswith("[]") or trimmed.endswith("{}"):
+        trimmed = trimmed[:-2]
+    return trimmed.rsplit(".", 1)[-1]
+
+
+def _graph_id_operations(spec: dict) -> set[tuple[str, str, str]]:
+    """(METHOD, path, field) for every operation accepting a uuid-typed input, anywhere: a path,
+    query or header param, or anything nested in a request body — regardless of its name."""
+    schemas = spec.get("components", {}).get("schemas", {})
     found: set[tuple[str, str, str]] = set()
     for path, operations in spec["paths"].items():
         for method, operation in operations.items():
-            names = {p["name"] for p in operation.get("parameters", [])}
+            if method not in _HTTP_METHODS:
+                continue
+            for param in operation.get("parameters", []):
+                param_schema = param.get("schema", {})
+                fields = _uuid_fields(param_schema, schemas, prefix=param["name"])
+                if _is_uuid(param_schema, schemas):
+                    fields.add(param["name"])
+                found |= {(method.upper(), path, field) for field in fields}
             for content in operation.get("requestBody", {}).get("content", {}).values():
-                names |= _fields(content.get("schema", {}), schemas)
-            for name in names:
-                if name.rsplit(".", 1)[-1] in _ID_FIELDS:
-                    found.add((method.upper(), path, name))
+                fields = _uuid_fields(content.get("schema", {}), schemas)
+                found |= {(method.upper(), path, field) for field in fields}
     return found
+
+
+def _uncovered(
+    operations: set[tuple[str, str, str]], covered: set[tuple[str, str, str]]
+) -> set[tuple[str, str, str]]:
+    """Uuid-typed inputs with neither a `CASES` entry nor an allowlisted leaf name."""
+    return {
+        (method, path, field)
+        for method, path, field in operations - covered
+        if _leaf_name(field) not in _NOT_GRAPH_IDS
+    }
 
 
 def test_every_operation_taking_a_graph_id_is_in_the_table() -> None:
     covered = {(case.method, case.path, case.field) for case in CASES}
-    operations = _graph_id_operations()
+    operations = _graph_id_operations(app.openapi())
 
-    missing = sorted(operations - covered)
+    missing = sorted(_uncovered(operations, covered))
     assert not missing, (
-        f"operations accepting a graph id with no cross-learner case (add one to CASES): {missing}"
+        "operations accepting a uuid with no cross-learner case and no _NOT_GRAPH_IDS entry "
+        f"(add one to CASES, or a commented allowlist entry if it truly is not a graph id): "
+        f"{missing}"
     )
     stale = sorted(covered - operations)
     assert not stale, f"cases naming operations that no longer exist: {stale}"
@@ -609,4 +715,86 @@ def test_every_operation_taking_a_graph_id_is_in_the_table() -> None:
 def test_the_guard_sees_ids_nested_in_request_bodies() -> None:
     """The guard is only as good as its walk. `POST /items` carries its ids inside a list of
     objects, so this pins that the walk reaches them."""
-    assert ("POST", "/api/v1/items", "kcs[].kc_id") in _graph_id_operations()
+    assert ("POST", "/api/v1/items", "kcs[].kc_id") in _graph_id_operations(app.openapi())
+
+
+def test_the_guard_classifies_by_type_not_name() -> None:
+    """Type-based classification must catch what name matching would miss: a renamed array
+    field, an id nested inside a dict's values, and an id moved into a query parameter. Fed a
+    hand-written OpenAPI fragment, not the real app, so this cannot pass by accident of what
+    routes happen to exist today — and does not require adding routes to the real app to prove
+    the walk works."""
+    fragment = {
+        "paths": {
+            "/probe/renamed-array": {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "kc_ids": {
+                                            "type": "array",
+                                            "items": {"type": "string", "format": "uuid"},
+                                        }
+                                    },
+                                }
+                            }
+                        }
+                    },
+                    "responses": {},
+                }
+            },
+            "/probe/dict-value": {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "topics": {
+                                            "type": "object",
+                                            "additionalProperties": {
+                                                "$ref": "#/components/schemas/Probe"
+                                            },
+                                        }
+                                    },
+                                }
+                            }
+                        }
+                    },
+                    "responses": {},
+                }
+            },
+            "/probe/query-param": {
+                "get": {
+                    "parameters": [
+                        {
+                            "name": "focus_topic",
+                            "in": "query",
+                            "schema": {"type": "string", "format": "uuid"},
+                        }
+                    ],
+                    "responses": {},
+                }
+            },
+        },
+        "components": {
+            "schemas": {
+                "Probe": {
+                    "type": "object",
+                    "properties": {"kc_id": {"type": "string", "format": "uuid"}},
+                }
+            }
+        },
+    }
+
+    missing = _uncovered(_graph_id_operations(fragment), covered=set())
+
+    assert missing == {
+        ("POST", "/probe/renamed-array", "kc_ids[]"),
+        ("POST", "/probe/dict-value", "topics{}.kc_id"),
+        ("GET", "/probe/query-param", "focus_topic"),
+    }
