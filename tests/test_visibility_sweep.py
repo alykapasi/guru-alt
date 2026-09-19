@@ -551,3 +551,62 @@ async def test_a_mismatched_scope_names_only_what_was_sent(
         "detail": f"topic {curated_topic.id} does not belong to subject {world.b_ids.subject}"
     }
     assert str(curated.id) not in r.text
+
+
+_ID_FIELDS = frozenset({"subject_id", "topic_id", "kc_id", "prereq_kc_id", "item_id"})
+
+
+def _fields(
+    schema: dict, schemas: dict, seen: frozenset[str] = frozenset(), prefix: str = ""
+) -> set[str]:
+    """Every property path in a JSON schema: `kcs[].kc_id` for a field inside an array."""
+    if "$ref" in schema:
+        name = schema["$ref"].rsplit("/", 1)[-1]
+        if name in seen:
+            return set()
+        return _fields(schemas[name], schemas, seen | {name}, prefix)
+    found: set[str] = set()
+    for key in ("anyOf", "allOf", "oneOf"):
+        for sub in schema.get(key, []):
+            found |= _fields(sub, schemas, seen, prefix)
+    if "items" in schema:
+        found |= _fields(schema["items"], schemas, seen, prefix + "[]")
+    for name, sub in schema.get("properties", {}).items():
+        path = f"{prefix}.{name}" if prefix else name
+        found.add(path)
+        found |= _fields(sub, schemas, seen, path)
+    return found
+
+
+def _graph_id_operations() -> set[tuple[str, str, str]]:
+    """(METHOD, path, field) for every operation accepting a graph or item id, anywhere."""
+    spec = app.openapi()
+    schemas = spec["components"]["schemas"]
+    found: set[tuple[str, str, str]] = set()
+    for path, operations in spec["paths"].items():
+        for method, operation in operations.items():
+            names = {p["name"] for p in operation.get("parameters", [])}
+            for content in operation.get("requestBody", {}).get("content", {}).values():
+                names |= _fields(content.get("schema", {}), schemas)
+            for name in names:
+                if name.rsplit(".", 1)[-1] in _ID_FIELDS:
+                    found.add((method.upper(), path, name))
+    return found
+
+
+def test_every_operation_taking_a_graph_id_is_in_the_table() -> None:
+    covered = {(case.method, case.path, case.field) for case in CASES}
+    operations = _graph_id_operations()
+
+    missing = sorted(operations - covered)
+    assert not missing, (
+        f"operations accepting a graph id with no cross-learner case (add one to CASES): {missing}"
+    )
+    stale = sorted(covered - operations)
+    assert not stale, f"cases naming operations that no longer exist: {stale}"
+
+
+def test_the_guard_sees_ids_nested_in_request_bodies() -> None:
+    """The guard is only as good as its walk. `POST /items` carries its ids inside a list of
+    objects, so this pins that the walk reaches them."""
+    assert ("POST", "/api/v1/items", "kcs[].kc_id") in _graph_id_operations()
