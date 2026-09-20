@@ -176,6 +176,46 @@ def _add_prerequisite_edges(
     return len(seen)
 
 
+async def unique_subject_slug(
+    session: AsyncSession, name: str, *, owner_learner_id: uuid.UUID | None
+) -> str:
+    """A slug free among the subjects sharing this owner (S25b D8).
+
+    Scoped, not global. Counting every slug in the table made the de-duplication suffix an
+    existence oracle: ask for a name a stranger privately used and the ``name_2`` you got back
+    answered a question about their library, for any name worth trying. It also read every slug
+    in the table to create one row.
+
+    The scope is exactly what the creator can already see, which is the rule that makes the
+    suffix say nothing new. For a learner that is their own subjects *plus* the curated ones:
+    every learner can already list the shared library, so de-duplicating against it reveals
+    nothing, and leaving it out would let a learner's subject sit in their catalog sharing a
+    slug with a curated one for no gain. ``owner_learner_id=None`` — approval creating a
+    published copy — scopes to curated subjects alone, because a curated slug must not be
+    pushed along by a private subject nobody reviewing it can see.
+    """
+    owner = (
+        # `== None` would compile to `= NULL`, which is never true: the filter would match
+        # nothing, every curated name would look free, and the failure would stay invisible
+        # until the second curated subject of one name hit the partial unique index.
+        Subject.owner_learner_id.is_(None)
+        if owner_learner_id is None
+        else or_(
+            Subject.owner_learner_id == owner_learner_id,
+            Subject.owner_learner_id.is_(None),
+        )
+    )
+    result = await session.execute(select(Subject.slug).where(owner))
+    taken = {slug for (slug,) in result.all()}
+
+    base = _slugify(name)
+    slug, counter = base, 2
+    while slug in taken:
+        slug = f"{base}_{counter}"
+        counter += 1
+    return slug
+
+
 async def create_subject_with_graph(
     session: AsyncSession,
     subject_name: str,
@@ -187,7 +227,8 @@ async def create_subject_with_graph(
     """Create a Subject with Topics and KCs in one atomic transaction.
 
     Handles multi-level slug deduplication and reassigns owned sources.
-    - Subject slug: globally unique (dedups across all subjects)
+    - Subject slug: unique per owner (S25b D8 — a global scan reported on other learners'
+      private subject names through the suffix it returned; see `unique_subject_slug`)
     - Topic slug: unique within the subject (dedups within topics_data)
     - KC slug: unique within its topic (dedups within topic's kcs)
 
@@ -204,15 +245,7 @@ async def create_subject_with_graph(
     Returns:
         The created Subject (with id set, relationships populated).
     """
-    # Deduplicate subject slug at the global level
-    base_slug = _slugify(subject_name)
-    subject_slug = base_slug
-    result = await session.execute(select(Subject.slug))
-    existing_subject_slugs = {slug for (slug,) in result.all()}
-    counter = 2
-    while subject_slug in existing_subject_slugs:
-        subject_slug = f"{base_slug}_{counter}"
-        counter += 1
+    subject_slug = await unique_subject_slug(session, subject_name, owner_learner_id=learner_id)
 
     # Create the subject and flush to get its ID
     subject = Subject(

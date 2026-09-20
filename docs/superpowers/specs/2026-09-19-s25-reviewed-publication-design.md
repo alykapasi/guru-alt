@@ -107,10 +107,20 @@ accounts and subjects involved, like `impersonations`.
 ## Scoping the slug de-duplication
 
 The constraint change is half the fix; the query that picks a slug is the half that leaks. In
-`create_subject_with_graph`, `select(Subject.slug)` must gain the matching owner filter — the
-caller's own rows when creating an owned subject, `owner_learner_id IS NULL` when creating a
-curated one — so the suffix counts only subjects the caller can already see. This also stops the
-function loading every slug in the table to create one subject.
+`create_subject_with_graph`, `select(Subject.slug)` must gain an owner filter, so that the suffix
+counts only subjects the caller can already see. That rule resolves asymmetrically, and the
+asymmetry is the point:
+
+- Creating an **owned** subject scopes to the learner's own rows **plus the curated ones**. Every
+  learner can already list the whole curated library, so de-duplicating against it reveals nothing
+  — while another learner's private subject is exactly what must not be counted. Leaving curated
+  out would also let a learner's subject share a slug with a curated one in the same catalog, for
+  no gain.
+- Creating a **curated** subject — approval materializing a published copy — scopes to
+  `owner_learner_id IS NULL` alone. A curated slug must not be pushed along by a private subject
+  nobody reviewing the publication can see.
+
+This also stops the function loading every slug in the table to create one subject.
 
 Two traps for the implementer:
 
@@ -240,6 +250,8 @@ gets its own test.
 
 - A and C both create a subject named "Calculus". Both get the slug `calculus` — the second is not
   suffixed, which is the leak closed: C learns nothing about A from the name they were given.
+- A creating "Algebra" when a *curated* "Algebra" exists does get `algebra_2`. The curated library
+  is public, so counting it reveals nothing, and the assertion pins the asymmetry deliberately.
 - A creating a second "Calculus" of their own still gets `calculus_2`: per-owner uniqueness is
   still uniqueness.
 - Two curated subjects cannot share a slug — the partial index refuses the second.
