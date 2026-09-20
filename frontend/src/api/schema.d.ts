@@ -3567,6 +3567,13 @@ export interface components {
             id: string;
             /** Name */
             name: string;
+            /** Owner Learner Id */
+            owner_learner_id?: string | null;
+            /**
+             * Private Source Derived
+             * @default false
+             */
+            private_source_derived: boolean;
             /** Slug */
             slug: string;
         };

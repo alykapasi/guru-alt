@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { PublicationQueue } from "../components/PublicationQueue";
 import { Gauge } from "lucide-react";
 import {
   useAdminActions,
@@ -599,6 +600,8 @@ export function Admin() {
       </section>
 
       <Invitations />
+
+      <PublicationQueue />
 
       <section className="flex flex-col gap-2">
         <h2 className="text-h2">Who has looked at an account</h2>

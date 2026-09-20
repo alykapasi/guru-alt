@@ -20,6 +20,16 @@ class SubjectRead(BaseModel):
     slug: str
     name: str
     description: str | None
+    # NULL means curated (S25). Safe to expose: a learner is only ever shown their own subjects
+    # and curated ones, so the only non-NULL value that can reach them is their own id, which
+    # they already have. It lets the app offer sharing on a subject that is theirs and not on
+    # the shared library, instead of offering it everywhere and letting the API refuse.
+    owner_learner_id: uuid.UUID | None = None
+    # Exposed so the app can say *why* sharing is unavailable rather than offering an action
+    # that answers 422 (S25b D4). It is not what enforces anything — the API refuses the
+    # request whatever the browser renders — it is what keeps a learner from being shown a
+    # door that refuses them. Same reasoning as `is_admin` on `LearnerRead`.
+    private_source_derived: bool = False
 
 
 class TopicCreate(BaseModel):
