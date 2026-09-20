@@ -223,6 +223,53 @@ CASES: list[Case] = [
         ("subject",),
         lambda c, t, o: c.get(f"{API}/subjects/{t.subject}/prerequisite-conflicts"),
     ),
+    # --- publication review (administrator routes) --------------------------------------
+    # An ordinary learner gets 403 on all of these whatever id they send, so the property
+    # worth pinning is that the refusal is *identical* for a real request and an invented
+    # one. Allowlisting `publication_id` instead would have exempted the learner-facing
+    # cancel route above from the guard the day somebody added another one.
+    Case(
+        "GET",
+        "/api/v1/admin/publications/{publication_id}",
+        "publication_id",
+        ("publication",),
+        lambda c, t, o: c.get(f"{API}/admin/publications/{t.publication}"),
+        owner_exempt="every caller without the admin tier gets the same 403, whether the request exists or not — these are review routes, not learner routes",
+        refusal=403,
+    ),
+    Case(
+        "POST",
+        "/api/v1/admin/publications/{publication_id}/approve",
+        "publication_id",
+        ("publication",),
+        lambda c, t, o: c.post(f"{API}/admin/publications/{t.publication}/approve", json={}),
+        owner_exempt="every caller without the admin tier gets the same 403, whether the request exists or not — these are review routes, not learner routes",
+        refusal=403,
+    ),
+    Case(
+        "POST",
+        "/api/v1/admin/publications/{publication_id}/approve",
+        "excluded_item_ids[]",
+        ("item",),
+        lambda c, t, o: c.post(
+            f"{API}/admin/publications/{o.publication}/approve",
+            json={"excluded_item_ids": [str(t.item)]},
+        ),
+        owner_exempt="every caller without the admin tier gets the same 403, whether the request exists or not — these are review routes, not learner routes",
+        refusal=403,
+    ),
+    Case(
+        "POST",
+        "/api/v1/admin/publications/{publication_id}/reject",
+        "publication_id",
+        ("publication",),
+        lambda c, t, o: c.post(
+            f"{API}/admin/publications/{t.publication}/reject",
+            json={"note": "a note long enough to pass"},
+        ),
+        owner_exempt="every caller without the admin tier gets the same 403, whether the request exists or not — these are review routes, not learner routes",
+        refusal=403,
+    ),
     Case(
         "POST",
         "/api/v1/subjects/{subject_id}/publications",

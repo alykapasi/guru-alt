@@ -245,6 +245,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/publications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Publication Queue
+         * @description The review queue, oldest first — the order somebody works through it in.
+         */
+        get: operations["publication_queue_api_v1_admin_publications_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/publications/{publication_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Publication Detail
+         * @description Everything that would ship, answer keys included — this is the review (D3).
+         */
+        get: operations["publication_detail_api_v1_admin_publications__publication_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/publications/{publication_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Publication
+         * @description Materialize the snapshot as a shared subject. One transaction; see the service.
+         */
+        post: operations["approve_publication_api_v1_admin_publications__publication_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/publications/{publication_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject Publication
+         * @description Refuse, with a reason the author can act on.
+         */
+        post: operations["reject_publication_api_v1_admin_publications__publication_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/dev-login": {
         parameters: {
             query?: never;
@@ -1848,6 +1928,16 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /**
+         * ApproveRequest
+         * @description Which items the reviewer struck out, and why they approved.
+         */
+        ApproveRequest: {
+            /** Excluded Item Ids */
+            excluded_item_ids?: string[];
+            /** Note */
+            note?: string | null;
+        };
         /** Body_upload_source_api_v1_sources_upload_post */
         Body_upload_source_api_v1_sources_upload_post: {
             /** File */
@@ -3038,6 +3128,14 @@ export interface components {
             publications: components["schemas"]["PublicationRead"][];
         };
         /**
+         * PublicationQueueRead
+         * @description The review queue, oldest first.
+         */
+        PublicationQueueRead: {
+            /** Publications */
+            publications: components["schemas"]["PublicationReviewRead"][];
+        };
+        /**
          * PublicationRead
          * @description One request, as its author sees it.
          *
@@ -3075,6 +3173,44 @@ export interface components {
             /** Note */
             note?: string | null;
         };
+        /**
+         * PublicationReviewRead
+         * @description One request as the *reviewer* sees it: with the snapshot, and with who asked.
+         *
+         *     The author is named here and nowhere a learner can reach (D6). Anonymity is towards other
+         *     learners, not towards the person deciding — a reviewer judging material with no idea whose
+         *     it is cannot weigh a pattern of requests from one account.
+         */
+        PublicationReviewRead: {
+            /** Author Handle */
+            author_handle: string | null;
+            /** Author Note */
+            author_note: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Published Subject Id */
+            published_subject_id: string | null;
+            /** Review Note */
+            review_note: string | null;
+            /** Reviewed At */
+            reviewed_at: string | null;
+            /** Reviewer Handle */
+            reviewer_handle: string | null;
+            /** Snapshot */
+            snapshot: {
+                [key: string]: unknown;
+            };
+            /** Status */
+            status: string;
+        };
         /** ReadinessReport */
         ReadinessReport: {
             /** Dependencies */
@@ -3095,6 +3231,14 @@ export interface components {
         ReinstateRequest: {
             /** Reason */
             reason?: string | null;
+        };
+        /**
+         * RejectRequest
+         * @description A refusal, with a reason the author can act on.
+         */
+        RejectRequest: {
+            /** Note */
+            note: string;
         };
         /** RetentionPolicyRead */
         RetentionPolicyRead: {
@@ -3876,6 +4020,138 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AccountRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    publication_queue_api_v1_admin_publications_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationQueueRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    publication_detail_api_v1_admin_publications__publication_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationReviewRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_publication_api_v1_admin_publications__publication_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_publication_api_v1_admin_publications__publication_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RejectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationReviewRead"];
                 };
             };
             /** @description Validation Error */

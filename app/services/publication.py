@@ -19,10 +19,11 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.assessment import Item, ItemKC, Rubric
+from app.models.assessment import AssessmentVisibility, Item, ItemKC, ItemOrigin, Rubric
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.publication import Publication, PublicationStatus
+from app.services import knowledge
 
 SOURCE_DERIVED_REFUSAL = "This subject was built from your uploaded material, which stays private."
 NO_KCS_REFUSAL = "This subject has no components yet, so there is nothing to publish."
@@ -252,3 +253,176 @@ __all__ = [
     "request_publication",
     "snapshot_of",
 ]
+
+
+REJECTION_NOTE_MIN = 8
+SHORT_NOTE_REFUSAL = (
+    f"A rejection needs a reason the author can act on — at least {REJECTION_NOTE_MIN} characters."
+)
+NOT_PENDING_REVIEW_REFUSAL = "This request has already been decided."
+
+
+async def approve(
+    session: AsyncSession,
+    publication: Publication,
+    reviewer: Learner,
+    *,
+    excluded_item_ids: list[uuid.UUID] | None = None,
+    note: str | None = None,
+) -> Subject:
+    """Materialize the snapshot as a curated subject, in one transaction (D3).
+
+    **It reads the snapshot, never the live subject.** That is the single most important line
+    in this function: the author may have edited, deleted or rebuilt their subject since asking,
+    and approval that re-read it would ship something no reviewer ever saw. Nothing below
+    touches ``publication.source_subject_id``'s current state.
+
+    Topics and KCs are built directly rather than through ``create_topic``/``create_kc``,
+    because those commit per row and this has to be one transaction — but each KC still goes
+    through ``resolve_concept``, which is the part of the ordinary path that carries a rule
+    (S24 owns concept identity, and a copy that skipped it would be invisible to every query
+    that reasons about what a learner already knows).
+    """
+    if publication.status != PublicationStatus.PENDING:
+        raise CannotPublish(NOT_PENDING_REVIEW_REFUSAL)
+
+    excluded = {str(item_id) for item_id in (excluded_item_ids or [])}
+    snapshot = publication.snapshot
+
+    copy = Subject(
+        slug=await knowledge.unique_subject_slug(
+            session, snapshot["subject"]["name"], owner_learner_id=None
+        ),
+        name=snapshot["subject"]["name"],
+        description=snapshot["subject"].get("description"),
+        # NULL owner is what *makes* it curated (S25). It carries the decision that created it.
+        owner_learner_id=None,
+        publication_id=publication.id,
+    )
+    session.add(copy)
+    await session.flush()
+
+    topics: dict[str, Topic] = {}
+    for entry in snapshot.get("topics", []):
+        topic = Topic(
+            subject_id=copy.id,
+            slug=entry["slug"],
+            name=entry["name"],
+            description=entry.get("description"),
+        )
+        session.add(topic)
+        topics[entry["id"]] = topic
+    await session.flush()
+
+    kcs: dict[str, KC] = {}
+    for entry in snapshot.get("kcs", []):
+        parent = topics.get(entry["topic_id"])
+        if parent is None:
+            continue  # a KC whose topic is not in the snapshot has nowhere to live
+        concept = await knowledge.resolve_concept(session, entry["name"])
+        kc = KC(
+            topic_id=parent.id,
+            slug=entry["slug"],
+            name=entry["name"],
+            description=entry.get("description"),
+            concept_id=concept.id if concept else None,
+        )
+        session.add(kc)
+        kcs[entry["id"]] = kc
+    await session.flush()
+
+    for entry in snapshot.get("edges", []):
+        prereq, dependent = kcs.get(entry["prereq_kc_id"]), kcs.get(entry["kc_id"])
+        if prereq is None or dependent is None:
+            continue
+        session.add(
+            KCEdge(prereq_kc_id=prereq.id, kc_id=dependent.id, weight=entry.get("weight", 1.0))
+        )
+
+    rubrics: dict[str, Rubric] = {}
+    for entry in snapshot.get("rubrics", []):
+        kc = kcs.get(entry["kc_id"])
+        if kc is None:
+            continue
+        rubric = Rubric(
+            visibility=AssessmentVisibility.CURATED,
+            owner_learner_id=None,
+            kc_id=kc.id,
+            name=entry.get("name"),
+            criteria=entry.get("criteria") or {},
+        )
+        session.add(rubric)
+        rubrics[entry["id"]] = rubric
+    await session.flush()
+
+    for entry in snapshot.get("items", []):
+        if entry["id"] in excluded:
+            continue
+        links = [
+            (kcs[link["kc_id"]], link.get("weight", 1.0))
+            for link in entry.get("kc_weights", [])
+            if link["kc_id"] in kcs
+        ]
+        if not links:
+            continue  # an item with nothing to attach to would be unreachable anyway
+        rubric = rubrics.get(entry["rubric_id"]) if entry.get("rubric_id") else None
+        session.add(
+            Item(
+                visibility=AssessmentVisibility.CURATED,
+                owner_learner_id=None,
+                item_type=entry["item_type"],
+                stem=entry["stem"],
+                answer_key=entry.get("answer_key"),
+                difficulty=entry.get("difficulty", 0.0),
+                rubric_id=rubric.id if rubric else None,
+                # Provenance is preserved while ownership is not: who wrote it stays true, and
+                # it never grants authority over the shared copy (see `ItemOrigin`).
+                origin=entry.get("origin", ItemOrigin.LEARNER),
+                author_learner_id=publication.author_id,
+                kc_links=[ItemKC(kc_id=kc.id, weight=weight) for kc, weight in links],
+            )
+        )
+
+    publication.status = PublicationStatus.APPROVED
+    publication.reviewer_id = reviewer.id
+    publication.reviewer_handle = reviewer.handle
+    publication.reviewed_at = datetime.now(UTC)
+    publication.review_note = note
+    publication.excluded_item_ids = sorted(excluded)
+    publication.published_subject_id = copy.id
+
+    await session.commit()
+    await session.refresh(copy)
+    return copy
+
+
+async def reject(
+    session: AsyncSession, publication: Publication, reviewer: Learner, note: str
+) -> Publication:
+    """Refuse a request, with a reason the author can act on.
+
+    The note is required and has a floor, because "no" with nothing attached tells an author
+    only that somebody looked — they cannot fix what they are not told about, and the next
+    request will be the same one.
+    """
+    if publication.status != PublicationStatus.PENDING:
+        raise CannotPublish(NOT_PENDING_REVIEW_REFUSAL)
+    if len(note.strip()) < REJECTION_NOTE_MIN:
+        raise CannotPublish(SHORT_NOTE_REFUSAL)
+
+    publication.status = PublicationStatus.REJECTED
+    publication.reviewer_id = reviewer.id
+    publication.reviewer_handle = reviewer.handle
+    publication.reviewed_at = datetime.now(UTC)
+    publication.review_note = note
+    await session.commit()
+    await session.refresh(publication)
+    return publication
+
+
+async def pending(session: AsyncSession, status: str | None = None) -> list[Publication]:
+    """The review queue, oldest first — the order somebody works through it in."""
+    statement = select(Publication).order_by(Publication.created_at)
+    if status is not None:
+        statement = statement.where(Publication.status == status)
+    return list(await session.scalars(statement))

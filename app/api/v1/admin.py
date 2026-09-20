@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from app.api.deps import CurrentAdmin, IdentityProviderDep, SessionDep, SettingsDep
 from app.core.identity import ProviderError
+from app.models.publication import Publication
 from app.schemas.admin import (
     AccountRead,
     AdminActionRead,
@@ -33,7 +34,15 @@ from app.schemas.admin import (
     ReinstateRequest,
     SuspendRequest,
 )
+from app.schemas.knowledge import SubjectRead
+from app.schemas.publication import (
+    ApproveRequest,
+    PublicationQueueRead,
+    PublicationReviewRead,
+    RejectRequest,
+)
 from app.services import accounts, impersonation
+from app.services import publication as publication_svc
 from app.services.admin import LearnerRoster, learner_usage
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -276,3 +285,65 @@ async def reinstate_learner(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such learner") from None
     except accounts.NotSuspended:
         raise HTTPException(status.HTTP_409_CONFLICT, "that account is not suspended") from None
+
+
+@router.get("/publications", response_model=PublicationQueueRead)
+async def publication_queue(
+    _: CurrentAdmin,
+    session: SessionDep,
+    status_filter: Annotated[str | None, Query(alias="status")] = None,
+):
+    """The review queue, oldest first — the order somebody works through it in."""
+    rows = await publication_svc.pending(session, status_filter)
+    return PublicationQueueRead(
+        publications=[PublicationReviewRead.model_validate(row) for row in rows]
+    )
+
+
+@router.get("/publications/{publication_id}", response_model=PublicationReviewRead)
+async def publication_detail(publication_id: uuid.UUID, _: CurrentAdmin, session: SessionDep):
+    """Everything that would ship, answer keys included — this is the review (D3)."""
+    publication = await session.get(Publication, publication_id)
+    if publication is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such publication request")
+    return publication
+
+
+@router.post("/publications/{publication_id}/approve", response_model=SubjectRead)
+async def approve_publication(
+    publication_id: uuid.UUID,
+    body: ApproveRequest,
+    admin: CurrentAdmin,
+    session: SessionDep,
+):
+    """Materialize the snapshot as a shared subject. One transaction; see the service."""
+    publication = await session.get(Publication, publication_id)
+    if publication is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such publication request")
+    try:
+        return await publication_svc.approve(
+            session,
+            publication,
+            admin,
+            excluded_item_ids=body.excluded_item_ids,
+            note=body.note,
+        )
+    except publication_svc.CannotPublish as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+
+@router.post("/publications/{publication_id}/reject", response_model=PublicationReviewRead)
+async def reject_publication(
+    publication_id: uuid.UUID,
+    body: RejectRequest,
+    admin: CurrentAdmin,
+    session: SessionDep,
+):
+    """Refuse, with a reason the author can act on."""
+    publication = await session.get(Publication, publication_id)
+    if publication is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such publication request")
+    try:
+        return await publication_svc.reject(session, publication, admin, body.note)
+    except publication_svc.CannotPublish as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
