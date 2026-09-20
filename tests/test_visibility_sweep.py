@@ -598,6 +598,7 @@ _NOT_GRAPH_IDS = frozenset(
     {
         "learner_id",  # POST /admin/impersonate's target learner, not a graph id
         "impersonation_id",  # an admin impersonation session id
+        "invitation_id",  # an admin invitation row id
         "source_id",  # a Source row id
         "source_ids",  # Source row ids reassigned between subjects (conversations, commit, ...)
         "conversation_id",  # a chat conversation id

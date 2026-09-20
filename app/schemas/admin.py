@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field
 
 from app.services.impersonation import MIN_REASON_LENGTH
 
@@ -64,3 +64,35 @@ class AdminActionRead(BaseModel):
     status_code: int | None
     created_at: datetime
     completed_at: datetime | None
+
+
+class InvitationCreate(BaseModel):
+    """Invite one address to enroll (S21)."""
+
+    email: EmailStr
+
+
+class InvitationRead(BaseModel):
+    """One invitation: open, accepted, or revoked.
+
+    ``status`` is derived rather than stored, so there is exactly one place deciding what
+    "open" means — the same two columns `Invitation`'s own docstring names.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    email: str
+    invited_by_handle: str
+    created_at: datetime
+    accepted_at: datetime | None
+    revoked_at: datetime | None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def status(self) -> str:
+        if self.accepted_at is not None:
+            return "accepted"
+        if self.revoked_at is not None:
+            return "revoked"
+        return "open"

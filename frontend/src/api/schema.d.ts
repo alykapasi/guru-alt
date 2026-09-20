@@ -119,6 +119,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Invitations
+         * @description Every invitation ever issued, newest first — open, accepted, and revoked alike.
+         */
+        get: operations["invitations_api_v1_admin_invitations_get"];
+        put?: never;
+        /**
+         * Create Invitation
+         * @description Invite one address to enroll (S21).
+         *
+         *     The provider is asked to send the invitation before anything is written — see
+         *     ``app.services.accounts.invite`` for why that ordering is deliberate.
+         */
+        post: operations["create_invitation_api_v1_admin_invitations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/invitations/{invitation_id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke Invitation
+         * @description Close an open invitation, at both ends when the provider will allow it.
+         *
+         *     See ``app.services.accounts.revoke_invitation`` for why a provider that will not answer
+         *     does not stop the local half.
+         */
+        post: operations["revoke_invitation_api_v1_admin_invitations__invitation_id__revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/learners": {
         parameters: {
             query?: never;
@@ -2328,6 +2378,46 @@ export interface components {
             /** Processing */
             processing: number;
         };
+        /**
+         * InvitationCreate
+         * @description Invite one address to enroll (S21).
+         */
+        InvitationCreate: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+        };
+        /**
+         * InvitationRead
+         * @description One invitation: open, accepted, or revoked.
+         *
+         *     ``status`` is derived rather than stored, so there is exactly one place deciding what
+         *     "open" means — the same two columns `Invitation`'s own docstring names.
+         */
+        InvitationRead: {
+            /** Accepted At */
+            accepted_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Email */
+            email: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Invited By Handle */
+            invited_by_handle: string;
+            /** Revoked At */
+            revoked_at: string | null;
+            /** Status */
+            readonly status: string;
+        };
         /** ItemCreate */
         ItemCreate: {
             /** Answer Key */
@@ -3589,6 +3679,90 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdminActionRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    invitations_api_v1_admin_invitations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationRead"][];
+                };
+            };
+        };
+    };
+    create_invitation_api_v1_admin_invitations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvitationCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_invitation_api_v1_admin_invitations__invitation_id__revoke_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationRead"];
                 };
             };
             /** @description Validation Error */

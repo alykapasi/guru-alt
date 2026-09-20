@@ -1,4 +1,4 @@
-"""The administrator's read of this deployment (P10).
+"""The administrator's read and control of this deployment (P10, S21).
 
 Split from ``ops`` on purpose, and the split is about *what is being read* rather than how
 sensitive it feels. ``/ops/*`` reports aggregates — spend, queue depth, which conditions are
@@ -7,10 +7,11 @@ reports people: who registered, what they use, what their use costs. A shared se
 a monitor's configuration is the wrong credential for that, so these take an administrator's
 session and nothing else.
 
-Read-only, deliberately. Everything an administrator might *do* — suspend an account, refund a
-budget, impersonate for support — is a separate decision with its own audit requirements, and
-P10's impersonation half is not started. A portal that can only look is a portal that cannot yet
-be used to do something nobody recorded.
+No longer read-only. Impersonation was the first exception; invitations (S21) are the second,
+and every write either of them makes is a durable record — a visit for one, an
+``AccountAction`` for the other — written in the same transaction as the act itself. A portal
+that can only look is a portal that cannot yet be used to do something nobody recorded; this
+one can be, and everything below stays true to that.
 """
 
 import uuid
@@ -19,17 +20,22 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from app.api.deps import CurrentAdmin, SessionDep, SettingsDep
+from app.api.deps import CurrentAdmin, IdentityProviderDep, SessionDep, SettingsDep
+from app.core.identity import ProviderError
 from app.schemas.admin import (
     AdminActionRead,
     ImpersonationRead,
     ImpersonationRequest,
     ImpersonationStarted,
+    InvitationCreate,
+    InvitationRead,
 )
-from app.services import impersonation
+from app.services import accounts, impersonation
 from app.services.admin import LearnerRoster, learner_usage
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+_PROVIDER_UNAVAILABLE = "sign-in is not configured on this server"
 
 
 @router.get("/learners", response_model=LearnerRoster)
@@ -155,3 +161,64 @@ async def actions(impersonation_id: uuid.UUID, _: CurrentAdmin, session: Session
             .order_by(AdminAction.created_at.desc(), AdminAction.id)
         )
     )
+
+
+@router.post("/invitations", response_model=InvitationRead, status_code=status.HTTP_201_CREATED)
+async def create_invitation(
+    body: InvitationCreate,
+    admin: CurrentAdmin,
+    session: SessionDep,
+    provider: IdentityProviderDep,
+):
+    """Invite one address to enroll (S21).
+
+    The provider is asked to send the invitation before anything is written — see
+    ``app.services.accounts.invite`` for why that ordering is deliberate.
+    """
+    if provider is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _PROVIDER_UNAVAILABLE)
+    try:
+        return await accounts.invite(session, provider, actor=admin, email=str(body.email))
+    except accounts.AlreadyEnrolled:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "that address already has an account"
+        ) from None
+    except accounts.AlreadyInvited:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "that address already has an open invitation"
+        ) from None
+    except ProviderError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "the sign-in provider could not be reached; try again",
+        ) from exc
+
+
+@router.get("/invitations", response_model=list[InvitationRead])
+async def invitations(_: CurrentAdmin, session: SessionDep):
+    """Every invitation ever issued, newest first — open, accepted, and revoked alike."""
+    return await accounts.list_invitations(session)
+
+
+@router.post("/invitations/{invitation_id}/revoke", response_model=InvitationRead)
+async def revoke_invitation(
+    invitation_id: uuid.UUID,
+    admin: CurrentAdmin,
+    session: SessionDep,
+    provider: IdentityProviderDep,
+):
+    """Close an open invitation, at both ends when the provider will allow it.
+
+    See ``app.services.accounts.revoke_invitation`` for why a provider that will not answer
+    does not stop the local half.
+    """
+    if provider is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _PROVIDER_UNAVAILABLE)
+    try:
+        return await accounts.revoke_invitation(
+            session, provider, actor=admin, invitation_id=invitation_id
+        )
+    except accounts.NoSuchInvitation:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such invitation") from None
+    except accounts.NotOpen:
+        raise HTTPException(status.HTTP_409_CONFLICT, "that invitation is not open") from None
