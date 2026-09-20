@@ -51,6 +51,12 @@ _REJECTED = "email or password is incorrect"
 # back through another door exactly the enumeration oracle sign-in refuses to open.
 _RESET_SENT = "if that address has an account, a reset link is on its way"
 
+# Shared by every sign-in door (S21 fix round 1). `/auth/login` and `/auth/exchange` are two
+# live ways in, and they must not disagree about whether a suspended account may come in: a
+# learner who reaches the password form must hear the same refusal Clerk's door already gives,
+# not a 200 that drops them into a shell where everything else 401s.
+_SUSPENDED = "This account is suspended. An administrator can reinstate it."
+
 
 def _client_of(request: Request) -> str:
     """Who is asking, for throttling. The socket peer, not a header.
@@ -141,6 +147,12 @@ async def login(
     except svc.InvalidCredentials as exc:
         await svc.record_failed_sign_in(session, email=str(body.email), client=client)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, _REJECTED) from exc
+    if learner.suspended_at is not None:
+        # The credentials were right; the account is not open. `resolve_session` would refuse
+        # the cookie this would otherwise set on every following request anyway — this just
+        # says so here, instead of routing a suspended learner into a shell that 401s on
+        # everything and looks like Guru is broken rather than like their account is suspended.
+        raise HTTPException(status.HTTP_403_FORBIDDEN, _SUSPENDED)
 
     issued = await svc.issue(session, learner, ttl=timedelta(hours=settings.session_ttl_hours))
     _set_session_cookie(response, issued.token, settings)
@@ -182,10 +194,7 @@ async def exchange(
             "Guru is invite-only. Ask an administrator for an invitation.",
         ) from exc
     except identity.AccountSuspended as exc:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "This account is suspended. An administrator can reinstate it.",
-        ) from exc
+        raise HTTPException(status.HTTP_403_FORBIDDEN, _SUSPENDED) from exc
     except identity.AmbiguousIdentity as exc:
         log.warning("identity.ambiguous", subject=subject, learners=str(exc))
         raise HTTPException(

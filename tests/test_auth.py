@@ -186,6 +186,32 @@ async def test_a_learner_with_no_password_cannot_be_signed_in_as(
     assert r.status_code == 401
 
 
+async def test_a_suspended_account_cannot_log_in_with_the_right_password(
+    anon_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The password door must not disagree with the Clerk door about who may come in (S21 fix
+    round 1) — mirrors `test_identity_exchange.py::test_a_suspended_account_cannot_sign_in`."""
+    await anon_client.post(
+        f"{API}/auth/register", json={"email": "susplogin@example.com", "password": PASSWORD}
+    )
+    await anon_client.post(f"{API}/auth/logout")
+    learner = await db_session.scalar(
+        select(Learner).where(Learner.email == "susplogin@example.com")
+    )
+    assert learner is not None
+    learner.suspended_at = datetime.now(UTC)
+    await db_session.flush()
+
+    r = await anon_client.post(
+        f"{API}/auth/login", json={"email": "susplogin@example.com", "password": PASSWORD}
+    )
+
+    assert r.status_code == 403, r.text
+    assert "suspended" in r.json()["detail"].lower()
+    assert _cookie(r) is None
+    assert (await anon_client.get(f"{API}/auth/me")).status_code == 401
+
+
 # --- what an unauthenticated request gets ----------------------------------------------------
 
 

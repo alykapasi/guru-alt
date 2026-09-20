@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Iterator
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,6 +66,26 @@ async def test_suspending_ends_the_learners_sessions_immediately(
     assert (await api_client.get(f"{API}/auth/me")).status_code == 401
 
 
+async def test_a_session_issued_after_suspension_is_still_refused(
+    admin_client: AsyncClient,
+    anon_client: AsyncClient,
+    db_session: AsyncSession,
+    api_learner: Learner,
+) -> None:
+    """``suspend``'s own revocation ``UPDATE`` only reaches sessions that already exist at that
+    instant — it cannot touch one minted afterwards. This isolates the *other* half of the bite:
+    ``resolve_session``'s own ``suspended_at`` check, which is what stops a session like this one,
+    issued straight through ``tests.conftest.sign_in`` (i.e. ``auth.issue``, which never consults
+    suspension) with no revocation involved at all. Fix round 1, Important 2: deleting the
+    ``resolve_session`` branch fails this test; deleting only the revocation ``UPDATE`` in
+    ``accounts.suspend`` does not, because there is nothing here for that ``UPDATE`` to reach."""
+    assert (await _suspend(admin_client, api_learner.id)).status_code == 200
+
+    await sign_in(anon_client, db_session, api_learner)
+
+    assert (await anon_client.get(f"{API}/auth/me")).status_code == 401
+
+
 async def test_an_administrators_visit_to_a_suspended_account_still_works(
     admin_client: AsyncClient,
     anon_client: AsyncClient,
@@ -88,6 +108,69 @@ async def test_an_administrators_visit_to_a_suspended_account_still_works(
 
     assert r.status_code == 200, r.text
     assert r.json()["id"] == str(api_learner.id)
+
+
+async def test_suspending_the_visited_learner_after_the_visit_started_leaves_the_visit_open(
+    admin_client: AsyncClient,
+    anon_client: AsyncClient,
+    db_session: AsyncSession,
+    api_learner: Learner,
+) -> None:
+    """Unlike the test above (which suspends *before* the visit starts, so the target has no
+    live session for the revocation ``UPDATE`` to reach in the first place), this opens the
+    visit first. At the moment of suspension the target now has two live sessions — their own
+    and the visit's — and only the ``impersonated_by_id IS NULL`` filter on that ``UPDATE`` keeps
+    the visit's alive. Fix round 1, Important 3(b): this makes that filter load-bearing in a
+    test rather than incidental."""
+    settings = get_settings().model_copy(update={"impersonation_enabled": True})
+    app.dependency_overrides[get_app_settings] = lambda: settings
+    try:
+        _, visit = await _visit(admin_client, api_learner)
+        anon_client.headers["authorization"] = f"Bearer {visit['token']}"
+        assert (await anon_client.get(f"{API}/auth/me")).status_code == 200
+
+        assert (await _suspend(admin_client, api_learner.id)).status_code == 200
+
+        r = await anon_client.get(f"{API}/auth/me")
+    finally:
+        app.dependency_overrides.pop(get_app_settings, None)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] == str(api_learner.id)
+
+
+async def test_suspending_the_visiting_administrator_ends_the_visit(
+    admin_client: AsyncClient,
+    anon_client: AsyncClient,
+    db_session: AsyncSession,
+    api_learner: Learner,
+) -> None:
+    """The clause a suspended admin's mid-flight visit relies on
+    (``app/services/auth.py``'s ``admin.suspended_at is not None`` check) had no test at all —
+    without it, a suspended administrator would go on acting *as the learner* through a visit
+    already open, until the visit token's own ``expires_at``: precisely the laundering
+    ``get_current_admin`` exists to prevent (fix round 1, Important 3(a)). An administrator
+    cannot suspend themselves, so a second admin does it."""
+    settings = get_settings().model_copy(update={"impersonation_enabled": True})
+    app.dependency_overrides[get_app_settings] = lambda: settings
+    try:
+        visited_admin_id = (await admin_client.get(f"{API}/auth/me")).json()["id"]
+        _, visit = await _visit(admin_client, api_learner)
+        anon_client.headers["authorization"] = f"Bearer {visit['token']}"
+        assert (await anon_client.get(f"{API}/auth/me")).status_code == 200
+
+        second_admin = await _learner(db_session, "second-admin", admin=True)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as second_admin_client:
+            await sign_in(second_admin_client, db_session, second_admin)
+            suspended = await _suspend(second_admin_client, visited_admin_id)
+            assert suspended.status_code == 200, suspended.text
+
+        r = await anon_client.get(f"{API}/auth/me")
+    finally:
+        app.dependency_overrides.pop(get_app_settings, None)
+
+    assert r.status_code == 401, r.text
 
 
 async def test_a_suspended_learner_cannot_exchange_a_new_identity_for_a_session(
