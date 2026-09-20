@@ -32,6 +32,7 @@ from app.main import app
 from app.models.assessment import Item, ItemKC, ItemOrigin, ItemType
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
+from app.models.publication import CurriculumProposal
 from app.storage import InMemoryBlobStore
 from tests.conftest import sign_in
 
@@ -45,6 +46,7 @@ class Ids:
     kc: uuid.UUID
     kc2: uuid.UUID  # a second component in the same topic, stored as a prerequisite of `kc`
     item: uuid.UUID
+    proposal: uuid.UUID  # a curriculum-generation record (S25b); `/subjects/commit` needs one
 
 
 @dataclass(frozen=True)
@@ -75,7 +77,7 @@ class Case:
 
 
 def _random_ids() -> Ids:
-    return Ids(*(uuid.uuid4() for _ in range(5)))
+    return Ids(*(uuid.uuid4() for _ in range(6)))
 
 
 async def _private_graph(session: AsyncSession, owner: Learner) -> Ids:
@@ -101,8 +103,19 @@ async def _private_graph(session: AsyncSession, owner: Learner) -> Ids:
         kc_links=[ItemKC(kc_id=kc.id)],
     )
     session.add(item)
+    # `/subjects/commit` will not accept another learner's proposal id, so the sweep needs one
+    # per learner to have anything to swap (S25b D4).
+    proposal = CurriculumProposal(learner_id=owner.id, grounded_in_sources=False)
+    session.add(proposal)
     await session.flush()
-    return Ids(subject=subject.id, topic=topic.id, kc=kc.id, kc2=kc2.id, item=item.id)
+    return Ids(
+        subject=subject.id,
+        topic=topic.id,
+        kc=kc.id,
+        kc2=kc2.id,
+        item=item.id,
+        proposal=proposal.id,
+    )
 
 
 @pytest_asyncio.fixture
@@ -198,6 +211,25 @@ CASES: list[Case] = [
         "subject_id",
         ("subject",),
         lambda c, t, o: c.get(f"{API}/subjects/{t.subject}/prerequisite-conflicts"),
+    ),
+    Case(
+        "POST",
+        "/api/v1/subjects/commit",
+        "proposal_id",
+        ("proposal",),
+        # Not a graph id, but it behaves exactly like one: it names a row belonging to one
+        # learner, and a caller who could tell "somebody else's" from "no such thing" could
+        # probe for other learners' activity (S25b D4).
+        lambda c, t, o: c.post(
+            f"{API}/subjects/commit",
+            json={
+                "subject_name": f"Swept {uuid.uuid4().hex[:8]}",
+                "subject_description": None,
+                "topics": [],
+                "source_ids": None,
+                "proposal_id": str(t.proposal),
+            },
+        ),
     ),
     Case(
         "POST",

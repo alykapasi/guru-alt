@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
+from app.models.publication import CurriculumProposal
 from app.models.source import Source, SourceKind, SourceStatus
 from app.schemas.knowledge import SubjectCreate
 from app.services import knowledge as svc
@@ -304,9 +305,25 @@ async def test_create_subject_with_graph_reassigns_sources(db_session: AsyncSess
 # --- API: POST /subjects/commit -----------------------------------------------
 
 
-async def test_commit_subject_creates_full_graph(api_client: AsyncClient) -> None:
+async def _proposal_id(session: AsyncSession, learner: Learner, *, grounded: bool = False) -> str:
+    """A server-issued curriculum-generation record, which `/subjects/commit` requires (S25b).
+
+    Made directly rather than by calling `/onboarding/curriculum`, because these tests are
+    about committing a graph and have no business paying for a generation to get an id.
+    """
+    record = CurriculumProposal(learner_id=learner.id, grounded_in_sources=grounded)
+    session.add(record)
+    await session.flush()
+    await session.commit()
+    return str(record.id)
+
+
+async def test_commit_subject_creates_full_graph(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
     """Endpoint: POST /subjects/commit returns 201 with the subject + full graph."""
     payload = {
+        "proposal_id": await _proposal_id(db_session, api_learner),
         "subject_name": "Trigonometry",
         "subject_description": "Trig basics",
         "topics": [
@@ -331,9 +348,12 @@ async def test_commit_subject_creates_full_graph(api_client: AsyncClient) -> Non
     assert data["id"] is not None
 
 
-async def test_commit_subject_duplicate_name_409(api_client: AsyncClient) -> None:
+async def test_commit_subject_duplicate_name_409(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
     """Endpoint: posting the same subject_name twice returns 409 on second attempt."""
     payload = {
+        "proposal_id": await _proposal_id(db_session, api_learner),
         "subject_name": "Chemistry",
         "subject_description": None,
         "topics": [{"name": "Basics", "description": None, "kcs": []}],

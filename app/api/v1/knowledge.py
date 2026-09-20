@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import CurrentLearner, RetagEnqueuerDep, SessionDep
 from app.models.knowledge import Subject
+from app.models.publication import CurriculumProposal
 from app.schemas.knowledge import (
     KCCreate,
     KCDetail,
@@ -38,6 +39,10 @@ class SubjectCommitRequest(BaseModel):
     subject_description: str | None = None
     topics: list[dict]
     source_ids: list[uuid.UUID] | None = None
+    # Required, not optional (S25b D4). It names the server's own record of the generation this
+    # graph came from, which is where `private_source_derived` is read from — and an *optional*
+    # id is one a client can leave out, which is the same hole the record was built to close.
+    proposal_id: uuid.UUID
 
 
 @asynccontextmanager
@@ -122,6 +127,12 @@ async def commit_subject(
 
     Returns 409 if a subject with this name already exists (case-insensitive).
     """
+    record = await session.get(CurriculumProposal, request.proposal_id)
+    if record is None or record.learner_id != learner.id:
+        # One answer for "no such proposal" and "somebody else's", as everywhere else on this
+        # boundary: a caller able to tell them apart could probe for other learners' activity.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such proposal")
+
     if await svc.subject_name_exists(session, request.subject_name, owner_learner_id=learner.id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -136,6 +147,10 @@ async def commit_subject(
             topics_data=request.topics,
             source_ids=request.source_ids,
             learner_id=learner.id,
+            # From what the server observed, never from the body: the row remembers whether
+            # the generation read this learner's uploads, and moving sources in is grounding
+            # on its own.
+            private_source_derived=record.grounded_in_sources or bool(request.source_ids),
         )
     # Moving a source between subjects invalidated its chunk KC tags, which the call above
     # already deleted. Rebuilding them is a model call per chunk, so it happens in the

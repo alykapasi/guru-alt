@@ -37,6 +37,10 @@ export function CommitStep({ curriculum, sourceIds, onBack }: CommitStepProps) {
       subject_description: curriculum.subject_description || null,
       topics: curriculum.topics,
       source_ids: sourceIds.length ? sourceIds : null,
+      // Carried straight back from the generation. The learner may have edited the topics
+      // above; this says which generation they started from, and the server decides from its
+      // own record whether that one read their uploads.
+      proposal_id: curriculum.proposal_id,
     };
     commitSubject.mutate(payload);
   }

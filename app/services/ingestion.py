@@ -95,6 +95,10 @@ async def create_source(
     subject_id, topic_id = await knowledge.resolve_source_scope(
         session, learner_id=learner_id, subject_id=subject_id, topic_id=topic_id
     )
+    # Source material is reaching this subject's graph, so the subject can never be published
+    # (S25b D4). Latched here, in the same transaction as the row that scopes it — a flag set
+    # afterwards is a window in which the subject is publishable.
+    await knowledge.mark_source_derived(session, subject_id)
     source = Source(
         learner_id=learner_id,
         kind=kind,
@@ -195,6 +199,9 @@ async def create_or_reuse_source(
     subject_id, topic_id = await knowledge.resolve_source_scope(
         session, learner_id=learner_id, subject_id=subject_id, topic_id=topic_id
     )
+    # Also here, not only in `create_source` below: a re-upload into a subject returns early
+    # without creating anything, and that is still this material arriving in that graph.
+    await knowledge.mark_source_derived(session, subject_id)
     existing = await find_duplicate(
         session,
         learner_id=learner_id,

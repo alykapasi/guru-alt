@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import structlog
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import prerequisites
@@ -176,6 +176,26 @@ def _add_prerequisite_edges(
     return len(seen)
 
 
+async def mark_source_derived(session: AsyncSession, subject_id: uuid.UUID | None) -> None:
+    """Latch ``private_source_derived`` on a subject source material has reached (S25b D4).
+
+    A latch, not a setter: every trigger sets it, nothing clears it, and calling this on a
+    subject that already carries it is a no-op rather than an error — which is what lets each
+    trigger call it without first asking whether one of the others got there already.
+
+    ``subject_id=None`` does nothing, so a caller with an unscoped source does not have to
+    branch. The update runs in the caller's transaction on purpose: a flag set in a later one
+    is a window in which the subject is publishable.
+    """
+    if subject_id is None:
+        return
+    await session.execute(
+        update(Subject)
+        .where(Subject.id == subject_id, Subject.private_source_derived.is_(False))
+        .values(private_source_derived=True)
+    )
+
+
 async def unique_subject_slug(
     session: AsyncSession, name: str, *, owner_learner_id: uuid.UUID | None
 ) -> str:
@@ -223,6 +243,7 @@ async def create_subject_with_graph(
     topics_data: list[dict],
     source_ids: list[uuid.UUID] | None,
     learner_id: uuid.UUID,
+    private_source_derived: bool = False,
 ) -> CurriculumResult:
     """Create a Subject with Topics and KCs in one atomic transaction.
 
@@ -255,6 +276,9 @@ async def create_subject_with_graph(
         # A curriculum generated for a learner from their own goal is theirs (S25). Curated
         # subjects are created deliberately and carry NULL; nothing reaches this path.
         owner_learner_id=learner_id,
+        # Decided by the caller from what the *server* observed — the proposal row, or the
+        # presence of sources to move in. Never from anything the request body claims (S25b D4).
+        private_source_derived=private_source_derived,
     )
     session.add(subject)
     await session.flush()
@@ -353,6 +377,9 @@ async def create_subject_with_graph(
                 ChunkKC.chunk_id.in_(select(Chunk.id).where(Chunk.source_id.in_(reassigned)))
             )
         )
+        # Sources genuinely moved into this subject, whatever the caller believed when it
+        # passed `private_source_derived`. The server saw it happen, so the server sets it.
+        subject.private_source_derived = True
 
     # Single atomic commit
     await session.commit()

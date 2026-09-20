@@ -2010,6 +2010,11 @@ export interface components {
         };
         /** CurriculumResponse */
         CurriculumResponse: {
+            /**
+             * Proposal Id
+             * Format: uuid
+             */
+            proposal_id: string;
             /** Subject Description */
             subject_description: string;
             /** Subject Name */
@@ -3252,6 +3257,11 @@ export interface components {
          * @description Request to commit a subject with its topics and KCs.
          */
         SubjectCommitRequest: {
+            /**
+             * Proposal Id
+             * Format: uuid
+             */
+            proposal_id: string;
             /** Source Ids */
             source_ids?: string[] | null;
             /** Subject Description */

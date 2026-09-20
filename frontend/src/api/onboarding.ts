@@ -35,6 +35,12 @@ export interface CurriculumProposal {
   subject_name: string;
   subject_description: string;
   topics: TopicProposal[];
+  /**
+   * The server's record of this generation. It has to travel back on commit: whether the
+   * curriculum was built from the learner's own uploads decides whether the subject can ever
+   * be published, and the server reads that from this row rather than from anything we send.
+   */
+  proposal_id: string;
 }
 
 export interface GoalTurnBody {
@@ -49,6 +55,8 @@ export interface SubjectCommitPayload {
   subject_description: string | null;
   topics: TopicProposal[];
   source_ids: string[] | null;
+  /** From the generation that produced these topics — see `CurriculumProposal`. */
+  proposal_id: string;
 }
 
 export interface CreatedSubject {
