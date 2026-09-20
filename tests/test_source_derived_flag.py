@@ -19,7 +19,7 @@ from httpx import AsyncClient, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_llm_client
+from app.api.deps import get_blob_store, get_ingestion_enqueuer, get_llm_client
 from app.llm.registry import fake_llm_client
 from app.llm.types import ModelRole
 from app.main import app
@@ -27,6 +27,7 @@ from app.models.knowledge import Subject
 from app.models.learner import Learner
 from app.models.publication import CurriculumProposal
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
+from app.storage import InMemoryBlobStore
 from tests.embedding import FAKE_SPACE
 
 API = "/api/v1"
@@ -51,6 +52,27 @@ def fake_llm_curriculum() -> Iterator[None]:
     app.dependency_overrides[get_llm_client] = lambda: fake_llm_client(CURRICULUM_REPLY)
     yield
     app.dependency_overrides.pop(get_llm_client, None)
+
+
+@pytest.fixture
+def fake_ingest() -> Iterator[InMemoryBlobStore]:
+    """Point the API's object store at memory and swallow the enqueued job.
+
+    Required by every test here that uploads through the endpoint: `BlobStoreDep` otherwise
+    builds the real S3 client and reaches a MinIO that CI does not run, so the test passes
+    only on a machine where docker compose happens to be up. These two asserted the flag
+    without it and were green locally and red in CI for exactly that reason.
+    """
+    store = InMemoryBlobStore()
+
+    async def _enqueue(source_id: uuid.UUID) -> None:
+        return None
+
+    app.dependency_overrides[get_blob_store] = lambda: store
+    app.dependency_overrides[get_ingestion_enqueuer] = lambda: _enqueue
+    yield store
+    app.dependency_overrides.pop(get_blob_store, None)
+    app.dependency_overrides.pop(get_ingestion_enqueuer, None)
 
 
 async def _retrievable_source(session: AsyncSession, learner: Learner) -> Source:
@@ -251,7 +273,10 @@ async def test_source_ids_at_commit_flag_the_subject(
 
 
 async def test_uploading_a_source_into_a_subject_flags_it(
-    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    api_learner: Learner,
+    fake_ingest: InMemoryBlobStore,
 ) -> None:
     """The upload path, which reaches a subject without any curriculum generation at all."""
     subject = Subject(
@@ -273,7 +298,10 @@ async def test_uploading_a_source_into_a_subject_flags_it(
 
 
 async def test_the_flag_is_a_latch(
-    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    api_learner: Learner,
+    fake_ingest: InMemoryBlobStore,
 ) -> None:
     """Running a trigger against an already-flagged subject is a no-op, not an error."""
     subject = Subject(
