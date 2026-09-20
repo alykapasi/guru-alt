@@ -1,6 +1,8 @@
 # S25b — Reviewed publication — Design
 
-**Status:** Approved design (2026-09-19). Feeds an implementation plan under
+**Status:** Approved design (2026-09-19), amended 2026-09-20 with D8 (per-owner subject slugs),
+carried over from S25a's review, which deferred it for needing a migration that slice forbade.
+Feeds an implementation plan under
 `docs/superpowers/plans/`. Third of three V0 workstream-1 slices. It depends on
 [S25a visibility](2026-09-19-s25-visibility-sweep-design.md) for the boundary it publishes across,
 and uses the admin tier as it stands after [S21](2026-09-19-s21-clerk-identity-design.md).
@@ -41,6 +43,14 @@ approval creates an immutable shared copy. Nothing private travels with it.
   unlists the previous one. Withdrawal also unlists. Neither removes access for learners who
   already have a lesson plan on the subject: it was reviewed as shareable, so reaching it by id is
   not a privacy leak.
+- **D8 — Subject slugs are unique per owner, not globally.** Carried here from S25a's review,
+  which deferred it for needing a migration that slice forbade. Today `subjects.slug` is globally
+  unique and `create_subject_with_graph` de-duplicates against *every* slug in the table, so naming
+  a subject something another learner already has privately yields `name_2` — and that suffix
+  answers "does a stranger have a subject by this name?" for any name the asker cares to try. It is
+  a probe anyone can repeat: create, read the slug, delete. S25a closed listing and writing across
+  the ownership boundary; this is the last reader of another learner's private material left in the
+  graph API, and it belongs to this slice because `0056` is already reshaping `subjects`.
 
 ## Data — migration `0056_publication`
 
@@ -49,6 +59,18 @@ approval creates an immutable shared copy. Nothing private travels with it.
 - `subjects.publication_id` (FK publications, SET NULL): set on published copies.
 - `subjects.superseded_by_id` (FK subjects, SET NULL).
 - `subjects.withdrawn_at` (timestamptz, nullable) and `withdrawn_reason` (text, nullable).
+- **Slug uniqueness moves from global to per-owner (D8).** Drop the unique index on
+  `subjects.slug` and replace it with two constraints that together say what the old one meant to:
+  - `UniqueConstraint("owner_learner_id", "slug")` — one learner's own subjects have distinct
+    slugs. Postgres does not treat NULLs as equal, so this constrains *owned* rows only and says
+    nothing about curated ones.
+  - a partial unique index on `slug` `WHERE owner_learner_id IS NULL` — curated subjects, which
+    are the shared library and are seen by everyone, stay unique among themselves. Without it the
+    first constraint would let two curated subjects share a slug.
+
+  No backfill and no collision risk: this only *loosens* uniqueness, so every existing row already
+  satisfies both constraints. A non-unique index on `slug` stays for the ordering in
+  `list_subjects`.
 - `publications`:
   - `id`, `created_at`;
   - `source_subject_id` (FK subjects, SET NULL);
@@ -62,6 +84,28 @@ approval creates an immutable shared copy. Nothing private travels with it.
 
 The foreign keys are SET NULL, and the handles are kept as text, so the record outlives the
 accounts and subjects involved, like `impersonations`.
+
+## Scoping the slug de-duplication
+
+The constraint change is half the fix; the query that picks a slug is the half that leaks. In
+`create_subject_with_graph`, `select(Subject.slug)` must gain the matching owner filter — the
+caller's own rows when creating an owned subject, `owner_learner_id IS NULL` when creating a
+curated one — so the suffix counts only subjects the caller can already see. This also stops the
+function loading every slug in the table to create one subject.
+
+Two traps for the implementer:
+
+- Write the curated filter as `Subject.owner_learner_id.is_(None)`. `== None` compiles to
+  `= NULL`, which is never true, and the filter would silently match no rows — a de-duplication
+  loop that always thinks the name is free, and an `IntegrityError` on the second curated subject
+  of the same name.
+- `create_subject` (the direct path) takes `data.slug` from its caller and de-duplicates nothing.
+  It is unreachable by learners today, but approval in this slice calls it with a curated slug, so
+  approval owns picking one that does not collide.
+
+The subject-name uniqueness the learner *experiences* changes with this: two learners may now both
+have a subject slugged `calculus`. That is the point — it is what makes the slug stop reporting on
+somebody else's library.
 
 ## Setting the source-derived flag
 
@@ -157,11 +201,21 @@ gets its own test.
 - Migration round-trip with data: the backfill marks existing owned subjects and leaves curated
   ones.
 
+**Slug scope (D8):**
+
+- A and C both create a subject named "Calculus". Both get the slug `calculus` — the second is not
+  suffixed, which is the leak closed: C learns nothing about A from the name they were given.
+- A creating a second "Calculus" of their own still gets `calculus_2`: per-owner uniqueness is
+  still uniqueness.
+- Two curated subjects cannot share a slug — the partial index refuses the second.
+- The migration round-trips on data that the old global constraint permitted.
+
 ## Delivery
 
 One commit per step, each tagged `[S25]`, in this order:
 
-1. migration `0056` and the source-derived flag at every trigger;
+1. migration `0056` (including the slug constraint swap), the source-derived flag at every trigger,
+   and the scoped slug de-duplication;
 2. author request, snapshot and cancel;
 3. admin review and approval materialization;
 4. supersede, withdraw and catalog;
