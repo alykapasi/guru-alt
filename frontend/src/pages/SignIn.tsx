@@ -4,6 +4,8 @@ import { Loader2 } from "lucide-react";
 import { Logo } from "../components/Logo";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { AuthFailed, useCurrentLearner, useDevLogin, useLogin, useRegister } from "../api/auth";
+import { ClerkSignInPanel } from "../auth/ClerkPanels";
+import { clerkEnabled } from "../auth/mode";
 
 type Mode = "signin" | "register";
 
@@ -34,6 +36,25 @@ export function SignIn() {
 
   if (isPending) return <Centered>Checking your session…</Centered>;
   if (learner) return <Navigate to={next} replace />;
+
+  // With a key, Clerk owns this page: its panel handles password, recovery and the social
+  // providers, and the exchange inside it turns the Clerk session into Guru's. Task 9 removes
+  // the form below; until then both modes work, which is what keeps this commit green in a
+  // checkout that has no Clerk account (S21).
+  if (clerkEnabled) {
+    return (
+      <div className="bg-base-100 min-h-svh">
+        <header className="mx-auto flex h-16 max-w-[1280px] items-center justify-between px-6">
+          <Logo />
+          <ThemeToggle />
+        </header>
+        <main className="mx-auto flex max-w-md flex-col items-center gap-6 px-6 py-16">
+          <h1 className="text-h2 text-base-content self-start">Sign in</h1>
+          <ClerkSignInPanel />
+        </main>
+      </div>
+    );
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();

@@ -7,9 +7,10 @@ there is one credential and one table behind both.
 """
 
 from datetime import timedelta
+from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 from sqlalchemy import select
 
 from app.api.deps import (
@@ -162,11 +163,11 @@ async def login(
 
 @router.post("/exchange", response_model=LearnerRead)
 async def exchange(
-    request: Request,
     response: Response,
     session: SessionDep,
     settings: SettingsDep,
     provider: IdentityProviderDep,
+    authorization: Annotated[str | None, Header()] = None,
 ):
     """Trade a proven identity for a Guru session (S21).
 
@@ -179,7 +180,10 @@ async def exchange(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "sign-in is not configured on this server"
         )
-    header = request.headers.get("authorization", "")
+    # Declared as a parameter rather than read off the raw request so the OpenAPI document
+    # says this endpoint takes it — which is what lets the generated client send it instead of
+    # every caller hand-rolling a fetch around the typed one (S21).
+    header = authorization or ""
     token = header[7:].strip() if header[:7].lower() == "bearer " else ""
     if not token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "not authenticated")

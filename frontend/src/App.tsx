@@ -6,6 +6,8 @@ import { ChatShell } from "./components/chat/ChatShell";
 import { SessionShell } from "./components/lessons/SessionShell";
 import { Landing } from "./pages/Landing";
 import { SignIn } from "./pages/SignIn";
+import { ClerkSignUpPanel } from "./auth/ClerkPanels";
+import { clerkEnabled } from "./auth/mode";
 import { Chat } from "./pages/Chat";
 import { ChatIndex } from "./pages/ChatIndex";
 import { Lessons } from "./pages/Lessons";
@@ -37,7 +39,8 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<Landing />} />
-        <Route path="/signin" element={<SignIn />} />
+        <Route path="/signin/*" element={<SignIn />} />
+        {clerkEnabled && <Route path="/sign-up/*" element={<ClerkSignUpPanel />} />}
         {/* Everything under /app needs a learner. The API refuses an unauthenticated request
             regardless; this is what keeps a signed-out browser off a shell of failed calls. */}
         <Route element={<RequireLearner />}>

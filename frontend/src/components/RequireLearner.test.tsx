@@ -5,6 +5,19 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RequireLearner } from "./RequireLearner";
 import { API_BASE_URL } from "../api/client";
 
+/** A build with no publishable key must not touch Clerk at all (S21).
+ *
+ * `ClerkProvider` is not mounted in that build, so any Clerk hook called here would throw —
+ * which is exactly what this mock does. The keyless build is what vitest, CI, the Playwright
+ * journeys and a checkout with nobody's Clerk account all run, so "it happens to work because
+ * the key is undefined" is not good enough: nothing on this path may reach Clerk. */
+vi.mock("@clerk/react", () => {
+  const refuse = () => {
+    throw new Error("a keyless build must not touch Clerk");
+  };
+  return { useAuth: refuse, useClerk: refuse, SignIn: refuse, SignUp: refuse, UserButton: refuse };
+});
+
 /** The gate is not the security boundary — the API refuses an unauthenticated request
  * whatever renders here. What these cover is that a signed-out browser is sent to sign in
  * instead of rendering a shell whose every call 401s, and that where they were going
@@ -53,6 +66,14 @@ describe("the learner gate", () => {
   });
 
   it("lets a signed-in learner through", async () => {
+    answerMe(200, { id: "l-1", handle: "ada", display_name: "Ada", email: "ada@example.com" });
+    renderAt("/app/notes");
+    expect(await screen.findByText("the notes page")).toBeInTheDocument();
+  });
+
+  it("lets a learner through a keyless build without touching Clerk", async () => {
+    // The mock above throws on any Clerk call, so this passing is the assertion: the gate
+    // rendered its children having never entered Clerk's tree.
     answerMe(200, { id: "l-1", handle: "ada", display_name: "Ada", email: "ada@example.com" });
     renderAt("/app/notes");
     expect(await screen.findByText("the notes page")).toBeInTheDocument();
