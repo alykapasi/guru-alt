@@ -27,6 +27,17 @@
 > chat. Historical transcripts are not backfilled. This completes a bounded alpha-admin slice;
 > the remaining v0 workstreams and release gates are still open.
 
+> **Identity, private ownership and reviewed publication implemented, 2026-09-21:** V0 workstream 1
+> landed in three slices (tracker items S25a, S21, S25b — see
+> [Phase 10](#phase-10--lightweight-auth--admin-portal)).
+> Every operation taking a graph id now passes one visibility gate; identity is delegated to Clerk
+> and Guru's own password system is deleted; enrollment is invitation-controlled; and sharing a
+> subject is a request, an administrator's review of a frozen snapshot, and an immutable anonymous
+> copy, with upload-derived material never publishable. Covered by offline service/API tests, a
+> migration round-trip, component tests and browser journeys. **Not established:** no deployment has
+> talked to a real Clerk endpoint, and production mail, account recovery in a real environment, and
+> the existing-data ownership migration against production data all remain open.
+
 **Working agreement**
 
 - Keep changes small and reviewable; check in with the maintainer between slices.
@@ -947,26 +958,44 @@ the hand-written baselines on real-data eval sets.
 an admin view into cost, usage, and users.
 
 **Scope**
-- ☐ **Lightweight auth**: login (email/password or a single OAuth provider — design-time call),
-  session/token issuance, replacing the stubbed `get_current_learner` seam with a real resolver.
-  `learner_id` is already threaded everywhere behind that seam, so this is a swap, not a rewire.
-- ☐ **Admin portal**: operator-only views for **cost & token usage** (the per-call `LLMCall` log
-  already captures this, tagged by role+model), **user management**, and other operational signals
-  as they're needed.
-- ☐ **Root / impersonation access** for alpha/beta support: an admin can act into another account —
-  built with an **explicit scope, mandatory audit logging of every impersonation, and a clean
-  removal seam**. It is a temporary alpha/beta affordance removed at full release, not a permanent
-  backdoor.
-- ☐ Authorization boundary: learner vs. admin roles; the admin surface gated separately from the
-  learner app.
+- ☑ **Auth**: the design-time call went to a **hosted provider (Clerk)** rather than a password
+  system of our own. `get_current_learner` was already the seam; the swap put `app/core/identity.py`
+  behind it and left every caller untouched.
+- ☑ **Admin portal**: operator-only views for **cost & token usage** (the per-call `LLMCall` log,
+  tagged by role+model), **user management**, invitations, suspension, and the publication review
+  queue.
+- ☑ **Root / impersonation access** for alpha/beta support: read-only, time-boxed,
+  reason-required, audited in the same transaction that issues the token, and off unless
+  `GURU_IMPERSONATION_ENABLED=true`.
+- ☑ Authorization boundary: learner vs. admin, the admin surface gated separately — and,
+  from S25, **ownership** as the graph's authorization model rather than roles.
 
 **DoD:** a learner can create an account and log in (no more stub); an admin can log into the portal,
 see cost/token/usage and manage users, and impersonate an account with every impersonation audited;
 the impersonation path sits behind a single seam that can be disabled/removed for full release.
 
-> Not started. Deliberately lightweight — full production auth hardening (rate limiting, real session
-> security, provider hardening) is Phase 11. This is "enough to run supervised tests with real
-> accounts + operator visibility," not the final auth system.
+> **Landed** as tracker items S21 and S25 across three slices on `feat/v0-identity-ownership`.
+>
+> **S25a — visibility sweep.** One gate (`is_visible_to` / `is_writable_by`) for every graph id,
+> and a guard test that fails when any new operation taking a graph id escapes the table, so the
+> sweep cannot silently rot.
+>
+> **S21 — hosted identity.** Clerk owns passwords, recovery, verification and social sign-in; Guru
+> stores none. One module imports the SDK; the browser spends a Clerk token once at
+> `POST /auth/exchange` for the opaque session cookie Guru already used. Guru keeps invitation-
+> controlled enrollment, the `is_admin` tier, suspension/reinstatement and audited visits. Guru's
+> own password system was deleted, with existing learners' Argon2 digests handed to Clerk so they
+> keep the password they had. 503 and 401 are deliberately different answers, so a provider outage
+> cannot present as "everyone is signed out."
+>
+> **S25b — reviewed publication.** Sharing is a request, an administrator's review of a *frozen*
+> snapshot, and an immutable anonymous copy in the curated catalog; the original stays private.
+> Material derived from a learner's uploads is never publishable, and that flag is recorded
+> server-side rather than carried by the client. Withdrawal and superseding unlist without deleting.
+>
+> **Not yet done:** no deployment has been pointed at a real Clerk application — `npx clerk init`
+> and production mail remain. Full auth hardening (rate limiting, provider hardening) is still
+> Phase 11, as is removing the impersonation affordance.
 
 ---
 

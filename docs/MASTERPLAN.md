@@ -213,8 +213,14 @@ model, a distillation step, format-selection logic) than a frontend-only slice.
 ## 5. Domain Model (concepts)
 
 - **Learner** — an end user. Owns a learner model (mastery + profile), memory, goals, and event
-  history. Auth identity is **stubbed** for MVP behind a clean seam (§7).
-- **Knowledge graph** — Subjects, Topics, KCs, prerequisite edges (§4.1).
+  history. Identity is **hosted** (Clerk) behind the seam in `app/core/identity.py`; Guru holds no
+  credentials and keeps authorization for itself (§7).
+- **Knowledge graph** — Subjects, Topics, KCs, prerequisite edges (§4.1). Every subject is either
+  **one learner's own** (`owner_learner_id`) or **curated** for everyone (NULL) — the graph has no
+  third state, and ownership is the entire authorization model for it.
+- **Publication** — a learner's request to share a subject, the frozen snapshot it was requested
+  against, and an administrator's decision on it. Approval writes an **immutable, anonymous copy**
+  into the curated catalog; it never makes the original public (§7).
 - **LearnerKCState** — continuous ability + uncertainty + review schedule per (learner, KC).
 - **Learner profile** — multi-dimensional, behavior-derived traits of *how* a learner learns (§4.8);
   each dimension has value + uncertainty + trait/state + source. Complements **Memory** (facts).
@@ -348,7 +354,9 @@ privacy/compliance gate.
 | OCR / ASR | Vision-LLM OCR + Whisper | Best on handwriting, least bespoke infra; fits the role registry. |
 | Content boundary | Conversations scoped to a subject (or explicit "general") + optional per-source narrowing; retrieval never crosses subject boundaries | Prevents cross-subject leakage (e.g. a physics chat pulling art-history chunks) while keeping Memory intentionally cross-subject for personal facts/mnemonics. |
 | Citation display | v1 shows the cited chunk's own extracted text in a pane, not a re-rendered original-format viewer | Works uniformly across every source type (PDF/audio/web/etc.) with zero new per-format viewer infra; a native viewer is a later, additive upgrade — the locator data for one already exists. |
-| Auth | Stubbed behind a seam | Defer identity; thread `learner_id` everywhere from day one. |
+| Auth | **Hosted identity (Clerk), authorization ours** | Passwords, recovery and social sign-in are a solved, security-sensitive problem worth renting; who may enroll, who administers and who is suspended are product decisions worth owning. One module imports the SDK; a token is exchanged once for the existing session cookie, so nothing downstream knows Clerk exists. |
+| Authorization shape | Ownership + one admin tier — **no RBAC** | Relationship (`owner_learner_id`) answers almost every question a role would, and answers it per-row; a role table would add a layer without adding a decision. `is_admin` covers the one genuinely global tier. Revisit when a third party needs partial access to somebody else's material. |
+| Sharing | Reviewed publication of a frozen snapshot | A visibility flag on the original makes every later edit public retroactively, and nobody reviews an edit. Copying what was actually reviewed is the only version where the review means anything; material derived from a learner's own uploads is never publishable. |
 | Connectivity | Online-first | Ship the MVP; design data model so offline/sync can be added. |
 | Monetization | None in MVP | Focus on the learning loop. |
 

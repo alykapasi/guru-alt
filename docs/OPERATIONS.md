@@ -48,15 +48,27 @@ Secrets that must be set explicitly in production:
 | `GURU_CORS_ORIGINS` | The real frontend origin, not `*` |
 | `GURU_SESSION_COOKIE_SECURE=true` | Without it the session cookie is sent over plain HTTP, where anything on the path can read and replay it |
 | `GURU_DEV_AUTO_LOGIN=false` | `POST /auth/dev-login` issues a session with **no credential** — it is not a weak password, it is no password |
+| `GURU_CLERK_SECRET_KEY` | Identity. Without it `/auth/exchange` and the invitation routes answer 503 and nobody can sign in |
+| `GURU_CLERK_JWT_KEY` | The instance's JWKS public key. With it, verifying a session token touches no network; without it every verification is a round trip, and a Clerk outage becomes a Guru outage |
+| `GURU_CLERK_AUTHORIZED_PARTIES` | Whose tokens are accepted, checked against the token's `azp`. Empty falls back to `GURU_CORS_ORIGINS`; with neither set there is no allowlist |
 | `GURU_OPS_TOKEN` | The monitor's credential for `/api/v1/ops/*`. Without it those reads admit only an administrator's session — which the database has to resolve, and the database is one of the things they exist to diagnose |
 
 ### Identity (S21)
 
-Learners sign in with an email address and a password (Argon2id), and hold an opaque session
-token in an httpOnly cookie; the same token is accepted as `Authorization: Bearer` for
-non-browser clients. Sessions are rows in `learner_sessions`, checked on every request, so
-revocation is immediate — `POST /auth/logout-all` ends every session a learner has, and
-deleting an account cascades theirs away.
+**Clerk owns credentials; Guru owns authorization.** Passwords, recovery mail, verification and
+the social providers are Clerk's — Guru stores none of them. The browser signs in with Clerk and
+spends that token once at `POST /auth/exchange`, receiving the opaque session token in an httpOnly
+cookie that Guru always used; the same token is accepted as `Authorization: Bearer` for non-browser
+clients. Sessions remain rows in `learner_sessions`, checked on every request, so revocation is
+immediate — `POST /auth/logout-all` ends every session a learner has, and deleting an account
+cascades theirs away.
+
+Guru keeps the decisions that are its own: who may enroll (invitations), who is an administrator,
+whose account is suspended, and who looked at whose data. [RUNBOOK §11](RUNBOOK.md#11-identity-s21)
+has the provisioning steps and the symptom-to-owner table; the one operational rule worth repeating
+here is that **503 and 401 are deliberately different answers** — a 503 means Guru could not ask
+Clerk about somebody, a 401 means Clerk answered and the answer was no. If an outage ever starts
+reporting as 401 you will see every learner signed out at once with nothing to alert on.
 
 The worker prunes sessions that can no longer authenticate anybody every
 `GURU_SESSION_PURGE_INTERVAL_SECONDS` (default hourly; `0` turns it off). A revoked row is kept
@@ -91,7 +103,13 @@ quiet learners last, so the cap removes exactly them, and a truncated page looks
 complete one without it. **Administrator session only**, not the ops token: the token is a
 shared secret in a monitor's configuration and this is not an aggregate.
 
-The portal is at `/app/admin`, offered in the nav only to an administrator.
+The portal is at `/app/admin`, offered in the nav only to an administrator. It also carries the
+invitation list, suspension and reinstatement, and the **publication review queue** — the only
+route by which a learner's private curriculum enters the shared catalog. Reviewing is a product
+judgement rather than an operational one, so it is documented in
+[RUNBOOK §12](RUNBOOK.md#12-publication-review-s25b); what matters operationally is that the queue
+is administrator-session only, never the ops token, and that approval writes a copy rather than
+flipping a flag on the author's subject.
 
 ### Viewing a learner's account
 
