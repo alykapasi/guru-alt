@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.db import engine, get_session
+from app.core.identity import IdentityProvider, build_identity_provider
 from app.llm import LLMClient, build_llm_client
 from app.models.learner import Learner
 from app.services import auth
@@ -61,6 +62,19 @@ def get_llm_client() -> LLMClient:
 
 
 LLMClientDep = Annotated[LLMClient, Depends(get_llm_client)]
+
+
+@lru_cache
+def _identity_provider() -> IdentityProvider | None:
+    return build_identity_provider(get_settings())
+
+
+def get_identity_provider() -> IdentityProvider | None:
+    """The hosted identity provider, or None when none is configured. Overridden in tests."""
+    return _identity_provider()
+
+
+IdentityProviderDep = Annotated[IdentityProvider | None, Depends(get_identity_provider)]
 
 
 @lru_cache

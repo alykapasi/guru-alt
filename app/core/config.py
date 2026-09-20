@@ -140,6 +140,19 @@ class Settings(BaseSettings):
     # None = host-only, which is right unless the API and the app are on sibling subdomains.
     session_cookie_domain: str | None = None
 
+    # Hosted identity (S21). Clerk proves who a person is; Guru still decides what they may do.
+    # No secret key means no provider: /auth/exchange and the invitation routes answer 503, and
+    # /auth/dev-login is the only way in — which production refuses to start with.
+    clerk_secret_key: str | None = None
+    # The instance's public key (Clerk dashboard → API keys → JWKS public key), PEM-encoded.
+    # With it, verifying a session token touches no network.
+    clerk_jwt_key: str | None = None
+    # Which origins' tokens are accepted, checked against the token's `azp`. Empty means the
+    # origins CORS already trusts.
+    clerk_authorized_parties: list[str] = []
+    # Where an invitation link lands: the frontend's sign-up route.
+    clerk_sign_up_url: str | None = None
+
     # Scoped impersonation (P10) — the alpha support affordance, and the seam that makes
     # removing it later a deployment change rather than an argument. Off by default: a
     # capability for acting as another person should be something a deployment turned on.
