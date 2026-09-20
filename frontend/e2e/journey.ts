@@ -13,29 +13,29 @@ export const API_BASE = `http://localhost:${process.env.GURU_E2E_API_PORT ?? "80
 
 /** A fresh account per run. The journeys commit, and a fixed address would make the second
  * run of the day fail on a unique constraint with a message about email addresses. */
-export function newAccount(): { email: string; password: string } {
+export function newAccount(): { email: string } {
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   // example.com, not example.test: the API validates deliverability, and the reserved
   // special-use TLDs are refused before the address ever reaches a handler.
-  return { email: `journey-${stamp}@example.com`, password: "journey-password-1" };
+  return { email: `journey-${stamp}@example.com` };
 }
 
-/** Register through the form and land signed in.
+/** Sign in as a fresh account, through the development sign-in (S21).
  *
- * Through the form rather than a development sign-in for two reasons: the dev-login button is
- * compiled out of the production build these run against on purpose, and registering is the
- * path a first user actually takes.
+ * Not through the UI any more: Clerk owns the sign-in form now, and its hosted UI cannot be
+ * driven in a CI browser with no network. What these journeys exist to prove is the product
+ * *behind* the sign-in — the event stream, the session cookie, the credentialed cross-origin
+ * fetch — so they take the one door that works offline and exercise everything after it. The
+ * journey that asserts a signed-out browser is sent to `/signin` still does exactly that.
+ *
+ * `page.request` shares the browser context's cookie jar, so the page is signed in too.
  */
-export async function register(page: Page): Promise<{ email: string; password: string }> {
+export async function signIn(page: Page): Promise<{ email: string }> {
   const account = newAccount();
-  await page.goto("/signin");
-  await page.getByRole("button", { name: "Create one" }).click();
-  await page.getByLabel("Email").fill(account.email);
-  // Not an exact match: in register mode the field's label carries the "At least 12
-  // characters" hint, so its accessible name is the two of them together.
-  await page.getByLabel(/^Password/).fill(account.password);
-  await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page).toHaveURL(/\/app\/chat/);
+  const response = await page.request.post(`${API_BASE}/api/v1/auth/dev-login`, {
+    data: { email: account.email },
+  });
+  expect(response.ok(), `dev-login → ${response.status()}`).toBeTruthy();
   // Returned because a journey may need to act on this account from outside the browser —
   // granting it admin, for one, which has no API by design.
   return account;

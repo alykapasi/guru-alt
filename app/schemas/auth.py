@@ -83,3 +83,15 @@ class SessionListRead(BaseModel):
     """Every live session for the current learner."""
 
     sessions: list[SessionRead]
+
+
+class DevLoginRequest(BaseModel):
+    """Who the development sign-in should sign in as (S21).
+
+    Optional: with no address it signs in as the one shared development learner, as it always
+    has. With one, it signs in as that address' account and creates it if it does not exist —
+    which is how the browser journeys get a fresh account each run now that there is no
+    registration form for them to drive.
+    """
+
+    email: EmailStr | None = None

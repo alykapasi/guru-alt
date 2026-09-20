@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { register, seedSubjectWithPlan } from "./journey";
+import { seedSubjectWithPlan, signIn } from "./journey";
 
 /** The third browser journey (S58): answer a question and see what it did to you.
  *
@@ -27,7 +27,7 @@ const A_REAL_ATTEMPT = "An eigenvalue is the factor by which its eigenvector is 
 const BARELY_AN_ANSWER = "no";
 
 async function startPractice(page: Page, goal: string): Promise<void> {
-  await register(page);
+  await signIn(page);
   const subjectId = await seedSubjectWithPlan(page, goal);
 
   await page.goto(`/app/lessons?subject_id=${subjectId}`);

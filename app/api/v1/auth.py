@@ -24,6 +24,7 @@ from app.core.config import Settings
 from app.core.identity import InvalidToken, ProviderError
 from app.models.learner import Learner
 from app.schemas.auth import (
+    DevLoginRequest,
     EmailChange,
     LearnerRead,
     LoginRequest,
@@ -347,7 +348,12 @@ async def sessions(
 
 
 @router.post("/dev-login", response_model=LearnerRead)
-async def dev_login(response: Response, session: SessionDep, settings: SettingsDep):
+async def dev_login(
+    response: Response,
+    session: SessionDep,
+    settings: SettingsDep,
+    body: DevLoginRequest | None = None,
+):
     """Sign in as the development learner, with no credential (S21).
 
     The last surviving piece of the stub seam, kept so `poe dev` and the frontend still work
@@ -356,16 +362,34 @@ async def dev_login(response: Response, session: SessionDep, settings: SettingsD
     exact shape of an auth boundary that looks present and is not. This one is listed in the
     OpenAPI document, refuses to exist unless ``GURU_DEV_AUTO_LOGIN`` is on, and production
     refuses to *start* while it is (``app.core.release``).
+
+    It is also how the browser journeys sign in. They used to register through the password
+    form; Clerk owns that form now, and its hosted UI cannot be driven in a CI browser with no
+    network. Passing an address signs in as that account, creating it if needed, so each run
+    gets a fresh one — the same door, opened by the same switch, with no second mechanism to
+    keep safe.
     """
     if not settings.dev_auto_login:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
 
-    learner = await session.scalar(select(Learner).where(Learner.handle == DEV_LEARNER_HANDLE))
-    if learner is None:
-        learner = Learner(handle=DEV_LEARNER_HANDLE, display_name="Dev Learner")
-        session.add(learner)
-        await session.commit()
-        await session.refresh(learner)
+    if body is not None and body.email is not None:
+        address = svc.normalise_email(str(body.email))
+        learner = await session.scalar(select(Learner).where(Learner.email == address))
+        if learner is None:
+            learner = Learner(
+                handle=await svc.unique_handle(session, svc.handle_for(address)),
+                email=address,
+            )
+            session.add(learner)
+            await session.commit()
+            await session.refresh(learner)
+    else:
+        learner = await session.scalar(select(Learner).where(Learner.handle == DEV_LEARNER_HANDLE))
+        if learner is None:
+            learner = Learner(handle=DEV_LEARNER_HANDLE, display_name="Dev Learner")
+            session.add(learner)
+            await session.commit()
+            await session.refresh(learner)
 
     issued = await svc.issue(session, learner, ttl=timedelta(hours=settings.session_ttl_hours))
     _set_session_cookie(response, issued.token, settings)

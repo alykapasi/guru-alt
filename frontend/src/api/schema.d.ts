@@ -264,6 +264,12 @@ export interface paths {
          *     exact shape of an auth boundary that looks present and is not. This one is listed in the
          *     OpenAPI document, refuses to exist unless ``GURU_DEV_AUTO_LOGIN`` is on, and production
          *     refuses to *start* while it is (``app.core.release``).
+         *
+         *     It is also how the browser journeys sign in. They used to register through the password
+         *     form; Clerk owns that form now, and its hosted UI cannot be driven in a CI browser with no
+         *     network. Passing an address signs in as that account, creating it if needed, so each run
+         *     gets a fresh one — the same door, opened by the same switch, with no second mechanism to
+         *     keep safe.
          */
         post: operations["dev_login_api_v1_auth_dev_login_post"];
         delete?: never;
@@ -2174,6 +2180,19 @@ export interface components {
             ok: boolean;
         };
         /**
+         * DevLoginRequest
+         * @description Who the development sign-in should sign in as (S21).
+         *
+         *     Optional: with no address it signs in as the one shared development learner, as it always
+         *     has. With one, it signs in as that address' account and creates it if it does not exist —
+         *     which is how the browser journeys get a fresh account each run now that there is no
+         *     registration form for them to drive.
+         */
+        DevLoginRequest: {
+            /** Email */
+            email?: string | null;
+        };
+        /**
          * Diagnosis
          * @description One component's diagnosis. Every field beyond ``kind`` is advisory — see the module
          *     docstring on what ``confidence`` and ``evidence`` are and are not worth.
@@ -3977,7 +3996,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DevLoginRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -3986,6 +4009,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LearnerRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

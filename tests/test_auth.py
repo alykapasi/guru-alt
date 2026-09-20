@@ -402,10 +402,47 @@ async def test_dev_login_signs_in_as_the_development_learner(anon_client: AsyncC
     assert (await anon_client.get(f"{API}/auth/me")).status_code == 200
 
 
+async def test_dev_login_can_name_the_account_it_signs_in_as(anon_client: AsyncClient) -> None:
+    """The journeys need a fresh account per run, and the password form is going away.
+
+    Twice with the same address, because a journey re-run must land on the same account rather
+    than pile up a new one each time.
+    """
+    r = await anon_client.post(f"{API}/auth/dev-login", json={"email": "journey-1@example.com"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["email"] == "journey-1@example.com"
+    assert r.json()["handle"] != DEV_LEARNER_HANDLE
+    assert (await anon_client.get(f"{API}/auth/me")).json()["email"] == "journey-1@example.com"
+
+    again = await anon_client.post(f"{API}/auth/dev-login", json={"email": "journey-1@example.com"})
+
+    assert again.json()["id"] == r.json()["id"]
+
+
+async def test_dev_login_normalises_the_address_it_is_given(anon_client: AsyncClient) -> None:
+    """Same account whichever way it is spelled, so a journey cannot fork one into two."""
+    first = await anon_client.post(f"{API}/auth/dev-login", json={"email": "Mixed@Example.com"})
+    second = await anon_client.post(f"{API}/auth/dev-login", json={"email": "mixed@example.com"})
+
+    assert first.json()["email"] == "mixed@example.com"
+    assert second.json()["id"] == first.json()["id"]
+
+
 async def test_dev_login_does_not_exist_when_it_is_turned_off(
     anon_client: AsyncClient, settings_without_dev_login: None
 ) -> None:
     r = await anon_client.post(f"{API}/auth/dev-login")
+    assert r.status_code == 404
+    assert (await anon_client.get(f"{API}/auth/me")).status_code == 401
+
+
+async def test_dev_login_stays_gone_when_turned_off_even_with_an_address(
+    anon_client: AsyncClient, settings_without_dev_login: None
+) -> None:
+    """The body must not be a second way in: the switch is the whole boundary."""
+    r = await anon_client.post(f"{API}/auth/dev-login", json={"email": "journey-2@example.com"})
+
     assert r.status_code == 404
     assert (await anon_client.get(f"{API}/auth/me")).status_code == 401
 

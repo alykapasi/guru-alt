@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { expect, test } from "@playwright/test";
-import { register } from "./journey";
+import { signIn } from "./journey";
 
 /** The operator's portal, and the door that is not shown to people who may not open it (P10).
  *
@@ -41,7 +41,8 @@ function grantAdmin(email: string): void {
 test("an ordinary learner is not shown the portal, and cannot reach it by URL", async ({
   page,
 }) => {
-  await register(page);
+  await signIn(page);
+  await page.goto("/app/chat");
 
   await expect(page.getByRole("link", { name: "Admin" })).toHaveCount(0);
 
@@ -53,7 +54,8 @@ test("an ordinary learner is not shown the portal, and cannot reach it by URL", 
 
 test("an administrator reads what the deployment costs and who is on it", async ({ page }) => {
   test.slow(); // two `uv run` invocations before the browser does anything
-  const account = await register(page);
+  const account = await signIn(page);
+  await page.goto("/app/chat");
 
   grantAdmin(account.email);
   await page.reload();
