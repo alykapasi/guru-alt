@@ -5,8 +5,18 @@ Content, mastery, and sequencing all reference KCs.
 """
 
 import uuid
+from datetime import datetime
 
-from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Text,
+    UniqueConstraint,
+    false,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -26,11 +36,29 @@ class Subject(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     took the name from everyone after them, and any authenticated learner could add topics,
     components and prerequisite edges to any subject — including one somebody else was
     actively being taught from.
+
+    **Slugs are unique per owner, not globally (S25b D8).** The global constraint outlived that
+    sweep and kept leaking the same fact in a quieter way: de-duplication counted every slug in
+    the table, so naming a subject what a stranger had privately named theirs returned
+    ``name_2`` — an answer about their library, obtainable by anyone willing to create, read and
+    delete. Two constraints replace it. ``uq_subjects_owner_slug`` keeps one learner's own
+    subjects distinct; the partial index below keeps *curated* subjects unique among themselves,
+    which the first cannot do because Postgres does not compare NULL owners as equal. Slugs are
+    display and ordering only — nothing is ever looked up by one — so scoping them costs nothing.
     """
 
     __tablename__ = "subjects"
+    __table_args__ = (
+        UniqueConstraint("owner_learner_id", "slug", name="uq_subjects_owner_slug"),
+        Index(
+            "uq_subjects_curated_slug",
+            "slug",
+            unique=True,
+            postgresql_where=text("owner_learner_id IS NULL"),
+        ),
+    )
 
-    slug: Mapped[str] = mapped_column(unique=True, index=True)
+    slug: Mapped[str] = mapped_column(index=True)
     name: Mapped[str]
     description: Mapped[str | None] = mapped_column(default=None)
     # CASCADE: a learner's own curriculum is theirs, and closing the account takes it. Curated
@@ -39,6 +67,33 @@ class Subject(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     owner_learner_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("learners.id", ondelete="CASCADE"), default=None, index=True
     )
+    # A latch (S25b D4): set the moment source material reaches this graph, never cleared, and
+    # never taken from a request body. A subject carrying it cannot be published, because
+    # publishing it would put one learner's private uploads in the shared library.
+    private_source_derived: Mapped[bool] = mapped_column(server_default=false(), default=False)
+    # Set on a *published copy*, naming the decision that created it. NULL on everything else,
+    # including the author's original, which is not itself published.
+    #
+    # ``use_alter``: this and ``publications.source_subject_id`` point at each other, and without
+    # it SQLAlchemy cannot order the two tables and drops every foreign key between them from
+    # consideration — with a warning that says it may become an error. Adding this one by ALTER
+    # after both exist breaks the cycle, which is also exactly what `0056` does by hand.
+    publication_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "publications.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_subjects_publication_id",
+        ),
+        default=None,
+    )
+    # A newer approved version of the same author's subject. Unlists this one from the catalog
+    # without removing it: learners already studying it keep their plan and their access.
+    superseded_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("subjects.id", ondelete="SET NULL"), default=None
+    )
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    withdrawn_reason: Mapped[str | None] = mapped_column(Text, default=None)
 
     topics: Mapped[list["Topic"]] = relationship(
         back_populates="subject", cascade="all, delete-orphan"
