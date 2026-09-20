@@ -60,10 +60,23 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function serve(publications: unknown[] = [PUBLICATION]) {
+const APPROVED = {
+  ...PUBLICATION,
+  id: "33333333-3333-3333-3333-333333333333",
+  status: "approved",
+  published_subject_id: "44444444-4444-4444-4444-444444444444",
+};
+
+function serve(publications: unknown[] = [PUBLICATION], approved: unknown[] = []) {
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const request = input instanceof Request ? input : null;
     if (request?.method === "POST") return Promise.resolve(jsonResponse({ id: "s-1" }));
+    // The component asks for two statuses; answering both with the pending list would let a
+    // "Shared" assertion pass on a row that is not shared.
+    const url = request?.url ?? String(input);
+    if (url.includes("status=approved")) {
+      return Promise.resolve(jsonResponse({ publications: approved }));
+    }
     return Promise.resolve(jsonResponse({ publications }));
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -143,5 +156,21 @@ describe("the review queue", () => {
     renderQueue();
 
     expect(await screen.findByText("Nothing is waiting for review.")).toBeInTheDocument();
+  });
+
+  it("will not withdraw without a reason, and sends it when given", async () => {
+    const fetchMock = serve([], [APPROVED]);
+    renderQueue();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Withdraw" }));
+    const confirm = screen.getByRole("button", { name: "Unlist it" });
+    expect(confirm).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Why withdraw Calculus?"), {
+      target: { value: "Answer keys were wrong." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Unlist it" }));
+
+    expect(await postBody(fetchMock)).toContain("Answer keys were wrong.");
   });
 });

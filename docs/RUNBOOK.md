@@ -612,3 +612,81 @@ Two things are deliberately unresolved rather than overlooked:
   audited-visit log is what stands behind it.
 - **Production needs a domain.** Clerk's development instances are not production-ready, and the
   social connections need your own OAuth applications before they will work outside development.
+
+---
+
+## 12. Publication review (S25b)
+
+Learners keep their curricula private by default. Sharing one is a request, a human review, and
+an immutable copy — never a switch that makes the original public.
+
+### What you are actually deciding
+
+Approving puts a **copy** of the subject into the shared library, where every learner can see it.
+It does not touch the author's subject, which stays theirs and stays private. Three things follow
+from that and are worth holding in mind while you review:
+
+- **What you see is what ships.** The queue shows the snapshot frozen when the author asked, not
+  their subject as it is now. If they have rewritten it since, approving still ships what is on
+  your screen. That is deliberate — it is the only way the review means anything.
+- **The copy is immutable and anonymous.** Learners are not told who wrote it. The author is
+  recorded on the publication for your audit, not for display.
+- **Approval cannot be undone, only superseded or withdrawn.** Both unlist; neither deletes, and
+  neither removes it from anyone already studying it.
+
+Read the answer keys. They are shown because they are part of what you are approving, and a
+plausible-looking question with a wrong key is the failure this review exists to catch.
+
+### Working the queue
+
+The queue lives in the admin portal, under **Waiting for review**, oldest first.
+
+- **Approve and share** — optionally untick individual questions first. Unticked ones are left
+  behind and the exclusion is recorded on the publication.
+- **Reject** — needs a note. It is what the author sees, and a refusal they cannot act on is one
+  they will send again unchanged.
+- **Withdraw** (on a published subject) — needs a reason. Unlists it; see below.
+
+### What withdrawal and superseding do, exactly
+
+| State | In the catalog | Reachable by id | For learners with a plan on it |
+| --- | --- | --- | --- |
+| Published | yes | yes | yes |
+| Superseded by a newer version | no | **yes** | **yes, still listed** |
+| Withdrawn | no | **yes** | **yes, still listed** |
+
+Reaching an unlisted subject by id is not a leak: it was reviewed as shareable. Removing access
+instead would break every lesson plan pointing at it, which is why unlisting is where this stops.
+**If a publication turns out to contain something that must not be readable at all, withdrawal is
+not the tool** — that is a data-removal job against the copy's rows, and the publication record
+names them.
+
+### What learners cannot publish, and why
+
+A subject built from the learner's own uploads can never be published (V03). The flag is set the
+moment source material reaches the graph, is never cleared, and there is no override — not in the
+portal, not in a request body.
+
+The flag is set from what the server observed, not from anything the browser claims:
+
+- the curriculum generation actually retrieved excerpts from their sources;
+- sources were moved into the subject when it was committed;
+- a source was uploaded scoped to the subject or one of its topics.
+
+**What the flag does not stop, and where you come in.** An author who deliberately requests a
+clean curriculum and then pastes source-derived material in as their own edits evades it. Closing
+that would mean the server committing only what it generated, which removes the learner's chance
+to edit — the wrong trade. So the flag guards against publishing private material *by accident*,
+and your review is the control that does not depend on the author's cooperation. If a submission
+looks like it was transcribed out of a textbook, it probably was.
+
+### Where the records are
+
+- `publications` — one row per request: the frozen snapshot, who asked, who decided, the notes,
+  the excluded items, and the subject that was created.
+- `subjects.publication_id` — on a published copy, the decision that created it.
+- `subjects.superseded_by_id`, `withdrawn_at`, `withdrawn_reason` — its later life.
+
+The foreign keys are `SET NULL` and the handles are kept as text, so the record survives the
+author closing their account. Closing an account clears the author's half and keeps the
+reviewer's: an audit any author can erase is not an audit.

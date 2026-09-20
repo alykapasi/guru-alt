@@ -115,6 +115,12 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   and social sign-in; Guru keeps invitations, the admin tier, suspension and audited visits. One
   module imports the SDK; a token is exchanged once for the existing session cookie, so nothing
   downstream knows Clerk exists. See [docs/RUNBOOK.md](docs/RUNBOOK.md) §11.
+- **Learner material is private; sharing is reviewed** (S25) — a subject is either one learner's
+  own (`owner_learner_id`) or curated (NULL), and `is_visible_to`/`is_writable_by` in
+  `app/services/knowledge.py` are the whole authorization model for the graph. Publishing copies
+  a frozen snapshot an administrator approved; it never makes the original public, and a subject
+  built from the learner's uploads can never be published at all. See
+  [docs/RUNBOOK.md](docs/RUNBOOK.md) §12.
 - **Pydantic at boundaries · async throughout · Alembic-tracked schema.**
 
 ## Performance & Conciseness Guidelines

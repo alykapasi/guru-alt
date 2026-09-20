@@ -3,6 +3,7 @@ import {
   useApprovePublication,
   useRejectPublication,
   useReviewQueue,
+  useWithdrawSubject,
   type PublicationReview,
   type Snapshot,
 } from "../api/publications";
@@ -147,6 +148,78 @@ function ReviewCard({ publication }: { publication: PublicationReview }) {
   );
 }
 
+function PublishedRow({ publication }: { publication: PublicationReview }) {
+  const withdraw = useWithdrawSubject();
+  const [reason, setReason] = useState("");
+  const [asking, setAsking] = useState(false);
+  const subjectId = publication.published_subject_id;
+
+  if (subjectId === null) return null;
+
+  return (
+    <li className="border-base-300 flex flex-col gap-2 border-t py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-body">{publication.snapshot.subject.name}</span>
+        <button
+          type="button"
+          className="btn btn-ghost btn-xs"
+          onClick={() => setAsking((open) => !open)}
+        >
+          Withdraw
+        </button>
+      </div>
+      {asking && (
+        <div className="flex flex-wrap items-start gap-2">
+          <input
+            className="input input-bordered input-sm grow"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            aria-label={`Why withdraw ${publication.snapshot.subject.name}?`}
+            placeholder="Why it is being unlisted"
+          />
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={withdraw.isPending || reason.trim().length === 0}
+            onClick={() =>
+              withdraw.mutate(
+                { subjectId, reason: reason.trim() },
+                { onSuccess: () => setAsking(false) },
+              )
+            }
+          >
+            Unlist it
+          </button>
+        </div>
+      )}
+      {withdraw.error && (
+        <p className="text-caption text-error" role="alert">
+          {withdraw.error.message}
+        </p>
+      )}
+    </li>
+  );
+}
+
+function Published() {
+  const approved = useReviewQueue("approved");
+  const live = (approved.data ?? []).filter((p) => p.published_subject_id !== null);
+
+  if (approved.isLoading) {
+    return <p className="text-caption text-base-content/50">Loading…</p>;
+  }
+  if (live.length === 0) {
+    return <p className="text-caption text-base-content/50">Nothing has been shared yet.</p>;
+  }
+  return (
+    <ul className="flex flex-col">
+      {live.map((publication) => (
+        <PublishedRow key={publication.id} publication={publication} />
+      ))}
+    </ul>
+  );
+}
+
 export function PublicationQueue() {
   const queue = useReviewQueue("pending");
 
@@ -171,6 +244,13 @@ export function PublicationQueue() {
           ))}
         </div>
       )}
+
+      <h2 className="text-h2">Shared</h2>
+      <p className="text-caption text-base-content/60">
+        Withdrawing unlists a subject from the catalog. It stays reachable by anyone already
+        studying it — unlisting is not removal.
+      </p>
+      <Published />
     </section>
   );
 }
