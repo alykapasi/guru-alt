@@ -27,7 +27,7 @@ from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import Item, Rubric
-from app.models.auth import AdminAction, Impersonation
+from app.models.auth import AccountAction, AdminAction, Impersonation, Invitation
 from app.models.chat import Conversation, Message, Turn
 from app.models.content import ContentBlock
 from app.models.learner import Learner
@@ -155,6 +155,21 @@ RETENTION: tuple[StoreRetention, ...] = (
         "deleting one account must not empty the shared library for everybody else. The "
         "shared graph is unaffected by deleting a learner.",
     ),
+    StoreRetention(
+        "invitations",
+        "partly deleted",
+        "Permission to enroll (S21). The invitation this learner accepted goes with the "
+        "account, because it holds their address. Invitations *they* issued as an "
+        "administrator are retained with the rest of the administrative record — who let "
+        "somebody in is not the invitee's to erase.",
+    ),
+    StoreRetention(
+        "account_actions",
+        "partly deleted",
+        "Administrative acts on accounts (S21): invitations, suspensions, reinstatements. The "
+        "same split as impersonations — the subject's id and handle and the address go, so "
+        "nothing left names them; that an administrator acted, when, and why is retained.",
+    ),
 )
 
 
@@ -272,6 +287,14 @@ async def delete_learner(
         .returning(Item.id)
     )
     report.items_deleted = len(authored.all())
+    # Their address is theirs, so the invitation they accepted goes with the account; the ones
+    # they issued as an administrator stay with the rest of the administrative record.
+    await session.execute(delete(Invitation).where(Invitation.accepted_learner_id == learner_id))
+    await session.execute(
+        update(AccountAction)
+        .where(AccountAction.learner_id == learner_id)
+        .values(learner_handle=None, email=None)
+    )
     # Before the learner row goes: the foreign key clears `learner_id` on its own, and after
     # that there is no way left to find the rows whose *handle* still names this person (P10).
     await session.execute(

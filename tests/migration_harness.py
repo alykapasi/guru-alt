@@ -70,8 +70,9 @@ async def _drop(url: str) -> None:
         await conn.close()
 
 
-def _alembic(url: str, revision: str) -> None:
-    """Migrate ``url`` to ``revision``. Blocking — call it through :func:`_migrate`.
+def _alembic(url: str, revision: str, *, down: bool = False) -> None:
+    """Migrate ``url`` to ``revision`` (upgrade, or downgrade when ``down``). Blocking — call it
+    through :func:`_migrate`.
 
     Alembic's ``env.py`` reads the URL from application settings, so it is handed over through
     the environment the same way ``tests/testdb.py`` does — setting it on the Config object
@@ -86,7 +87,7 @@ def _alembic(url: str, revision: str) -> None:
         from app.core.config import get_settings
 
         get_settings.cache_clear()
-        command.upgrade(Config("alembic.ini"), revision)
+        (command.downgrade if down else command.upgrade)(Config("alembic.ini"), revision)
     finally:
         if previous is None:
             os.environ.pop("GURU_DATABASE_URL", None)
@@ -97,14 +98,14 @@ def _alembic(url: str, revision: str) -> None:
         get_settings.cache_clear()
 
 
-async def _migrate(url: str, revision: str) -> None:
+async def _migrate(url: str, revision: str, *, down: bool = False) -> None:
     """Run a migration from async code.
 
     In a worker thread, because the project's ``env.py`` drives an async engine with
     ``asyncio.run`` — which refuses to start inside a loop that is already running, and a test
     is always inside one.
     """
-    await asyncio.to_thread(_alembic, url, revision)
+    await asyncio.to_thread(_alembic, url, revision, down=down)
 
 
 @asynccontextmanager
@@ -139,3 +140,14 @@ async def upgrade(name: str, revision: str) -> None:
 
     base = make_url(get_settings().database_url)
     await _migrate(base.set(database=name).render_as_string(hide_password=False), revision)
+
+
+async def downgrade(name: str, revision: str) -> None:
+    """Bring the scratch database named ``name`` down to ``revision`` — the downgrade under
+    test, the counterpart of :func:`upgrade`."""
+    from app.core.config import get_settings
+
+    base = make_url(get_settings().database_url)
+    await _migrate(
+        base.set(database=name).render_as_string(hide_password=False), revision, down=True
+    )

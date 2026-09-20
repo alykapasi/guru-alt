@@ -13,7 +13,9 @@ address is the one combination that is nonsense, and the database refuses it rat
 leaving it to be documented.
 """
 
-from sqlalchemy import CheckConstraint, false
+from datetime import datetime
+
+from sqlalchemy import CheckConstraint, DateTime, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -44,3 +46,10 @@ class Learner(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # because there is no such thing as an administrator who is not also an account — the
     # portal is read with the same session everything else is.
     is_admin: Mapped[bool] = mapped_column(server_default=false(), default=False)
+    # The provider's id for this person (S21). NULL for a learner nobody has signed in as yet:
+    # an account created by an import before its owner arrives, or the dev learner. Unique,
+    # because one provider identity resolving to two learners is one sign-in with two answers.
+    auth_subject: Mapped[str | None] = mapped_column(unique=True, index=True, default=None)
+    # Set by an administrator (S21). Access stops immediately and the reason is in
+    # ``account_actions``; the learner's work is untouched, because suspension is not deletion.
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)

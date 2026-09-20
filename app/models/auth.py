@@ -11,8 +11,9 @@ keep. A row can be deleted. The cost is a lookup per request, which is one index
 
 import uuid
 from datetime import datetime
+from enum import StrEnum
 
-from sqlalchemy import JSON, DateTime, ForeignKey, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -157,3 +158,76 @@ class AdminAction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     resource_ids: Mapped[dict[str, str]] = mapped_column(JSON)
     status_code: Mapped[int | None] = mapped_column(default=None)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class Invitation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Permission for one address to enroll (S21).
+
+    Guru is invite-only for the alpha, and this row — not the provider's setting — is what
+    enforces it: the exchange refuses an identity whose addresses have no open invitation. The
+    provider is asked to *deliver* the invitation, so one misconfigured dashboard toggle cannot
+    turn the alpha into open registration.
+
+    Open means accepted and revoked are both NULL, and the partial unique index says an address
+    has at most one of those at a time. A spent or withdrawn invitation stays as history.
+    """
+
+    __tablename__ = "invitations"
+    __table_args__ = (
+        Index(
+            "uq_invitations_open_email",
+            "email",
+            unique=True,
+            postgresql_where=text("accepted_at IS NULL AND revoked_at IS NULL"),
+        ),
+    )
+
+    email: Mapped[str] = mapped_column(index=True)
+    invited_by_learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="SET NULL"), index=True, default=None
+    )
+    # Beside the id, for the same reason as ``impersonations``: an id whose row is gone names
+    # nobody, and "who let this person in" has to survive the inviter closing their account.
+    invited_by_handle: Mapped[str] = mapped_column()
+    provider_invitation_id: Mapped[str | None] = mapped_column(default=None)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    accepted_learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="SET NULL"), index=True, default=None
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    revoked_by_learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="SET NULL"), default=None
+    )
+
+
+class AccountActionKind(StrEnum):
+    """What an administrator did to an account."""
+
+    INVITE = "invite"
+    REVOKE_INVITATION = "revoke_invitation"
+    SUSPEND = "suspend"
+    REINSTATE = "reinstate"
+
+
+class AccountAction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One administrative act on accounts, recorded (S21, V13).
+
+    ``admin_actions`` records what a *visit* touched; this records the acts that need no visit —
+    letting somebody in, and stopping them. Written in the same transaction as the act, so there
+    is no path that suspends an account without leaving a record of who did it and why.
+    """
+
+    __tablename__ = "account_actions"
+
+    actor_learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="SET NULL"), index=True, default=None
+    )
+    actor_handle: Mapped[str] = mapped_column()
+    learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="SET NULL"), index=True, default=None
+    )
+    learner_handle: Mapped[str | None] = mapped_column(default=None)
+    action: Mapped[str] = mapped_column(index=True)
+    # The address an invitation was issued to. Cleared when that person's account is erased.
+    email: Mapped[str | None] = mapped_column(default=None)
+    reason: Mapped[str | None] = mapped_column(default=None)
