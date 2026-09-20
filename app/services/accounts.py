@@ -1,26 +1,30 @@
 """An administrator's acts on accounts: letting somebody in, and stopping them (S21).
 
-Everything here writes an :class:`~app.models.auth.AccountAction` in the same transaction as
-the act it records, so there is no path that lets somebody in, or shuts an invitation, without
-leaving a row that says who did it and to which address. That is the whole point of this
-module existing separately from ``app.services.identity`` (which spends an invitation) and
-``app.services.impersonation`` (which records visits, not account state): this is where the
-*administrative* half of enrollment lives.
+Every *local* state change here writes an :class:`~app.models.auth.AccountAction` in the same
+transaction as the act, so there is no path that lets somebody in, or shuts an invitation,
+without leaving a row that says who did it and to which address. This module exists separately
+from ``app.services.identity`` (which spends an invitation) and ``app.services.impersonation``
+(which records visits, not account state) because it is where the *administrative* half of
+enrollment lives.
 
 The two functions disagree, on purpose, about what happens when the identity provider will not
 answer:
 
-- ``invite`` asks the provider **before** writing anything. A provider failure then leaves no
+- ``invite`` asks the provider **before** writing anything. A provider failure there leaves no
   trace in Guru — no invitation row, no audit row — because the alternative is an invitation
   that unlocks ``/auth/exchange`` (S21 Task 3's enrollment check only reads this table, not
-  Clerk's) with nobody ever told it exists. That is a silent side door; recording nothing is
-  the safer failure.
+  Clerk's) with nobody ever told it exists. That is a silent side door; recording nothing is the
+  safer failure. That ordering has one gap it cannot close: if the provider *succeeds* and the
+  commit that follows then fails for any other reason (a dropped connection, a timeout), Clerk
+  has already sent a real invitation and Guru still writes nothing — fail-closed (the address
+  gets ``NotInvited`` at exchange either way), but otherwise untraceable from Guru's side. That
+  one case is logged rather than left silent; see ``invite``.
 - ``revoke_invitation`` does the opposite: it commits the local revocation **before** asking the
-  provider, and a provider failure is logged rather than raised. An administrator who revoked
-  an invitation has to be able to trust that Guru's own gate is shut even when Clerk's is not —
-  an invitation Guru still believes is open is invisible until the address tries to sign in,
-  where a provider that never got the memo is merely an operational loose end an operator can
-  chase from the log line.
+  provider — or without asking at all, when none is configured — and a provider failure is
+  logged rather than raised. An administrator who revoked an invitation has to be able to trust
+  that Guru's own gate is shut whether or not Clerk agrees: an invitation Guru still believes is
+  open is invisible until the address tries to sign in, where a provider that never got the memo
+  is merely an operational loose end an operator can chase from the log line.
 """
 
 import uuid
@@ -131,9 +135,30 @@ async def invite(
         # it and race to the partial unique index, which is the real guard. If the provider was
         # already asked (`notify=True`), Clerk is left holding an invitation Guru now refuses to
         # recognise — harmless, since nothing Guru grants depends on Clerk's copy, and the loser
-        # here gets the same refusal a second, later request would.
+        # here gets the same refusal a second, later request would. Logged anyway, so an
+        # operator reconciling Clerk's invitation list against this one can find it.
         await session.rollback()
+        if provider_invitation_id:
+            log.warning(
+                "accounts.invite.provider_invitation_orphaned",
+                email=address,
+                provider_invitation_id=provider_invitation_id,
+                reason="lost the race for the open-invitation slot",
+            )
         raise AlreadyInvited(address) from None
+    except Exception:
+        # Anything else here — a dropped connection, a statement timeout, a full pool — is the
+        # one gap the module docstring names: the provider has already been asked and nothing in
+        # Guru will say so once this exception propagates. Fail-closed, not silent: this is the
+        # only trace left of a Clerk-side invitation nobody in Guru can see.
+        await session.rollback()
+        if provider_invitation_id:
+            log.error(
+                "accounts.invite.provider_invitation_abandoned",
+                email=address,
+                provider_invitation_id=provider_invitation_id,
+            )
+        raise
     await session.refresh(invitation)
     return invitation
 
@@ -145,7 +170,7 @@ async def list_invitations(session: AsyncSession) -> list[Invitation]:
 
 async def revoke_invitation(
     session: AsyncSession,
-    provider: IdentityProvider,
+    provider: IdentityProvider | None,
     *,
     actor: Actor,
     invitation_id: uuid.UUID,
@@ -153,7 +178,10 @@ async def revoke_invitation(
     """Close an open invitation, committing locally before the provider is even asked.
 
     See the module docstring for why this is the opposite ordering from ``invite``: a provider
-    that will not answer must not stop an administrator from shutting Guru's own door.
+    that will not answer must not stop an administrator from shutting Guru's own door. ``provider``
+    may be ``None`` — no identity provider configured at all — for the same reason: Guru's own
+    row is what admits people, so revoking it needs no provider, and refusing to would leave an
+    administrator unable to stop an enrollment they can see.
     """
     invitation = await session.get(Invitation, invitation_id)
     if invitation is None:
@@ -176,13 +204,20 @@ async def revoke_invitation(
     await session.refresh(invitation)
 
     if invitation.provider_invitation_id:
-        try:
-            await provider.revoke_invitation(invitation.provider_invitation_id)
-        except ProviderError as exc:
+        if provider is None:
             log.warning(
-                "accounts.revoke_invitation.provider_unreachable",
+                "accounts.revoke_invitation.no_provider_configured",
                 invitation_id=str(invitation_id),
-                error=str(exc),
+                provider_invitation_id=invitation.provider_invitation_id,
             )
+        else:
+            try:
+                await provider.revoke_invitation(invitation.provider_invitation_id)
+            except ProviderError as exc:
+                log.warning(
+                    "accounts.revoke_invitation.provider_unreachable",
+                    invitation_id=str(invitation_id),
+                    error=str(exc),
+                )
 
     return invitation

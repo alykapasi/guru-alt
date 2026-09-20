@@ -157,10 +157,12 @@ export interface paths {
         put?: never;
         /**
          * Revoke Invitation
-         * @description Close an open invitation, at both ends when the provider will allow it.
+         * @description Close an open invitation, at the provider too when one is configured and will answer.
          *
-         *     See ``app.services.accounts.revoke_invitation`` for why a provider that will not answer
-         *     does not stop the local half.
+         *     Unlike creating one, revoking never requires a provider. Guru's own row is what admits
+         *     people — see ``app.services.accounts.revoke_invitation`` — so refusing to revoke just
+         *     because no provider is configured (or it will not answer) would leave an administrator
+         *     unable to stop an enrollment they can see, which is the worse failure.
          */
         post: operations["revoke_invitation_api_v1_admin_invitations__invitation_id__revoke_post"];
         delete?: never;

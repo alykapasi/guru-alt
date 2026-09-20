@@ -47,7 +47,8 @@ async def _revoke(client: AsyncClient, invitation_id: str):
 async def test_inviting_records_the_invitation_and_asks_the_provider_to_send_it(
     admin_client: AsyncClient, db_session: AsyncSession, provider: FakeIdentityProvider
 ) -> None:
-    admin_id = (await admin_client.get(f"{API}/auth/me")).json()["id"]
+    me = (await admin_client.get(f"{API}/auth/me")).json()
+    admin_id, admin_handle = me["id"], me["handle"]
 
     r = await _create(admin_client, "New@Example.com")
 
@@ -60,6 +61,8 @@ async def test_inviting_records_the_invitation_and_asks_the_provider_to_send_it(
     assert row is not None
     assert row.email == "new@example.com"
     assert str(row.invited_by_learner_id) == admin_id
+    # The denormalised handle: what survives `invited_by_learner_id` being SET NULL on deletion.
+    assert row.invited_by_handle == admin_handle
     assert row.provider_invitation_id is not None
     # The provider was asked for exactly that address, and nothing else.
     assert provider.invitations == {row.provider_invitation_id: "new@example.com"}
@@ -69,20 +72,26 @@ async def test_inviting_records_the_invitation_and_asks_the_provider_to_send_it(
     )
     assert action is not None
     assert str(action.actor_learner_id) == admin_id
+    assert action.actor_handle == admin_handle
     assert action.email == "new@example.com"
 
 
 async def test_the_stored_address_is_normalised_even_when_the_caller_was_not(
     admin_client: AsyncClient, db_session: AsyncSession, provider: FakeIdentityProvider
 ) -> None:
-    """Pins the task-4 ruling: the write side normalises, not just `/auth/exchange`'s read of it.
+    """Pins the case-folding half of the task-4 ruling, through the portal route.
 
-    Postgres's bare `TRIM()` strips only spaces, where Python's `.strip()` (what
-    `normalise_email` uses) strips a wider whitespace class — so a dirty stored address could
-    still slip past the exchange's own SQL-side normalisation. This asserts what actually landed
-    in the column, not just what the API echoed back.
+    This only proves the lower-casing half: the request body is `InvitationCreate.email:
+    EmailStr`, and pydantic already strips surrounding whitespace before `accounts.invite` ever
+    sees the value — the local part's case is the only thing this path leaves for the service to
+    normalise. Asserts what actually landed in the column, not just what the API echoed back.
+
+    The `.strip()` half is the one the ruling was actually about (Postgres's bare `TRIM()`
+    strips only spaces, where Python's `.strip()` strips a wider whitespace class), and its only
+    real carrier is `poe invite`, which never goes through `EmailStr` at all — see
+    `test_the_invite_command_records_and_normalises_a_raw_address` below.
     """
-    r = await _create(admin_client, "  Mixed.Case@Example.com  ")
+    r = await _create(admin_client, "Mixed.Case@Example.com")
 
     assert r.status_code == 201, r.text
     row = await db_session.scalar(
@@ -158,7 +167,8 @@ async def test_nothing_is_recorded_when_the_provider_cannot_be_reached(
 async def test_revoking_closes_the_invitation_at_both_ends(
     admin_client: AsyncClient, db_session: AsyncSession, provider: FakeIdentityProvider
 ) -> None:
-    admin_id = (await admin_client.get(f"{API}/auth/me")).json()["id"]
+    me = (await admin_client.get(f"{API}/auth/me")).json()
+    admin_id, admin_handle = me["id"], me["handle"]
     created = await _create(admin_client, "close@example.com")
     assert created.status_code == 201, created.text
     invitation_id = created.json()["id"]
@@ -185,6 +195,7 @@ async def test_revoking_closes_the_invitation_at_both_ends(
     )
     assert action is not None
     assert str(action.actor_learner_id) == admin_id
+    assert action.actor_handle == admin_handle
     assert action.email == "close@example.com"
 
 
@@ -208,6 +219,63 @@ async def test_revoking_an_invitation_that_is_not_open_is_refused(
     r = await _revoke(admin_client, str(invitation.id))
 
     assert r.status_code == 409, r.text
+
+
+async def test_revoking_a_nonexistent_invitation_is_refused(
+    admin_client: AsyncClient, provider: FakeIdentityProvider
+) -> None:
+    r = await _revoke(admin_client, str(uuid.uuid4()))
+
+    assert r.status_code == 404, r.text
+
+
+async def test_revoking_an_already_revoked_invitation_is_refused(
+    admin_client: AsyncClient, db_session: AsyncSession, provider: FakeIdentityProvider
+) -> None:
+    """A second revoke must not rewrite who closed it, or double the audit trail."""
+    created = await _create(admin_client, "twice@example.com")
+    assert created.status_code == 201, created.text
+    invitation_id = created.json()["id"]
+    assert (await _revoke(admin_client, invitation_id)).status_code == 200
+    row = await db_session.scalar(
+        select(Invitation).where(Invitation.id == uuid.UUID(invitation_id))
+    )
+    assert row is not None
+    first_revoked_at, first_revoked_by = row.revoked_at, row.revoked_by_learner_id
+
+    second = await _revoke(admin_client, invitation_id)
+
+    assert second.status_code == 409, second.text
+    await db_session.refresh(row)
+    assert row.revoked_at == first_revoked_at
+    assert row.revoked_by_learner_id == first_revoked_by
+    actions = list(
+        await db_session.scalars(
+            select(AccountAction).where(AccountAction.action == AccountActionKind.REVOKE_INVITATION)
+        )
+    )
+    assert len(actions) == 1
+
+
+async def test_revoking_works_with_no_provider_configured(
+    admin_client: AsyncClient, db_session: AsyncSession, provider: FakeIdentityProvider
+) -> None:
+    """Guru's own row is what admits people: revoking must not need Clerk to be configured."""
+    created = await _create(admin_client, "noprovider@example.com")
+    assert created.status_code == 201, created.text
+    invitation_id = created.json()["id"]
+
+    app.dependency_overrides[get_identity_provider] = lambda: None
+    try:
+        r = await _revoke(admin_client, invitation_id)
+    finally:
+        app.dependency_overrides[get_identity_provider] = lambda: provider
+
+    assert r.status_code == 200, r.text
+    row = await db_session.scalar(
+        select(Invitation).where(Invitation.id == uuid.UUID(invitation_id))
+    )
+    assert row is not None and row.revoked_at is not None
 
 
 async def test_revoking_survives_a_provider_that_will_not_answer(
@@ -312,3 +380,106 @@ async def test_without_a_provider_inviting_says_so(admin_client: AsyncClient) ->
         app.dependency_overrides.pop(get_identity_provider, None)
 
     assert r.status_code == 503, r.text
+
+
+# --- the bootstrap CLI ------------------------------------------------------------------------
+#
+# `poe invite` never goes through the FastAPI app or the `provider` fixture above — it opens its
+# own session and builds its own provider straight from settings (see app/workers/invite.py) —
+# so it is the only caller of `accounts.invite` this repo exercises for `notify=False`,
+# `provider=None`, the `Actor = str` branch, and the non-zero exit codes. It is also the only
+# caller that can hand `accounts.invite` a raw, un-normalised string: the portal route's
+# `InvitationCreate.email: EmailStr` already trims and lower-cases the domain before the service
+# ever sees the value (see the docstring above), so the CLI is where the `.strip()` half of
+# `normalise_email` — the half the task-4 ruling was actually about — gets proven at all.
+#
+# Committing for real on its own connection, mirroring
+# `test_the_grant_command_promotes_demotes_and_refuses_an_unknown_address` in
+# tests/test_admin_access.py: the command runs outside any request, against the live database,
+# which is the whole reason it exists.
+
+
+async def test_the_invite_command_records_and_normalises_a_raw_address(engine, monkeypatch) -> None:
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.workers import invite as invite_cli
+
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def make():
+        async with factory() as session:
+            yield session
+
+    monkeypatch.setattr(invite_cli, "SessionFactory", make)
+
+    raw = "\tDirty.Case@Example.com\n"
+    address = "dirty.case@example.com"
+    try:
+        assert await invite_cli.run(raw, send=False) == 0
+        async with factory() as check:
+            row = await check.scalar(select(Invitation).where(Invitation.email == address))
+            assert row is not None
+            assert row.email == address
+            assert row.invited_by_learner_id is None
+            assert row.invited_by_handle == invite_cli.CLI_HANDLE
+            assert row.provider_invitation_id is None
+
+            action = await check.scalar(
+                select(AccountAction).where(
+                    AccountAction.action == AccountActionKind.INVITE,
+                    AccountAction.email == address,
+                )
+            )
+            assert action is not None
+            assert action.actor_learner_id is None
+            assert action.actor_handle == invite_cli.CLI_HANDLE
+
+        # A second invite to the same (now-normalised) address is refused, non-zero, and adds
+        # no second row — the CLI's `AlreadyInvited` exit path.
+        assert await invite_cli.run(raw, send=False) == 1
+        async with factory() as check:
+            rows = list(await check.scalars(select(Invitation).where(Invitation.email == address)))
+            assert len(rows) == 1
+    finally:
+        async with factory() as cleanup:
+            await cleanup.execute(delete(AccountAction).where(AccountAction.email == address))
+            await cleanup.execute(delete(Invitation).where(Invitation.email == address))
+            await cleanup.commit()
+
+
+async def test_the_invite_command_refuses_an_already_enrolled_address(engine, monkeypatch) -> None:
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.workers import invite as invite_cli
+
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def make():
+        async with factory() as session:
+            yield session
+
+    monkeypatch.setattr(invite_cli, "SessionFactory", make)
+
+    email = f"cli-enrolled-{uuid.uuid4().hex[:8]}@example.com"
+    try:
+        async with factory() as setup:
+            setup.add(Learner(handle=f"cli-{uuid.uuid4().hex[:8]}", email=email))
+            await setup.commit()
+
+        # Non-zero, so a deployment script that invites an address that is already an account
+        # stops rather than reporting an invitation that was never issued.
+        assert await invite_cli.run(email, send=False) == 1
+        async with factory() as check:
+            assert await check.scalar(select(Invitation).where(Invitation.email == email)) is None
+    finally:
+        async with factory() as cleanup:
+            await cleanup.execute(delete(Learner).where(Learner.email == email))
+            await cleanup.commit()
