@@ -105,6 +105,13 @@ def _classify_verification_error(exc: object) -> InvalidToken | ProviderError:
         TokenVerificationErrorReason.JWK_KID_MISMATCH,
         TokenVerificationErrorReason.SECRET_KEY_MISSING,
         TokenVerificationErrorReason.SERVER_ERROR,
+        # Unreachable today: the SDK raises this only for a token carrying one of its
+        # machine-token prefixes, and ``verify`` rejects everything that is not a three-segment
+        # JWT before the SDK sees it. Listed anyway, because the only way it could ever fire is
+        # the SDK disagreeing with that guard about what a session token looks like — our
+        # mismatch to fix, not the caller's token to reject, and the whole point of this
+        # function is that our breakage must never arrive as everyone's 401.
+        TokenVerificationErrorReason.INVALID_TOKEN_TYPE,
     }
     if getattr(exc, "reason", None) in configuration_or_availability:
         return ProviderError(str(exc))

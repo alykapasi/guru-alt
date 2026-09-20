@@ -140,37 +140,47 @@ async def test_a_bare_machine_token_is_also_refused(keypair: tuple[str, str], pr
 # --- C3: a config/availability problem is not reported as a bad token ---------------------------
 
 
-@pytest.mark.parametrize(
-    "reason",
-    [
-        Reason.TOKEN_EXPIRED,
-        Reason.TOKEN_INVALID,
-        Reason.TOKEN_INVALID_AUTHORIZED_PARTIES,
-        Reason.TOKEN_INVALID_AUDIENCE,
-        Reason.TOKEN_IAT_IN_THE_FUTURE,
-        Reason.TOKEN_NOT_ACTIVE_YET,
-        Reason.TOKEN_INVALID_SIGNATURE,
-    ],
+_THE_TOKEN_IS_BAD = (
+    Reason.TOKEN_EXPIRED,
+    Reason.TOKEN_INVALID,
+    Reason.TOKEN_INVALID_AUTHORIZED_PARTIES,
+    Reason.TOKEN_INVALID_AUDIENCE,
+    Reason.TOKEN_IAT_IN_THE_FUTURE,
+    Reason.TOKEN_NOT_ACTIVE_YET,
+    Reason.TOKEN_INVALID_SIGNATURE,
 )
+
+_WE_ARE_BROKEN = (
+    Reason.JWK_FAILED_TO_LOAD,
+    Reason.JWK_REMOTE_INVALID,
+    Reason.JWK_FAILED_TO_RESOLVE,
+    Reason.JWK_KID_MISMATCH,
+    Reason.SECRET_KEY_MISSING,
+    Reason.SERVER_ERROR,
+    Reason.INVALID_TOKEN_TYPE,
+)
+
+
+@pytest.mark.parametrize("reason", _THE_TOKEN_IS_BAD)
 def test_a_problem_with_the_presented_token_is_invalid_token(reason: Reason) -> None:
     classified = identity._classify_verification_error(TokenVerificationError(reason))
     assert isinstance(classified, identity.InvalidToken)
 
 
-@pytest.mark.parametrize(
-    "reason",
-    [
-        Reason.JWK_FAILED_TO_LOAD,
-        Reason.JWK_REMOTE_INVALID,
-        Reason.JWK_FAILED_TO_RESOLVE,
-        Reason.JWK_KID_MISMATCH,
-        Reason.SECRET_KEY_MISSING,
-        Reason.SERVER_ERROR,
-    ],
-)
+@pytest.mark.parametrize("reason", _WE_ARE_BROKEN)
 def test_a_config_or_availability_problem_is_provider_error(reason: Reason) -> None:
     classified = identity._classify_verification_error(TokenVerificationError(reason))
     assert isinstance(classified, identity.ProviderError)
+
+
+def test_every_reason_the_sdk_can_raise_has_been_classified_on_purpose() -> None:
+    """An unclassified reason defaults to ``InvalidToken``, which is the dangerous direction.
+
+    A Clerk SDK upgrade that adds a reason would otherwise land silently on that default, and
+    if the new reason described *our* breakage it would arrive as every learner's 401 — the
+    failure this classification exists to prevent. Fail here instead, at the upgrade.
+    """
+    assert set(Reason) == set(_THE_TOKEN_IS_BAD) | set(_WE_ARE_BROKEN)
 
 
 async def test_a_misconfigured_public_key_is_reported_as_a_provider_error(
