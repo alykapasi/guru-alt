@@ -96,3 +96,38 @@ class InvitationRead(BaseModel):
         if self.revoked_at is not None:
             return "revoked"
         return "open"
+
+
+class SuspendRequest(BaseModel):
+    """Stop an account, and say why (S21).
+
+    The reason is required by the schema, the same way ``ImpersonationRequest.reason`` is:
+    a request without one never reaches ``accounts.suspend`` at all.
+    """
+
+    reason: str = Field(min_length=MIN_REASON_LENGTH, max_length=500)
+
+
+class ReinstateRequest(BaseModel):
+    """Let a suspended account sign in again. Unlike suspending, no reason is required — see
+    ``app.services.accounts.reinstate``."""
+
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class AccountRead(BaseModel):
+    """A learner's account, as ``suspend``/``reinstate`` leave it.
+
+    A narrower cut than ``app.schemas.auth.LearnerRead`` — that schema is the *session's* view
+    of a learner and has no reason to carry ``suspended_at``; this is the *administrator's* view
+    after an act that is entirely about that one field.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    handle: str
+    display_name: str | None
+    email: str | None
+    is_admin: bool
+    suspended_at: datetime | None

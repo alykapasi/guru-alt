@@ -216,7 +216,10 @@ async def get_current_admin(who: Authenticated) -> Learner:
     """
     if who.impersonated_by_id is not None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not an administrator")
-    if not who.learner.is_admin:
+    # A suspended administrator is not an administrator (S21): `resolve_session` already refuses
+    # their own sessions on the next request, so this is belt-and-braces for this one gate
+    # rather than the enforcement point — see `app.services.auth.resolve_session`.
+    if not who.learner.is_admin or who.learner.suspended_at is not None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not an administrator")
     return who.learner
 
@@ -259,8 +262,14 @@ async def require_operator(request: Request, session: SessionDep, settings: Sett
             "not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    # Same reasoning as the admin gate: a borrowed identity is not a way to become an operator.
-    if resolved.impersonated_by_id is not None or not resolved.learner.is_admin:
+    # Same reasoning as the admin gate: a borrowed identity is not a way to become an operator,
+    # and neither is a suspended one (S21) — `resolve_session` above already refuses the
+    # session itself; this is the same belt-and-braces check `get_current_admin` makes.
+    if (
+        resolved.impersonated_by_id is not None
+        or not resolved.learner.is_admin
+        or resolved.learner.suspended_at is not None
+    ):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not an administrator")
 
 

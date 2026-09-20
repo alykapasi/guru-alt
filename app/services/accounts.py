@@ -25,20 +25,25 @@ answer:
   that Guru's own gate is shut whether or not Clerk agrees: an invitation Guru still believes is
   open is invisible until the address tries to sign in, where a provider that never got the memo
   is merely an operational loose end an operator can chase from the log line.
+
+``suspend`` and ``reinstate`` never touch the provider at all: Clerk's free tier has no account
+ban, so Guru is the only place that can stop somebody, and the stop has to bite a session that
+is already live, not only the next sign-in — see ``suspend``'s docstring for how.
 """
 
 import uuid
 from datetime import UTC, datetime
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.identity import IdentityProvider, ProviderError
-from app.models.auth import AccountAction, AccountActionKind, Invitation
+from app.models.auth import AccountAction, AccountActionKind, Invitation, LearnerSession
 from app.models.learner import Learner
 from app.services.auth import normalise_email
+from app.services.impersonation import MIN_REASON_LENGTH
 
 log = structlog.get_logger(__name__)
 
@@ -66,6 +71,27 @@ class NoSuchInvitation(AccountsError):
 
 class NotOpen(AccountsError):
     """This invitation has already been accepted or revoked."""
+
+
+class NoSuchLearner(AccountsError):
+    """There is no learner with that id."""
+
+
+class CannotSuspendSelf(AccountsError):
+    """You already administer this deployment; suspending yourself locks out the only operator
+    who could reverse it."""
+
+
+class ReasonRequired(AccountsError):
+    """A suspension whose every row says nothing records that something happened, not why."""
+
+
+class AlreadySuspended(AccountsError):
+    """This account is already stopped; suspending it again would only overwrite when and why."""
+
+
+class NotSuspended(AccountsError):
+    """This account is open; reinstating it is not a thing that can happen twice."""
 
 
 def _actor_ids(actor: Actor) -> tuple[uuid.UUID | None, str]:
@@ -221,3 +247,101 @@ async def revoke_invitation(
                 )
 
     return invitation
+
+
+async def suspend(
+    session: AsyncSession, *, actor: Actor, learner_id: uuid.UUID, reason: str
+) -> Learner:
+    """Stop an account immediately, with the reason on the record.
+
+    "Immediately" is the part that costs effort: a flag nothing else reads would leave a
+    signed-in learner working until their cookie expires, which is exactly when Guru least
+    wants that. So this also revokes the learner's own live sessions in the same transaction
+    that stamps ``suspended_at`` — the write and the audit and the eviction all commit
+    together, or none of them do.
+
+    Only the learner's *own* sessions: an administrator's visit (``impersonated_by_id`` set)
+    is the administrator's credential, not the learner's, and support has to be able to keep
+    looking at exactly the account that is in trouble. ``resolve_session`` is the other half of
+    "immediately" — it refuses this learner's ordinary sessions on their very next request,
+    not only new ones, and this function only has to make that check start returning true.
+
+    Refuses to suspend the caller's own account (``CannotSuspendSelf``): the alpha has few
+    administrators, and there is no path back from the last operator locking themselves out.
+    Refuses an account already suspended (``AlreadySuspended``) rather than silently refreshing
+    the timestamp and reason — the same answer Task 4 gives a second invitation to an address
+    that already has one open, so "act again on a state that already holds" reads the same way
+    everywhere in this module.
+    """
+    reason = reason.strip()
+    if len(reason) < MIN_REASON_LENGTH:
+        raise ReasonRequired(reason)
+    actor_id, actor_handle = _actor_ids(actor)
+    if actor_id is not None and actor_id == learner_id:
+        raise CannotSuspendSelf(str(learner_id))
+
+    learner = await session.get(Learner, learner_id)
+    if learner is None:
+        raise NoSuchLearner(str(learner_id))
+    if learner.suspended_at is not None:
+        raise AlreadySuspended(str(learner_id))
+
+    learner.suspended_at = datetime.now(UTC)
+    session.add(
+        AccountAction(
+            actor_learner_id=actor_id,
+            actor_handle=actor_handle,
+            learner_id=learner.id,
+            learner_handle=learner.handle,
+            action=AccountActionKind.SUSPEND,
+            reason=reason,
+        )
+    )
+    await session.execute(
+        update(LearnerSession)
+        .where(
+            LearnerSession.learner_id == learner.id,
+            LearnerSession.impersonated_by_id.is_(None),
+            LearnerSession.revoked_at.is_(None),
+        )
+        .values(revoked_at=datetime.now(UTC))
+    )
+    await session.commit()
+    await session.refresh(learner)
+    return learner
+
+
+async def reinstate(
+    session: AsyncSession, *, actor: Actor, learner_id: uuid.UUID, reason: str | None = None
+) -> Learner:
+    """Let a suspended account sign in again.
+
+    No minimum reason here, unlike ``suspend``: an administrator reversing their own act is not
+    the event this audit trail exists to interrogate, and requiring a sentence to undo a mistake
+    is a way to make the safe action annoying. Whatever is given (or nothing) is still recorded.
+
+    Refuses an account that is not suspended (``NotSuspended``), the same shape as
+    ``suspend``'s ``AlreadySuspended`` — reinstating something already open would record an act
+    that never happened.
+    """
+    learner = await session.get(Learner, learner_id)
+    if learner is None:
+        raise NoSuchLearner(str(learner_id))
+    if learner.suspended_at is None:
+        raise NotSuspended(str(learner_id))
+
+    actor_id, actor_handle = _actor_ids(actor)
+    learner.suspended_at = None
+    session.add(
+        AccountAction(
+            actor_learner_id=actor_id,
+            actor_handle=actor_handle,
+            learner_id=learner.id,
+            learner_handle=learner.handle,
+            action=AccountActionKind.REINSTATE,
+            reason=reason.strip() if reason else None,
+        )
+    )
+    await session.commit()
+    await session.refresh(learner)
+    return learner

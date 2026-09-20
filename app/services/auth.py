@@ -204,8 +204,22 @@ async def resolve_session(
 
             impersonation_enabled = get_settings().impersonation_enabled
         admin = await session.get(Learner, row.impersonated_by_id, populate_existing=True)
-        if not impersonation_enabled or admin is None or not admin.is_admin:
+        # The *administrator's* suspension ends their visits, not the learner's: a visit is the
+        # administrator's credential, and support has to be able to keep looking at exactly the
+        # account that is in trouble (S21).
+        if (
+            not impersonation_enabled
+            or admin is None
+            or not admin.is_admin
+            or admin.suspended_at is not None
+        ):
             return None
+    elif learner.suspended_at is not None:
+        # Suspension has to bite a session that already exists, not only stop a future sign-in
+        # — a check that only ran at sign-in would leave a suspended learner working until their
+        # cookie expired, which is exactly when Guru least wants that (S21). This runs on every
+        # authenticated request, same as expiry and revocation above.
+        return None
     if now - row.last_used_at >= LAST_USED_RESOLUTION:
         row.last_used_at = now
         await session.commit()

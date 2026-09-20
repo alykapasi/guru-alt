@@ -202,6 +202,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/learners/{learner_id}/reinstate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reinstate Learner
+         * @description Let a suspended account sign in again (S21).
+         */
+        post: operations["reinstate_learner_api_v1_admin_learners__learner_id__reinstate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/learners/{learner_id}/suspend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Suspend Learner
+         * @description Stop an account immediately, with the reason on the record (S21).
+         *
+         *     The learner's own sessions end in the same transaction — see ``accounts.suspend`` — so this
+         *     bites a person already signed in, not only their next attempt to sign in.
+         */
+        post: operations["suspend_learner_api_v1_admin_learners__learner_id__suspend_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/dev-login": {
         parameters: {
             query?: never;
@@ -1743,6 +1786,31 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AccountRead
+         * @description A learner's account, as ``suspend``/``reinstate`` leave it.
+         *
+         *     A narrower cut than ``app.schemas.auth.LearnerRead`` — that schema is the *session's* view
+         *     of a learner and has no reason to carry ``suspended_at``; this is the *administrator's* view
+         *     after an act that is entirely about that one field.
+         */
+        AccountRead: {
+            /** Display Name */
+            display_name: string | null;
+            /** Email */
+            email: string | null;
+            /** Handle */
+            handle: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Admin */
+            is_admin: boolean;
+            /** Suspended At */
+            suspended_at: string | null;
+        };
         /** ActivityRead */
         ActivityRead: {
             /** Momentum */
@@ -2714,6 +2782,8 @@ export interface components {
             is_admin: boolean;
             /** Last Call At */
             last_call_at: string | null;
+            /** Suspended At */
+            suspended_at: string | null;
             /** Unpriced Calls */
             unpriced_calls: number;
         };
@@ -3103,6 +3173,15 @@ export interface components {
             /** Password */
             password: string;
         };
+        /**
+         * ReinstateRequest
+         * @description Let a suspended account sign in again. Unlike suspending, no reason is required — see
+         *     ``app.services.accounts.reinstate``.
+         */
+        ReinstateRequest: {
+            /** Reason */
+            reason?: string | null;
+        };
         /** RetentionPolicyRead */
         RetentionPolicyRead: {
             /** Stores */
@@ -3427,6 +3506,17 @@ export interface components {
             ][];
             /** Supported Fraction */
             supported_fraction: number | null;
+        };
+        /**
+         * SuspendRequest
+         * @description Stop an account, and say why (S21).
+         *
+         *     The reason is required by the schema, the same way ``ImpersonationRequest.reason`` is:
+         *     a request without one never reaches ``accounts.suspend`` at all.
+         */
+        SuspendRequest: {
+            /** Reason */
+            reason: string;
         };
         /** TopicCreate */
         TopicCreate: {
@@ -3797,6 +3887,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LearnerRoster"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reinstate_learner_api_v1_admin_learners__learner_id__reinstate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                learner_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReinstateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    suspend_learner_api_v1_admin_learners__learner_id__suspend_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                learner_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SuspendRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountRead"];
                 };
             };
             /** @description Validation Error */

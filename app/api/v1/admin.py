@@ -7,9 +7,9 @@ reports people: who registered, what they use, what their use costs. A shared se
 a monitor's configuration is the wrong credential for that, so these take an administrator's
 session and nothing else.
 
-No longer read-only. Impersonation was the first exception; invitations (S21) are the second,
-and every write either of them makes is a durable record — a visit for one, an
-``AccountAction`` for the other — written in the same transaction as the act itself. A portal
+No longer read-only. Impersonation was the first exception; invitations and suspension (S21) are
+the rest, and every write any of them makes is a durable record — a visit for the first, an
+``AccountAction`` for the other two — written in the same transaction as the act itself. A portal
 that can only look is a portal that cannot yet be used to do something nobody recorded; this
 one can be, and everything below stays true to that.
 """
@@ -23,12 +23,15 @@ from fastapi import APIRouter, HTTPException, Query, status
 from app.api.deps import CurrentAdmin, IdentityProviderDep, SessionDep, SettingsDep
 from app.core.identity import ProviderError
 from app.schemas.admin import (
+    AccountRead,
     AdminActionRead,
     ImpersonationRead,
     ImpersonationRequest,
     ImpersonationStarted,
     InvitationCreate,
     InvitationRead,
+    ReinstateRequest,
+    SuspendRequest,
 )
 from app.services import accounts, impersonation
 from app.services.admin import LearnerRoster, learner_usage
@@ -222,3 +225,54 @@ async def revoke_invitation(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such invitation") from None
     except accounts.NotOpen:
         raise HTTPException(status.HTTP_409_CONFLICT, "that invitation is not open") from None
+
+
+@router.post("/learners/{learner_id}/suspend", response_model=AccountRead)
+async def suspend_learner(
+    learner_id: uuid.UUID,
+    body: SuspendRequest,
+    admin: CurrentAdmin,
+    session: SessionDep,
+):
+    """Stop an account immediately, with the reason on the record (S21).
+
+    The learner's own sessions end in the same transaction — see ``accounts.suspend`` — so this
+    bites a person already signed in, not only their next attempt to sign in.
+    """
+    try:
+        return await accounts.suspend(
+            session, actor=admin, learner_id=learner_id, reason=body.reason
+        )
+    except accounts.NoSuchLearner:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such learner") from None
+    except accounts.CannotSuspendSelf:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "you cannot suspend your own account"
+        ) from None
+    except accounts.AlreadySuspended:
+        raise HTTPException(status.HTTP_409_CONFLICT, "that account is already suspended") from None
+    except accounts.ReasonRequired:
+        # Reachable only if a caller bypasses `SuspendRequest.reason`'s own `min_length` (e.g. a
+        # whitespace-padded reason Pydantic counted before it was stripped) — the same relationship
+        # `ImpersonationRequest.reason` has to `impersonation.begin`'s own check.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "say why, in a sentence"
+        ) from None
+
+
+@router.post("/learners/{learner_id}/reinstate", response_model=AccountRead)
+async def reinstate_learner(
+    learner_id: uuid.UUID,
+    body: ReinstateRequest,
+    admin: CurrentAdmin,
+    session: SessionDep,
+):
+    """Let a suspended account sign in again (S21)."""
+    try:
+        return await accounts.reinstate(
+            session, actor=admin, learner_id=learner_id, reason=body.reason
+        )
+    except accounts.NoSuchLearner:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such learner") from None
+    except accounts.NotSuspended:
+        raise HTTPException(status.HTTP_409_CONFLICT, "that account is not suspended") from None

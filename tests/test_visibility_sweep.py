@@ -596,7 +596,7 @@ _HTTP_METHODS = frozenset({"get", "put", "post", "delete", "patch", "options", "
 # fails naming it.
 _NOT_GRAPH_IDS = frozenset(
     {
-        "learner_id",  # POST /admin/impersonate's target learner, not a graph id
+        "learner_id",  # target learner: /admin/impersonate, /admin/learners/{id}/suspend|reinstate
         "impersonation_id",  # an admin impersonation session id
         "invitation_id",  # an admin invitation row id
         "source_id",  # a Source row id
