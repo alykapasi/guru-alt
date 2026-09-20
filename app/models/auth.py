@@ -11,8 +11,9 @@ keep. A row can be deleted. The cost is a lookup per request, which is one index
 
 import uuid
 from datetime import datetime
+from enum import StrEnum
 
-from sqlalchemy import JSON, DateTime, ForeignKey, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -96,56 +97,6 @@ class Impersonation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
 
-class PasswordResetToken(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """A single-use, short-lived permission to set a new password (S21).
-
-    Stored as a fingerprint, never in full, for the same reason as a session token: a database
-    dump or a log line must not be a way in. It is a *separate* table from ``learner_sessions``
-    rather than a flag on one, because the two have opposite properties — a session is long
-    and renewable, a reset is short and spent on first use — and sharing a row would mean the
-    weaker rules governing both.
-    """
-
-    __tablename__ = "password_reset_tokens"
-
-    learner_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("learners.id", ondelete="CASCADE"), index=True
-    )
-    token_hash: Mapped[str] = mapped_column(unique=True, index=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    # Set rather than deleted, so a token presented twice is distinguishable from one that
-    # never existed for as long as the row is kept — the same argument as a revoked session.
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
-
-
-class SignInAttempt(UUIDPrimaryKeyMixin, Base):
-    """One failed sign-in, kept only long enough to throttle the next one (S21).
-
-    Recorded in the database rather than in a process's memory on purpose. An in-memory counter
-    is per-process, so a deployment behind two workers gives an attacker twice the budget and a
-    restart gives them a fresh one — which is to say it throttles the honest user who mistyped
-    and nobody else.
-
-    Both the address and the client are recorded, because they are two different attacks.
-    Repeated failures against one address is somebody working on one account; repeated failures
-    from one client across many addresses is credential stuffing, and the per-address counter
-    never sees it.
-
-    Only *failures* are written. A successful sign-in costs no write, so the common path is
-    unchanged, and being expensive is the entire point of the uncommon one.
-    """
-
-    __tablename__ = "sign_in_attempts"
-
-    # Normalised, and not a foreign key: an attempt against an address nobody has registered is
-    # exactly the kind that most needs counting, and a FK would make it unrecordable.
-    email: Mapped[str] = mapped_column(index=True)
-    client: Mapped[str] = mapped_column(index=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), index=True
-    )
-
-
 class AdminAction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """Durable request intent; no credentials, request bodies, or query strings."""
 
@@ -157,3 +108,98 @@ class AdminAction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     resource_ids: Mapped[dict[str, str]] = mapped_column(JSON)
     status_code: Mapped[int | None] = mapped_column(default=None)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class Invitation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Permission for one address to enroll (S21).
+
+    Guru is invite-only for the alpha, and this row — not the provider's setting — is what
+    enforces it: the exchange refuses an identity whose addresses have no open invitation. The
+    provider is asked to *deliver* the invitation, so one misconfigured dashboard toggle cannot
+    turn the alpha into open registration.
+
+    Open means accepted and revoked are both NULL, and the partial unique index says an address
+    has at most one of those at a time. A spent or withdrawn invitation stays as history.
+    """
+
+    __tablename__ = "invitations"
+    __table_args__ = (
+        Index(
+            "uq_invitations_open_email",
+            "email",
+            unique=True,
+            postgresql_where=text("accepted_at IS NULL AND revoked_at IS NULL"),
+        ),
+    )
+
+    email: Mapped[str] = mapped_column(index=True)
+    invited_by_learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="SET NULL"), index=True, default=None
+    )
+    # Beside the id, for the same reason as ``impersonations``: an id whose row is gone names
+    # nobody, and "who let this person in" has to survive the inviter closing their account.
+    invited_by_handle: Mapped[str] = mapped_column()
+    provider_invitation_id: Mapped[str | None] = mapped_column(default=None)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    accepted_learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="SET NULL"), index=True, default=None
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    revoked_by_learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="SET NULL"), default=None
+    )
+
+
+class AccountActionKind(StrEnum):
+    """What an administrator did to an account."""
+
+    INVITE = "invite"
+    REVOKE_INVITATION = "revoke_invitation"
+    SUSPEND = "suspend"
+    REINSTATE = "reinstate"
+
+
+class AccountAction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One administrative act on accounts, recorded (S21, V13).
+
+    ``admin_actions`` records what a *visit* touched; this records the acts that need no visit —
+    letting somebody in, and stopping them. Written in the same transaction as the act, so there
+    is no path that suspends an account without leaving a record of who did it and why.
+    """
+
+    __tablename__ = "account_actions"
+
+    actor_learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="SET NULL"), index=True, default=None
+    )
+    actor_handle: Mapped[str] = mapped_column()
+    learner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learners.id", ondelete="SET NULL"), index=True, default=None
+    )
+    learner_handle: Mapped[str | None] = mapped_column(default=None)
+    action: Mapped[str] = mapped_column(index=True)
+    # The address an invitation was issued to. Cleared when that person's account is erased.
+    email: Mapped[str | None] = mapped_column(default=None)
+    reason: Mapped[str | None] = mapped_column(default=None)
+
+
+class LegacyPasswordDigest(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A password hash that outlived the password system, waiting to be imported (S21).
+
+    Guru stopped holding credentials when Clerk took them over, but the hashes are what lets
+    existing learners keep the password they already have: Clerk accepts an Argon2 digest at
+    import, so nobody has to be told to reset. Dropping the column in the same change that
+    shipped the import would have destroyed them before any operator could run it, so `0055`
+    moves them here instead and `poe identity-import` deletes each row as it succeeds.
+
+    The table is therefore expected to end up empty, and an empty one is the finished state
+    rather than a missing step. It carries no email: the address lives on the learner, and a
+    second copy here would be a second thing to keep true.
+    """
+
+    __tablename__ = "legacy_password_digests"
+
+    learner_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("learners.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    digest: Mapped[str]

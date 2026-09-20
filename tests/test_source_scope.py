@@ -53,30 +53,42 @@ async def _learner(session: AsyncSession, *, handle: str | None = None) -> Learn
 
 
 async def test_a_topic_from_another_subject_is_refused(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
     _subject_a, _t_a, _kc_a = await _graph(db_session, "a")
     subject_b, _t_b, _kc_b = await _graph(db_session, "b")
     other_topic = (await _graph(db_session, "c"))[1]
 
     with pytest.raises(svc.ScopeConflict):
-        await svc.resolve_source_scope(db_session, subject_id=subject_b.id, topic_id=other_topic.id)
+        await svc.resolve_source_scope(
+            db_session, learner_id=learner.id, subject_id=subject_b.id, topic_id=other_topic.id
+        )
 
 
 async def test_a_topic_implies_its_subject(db_session: AsyncSession) -> None:
     """Not an error — a topic belongs to exactly one subject, so it can be filled in."""
+    learner = await _learner(db_session)
     subject, topic, _kc = await _graph(db_session, "d")
 
-    resolved = await svc.resolve_source_scope(db_session, subject_id=None, topic_id=topic.id)
+    resolved = await svc.resolve_source_scope(
+        db_session, learner_id=learner.id, subject_id=None, topic_id=topic.id
+    )
 
     assert resolved == (subject.id, topic.id)
 
 
 async def test_a_missing_topic_is_refused(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
     with pytest.raises(svc.ScopeConflict):
-        await svc.resolve_source_scope(db_session, subject_id=None, topic_id=uuid.uuid4())
+        await svc.resolve_source_scope(
+            db_session, learner_id=learner.id, subject_id=None, topic_id=uuid.uuid4()
+        )
 
 
 async def test_no_scope_at_all_is_fine(db_session: AsyncSession) -> None:
-    assert await svc.resolve_source_scope(db_session, subject_id=None, topic_id=None) == (
+    learner = await _learner(db_session)
+    assert await svc.resolve_source_scope(
+        db_session, learner_id=learner.id, subject_id=None, topic_id=None
+    ) == (
         None,
         None,
     )
@@ -103,7 +115,7 @@ async def test_uploading_into_a_mismatched_topic_is_422(
         app.dependency_overrides.pop(get_blob_store, None)
 
     assert r.status_code == 422
-    assert "belongs to subject" in r.text
+    assert "does not belong to subject" in r.text
 
 
 # --- reassignment ------------------------------------------------------------------------

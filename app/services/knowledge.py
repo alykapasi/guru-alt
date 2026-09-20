@@ -9,14 +9,16 @@ import re
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 import structlog
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import prerequisites
 from app.models.knowledge import KC, Concept, KCEdge, Subject, Topic
 from app.models.learning import LearnerKCState
+from app.models.lesson_plan import LessonPlan
 from app.models.source import Chunk, ChunkKC, Source
 from app.schemas.knowledge import KCCreate, SubjectCreate, TopicCreate
 
@@ -175,6 +177,66 @@ def _add_prerequisite_edges(
     return len(seen)
 
 
+async def mark_source_derived(session: AsyncSession, subject_id: uuid.UUID | None) -> None:
+    """Latch ``private_source_derived`` on a subject source material has reached (S25b D4).
+
+    A latch, not a setter: every trigger sets it, nothing clears it, and calling this on a
+    subject that already carries it is a no-op rather than an error — which is what lets each
+    trigger call it without first asking whether one of the others got there already.
+
+    ``subject_id=None`` does nothing, so a caller with an unscoped source does not have to
+    branch. The update runs in the caller's transaction on purpose: a flag set in a later one
+    is a window in which the subject is publishable.
+    """
+    if subject_id is None:
+        return
+    await session.execute(
+        update(Subject)
+        .where(Subject.id == subject_id, Subject.private_source_derived.is_(False))
+        .values(private_source_derived=True)
+    )
+
+
+async def unique_subject_slug(
+    session: AsyncSession, name: str, *, owner_learner_id: uuid.UUID | None
+) -> str:
+    """A slug free among the subjects sharing this owner (S25b D8).
+
+    Scoped, not global. Counting every slug in the table made the de-duplication suffix an
+    existence oracle: ask for a name a stranger privately used and the ``name_2`` you got back
+    answered a question about their library, for any name worth trying. It also read every slug
+    in the table to create one row.
+
+    The scope is exactly what the creator can already see, which is the rule that makes the
+    suffix say nothing new. For a learner that is their own subjects *plus* the curated ones:
+    every learner can already list the shared library, so de-duplicating against it reveals
+    nothing, and leaving it out would let a learner's subject sit in their catalog sharing a
+    slug with a curated one for no gain. ``owner_learner_id=None`` — approval creating a
+    published copy — scopes to curated subjects alone, because a curated slug must not be
+    pushed along by a private subject nobody reviewing it can see.
+    """
+    owner = (
+        # `== None` would compile to `= NULL`, which is never true: the filter would match
+        # nothing, every curated name would look free, and the failure would stay invisible
+        # until the second curated subject of one name hit the partial unique index.
+        Subject.owner_learner_id.is_(None)
+        if owner_learner_id is None
+        else or_(
+            Subject.owner_learner_id == owner_learner_id,
+            Subject.owner_learner_id.is_(None),
+        )
+    )
+    result = await session.execute(select(Subject.slug).where(owner))
+    taken = {slug for (slug,) in result.all()}
+
+    base = _slugify(name)
+    slug, counter = base, 2
+    while slug in taken:
+        slug = f"{base}_{counter}"
+        counter += 1
+    return slug
+
+
 async def create_subject_with_graph(
     session: AsyncSession,
     subject_name: str,
@@ -182,11 +244,13 @@ async def create_subject_with_graph(
     topics_data: list[dict],
     source_ids: list[uuid.UUID] | None,
     learner_id: uuid.UUID,
+    private_source_derived: bool = False,
 ) -> CurriculumResult:
     """Create a Subject with Topics and KCs in one atomic transaction.
 
     Handles multi-level slug deduplication and reassigns owned sources.
-    - Subject slug: globally unique (dedups across all subjects)
+    - Subject slug: unique per owner (S25b D8 — a global scan reported on other learners'
+      private subject names through the suffix it returned; see `unique_subject_slug`)
     - Topic slug: unique within the subject (dedups within topics_data)
     - KC slug: unique within its topic (dedups within topic's kcs)
 
@@ -203,15 +267,7 @@ async def create_subject_with_graph(
     Returns:
         The created Subject (with id set, relationships populated).
     """
-    # Deduplicate subject slug at the global level
-    base_slug = _slugify(subject_name)
-    subject_slug = base_slug
-    result = await session.execute(select(Subject.slug))
-    existing_subject_slugs = {slug for (slug,) in result.all()}
-    counter = 2
-    while subject_slug in existing_subject_slugs:
-        subject_slug = f"{base_slug}_{counter}"
-        counter += 1
+    subject_slug = await unique_subject_slug(session, subject_name, owner_learner_id=learner_id)
 
     # Create the subject and flush to get its ID
     subject = Subject(
@@ -221,6 +277,9 @@ async def create_subject_with_graph(
         # A curriculum generated for a learner from their own goal is theirs (S25). Curated
         # subjects are created deliberately and carry NULL; nothing reaches this path.
         owner_learner_id=learner_id,
+        # Decided by the caller from what the *server* observed — the proposal row, or the
+        # presence of sources to move in. Never from anything the request body claims (S25b D4).
+        private_source_derived=private_source_derived,
     )
     session.add(subject)
     await session.flush()
@@ -319,6 +378,9 @@ async def create_subject_with_graph(
                 ChunkKC.chunk_id.in_(select(Chunk.id).where(Chunk.source_id.in_(reassigned)))
             )
         )
+        # Sources genuinely moved into this subject, whatever the caller believed when it
+        # passed `private_source_derived`. The server saw it happen, so the server sets it.
+        subject.private_source_derived = True
 
     # Single atomic commit
     await session.commit()
@@ -328,12 +390,18 @@ async def create_subject_with_graph(
 
 
 class ScopeConflict(ValueError):
-    """A source was scoped to a topic that does not belong to its subject."""
+    """A source's scope is inconsistent, or names a subject or topic the caller cannot see.
+
+    Raised both when a source is scoped to a topic that does not belong to its subject, and
+    when the supplied subject or topic is missing or another learner's private one (S25). The
+    message names only ids the caller sent.
+    """
 
 
 async def resolve_source_scope(
     session: AsyncSession,
     *,
+    learner_id: uuid.UUID,
     subject_id: uuid.UUID | None,
     topic_id: uuid.UUID | None,
 ) -> tuple[uuid.UUID | None, uuid.UUID | None]:
@@ -346,16 +414,25 @@ async def resolve_source_scope(
 
     A topic given without a subject is not an error; the topic determines the subject, so it
     is filled in rather than rejected.
+
+    Both ids pass the visibility gate first (S25). A stranger's private subject or topic is
+    refused exactly like one that does not exist. Every message names only ids the caller sent:
+    the old one named the subject a topic belongs to, which told anybody who uploaded against a
+    stranger's topic whose curriculum it was.
     """
+    if subject_id is not None:
+        try:
+            await require_visible_subject(session, subject_id, learner_id)
+        except NotVisible as exc:
+            raise ScopeConflict(f"subject {subject_id} does not exist") from exc
     if topic_id is None:
         return subject_id, None
-    topic = await session.get(Topic, topic_id)
-    if topic is None:
-        raise ScopeConflict(f"topic {topic_id} does not exist")
+    try:
+        _, topic = await require_visible_topic(session, topic_id, learner_id)
+    except NotVisible as exc:
+        raise ScopeConflict(f"topic {topic_id} does not exist") from exc
     if subject_id is not None and topic.subject_id != subject_id:
-        raise ScopeConflict(
-            f"topic {topic_id} belongs to subject {topic.subject_id}, not {subject_id}"
-        )
+        raise ScopeConflict(f"topic {topic_id} does not belong to subject {subject_id}")
     return topic.subject_id, topic_id
 
 
@@ -371,7 +448,30 @@ async def list_subjects(
     statement = select(Subject).order_by(Subject.slug)
     if learner_id is not None:
         statement = statement.where(
-            or_(Subject.owner_learner_id.is_(None), Subject.owner_learner_id == learner_id)
+            or_(
+                Subject.owner_learner_id == learner_id,
+                # A curated subject is listed while it is the current version, and stops being
+                # listed once a newer one supersedes it or it is withdrawn (S25b D7). Unlisting
+                # is not removal: `is_visible_to` still admits it by id, deliberately, because
+                # it was reviewed as shareable and a learner mid-way through one should not
+                # find it gone. The third arm is what makes that real — somebody with a lesson
+                # plan on it keeps seeing it in their catalog, because for them it is not an
+                # old version, it is the thing they are studying.
+                and_(
+                    Subject.owner_learner_id.is_(None),
+                    Subject.superseded_by_id.is_(None),
+                    Subject.withdrawn_at.is_(None),
+                ),
+                and_(
+                    Subject.owner_learner_id.is_(None),
+                    select(LessonPlan.id)
+                    .where(
+                        LessonPlan.learner_id == learner_id,
+                        LessonPlan.subject_id == Subject.id,
+                    )
+                    .exists(),
+                ),
+            )
         )
     result = await session.scalars(statement)
     return result.all()
@@ -394,6 +494,62 @@ def is_writable_by(subject: Subject, learner_id: uuid.UUID) -> bool:
     library becomes one learner's notes.
     """
     return subject.owner_learner_id == learner_id
+
+
+class NotVisible(LookupError):
+    """A graph id that names nothing, or names another learner's private material (S25).
+
+    One exception for both, on purpose. A caller who could tell them apart could map somebody
+    else's curriculum one id at a time. ``kind`` is what the id was meant to name, and the
+    message is the entire 404 body a route sends (see the handler in ``app.main``).
+    """
+
+    def __init__(self, kind: Literal["subject", "topic", "kc"]) -> None:
+        super().__init__(f"{kind} not found")
+        self.kind: Literal["subject", "topic", "kc"] = kind
+
+
+async def require_visible_subject(
+    session: AsyncSession, subject_id: uuid.UUID, learner_id: uuid.UUID
+) -> Subject:
+    """The subject, if ``learner_id`` may see it; otherwise ``NotVisible``."""
+    subject = await session.get(Subject, subject_id)
+    if subject is None or not is_visible_to(subject, learner_id):
+        raise NotVisible("subject")
+    return subject
+
+
+async def require_visible_topic(
+    session: AsyncSession, topic_id: uuid.UUID, learner_id: uuid.UUID
+) -> tuple[Subject, Topic]:
+    """The topic and the subject that decides its visibility, or ``NotVisible``."""
+    row = (
+        await session.execute(
+            select(Subject, Topic)
+            .join(Topic, Topic.subject_id == Subject.id)
+            .where(Topic.id == topic_id)
+        )
+    ).first()
+    if row is None or not is_visible_to(row[0], learner_id):
+        raise NotVisible("topic")
+    return row[0], row[1]
+
+
+async def require_visible_kc(
+    session: AsyncSession, kc_id: uuid.UUID, learner_id: uuid.UUID
+) -> tuple[Subject, KC]:
+    """The component and the subject that decides its visibility, or ``NotVisible``."""
+    row = (
+        await session.execute(
+            select(Subject, KC)
+            .join(Topic, Topic.subject_id == Subject.id)
+            .join(KC, KC.topic_id == Topic.id)
+            .where(KC.id == kc_id)
+        )
+    ).first()
+    if row is None or not is_visible_to(row[0], learner_id):
+        raise NotVisible("kc")
+    return row[0], row[1]
 
 
 async def subject_of_topic(session: AsyncSession, topic_id: uuid.UUID) -> Subject | None:

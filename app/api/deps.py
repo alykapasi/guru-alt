@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.db import engine, get_session
+from app.core.identity import IdentityProvider, build_identity_provider
 from app.llm import LLMClient, build_llm_client
 from app.models.learner import Learner
 from app.services import auth
@@ -61,6 +62,19 @@ def get_llm_client() -> LLMClient:
 
 
 LLMClientDep = Annotated[LLMClient, Depends(get_llm_client)]
+
+
+@lru_cache
+def _identity_provider() -> IdentityProvider | None:
+    return build_identity_provider(get_settings())
+
+
+def get_identity_provider() -> IdentityProvider | None:
+    """The hosted identity provider, or None when none is configured. Overridden in tests."""
+    return _identity_provider()
+
+
+IdentityProviderDep = Annotated[IdentityProvider | None, Depends(get_identity_provider)]
 
 
 @lru_cache
@@ -202,7 +216,10 @@ async def get_current_admin(who: Authenticated) -> Learner:
     """
     if who.impersonated_by_id is not None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not an administrator")
-    if not who.learner.is_admin:
+    # A suspended administrator is not an administrator (S21): `resolve_session` already refuses
+    # their own sessions on the next request, so this is belt-and-braces for this one gate
+    # rather than the enforcement point — see `app.services.auth.resolve_session`.
+    if not who.learner.is_admin or who.learner.suspended_at is not None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not an administrator")
     return who.learner
 
@@ -245,8 +262,14 @@ async def require_operator(request: Request, session: SessionDep, settings: Sett
             "not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    # Same reasoning as the admin gate: a borrowed identity is not a way to become an operator.
-    if resolved.impersonated_by_id is not None or not resolved.learner.is_admin:
+    # Same reasoning as the admin gate: a borrowed identity is not a way to become an operator,
+    # and neither is a suspended one (S21) — `resolve_session` above already refuses the
+    # session itself; this is the same belt-and-braces check `get_current_admin` makes.
+    if (
+        resolved.impersonated_by_id is not None
+        or not resolved.learner.is_admin
+        or resolved.learner.suspended_at is not None
+    ):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not an administrator")
 
 

@@ -20,8 +20,7 @@ async def generate_lesson_plan(
     learner: CurrentLearner,
     llm: LLMClientDep,
 ):
-    if await knowledge_svc.get_subject(session, subject_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
+    await knowledge_svc.require_visible_subject(session, subject_id, learner.id)
     return await svc.generate_lesson_plan(
         session, llm, learner_id=learner.id, subject_id=subject_id, goal=data.goal
     )
@@ -29,8 +28,7 @@ async def generate_lesson_plan(
 
 @router.get("/subjects/{subject_id}/lesson-plan", response_model=LessonPlanRead)
 async def get_lesson_plan(subject_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
-    if await knowledge_svc.get_subject(session, subject_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
+    await knowledge_svc.require_visible_subject(session, subject_id, learner.id)
     plan = await svc.get_lesson_plan(session, learner.id, subject_id)
     if plan is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no lesson plan for this subject yet")

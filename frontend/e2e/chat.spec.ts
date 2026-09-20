@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { register } from "./journey";
+import { signIn } from "./journey";
 
 /** Mirrors `TERMINAL_EVENTS` in `src/api/sse.ts`. Restated rather than imported because that
  * module reaches `import.meta.env`, which the Playwright runner has no equivalent of — and a
@@ -8,7 +8,7 @@ import { register } from "./journey";
  * type to the product without adding it here fails this test rather than weakening it. */
 const TERMINAL_EVENTS = ["done", "awaiting_reply", "committed", "error"];
 
-/** The first browser journey (S58): register, chat, and come back to find it there.
+/** The first browser journey (S58): sign in, chat, and come back to find it there.
  *
  * Everything this covers is invisible to both suites on either side of it. The backend tests
  * drive `run_tutor_turn` directly and never serialise an SSE frame; the component tests render
@@ -16,9 +16,10 @@ const TERMINAL_EVENTS = ["done", "awaiting_reply", "committed", "error"];
  * stream, the credentialed cross-origin fetch, the cookie the browser decides whether to send —
  * is where a change breaks the product while both suites stay green.
  *
- * The account is registered through the form rather than through a development sign-in, for
- * two reasons: the dev-login button is compiled out of a production build, which this runs
- * against on purpose, and registering is the path a first user actually takes. */
+ * The account signs in through the development sign-in rather than the form (S21): Clerk owns
+ * the form now and its hosted UI cannot be driven offline, so the journeys take the one door
+ * that works in CI and spend themselves on everything behind it, which is the part these
+ * cover and nothing else does. */
 
 async function startGeneralChat(page: Page): Promise<void> {
   await page.getByRole("button", { name: "New chat" }).click();
@@ -35,8 +36,9 @@ test("a signed-out browser is sent to sign in rather than a shell of failed call
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
 });
 
-test("registering, asking, and finding the answer still there after a reload", async ({ page }) => {
-  await register(page);
+test("signing in, asking, and finding the answer still there after a reload", async ({ page }) => {
+  await signIn(page);
+  await page.goto("/app/chat");
   await startGeneralChat(page);
 
   const stream = page.waitForResponse(
@@ -68,7 +70,8 @@ test("registering, asking, and finding the answer still there after a reload", a
 });
 
 test("the reply is streamed into the page, not delivered in one piece", async ({ page }) => {
-  await register(page);
+  await signIn(page);
+  await page.goto("/app/chat");
   await startGeneralChat(page);
 
   // Watch the response frames rather than the DOM: a rendered reply looks identical whether it

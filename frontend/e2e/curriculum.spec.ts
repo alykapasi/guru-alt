@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { register } from "./journey";
+import { signIn } from "./journey";
 
 /** The second browser journey (S58): turn a sentence into a subject you own.
  *
@@ -42,7 +42,7 @@ async function openWizardAtTheGoalStep(page: Page): Promise<void> {
 test("a goal becomes a curriculum, and the curriculum becomes a subject", async ({ page }) => {
   const goal = `Understand eigenvalues ${Date.now()}`;
 
-  await register(page);
+  await signIn(page);
   await openWizardAtTheGoalStep(page);
 
   // The refinement gate. Its reply is prose, which is the correct shape for it — the gate
@@ -93,7 +93,7 @@ test("the curriculum the learner edits is the curriculum that gets created", asy
   const goal = `Understand eigenvalues ${Date.now()}`;
   const renamed = `Linear algebra, my way ${Date.now()}`;
 
-  await register(page);
+  await signIn(page);
   await openWizardAtTheGoalStep(page);
   await page.getByPlaceholder(/Learn Python for data analysis/).fill(goal);
   await page.getByRole("button", { name: "Send" }).click();

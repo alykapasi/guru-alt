@@ -14,7 +14,7 @@ import uuid
 
 import pytest
 
-from tests.migration_harness import database_at, upgrade
+from tests.migration_harness import database_at, downgrade, upgrade
 
 SCRATCH = "guru_migration_test"
 
@@ -209,5 +209,63 @@ async def test_calls_recorded_before_timing_come_through_unmeasured_not_instant(
             assert row is not None, "the call did not survive the upgrade"
             assert row["input_tokens"] == 100, "the accounting it did hold was not disturbed"
             assert row["latency_ms"] is None, "claimed a timing that was never taken"
+        finally:
+            await conn.close()
+
+
+async def test_a_provider_link_survives_the_round_trip_down_and_back_up() -> None:
+    """0054 (S21) adds ``auth_subject``. A downgrade has to be able to drop it from a table that
+    already has a row carrying one, and the subsequent upgrade has to restore the column and
+    its unique index without choking on the row that is already there.
+    """
+    async with database_at("0054_hosted_identity") as connect:
+        conn = await connect()
+        try:
+            learner_id = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO learners (id, handle, auth_subject) VALUES ($1, $2, $3)",
+                learner_id,
+                "hosted",
+                "user_abc123",
+            )
+        finally:
+            await conn.close()
+
+        await downgrade(SCRATCH, "0053_note_exact_authorship")
+        conn = await connect()
+        try:
+            row = await conn.fetchrow("SELECT handle FROM learners WHERE id = $1", learner_id)
+            assert row is not None, "the learner did not survive the downgrade"
+            assert row["handle"] == "hosted"
+            columns = await conn.fetch(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'learners'"
+            )
+            assert "auth_subject" not in {c["column_name"] for c in columns}
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0054_hosted_identity")
+        conn = await connect()
+        try:
+            row = await conn.fetchrow(
+                "SELECT handle, auth_subject FROM learners WHERE id = $1", learner_id
+            )
+            assert row is not None, "the learner did not survive the re-upgrade"
+            assert row["handle"] == "hosted"
+            assert row["auth_subject"] is None, "the column came back with no way to fill it"
+
+            await conn.execute(
+                "INSERT INTO learners (id, handle, auth_subject) VALUES ($1, $2, $3)",
+                uuid.uuid4(),
+                "second",
+                "user_def456",
+            )
+            with pytest.raises(Exception, match="ix_learners_auth_subject"):
+                await conn.execute(
+                    "INSERT INTO learners (id, handle, auth_subject) VALUES ($1, $2, $3)",
+                    uuid.uuid4(),
+                    "third",
+                    "user_def456",
+                )
         finally:
             await conn.close()

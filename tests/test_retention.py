@@ -244,3 +244,43 @@ async def test_a_memory_write_back_queued_before_deletion_does_nothing(
 
     assert written == []
     assert await db_session.scalar(select(func.count()).select_from(Memory)) == 0
+
+
+async def test_closing_an_authors_account_clears_them_from_a_publication_but_keeps_it(
+    db_session: AsyncSession,
+) -> None:
+    """The same split as impersonations (S25b), and for the same reason.
+
+    A published subject stays in the shared library after its author closes their account, so
+    the record of *why* it is there has to survive too — an approval that named nothing would
+    leave material in the library with no account of how it got in. What goes is the half that
+    names the author. What stays is the reviewer's half, which is not the author's to erase.
+    """
+    from app.models.publication import Publication, PublicationStatus
+
+    author = await _learner(db_session)
+    reviewer = await _learner(db_session)
+    publication = Publication(
+        author_id=author.id,
+        author_handle=author.handle,
+        reviewer_id=reviewer.id,
+        reviewer_handle=reviewer.handle,
+        status=PublicationStatus.APPROVED,
+        snapshot={"subject": {"name": "Calculus"}},
+    )
+    db_session.add(publication)
+    await db_session.flush()
+    publication_id = publication.id
+    reviewer_handle = reviewer.handle
+    await db_session.commit()
+
+    await svc.delete_learner(db_session, InMemoryBlobStore(), author.id)
+
+    # The foreign key clears the column in the database; this session is still holding the
+    # object it loaded before that happened.
+    db_session.expire_all()
+    record = await db_session.get(Publication, publication_id)
+    assert record is not None, "the decision went with the account"
+    assert record.author_id is None and record.author_handle is None
+    assert record.reviewer_handle == reviewer_handle
+    assert record.snapshot == {"subject": {"name": "Calculus"}}

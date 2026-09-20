@@ -153,6 +153,8 @@ async def list_sources(
 ):
     """List the learner's sources, optionally scoped to a subject — backs the conversation
     creation modal's source picker (Phase 7)."""
+    if subject_id is not None:
+        await knowledge.require_visible_subject(session, subject_id, learner.id)
     stmt = select(Source).where(Source.learner_id == learner.id)
     if subject_id is not None:
         stmt = stmt.where(Source.subject_id == subject_id)
@@ -176,6 +178,10 @@ async def retrieve_chunks(
     llm: LLMClientDep,
 ):
     """Hybrid-retrieve the most relevant chunks for a query, scoped to the learner."""
+    if data.subject_id is not None:
+        await knowledge.require_visible_subject(session, data.subject_id, learner.id)
+    if data.topic_id is not None:
+        await knowledge.require_visible_topic(session, data.topic_id, learner.id)
     return await retrieval.retrieve(
         session,
         llm,

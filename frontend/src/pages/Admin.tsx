@@ -1,17 +1,24 @@
 import { useState } from "react";
+import { PublicationQueue } from "../components/PublicationQueue";
 import { Gauge } from "lucide-react";
 import {
   useAdminActions,
   useImpersonations,
+  useInvitations,
+  useInvite,
   useLearnerRoster,
+  useReinstate,
+  useRevokeInvitation,
   useSpend,
   useStartVisit,
+  useSuspend,
 } from "../api/admin";
 import type { components } from "../api/schema";
 
 type Latency = components["schemas"]["Latency"];
 type SpendBucket = components["schemas"]["SpendBucket"];
 type LearnerUsage = components["schemas"]["LearnerUsage"];
+type Invitation = components["schemas"]["InvitationRead"];
 
 /** What this deployment costs, how long its models take, and who is using it (P10).
  *
@@ -107,10 +114,15 @@ function BucketRows({ buckets }: { buckets: SpendBucket[] }) {
 function RosterRow({
   learner,
   onView,
+  onSuspend,
 }: {
   learner: LearnerUsage;
   onView: (learner: LearnerUsage) => void;
+  onSuspend: (learner: LearnerUsage) => void;
 }) {
+  const reinstate = useReinstate();
+  const suspended = learner.suspended_at !== null;
+
   return (
     <tr className="border-base-300 border-t">
       <td className="py-2 pr-4">
@@ -118,7 +130,13 @@ function RosterRow({
         {learner.is_admin && (
           <span className="badge badge-ghost badge-sm ml-2 align-middle">admin</span>
         )}
+        {suspended && (
+          <span className="badge badge-error badge-sm ml-2 align-middle">Suspended</span>
+        )}
         <span className="text-caption text-base-content/50 block">{learner.email ?? "—"}</span>
+        {reinstate.error && (
+          <span className="text-caption text-error block">{reinstate.error.message}</span>
+        )}
       </td>
       <td className="py-2 pr-4 text-right tabular-nums">{learner.calls}</td>
       <td className="py-2 pr-4 text-right tabular-nums">
@@ -130,6 +148,26 @@ function RosterRow({
         <button type="button" className="btn btn-ghost btn-xs" onClick={() => onView(learner)}>
           View as
         </button>
+        {/* Reinstating needs no reason — restoring somebody's access is not the act that has
+            to be justified later. Suspending is, so it opens a dialog instead. */}
+        {suspended ? (
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs"
+            disabled={reinstate.isPending}
+            onClick={() => reinstate.mutate({ learnerId: learner.id })}
+          >
+            Reinstate
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs text-error"
+            onClick={() => onSuspend(learner)}
+          >
+            Suspend
+          </button>
+        )}
       </td>
     </tr>
   );
@@ -275,9 +313,161 @@ function AccessLog() {
   );
 }
 
+/** Asking why, before the account closes.
+ *
+ * The same shape as `ViewAsDialog` and for the same reason: the API refuses a suspension
+ * without a reason, and the audit row is only worth as much as the sentence typed here. The
+ * button stays disabled until there is one, so the refusal happens before the request rather
+ * than as an error afterwards. */
+function SuspendDialog({ learner, onClose }: { learner: LearnerUsage; onClose: () => void }) {
+  const [reason, setReason] = useState("");
+  const suspend = useSuspend();
+
+  function submit(event: React.FormEvent) {
+    event.preventDefault();
+    suspend.mutate({ learnerId: learner.id, reason }, { onSuccess: onClose });
+  }
+
+  return (
+    <div className="bg-base-content/40 fixed inset-0 z-50 flex items-center justify-center p-6">
+      <form
+        onSubmit={submit}
+        className="bg-base-100 border-base-300 flex w-full max-w-md flex-col gap-4 rounded-box border p-6"
+      >
+        <h2 className="text-h2">
+          Suspend {learner.display_name || learner.handle}&rsquo;s account
+        </h2>
+        <p className="text-body text-base-content/70">
+          They are signed out everywhere immediately and cannot sign in again until an administrator
+          reinstates them. Their work is untouched.
+        </p>
+        <label className="flex flex-col gap-1">
+          <span className="text-caption text-base-content/70">Why?</span>
+          <input
+            className="input input-bordered"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Repeated abuse reports from other learners"
+            autoFocus
+          />
+        </label>
+        {suspend.error && <p className="text-caption text-error">{suspend.error.message}</p>}
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="btn btn-error btn-sm"
+            disabled={suspend.isPending || reason.trim().length === 0}
+          >
+            Suspend account
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/** Who may enrol at all (S21).
+ *
+ * Guru is invite-only: the exchange refuses anyone without an open invitation, so this panel
+ * is the entire front door. Spent and revoked invitations stay listed because the question an
+ * operator has is "did this person get in, and if not why" — a list of only open ones cannot
+ * answer it. */
+function Invitations() {
+  const invitations = useInvitations();
+  const invite = useInvite();
+  const revoke = useRevokeInvitation();
+  const [email, setEmail] = useState("");
+
+  function submit(event: React.FormEvent) {
+    event.preventDefault();
+    invite.mutate(email, { onSuccess: () => setEmail("") });
+  }
+
+  return (
+    <section className="flex flex-col gap-2">
+      <h2 className="text-h2">Who may join</h2>
+      <p className="text-caption text-base-content/60">
+        Guru is invite-only. An address with no open invitation cannot sign in, whichever provider
+        it arrives from.
+      </p>
+
+      <form onSubmit={submit} className="flex flex-wrap items-start gap-2">
+        <input
+          className="input input-bordered input-sm grow"
+          type="email"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          aria-label="Email to invite"
+          placeholder="learner@example.com"
+        />
+        <button type="submit" className="btn btn-primary btn-sm" disabled={invite.isPending}>
+          Invite
+        </button>
+      </form>
+      {invite.error && <p className="text-caption text-error">{invite.error.message}</p>}
+      {revoke.error && <p className="text-caption text-error">{revoke.error.message}</p>}
+
+      {invitations.isLoading ? (
+        <p className="text-caption text-base-content/50">Loading…</p>
+      ) : invitations.isError || !invitations.data ? (
+        <p className="text-body text-error">Could not read the invitation list.</p>
+      ) : invitations.data.length === 0 ? (
+        <p className="text-caption text-base-content/50">Nobody has been invited yet.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="text-body w-full">
+            <thead className="text-caption text-base-content/50 text-left">
+              <tr>
+                <th className="pb-2 pr-4 font-normal">Address</th>
+                <th className="pb-2 pr-4 font-normal">Status</th>
+                <th className="pb-2 pr-4 font-normal">Invited by</th>
+                <th className="pb-2 text-right font-normal" />
+              </tr>
+            </thead>
+            <tbody>
+              {invitations.data.map((invitation: Invitation) => (
+                <tr key={invitation.id} className="border-base-300 border-t">
+                  <td className="py-2 pr-4">{invitation.email}</td>
+                  {/* The server derives `status`; recomputing it here would be a second place
+                      deciding what an invitation is. */}
+                  <td className="py-2 pr-4 capitalize">{invitation.status}</td>
+                  <td className="py-2 pr-4">{invitation.invited_by_handle ?? "—"}</td>
+                  <td className="py-2 text-right">
+                    {invitation.status === "open" && (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-xs"
+                        disabled={revoke.isPending}
+                        onClick={() => {
+                          // Confirmed, because the address is not re-invitable while the row
+                          // stands and the operator cannot undo this from here.
+                          if (window.confirm(`Revoke the invitation to ${invitation.email}?`)) {
+                            revoke.mutate(invitation.id);
+                          }
+                        }}
+                      >
+                        Revoke
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function Admin() {
   const [hours, setHours] = useState(24);
   const [viewing, setViewing] = useState<LearnerUsage | null>(null);
+  const [suspending, setSuspending] = useState<LearnerUsage | null>(null);
   const spend = useSpend(hours);
   const roster = useLearnerRoster(hours);
 
@@ -396,7 +586,12 @@ export function Admin() {
               </thead>
               <tbody>
                 {roster.data.learners.map((learner) => (
-                  <RosterRow key={learner.id} learner={learner} onView={setViewing} />
+                  <RosterRow
+                    key={learner.id}
+                    learner={learner}
+                    onView={setViewing}
+                    onSuspend={setSuspending}
+                  />
                 ))}
               </tbody>
             </table>
@@ -404,12 +599,17 @@ export function Admin() {
         )}
       </section>
 
+      <Invitations />
+
+      <PublicationQueue />
+
       <section className="flex flex-col gap-2">
         <h2 className="text-h2">Who has looked at an account</h2>
         <AccessLog />
       </section>
 
       {viewing && <ViewAsDialog learner={viewing} onClose={() => setViewing(null)} />}
+      {suspending && <SuspendDialog learner={suspending} onClose={() => setSuspending(null)} />}
     </div>
   );
 }

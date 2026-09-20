@@ -16,6 +16,7 @@
     "e2e-ui": "playwright test --ui"
   },
   "dependencies": {
+    "@clerk/react": "^6.16.1",
     "@fontsource/fraunces": "^5.2.9",
     "@fontsource/inter": "^5.2.8",
     "@tanstack/react-query": "^5.101.2",

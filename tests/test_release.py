@@ -43,6 +43,9 @@ def _prod(**overrides: object) -> Settings:
         dev_auto_login=False,
         session_cookie_secure=True,
         ops_token="a-real-ops-token",
+        # Clerk owns sign-in from S21, so a production deployment without it is one nobody
+        # can enter — the gate refuses to start rather than letting every sign-in 503.
+        clerk_secret_key="sk_test_a-real-clerk-secret",
     )
     return base.model_copy(update=overrides) if overrides else base
 
@@ -55,6 +58,10 @@ def test_a_correct_production_config_starts() -> None:
     ("overrides", "expected"),
     [
         ({"debug": True}, "GURU_DEBUG"),
+        ({"clerk_secret_key": None}, "GURU_CLERK_SECRET_KEY"),
+        # With neither list set there is no allowlist to check a token's `azp` claim against,
+        # so any Clerk application sharing the instance would be accepted (S21).
+        ({"clerk_authorized_parties": [], "cors_origins": []}, "authorized party"),
         (
             {"database_url": "postgresql+asyncpg://guru:guru@db.internal:5432/guru"},
             "docker-compose credentials",

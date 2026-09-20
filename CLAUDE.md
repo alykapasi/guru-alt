@@ -57,8 +57,9 @@ non-obvious modules:
   *learner model* = mastery model + learner profile.
 - `app/memory/` — persistent per-learner memory.
 
-Cross-cutting: SSE for token streaming · `learner_id` threaded everywhere behind a **stubbed auth
-seam** · **token/cost logged per LLM call** (tagged by role+model) from day one · Redis-backed job
+Cross-cutting: SSE for token streaming · `learner_id` threaded everywhere behind the **identity
+seam** (`app/core/identity.py`; Clerk in prod, a fake in tests) · **token/cost logged per LLM
+call** (tagged by role+model) from day one · Redis-backed job
 queue (taskiq/arq) introduced at the ingestion phase · heavy deps (LangGraph/DSPy) enter at the phase
 that needs them, behind thin seams.
 
@@ -110,7 +111,16 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   Ollama for dev, OpenRouter for prod, Claude as the prod SMART/GENIUS default.
 - **LangGraph orchestration + interactive refinement gate + DSPy** — introduced when they earn it.
 - **Multimodal ingestion** (docs/OCR/ASR/web) into one provenance-tagged RAG pipeline.
-- **Auth stubbed behind a seam** — thread `learner_id` everywhere now; real auth in Phase 10.
+- **Identity is hosted (Clerk), authorization is ours** (S21) — Clerk owns passwords, recovery
+  and social sign-in; Guru keeps invitations, the admin tier, suspension and audited visits. One
+  module imports the SDK; a token is exchanged once for the existing session cookie, so nothing
+  downstream knows Clerk exists. See [docs/RUNBOOK.md](docs/RUNBOOK.md) §11.
+- **Learner material is private; sharing is reviewed** (S25) — a subject is either one learner's
+  own (`owner_learner_id`) or curated (NULL), and `is_visible_to`/`is_writable_by` in
+  `app/services/knowledge.py` are the whole authorization model for the graph. Publishing copies
+  a frozen snapshot an administrator approved; it never makes the original public, and a subject
+  built from the learner's uploads can never be published at all. See
+  [docs/RUNBOOK.md](docs/RUNBOOK.md) §12.
 - **Pydantic at boundaries · async throughout · Alembic-tracked schema.**
 
 ## Performance & Conciseness Guidelines

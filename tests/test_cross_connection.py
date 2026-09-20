@@ -22,11 +22,13 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from app.api.deps import get_engine, get_llm_client
+from app.api.deps import get_engine, get_identity_provider, get_llm_client
 from app.core import db as core_db
 from app.core.config import Settings
+from app.core.identity import FakeIdentityProvider
 from app.llm.registry import fake_llm_client
 from app.main import app
+from app.models.auth import Invitation
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearningEvent
@@ -148,34 +150,124 @@ async def test_two_simultaneous_submissions_of_one_attempt_record_one_observatio
         await _drop_subject(engine, subject)
 
 
-# --- one address, registered twice at once (S21) ----------------------------------------------
+# The registration race that used to live here went with `/auth/register` (S21 task 9). The
+# property it guarded — one address cannot become two accounts under concurrency — is carried
+# by `test_one_new_identity_signing_in_twice_at_once_makes_one_account` below, which races the
+# door that actually exists now.
 
 
-async def test_two_simultaneous_registrations_of_one_address_create_one_account(
-    live_client: AsyncClient, engine: AsyncEngine
+# --- one new identity, signed in twice at once (S21) --------------------------------------------
+
+
+async def test_one_new_identity_signing_in_twice_at_once_makes_one_account(
+    engine: AsyncEngine,
 ) -> None:
-    """`register` checks for the address and then inserts, which is not atomic.
-
-    The unique constraint is what actually decides, and the loser is meant to come back as the
-    same 409 a plain duplicate gets. Nothing proved that until there were two connections.
-    """
-    address = f"race-{uuid.uuid4().hex[:8]}@example.com"
-    body = {"email": address, "password": "a sufficiently long password"}
-    try:
-        first, second = await asyncio.gather(
-            live_client.post(f"{API}/auth/register", json=body),
-            live_client.post(f"{API}/auth/register", json=body),
+    """Two tabs, one new person. The unique constraint on `auth_subject` decides; nobody 500s."""
+    email = f"race-{uuid.uuid4().hex[:8]}@example.com"
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        session.add(
+            Invitation(email=email, invited_by_learner_id=None, invited_by_handle="operator")
         )
-        assert sorted([first.status_code, second.status_code]) == [201, 409]
+        await session.commit()
+
+    provider = FakeIdentityProvider()
+    user = provider.add_user(emails=[email])
+    token = provider.token_for(user.subject)
+
+    app.dependency_overrides[get_engine] = lambda: engine
+    app.dependency_overrides[get_identity_provider] = lambda: provider
+    client_stub = fake_llm_client()
+    app.dependency_overrides[get_llm_client] = lambda: client_stub
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = {"Authorization": f"Bearer {token}"}
+            first, second = await asyncio.gather(
+                client.post(f"{API}/auth/exchange", headers=headers),
+                client.post(f"{API}/auth/exchange", headers=headers),
+            )
+        assert first.status_code == second.status_code == 200, (first.text, second.text)
 
         async with AsyncSession(engine) as session:
             accounts = await session.scalar(
-                select(func.count()).select_from(Learner).where(Learner.email == address)
+                select(func.count())
+                .select_from(Learner)
+                .where(Learner.auth_subject == user.subject)
             )
         assert accounts == 1
     finally:
+        app.dependency_overrides.clear()
+        await core_db.engine.dispose()
         async with AsyncSession(engine) as session:
-            await session.execute(delete(Learner).where(Learner.email == address))
+            await session.execute(delete(Learner).where(Learner.auth_subject == user.subject))
+            await session.execute(delete(Invitation).where(Invitation.email == email))
+            await session.commit()
+
+
+# --- two identities, one address, claimed by whichever locks first (S21) ------------------------
+
+
+async def test_two_identities_racing_to_claim_one_address_do_not_silently_swap_owners(
+    engine: AsyncEngine,
+) -> None:
+    """Two *different* Clerk subjects, both verified for one existing, unclaimed address.
+
+    `_link` used to take no lock: both could read `auth_subject IS NULL`, both would write, and
+    whichever committed last would silently win — no error, no log. The loser's cookie kept
+    working for that one request (session lookup is by `learner_id`), but the account it just
+    linked already belonged to somebody else by the time its next Clerk session needed
+    renewing, and nothing anywhere explained why. Locked and re-checked, exactly one identity
+    may claim the account; the other is refused (409), not silently overridden.
+    """
+    email = f"race-{uuid.uuid4().hex[:8]}@example.com"
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        learner = Learner(handle=f"cx-link-{uuid.uuid4().hex[:8]}", email=email)
+        session.add(learner)
+        await session.commit()
+        learner_id = learner.id
+
+    provider = FakeIdentityProvider()
+    user_a = provider.add_user(emails=[email])
+    user_b = provider.add_user(emails=[email])
+
+    app.dependency_overrides[get_engine] = lambda: engine
+    app.dependency_overrides[get_identity_provider] = lambda: provider
+    client_stub = fake_llm_client()
+    app.dependency_overrides[get_llm_client] = lambda: client_stub
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            first, second = await asyncio.gather(
+                client.post(
+                    f"{API}/auth/exchange",
+                    headers={"Authorization": f"Bearer {provider.token_for(user_a.subject)}"},
+                ),
+                client.post(
+                    f"{API}/auth/exchange",
+                    headers={"Authorization": f"Bearer {provider.token_for(user_b.subject)}"},
+                ),
+            )
+        assert sorted([first.status_code, second.status_code]) == [200, 409], (
+            first.text,
+            second.text,
+        )
+        winning_subject = user_a.subject if first.status_code == 200 else user_b.subject
+
+        async with AsyncSession(engine) as session:
+            row = await session.get(Learner, learner_id)
+            assert row is not None
+            # Whoever actually got the 200 is who the row belongs to — not whichever request
+            # merely committed last, which is what the unlocked version let happen.
+            assert row.auth_subject == winning_subject
+            accounts = await session.scalar(
+                select(func.count()).select_from(Learner).where(Learner.email == email)
+            )
+        assert accounts == 1, "a race must not create a duplicate account"
+    finally:
+        app.dependency_overrides.clear()
+        await core_db.engine.dispose()
+        async with AsyncSession(engine) as session:
+            await session.execute(delete(Learner).where(Learner.id == learner_id))
             await session.commit()
 
 

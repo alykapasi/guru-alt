@@ -7,38 +7,41 @@ there is one credential and one table behind both.
 """
 
 from datetime import timedelta
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+import structlog
+from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 from sqlalchemy import select
 
-from app.api.deps import CurrentLearner, SessionDep, SettingsDep, session_token_from
-from app.core import mail
+from app.api.deps import (
+    CurrentLearner,
+    IdentityProviderDep,
+    SessionDep,
+    SettingsDep,
+    session_token_from,
+)
 from app.core.config import Settings
+from app.core.identity import InvalidToken, ProviderError
 from app.models.learner import Learner
 from app.schemas.auth import (
-    EmailChange,
+    DevLoginRequest,
     LearnerRead,
-    LoginRequest,
-    PasswordChange,
-    PasswordResetConfirm,
-    PasswordResetRequest,
-    RegisterRequest,
     SessionListRead,
     SessionRead,
 )
 from app.services import auth as svc
+from app.services import identity
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+log = structlog.get_logger(__name__)
+
 DEV_LEARNER_HANDLE = "dev"
 
-# One message for both halves of a failed sign-in. Which half was wrong is a free membership
-# list, and it is worth exactly nothing to somebody who typed their own password wrong.
-_REJECTED = "email or password is incorrect"
-
-# Deliberately not "no account with that address". A reset endpoint that distinguishes gives
-# back through another door exactly the enumeration oracle sign-in refuses to open.
-_RESET_SENT = "if that address has an account, a reset link is on its way"
+# There is one sign-in door now, so this no longer has a second door to agree with — but the
+# wording is the learner's, and it stays theirs: a refusal that says which of their accounts is
+# in what state is the only thing they can act on.
+_SUSPENDED = "This account is suspended. An administrator can reinstate it."
 
 
 def _client_of(request: Request) -> str:
@@ -79,57 +82,56 @@ def _clear_session_cookie(response: Response, settings: Settings) -> None:
     )
 
 
-@router.post("/register", response_model=LearnerRead, status_code=status.HTTP_201_CREATED)
-async def register(
-    body: RegisterRequest, response: Response, session: SessionDep, settings: SettingsDep
-):
-    """Create an account and sign in as it."""
-    try:
-        learner = await svc.register(
-            session,
-            email=str(body.email),
-            password=body.password,
-            display_name=body.display_name,
-        )
-    except svc.EmailTaken as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, "that email is already registered") from exc
-
-    issued = await svc.issue(session, learner, ttl=timedelta(hours=settings.session_ttl_hours))
-    _set_session_cookie(response, issued.token, settings)
-    return learner
-
-
-@router.post("/login", response_model=LearnerRead)
-async def login(
-    body: LoginRequest,
-    request: Request,
+@router.post("/exchange", response_model=LearnerRead)
+async def exchange(
     response: Response,
     session: SessionDep,
     settings: SettingsDep,
+    provider: IdentityProviderDep,
+    authorization: Annotated[str | None, Header()] = None,
 ):
-    """Exchange credentials for a session."""
-    client = _client_of(request)
-    try:
-        await svc.check_sign_in_allowed(
-            session,
-            email=str(body.email),
-            client=client,
-            window=timedelta(minutes=settings.sign_in_window_minutes),
-            max_per_email=settings.sign_in_max_failures_per_email,
-            max_per_client=settings.sign_in_max_failures_per_client,
-        )
-    except svc.TooManyAttempts as exc:
-        # 429 rather than 401, because this one *is* worth distinguishing: it is the only way
-        # a person locked out by somebody else's guessing can tell what is happening to them.
+    """Trade a proven identity for a Guru session (S21).
+
+    The provider's token arrives in ``Authorization`` and is spent here, once. What the browser
+    keeps is the same httpOnly cookie every other route already takes — which is why nothing
+    downstream of this line knows Clerk exists, and why signing out, "log out everywhere" and
+    suspension keep working exactly as they did.
+    """
+    if provider is None:
         raise HTTPException(
-            status.HTTP_429_TOO_MANY_REQUESTS, "too many sign-in attempts; try again later"
-        ) from exc
+            status.HTTP_503_SERVICE_UNAVAILABLE, "sign-in is not configured on this server"
+        )
+    # Declared as a parameter rather than read off the raw request so the OpenAPI document
+    # says this endpoint takes it — which is what lets the generated client send it instead of
+    # every caller hand-rolling a fetch around the typed one (S21).
+    header = authorization or ""
+    token = header[7:].strip() if header[:7].lower() == "bearer " else ""
+    if not token:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "not authenticated")
 
     try:
-        learner = await svc.authenticate(session, email=str(body.email), password=body.password)
-    except svc.InvalidCredentials as exc:
-        await svc.record_failed_sign_in(session, email=str(body.email), client=client)
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, _REJECTED) from exc
+        subject = await provider.verify(token)
+        learner = await identity.enroll(session, provider, subject)
+    except InvalidToken as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "not authenticated") from exc
+    except identity.NotInvited as exc:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Guru is invite-only. Ask an administrator for an invitation.",
+        ) from exc
+    except identity.AccountSuspended as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, _SUSPENDED) from exc
+    except identity.AmbiguousIdentity as exc:
+        log.warning("identity.ambiguous", subject=subject, learners=str(exc))
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This sign-in matches more than one Guru account; an administrator has to resolve it.",
+        ) from exc
+    except ProviderError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "the sign-in provider could not be reached; try again",
+        ) from exc
 
     issued = await svc.issue(session, learner, ttl=timedelta(hours=settings.session_ttl_hours))
     _set_session_cookie(response, issued.token, settings)
@@ -156,88 +158,6 @@ async def logout_all(
     """End every session for this learner, on every device."""
     await svc.revoke_all(session, learner.id)
     _clear_session_cookie(response, settings)
-
-
-@router.post("/password", status_code=status.HTTP_204_NO_CONTENT)
-async def change_password(
-    body: PasswordChange,
-    request: Request,
-    learner: CurrentLearner,
-    session: SessionDep,
-    settings: SettingsDep,
-):
-    """Set a new password. Every *other* session ends; this one keeps working.
-
-    Signing the learner out of the tab they are typing in would make the safe action annoying,
-    and a password change is often a response to suspecting another device — so the other
-    devices are what stop working.
-    """
-    try:
-        await svc.change_password(
-            session,
-            learner,
-            current=body.current_password,
-            new=body.new_password,
-            keep_token=session_token_from(request, settings),
-        )
-    except svc.WrongPassword as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "current password is incorrect") from exc
-
-
-@router.post("/email", response_model=LearnerRead)
-async def change_email(body: EmailChange, learner: CurrentLearner, session: SessionDep):
-    """Move to a new address, proving the password.
-
-    No verification of the new address, which is the honest gap: until a message can be
-    delivered (``app.core.mail``) there is no way to establish that the learner owns what they
-    typed, and a typo here costs them the account.
-    """
-    try:
-        await svc.change_email(session, learner, password=body.password, email=str(body.email))
-    except svc.WrongPassword as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "password is incorrect") from exc
-    except svc.EmailTaken as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, "that email is already registered") from exc
-    return learner
-
-
-@router.post("/password-reset", status_code=status.HTTP_202_ACCEPTED)
-async def request_password_reset(
-    body: PasswordResetRequest, session: SessionDep, settings: SettingsDep
-):
-    """Start a reset. Answers the same whether or not the address has an account."""
-    if not settings.password_reset_enabled:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
-    issued = await svc.begin_password_reset(
-        session,
-        email=str(body.email),
-        ttl=timedelta(minutes=settings.password_reset_ttl_minutes),
-    )
-    if issued is not None:
-        await mail.build_mailer().send(
-            to=str(body.email),
-            subject="Reset your Guru password",
-            body=f"Use this code to set a new password: {issued.token}",
-        )
-    return {"detail": _RESET_SENT}
-
-
-@router.post("/password-reset/confirm", status_code=status.HTTP_204_NO_CONTENT)
-async def confirm_password_reset(
-    body: PasswordResetConfirm, session: SessionDep, settings: SettingsDep
-):
-    """Spend a reset token and set the new password. Every session ends.
-
-    A reset is what somebody does when they think the account may not be theirs alone, so
-    leaving the intruder's session working would make it a gesture.
-    """
-    if not settings.password_reset_enabled:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
-    learner = await svc.complete_password_reset(
-        session, token=body.token, password=body.new_password
-    )
-    if learner is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "that reset link is not usable")
 
 
 @router.get("/me", response_model=LearnerRead)
@@ -271,7 +191,12 @@ async def sessions(
 
 
 @router.post("/dev-login", response_model=LearnerRead)
-async def dev_login(response: Response, session: SessionDep, settings: SettingsDep):
+async def dev_login(
+    response: Response,
+    session: SessionDep,
+    settings: SettingsDep,
+    body: DevLoginRequest | None = None,
+):
     """Sign in as the development learner, with no credential (S21).
 
     The last surviving piece of the stub seam, kept so `poe dev` and the frontend still work
@@ -280,16 +205,34 @@ async def dev_login(response: Response, session: SessionDep, settings: SettingsD
     exact shape of an auth boundary that looks present and is not. This one is listed in the
     OpenAPI document, refuses to exist unless ``GURU_DEV_AUTO_LOGIN`` is on, and production
     refuses to *start* while it is (``app.core.release``).
+
+    It is also how the browser journeys sign in. They used to register through the password
+    form; Clerk owns that form now, and its hosted UI cannot be driven in a CI browser with no
+    network. Passing an address signs in as that account, creating it if needed, so each run
+    gets a fresh one — the same door, opened by the same switch, with no second mechanism to
+    keep safe.
     """
     if not settings.dev_auto_login:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
 
-    learner = await session.scalar(select(Learner).where(Learner.handle == DEV_LEARNER_HANDLE))
-    if learner is None:
-        learner = Learner(handle=DEV_LEARNER_HANDLE, display_name="Dev Learner")
-        session.add(learner)
-        await session.commit()
-        await session.refresh(learner)
+    if body is not None and body.email is not None:
+        address = svc.normalise_email(str(body.email))
+        learner = await session.scalar(select(Learner).where(Learner.email == address))
+        if learner is None:
+            learner = Learner(
+                handle=await svc.unique_handle(session, svc.handle_for(address)),
+                email=address,
+            )
+            session.add(learner)
+            await session.commit()
+            await session.refresh(learner)
+    else:
+        learner = await session.scalar(select(Learner).where(Learner.handle == DEV_LEARNER_HANDLE))
+        if learner is None:
+            learner = Learner(handle=DEV_LEARNER_HANDLE, display_name="Dev Learner")
+            session.add(learner)
+            await session.commit()
+            await session.refresh(learner)
 
     issued = await svc.issue(session, learner, ttl=timedelta(hours=settings.session_ttl_hours))
     _set_session_cookie(response, issued.token, settings)

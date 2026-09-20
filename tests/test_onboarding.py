@@ -183,7 +183,7 @@ class TestGenerateCurriculumForOnboarding:
         db_session.add(learner)
         await db_session.flush()
 
-        result = await generate_curriculum_for_onboarding(
+        result, grounded = await generate_curriculum_for_onboarding(
             session=db_session,
             llm=llm,
             goal="Learn linear algebra",
@@ -196,6 +196,8 @@ class TestGenerateCurriculumForOnboarding:
         assert result.subject_name == "Linear Algebra"
         assert len(result.topics) == 2
         assert result.topics[0].name == "Vectors"
+        # No sources were asked for, so nothing of the learner's was read (S25b D4).
+        assert grounded is False
 
     async def test_generate_with_empty_sources_list(self, db_session: AsyncSession) -> None:
         """Curriculum generation with empty source_ids list (materials=None)."""
@@ -205,7 +207,7 @@ class TestGenerateCurriculumForOnboarding:
         db_session.add(learner)
         await db_session.flush()
 
-        result = await generate_curriculum_for_onboarding(
+        result, grounded = await generate_curriculum_for_onboarding(
             session=db_session,
             llm=llm,
             goal="Learn linear algebra",
@@ -216,6 +218,8 @@ class TestGenerateCurriculumForOnboarding:
         assert result is not None
         assert isinstance(result, CurriculumProposal)
         assert result.subject_name == "Linear Algebra"
+        # An empty list retrieves nothing, so it is not grounding (S25b D4).
+        assert grounded is False
 
     async def test_generate_with_real_sources(self, db_session: AsyncSession) -> None:
         """Curriculum generation with real source_ids (tests excerpt-fetch path).
@@ -263,7 +267,7 @@ class TestGenerateCurriculumForOnboarding:
 
         # Call generate_curriculum_for_onboarding with real source_ids
         # The query will be the goal; retrieval will use keyword matching to find the chunk
-        result = await generate_curriculum_for_onboarding(
+        result, grounded = await generate_curriculum_for_onboarding(
             session=db_session,
             llm=llm,
             goal="Learn linear algebra",
@@ -278,6 +282,8 @@ class TestGenerateCurriculumForOnboarding:
         assert result.subject_name == "Linear Algebra"
         assert len(result.topics) == 2
         assert result.topics[0].name == "Vectors"
+        # Excerpts really did reach the model here, which is what the flag records (S25b D4).
+        assert grounded is True
 
 
 async def test_onboarding_end_to_end(db_session: AsyncSession) -> None:
@@ -316,7 +322,7 @@ async def test_onboarding_end_to_end(db_session: AsyncSession) -> None:
 
     # 3. Generate curriculum from committed goal
     curr_llm = fake_llm_client(CURRICULUM_REPLY)
-    proposal = await generate_curriculum_for_onboarding(
+    proposal, _grounded = await generate_curriculum_for_onboarding(
         session=db_session,
         llm=curr_llm,
         goal=goal,

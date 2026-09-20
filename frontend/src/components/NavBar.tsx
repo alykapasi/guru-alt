@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   BookOpen,
@@ -11,7 +12,10 @@ import {
 } from "lucide-react";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
-import { useCurrentLearner, useLogout } from "../api/auth";
+import { useCurrentLearner } from "../api/auth";
+import { ClerkUserButton } from "../auth/ClerkPanels";
+import { clerkEnabled } from "../auth/mode";
+import { useSignOutEverywhere } from "../auth/session";
 
 const LINKS = [
   { to: "/app/chat", label: "Chat", icon: MessageSquare },
@@ -30,11 +34,17 @@ const ADMIN_LINK = { to: "/app/admin", label: "Admin", icon: Gauge };
 export function NavBar() {
   const navigate = useNavigate();
   const { data: learner } = useCurrentLearner();
-  const logout = useLogout();
+  const signOutEverywhere = useSignOutEverywhere();
+  const [busy, setBusy] = useState(false);
 
   async function signOut() {
-    await logout.mutateAsync();
-    navigate("/signin", { replace: true });
+    setBusy(true);
+    try {
+      await signOutEverywhere();
+      navigate("/signin", { replace: true });
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -70,16 +80,23 @@ export function NavBar() {
             </span>
           )}
           <ThemeToggle />
-          <button
-            type="button"
-            onClick={signOut}
-            disabled={logout.isPending}
-            aria-label="Sign out"
-            title="Sign out"
-            className="text-base-content/70 hover:bg-base-200 hover:text-base-content rounded-field p-2 transition-colors"
-          >
-            <LogOut size={16} />
-          </button>
+          {/* Clerk's menu carries sign-out and account management together, so showing Guru's
+              button beside it would offer the same action twice and disagree about what it
+              does. `ClerkSessionWatcher` ends Guru's session when Clerk's ends (S21). */}
+          {clerkEnabled ? (
+            <ClerkUserButton />
+          ) : (
+            <button
+              type="button"
+              onClick={signOut}
+              disabled={busy}
+              aria-label="Sign out"
+              title="Sign out"
+              className="text-base-content/70 hover:bg-base-200 hover:text-base-content rounded-field p-2 transition-colors"
+            >
+              <LogOut size={16} />
+            </button>
+          )}
         </div>
       </div>
     </header>

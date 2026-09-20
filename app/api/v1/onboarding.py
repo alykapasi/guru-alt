@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
+from app.models.publication import CurriculumProposal
 from app.services import onboarding, onboarding_sessions
 
 router = APIRouter(tags=["onboarding"])
@@ -42,6 +43,10 @@ class CurriculumResponse(BaseModel):
     subject_name: str
     subject_description: str
     topics: list[dict]  # Topic dicts with 'name', 'description', 'kcs'
+    # The server's record of this generation (S25b D4). `/subjects/commit` requires it and
+    # reads grounding from the row it names, so whether the curriculum was built from the
+    # learner's own uploads is never something the request body gets to assert.
+    proposal_id: uuid.UUID
 
 
 @router.post("/onboarding/goal-sessions", response_model=GoalSessionResponse)
@@ -113,7 +118,7 @@ async def generate_curriculum_endpoint(
 
     Returns: CurriculumResponse or 400 on LLM failure.
     """
-    proposal = await onboarding.generate_curriculum_for_onboarding(
+    proposal, grounded = await onboarding.generate_curriculum_for_onboarding(
         session=session,
         llm=llm,
         goal=request.goal,
@@ -148,8 +153,15 @@ async def generate_curriculum_endpoint(
         }
         topics.append(topic_dict)
 
+    # Written before the response goes out, so the only proposal id a client can present at
+    # commit is one this server issued and whose grounding it recorded itself.
+    record = CurriculumProposal(learner_id=learner.id, grounded_in_sources=grounded)
+    session.add(record)
+    await session.commit()
+
     return CurriculumResponse(
         subject_name=proposal.subject_name,
         subject_description=proposal.subject_description,
         topics=topics,
+        proposal_id=record.id,
     )

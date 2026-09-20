@@ -40,6 +40,7 @@ class LearnerUsage(BaseModel):
     display_name: str | None
     email: str | None
     is_admin: bool
+    suspended_at: datetime | None
     created_at: datetime
     calls: int
     # A floor whenever ``unpriced_calls`` is non-zero, on exactly the reasoning in
@@ -98,6 +99,7 @@ async def learner_usage(session: AsyncSession, *, hours: int, limit: int = 100) 
             display_name=learner.display_name,
             email=learner.email,
             is_admin=learner.is_admin,
+            suspended_at=learner.suspended_at,
             created_at=learner.created_at,
             calls=calls,
             cost_usd=float(spent),

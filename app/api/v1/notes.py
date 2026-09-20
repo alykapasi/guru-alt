@@ -26,10 +26,7 @@ router = APIRouter(tags=["notes"])
 
 
 async def _topic_404(session: SessionDep, topic_id: uuid.UUID, learner_id: uuid.UUID) -> Topic:
-    topic = await knowledge_svc.get_topic(session, topic_id)
-    subject = await knowledge_svc.subject_of_topic(session, topic_id)
-    if topic is None or subject is None or not knowledge_svc.is_visible_to(subject, learner_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="topic not found")
+    _, topic = await knowledge_svc.require_visible_topic(session, topic_id, learner_id)
     return topic
 
 
@@ -49,9 +46,7 @@ def _read(view: notes_svc.NoteView) -> NoteRead:
 
 @router.get("/subjects/{subject_id}/notes", response_model=list[NoteIndexEntry])
 async def notes_index(subject_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
-    subject = await knowledge_svc.get_subject(session, subject_id)
-    if subject is None or not knowledge_svc.is_visible_to(subject, learner.id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="subject not found")
+    await knowledge_svc.require_visible_subject(session, subject_id, learner.id)
     return await notes_svc.notes_index(session, learner.id, subject_id)
 
 

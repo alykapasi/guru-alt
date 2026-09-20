@@ -11,179 +11,84 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.auth import DEV_LEARNER_HANDLE
 from app.core.config import Settings, get_settings
-from app.core.security import hash_password, token_fingerprint, verify_password
+from app.core.security import token_fingerprint
+from app.main import app
 from app.models.auth import LearnerSession
 from app.models.learner import Learner
 from app.services import auth as svc
 from tests.conftest import sign_in
 
 API = "/api/v1"
-PASSWORD = "a sufficiently long password"
 
 
 def _cookie(response) -> str | None:
     return response.cookies.get(get_settings().session_cookie_name)
 
 
-# --- registration ----------------------------------------------------------------------------
+# --- the password system is gone, not disabled -------------------------------------------------
 
 
-async def test_registering_creates_an_account_and_signs_it_in(anon_client: AsyncClient) -> None:
-    r = await anon_client.post(
-        f"{API}/auth/register",
-        json={"email": "ada@example.com", "password": PASSWORD, "display_name": "Ada"},
-    )
-    assert r.status_code == 201, r.text
-    assert r.json()["email"] == "ada@example.com"
-    assert _cookie(r), "registration should leave the client signed in"
-
-    me = await anon_client.get(f"{API}/auth/me")
-    assert me.status_code == 200
-    assert me.json()["display_name"] == "Ada"
-
-
-async def test_the_session_cookie_is_not_readable_by_script(anon_client: AsyncClient) -> None:
-    """A token JavaScript can read is a token an injected script can take."""
-    r = await anon_client.post(
-        f"{API}/auth/register", json={"email": "http@example.com", "password": PASSWORD}
-    )
-    header = r.headers["set-cookie"].lower()
-    assert "httponly" in header
-    assert "path=/" in header
-
-
-async def test_no_response_ever_carries_the_token_in_its_body(anon_client: AsyncClient) -> None:
-    r = await anon_client.post(
-        f"{API}/auth/register", json={"email": "body@example.com", "password": PASSWORD}
-    )
-    token = _cookie(r)
-    assert token
-    assert token not in r.text
-    me = await anon_client.get(f"{API}/auth/me")
-    assert token not in me.text
-    assert "password" not in me.text
-
-
-async def test_an_address_can_only_be_registered_once(anon_client: AsyncClient) -> None:
-    first = await anon_client.post(
-        f"{API}/auth/register", json={"email": "twice@example.com", "password": PASSWORD}
-    )
-    assert first.status_code == 201
-    second = await anon_client.post(
-        f"{API}/auth/register", json={"email": "twice@example.com", "password": PASSWORD}
-    )
-    assert second.status_code == 409
-
-
-async def test_case_does_not_make_a_second_account(anon_client: AsyncClient) -> None:
-    """``Ada@`` and ``ada@`` are one account, because treating them as two locks people out."""
-    await anon_client.post(
-        f"{API}/auth/register", json={"email": "Mixed@Example.COM", "password": PASSWORD}
-    )
-    again = await anon_client.post(
-        f"{API}/auth/register", json={"email": "mixed@example.com", "password": PASSWORD}
-    )
-    assert again.status_code == 409
-
-
-async def test_a_short_password_is_refused_before_it_reaches_the_database(
-    anon_client: AsyncClient,
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/auth/register", {"email": "a@example.com", "password": "x" * 12}),
+        ("/auth/login", {"email": "a@example.com", "password": "x" * 12}),
+        ("/auth/password", {"current_password": "x" * 12, "new_password": "y" * 12}),
+        ("/auth/email", {"email": "b@example.com", "password": "x" * 12}),
+        ("/auth/password-reset", {"email": "a@example.com"}),
+        ("/auth/password-reset/confirm", {"token": "t", "new_password": "y" * 12}),
+    ],
+)
+async def test_the_password_routes_are_gone(
+    anon_client: AsyncClient, path: str, body: dict
 ) -> None:
-    r = await anon_client.post(
-        f"{API}/auth/register", json={"email": "short@example.com", "password": "short"}
-    )
-    assert r.status_code == 422
+    """Gone, not disabled. An endpoint that answers 401 is an endpoint somebody can attack,
+    and a disabled one still has to be kept correct forever. Clerk owns credentials now."""
+    assert (await anon_client.post(f"{API}{path}", json=body)).status_code == 404
 
 
-async def test_a_malformed_address_is_refused(anon_client: AsyncClient) -> None:
-    r = await anon_client.post(
-        f"{API}/auth/register", json={"email": "not-an-address", "password": PASSWORD}
-    )
-    assert r.status_code == 422
+def test_the_openapi_document_offers_no_password_route() -> None:
+    """The contract is the other half of removal: a client generated from this document must
+    not be able to name a password route at all."""
+    paths = app.openapi()["paths"]
+
+    assert not [p for p in paths if "password" in p or p.endswith("/auth/register")]
 
 
-async def test_the_stored_password_is_a_hash_and_not_the_password(
-    anon_client: AsyncClient, db_session: AsyncSession
-) -> None:
-    await anon_client.post(
-        f"{API}/auth/register", json={"email": "hashed@example.com", "password": PASSWORD}
-    )
-    learner = await db_session.scalar(select(Learner).where(Learner.email == "hashed@example.com"))
-    assert learner is not None
-    assert learner.password_hash is not None
-    assert PASSWORD not in learner.password_hash
-    assert learner.password_hash.startswith("$argon2")
-    assert verify_password(PASSWORD, learner.password_hash)
+def test_no_password_machinery_survives_in_the_service() -> None:
+    """The routes going is not the same as the code going.
+
+    Dead credential-checking code is worse than live code: nothing exercises it, so nothing
+    notices when it rots, and the next person to need "just a quick login" finds it waiting.
+    """
+    for gone in (
+        "register",
+        "authenticate",
+        "check_sign_in_allowed",
+        "record_failed_sign_in",
+        "purge_sign_in_attempts",
+        "begin_password_reset",
+        "complete_password_reset",
+        "purge_password_resets",
+        "change_password",
+        "change_email",
+    ):
+        assert not hasattr(svc, gone), f"app.services.auth.{gone} still exists"
+
+    import app.core.security as security
+
+    assert not hasattr(security, "hash_password")
+    assert not hasattr(security, "verify_password")
 
 
-async def test_a_password_without_an_address_is_refused_by_the_database(
-    db_session: AsyncSession,
-) -> None:
-    """The one credential combination that cannot be signed in with or recovered from."""
-    await db_session.execute(text("SAVEPOINT ck_test"))
-    db_session.add(
-        Learner(
-            handle=f"ck-{uuid.uuid4().hex[:8]}", email=None, password_hash=hash_password(PASSWORD)
-        )
-    )
-    with pytest.raises(IntegrityError):
-        await db_session.flush()
-    await db_session.rollback()
-
-
-# --- signing in ------------------------------------------------------------------------------
-
-
-async def test_login_with_the_right_password_starts_a_session(anon_client: AsyncClient) -> None:
-    await anon_client.post(
-        f"{API}/auth/register", json={"email": "login@example.com", "password": PASSWORD}
-    )
-    await anon_client.post(f"{API}/auth/logout")
-
-    r = await anon_client.post(
-        f"{API}/auth/login", json={"email": "login@example.com", "password": PASSWORD}
-    )
-    assert r.status_code == 200, r.text
-    assert (await anon_client.get(f"{API}/auth/me")).status_code == 200
-
-
-async def test_a_wrong_password_and_an_unknown_address_are_indistinguishable(
-    anon_client: AsyncClient,
-) -> None:
-    """Telling them apart is a free membership list for anybody who asks."""
-    await anon_client.post(
-        f"{API}/auth/register", json={"email": "known@example.com", "password": PASSWORD}
-    )
-    wrong = await anon_client.post(
-        f"{API}/auth/login", json={"email": "known@example.com", "password": "the wrong password"}
-    )
-    unknown = await anon_client.post(
-        f"{API}/auth/login", json={"email": "nobody@example.com", "password": PASSWORD}
-    )
-    assert wrong.status_code == unknown.status_code == 401
-    assert wrong.json()["detail"] == unknown.json()["detail"]
-
-
-async def test_a_learner_with_no_password_cannot_be_signed_in_as(
-    anon_client: AsyncClient, db_session: AsyncSession
-) -> None:
-    """Every learner that predates S21 is in this state, and none of them is a way in."""
-    db_session.add(
-        Learner(
-            handle=f"old-{uuid.uuid4().hex[:8]}", email="legacy@example.com", password_hash=None
-        )
-    )
-    await db_session.flush()
-    r = await anon_client.post(
-        f"{API}/auth/login", json={"email": "legacy@example.com", "password": PASSWORD}
-    )
-    assert r.status_code == 401
+def test_a_learner_no_longer_carries_a_password_at_all() -> None:
+    """The column is dropped, so there is nothing left to leak, reset, or forget to hash."""
+    assert not hasattr(Learner, "password_hash")
 
 
 # --- what an unauthenticated request gets ----------------------------------------------------
@@ -376,10 +281,47 @@ async def test_dev_login_signs_in_as_the_development_learner(anon_client: AsyncC
     assert (await anon_client.get(f"{API}/auth/me")).status_code == 200
 
 
+async def test_dev_login_can_name_the_account_it_signs_in_as(anon_client: AsyncClient) -> None:
+    """The journeys need a fresh account per run, and the password form is going away.
+
+    Twice with the same address, because a journey re-run must land on the same account rather
+    than pile up a new one each time.
+    """
+    r = await anon_client.post(f"{API}/auth/dev-login", json={"email": "journey-1@example.com"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["email"] == "journey-1@example.com"
+    assert r.json()["handle"] != DEV_LEARNER_HANDLE
+    assert (await anon_client.get(f"{API}/auth/me")).json()["email"] == "journey-1@example.com"
+
+    again = await anon_client.post(f"{API}/auth/dev-login", json={"email": "journey-1@example.com"})
+
+    assert again.json()["id"] == r.json()["id"]
+
+
+async def test_dev_login_normalises_the_address_it_is_given(anon_client: AsyncClient) -> None:
+    """Same account whichever way it is spelled, so a journey cannot fork one into two."""
+    first = await anon_client.post(f"{API}/auth/dev-login", json={"email": "Mixed@Example.com"})
+    second = await anon_client.post(f"{API}/auth/dev-login", json={"email": "mixed@example.com"})
+
+    assert first.json()["email"] == "mixed@example.com"
+    assert second.json()["id"] == first.json()["id"]
+
+
 async def test_dev_login_does_not_exist_when_it_is_turned_off(
     anon_client: AsyncClient, settings_without_dev_login: None
 ) -> None:
     r = await anon_client.post(f"{API}/auth/dev-login")
+    assert r.status_code == 404
+    assert (await anon_client.get(f"{API}/auth/me")).status_code == 401
+
+
+async def test_dev_login_stays_gone_when_turned_off_even_with_an_address(
+    anon_client: AsyncClient, settings_without_dev_login: None
+) -> None:
+    """The body must not be a second way in: the switch is the whole boundary."""
+    r = await anon_client.post(f"{API}/auth/dev-login", json={"email": "journey-2@example.com"})
+
     assert r.status_code == 404
     assert (await anon_client.get(f"{API}/auth/me")).status_code == 401
 

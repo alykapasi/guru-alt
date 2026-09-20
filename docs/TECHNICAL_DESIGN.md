@@ -31,7 +31,8 @@ stay thin; no router or service ever imports a provider SDK directly — all mod
 
 ```text
 app/
-  core/        config, async engine/session, logging, deps, auth-stub, beartype claw
+  core/        config, async engine/session, logging, deps, identity seam (Clerk + fake),
+               session/auth resolution, release-readiness gate, beartype claw
   api/v1/      routers (thin); SSE endpoints
   schemas/     Pydantic request/response
   models/      SQLAlchemy ORM
@@ -220,12 +221,26 @@ grounded, citable generation.
 ### 7.1 Data model (core tables)
 
 ```text
-subjects, topics, kcs                      # knowledge graph nodes
+subjects(owner_learner_id NULL=curated,    # knowledge graph nodes; ownership lives on the
+         slug, private_source_derived,     #   subject and the rest of the graph inherits it
+         publication_id, withdrawn_at)
+topics, kcs
 kc_edges(prereq_kc_id, kc_id, weight)      # prerequisite DAG
 content_blocks(kc_ids[], type, body, ...)  # reusable lessons/wikis/questions, KC-tagged, cached
 items(kc_ids[], type, stem, key, rubric_id)# assessment items (MCQ/cloze/short/long/flashcard)
 rubrics(kc_id, criteria)                   # per-KC grading rubrics
-learners                                   # stub identity for MVP
+learners(is_admin, auth_subject, suspended_at, ...)  # the account row is Guru's; the credential
+                                           #   is not. auth_subject = the provider's unique id
+learner_sessions(learner_id, token_hash,   # Guru's own opaque sessions, checked every request
+                 expires_at, revoked_at, impersonated_by_id)
+invitations(email, invited_by_learner_id,  # enrollment is invite-controlled by this row, not
+            provider_invitation_id,        #   by a provider dashboard toggle
+            accepted_at, revoked_at)
+curriculum_proposals(learner_id,           # server-side record that a draft came from uploads —
+                     grounded_in_sources)  #   never routed through the client
+publications(source_subject_id, published_subject_id, author_id, author_handle, status,
+             snapshot jsonb, excluded_item_ids jsonb, reviewer_id, reviewer_handle,
+             reviewed_at, review_note)     # the frozen copy an administrator reviewed (7.1a)
 learner_kc_state(learner_id, kc_id, ability, uncertainty, last_seen, due_at)
 learner_profiles(learner_id, created_at, updated_at)               # the "how they learn" model
 profile_dimensions(learner_id, key, value jsonb, uncertainty,      # one row per dimension
@@ -237,6 +252,28 @@ sources, chunks(embedding vector, tsv, provenance jsonb)
 memory(learner_id, kind, content, embedding)
 llm_calls(request_id, role, model, usage, cost, node)
 ```
+
+### 7.1a Ownership and reviewed publication
+
+Three constraints in the schema carry most of the privacy guarantee, and each exists because the
+obvious alternative leaks:
+
+- **Slugs are unique per owner, not globally.** `UniqueConstraint(owner_learner_id, slug)` for
+  owned rows plus a partial unique index for curated ones (Postgres `NULL` is not equal to itself,
+  so one constraint cannot cover both). A single global unique slug turned the de-duplication
+  suffix into an existence oracle: creating "Calculus" and getting `calculus_2` told a stranger
+  that somebody else already had a subject by that name.
+- **`private_source_derived` is a latch.** Any ingestion path sets it; nothing clears it. A subject
+  built from a learner's uploads can never be published, and the flag is read from a server-side
+  `curriculum_proposals` row rather than travelling through the browser — a bit handed to the
+  client is a bit the client can drop.
+- **`publications.snapshot` is the reviewed artifact.** Approval materializes the stored JSON, not
+  the live subject, so an author cannot edit into an approval. `publications ↔ subjects` is a
+  deliberate FK cycle (`use_alter=True`), because the copy points back at what produced it.
+
+Withdrawal and superseding both unlist without deleting: a learner already studying a withdrawn
+subject keeps it. Retention splits the publication row — the author's handle is cleared on account
+deletion, the reviewer's is retained, on the same reasoning as `impersonations`.
 
 ### 7.2 KnowledgeTracer interface (swappable)
 
@@ -342,9 +379,16 @@ class LearnerProfile(Protocol):
 
 - **API:** versioned `/api/v1`; Pydantic schemas distinct from ORM; SSE for streaming + HITL events;
   consistent error envelope; cursor pagination. OpenAPI schema drives the typed frontend client.
-- **Auth (stubbed):** `get_current_learner` dependency returns a dev learner (or reads a header);
-  `learner_id` is threaded through every layer **now** so real auth (JWT/OAuth/managed) later is a
-  dependency swap, not a refactor.
+- **Auth (hosted identity, owned authorization):** `app/core/identity.py` is the only module that
+  imports the Clerk SDK, behind an `IdentityProvider` protocol with a fake for tests. The browser
+  proves who it is to Clerk and spends that token once at `POST /auth/exchange`; from there the
+  request carries Guru's own opaque session token, and `get_current_learner` resolves it exactly as
+  before — `learner_id` was threaded everywhere from day one, so this was a dependency swap rather
+  than a refactor. Guru keeps invitations, the `is_admin` tier, suspension and audited visits.
+- **Authorization:** ownership, not roles. `is_visible_to` / `is_writable_by` in
+  `app/services/knowledge.py` gate every graph id; a subject is one learner's own or curated, and
+  `learners.is_admin` is the single global tier. Sharing goes through reviewed publication
+  (§7.1a), never a visibility flag on the original.
 - **Observability:** structured logs + request IDs; LLM/tool tracing; per-call token+cost
   (`llm_calls`); an **eval harness** for educational correctness + grading reliability treated as a
   release gate (wrong teaching is worse than none).

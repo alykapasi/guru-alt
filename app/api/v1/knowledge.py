@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import CurrentLearner, RetagEnqueuerDep, SessionDep
 from app.models.knowledge import Subject
+from app.models.publication import CurriculumProposal
 from app.schemas.knowledge import (
     KCCreate,
     KCDetail,
@@ -38,6 +39,10 @@ class SubjectCommitRequest(BaseModel):
     subject_description: str | None = None
     topics: list[dict]
     source_ids: list[uuid.UUID] | None = None
+    # Required, not optional (S25b D4). It names the server's own record of the generation this
+    # graph came from, which is where `private_source_derived` is read from — and an *optional*
+    # id is one a client can leave out, which is the same hole the record was built to close.
+    proposal_id: uuid.UUID
 
 
 @asynccontextmanager
@@ -60,10 +65,7 @@ async def _visible_subject(session, subject_id: uuid.UUID, learner) -> Subject:
     learner must not be able to learn about another learner's private curriculum. Absent and
     not-yours are deliberately indistinguishable.
     """
-    subject = await svc.get_subject(session, subject_id)
-    if subject is None or not svc.is_visible_to(subject, learner.id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "subject not found")
-    return subject
+    return await svc.require_visible_subject(session, subject_id, learner.id)
 
 
 def _require_writable(subject: Subject, learner) -> None:
@@ -87,17 +89,18 @@ def _require_writable(subject: Subject, learner) -> None:
 
 
 async def _writable_subject_of_topic(session, topic_id: uuid.UUID, learner) -> Subject:
-    subject = await svc.subject_of_topic(session, topic_id)
-    if subject is None or not svc.is_visible_to(subject, learner.id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "topic not found")
+    subject, _ = await svc.require_visible_topic(session, topic_id, learner.id)
     _require_writable(subject, learner)
     return subject
 
 
 async def _writable_subject_of_kc(session, kc_id: uuid.UUID, learner, *, missing: str) -> Subject:
-    subject = await svc.subject_of_kc(session, kc_id)
-    if subject is None or not svc.is_visible_to(subject, learner.id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, missing)
+    # ``missing`` survives because the two ends of an edge answer differently: "kc not found"
+    # for the dependent, "prerequisite kc not found" for the prerequisite.
+    try:
+        subject, _ = await svc.require_visible_kc(session, kc_id, learner.id)
+    except svc.NotVisible as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, missing) from exc
     _require_writable(subject, learner)
     return subject
 
@@ -124,6 +127,12 @@ async def commit_subject(
 
     Returns 409 if a subject with this name already exists (case-insensitive).
     """
+    record = await session.get(CurriculumProposal, request.proposal_id)
+    if record is None or record.learner_id != learner.id:
+        # One answer for "no such proposal" and "somebody else's", as everywhere else on this
+        # boundary: a caller able to tell them apart could probe for other learners' activity.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such proposal")
+
     if await svc.subject_name_exists(session, request.subject_name, owner_learner_id=learner.id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -138,6 +147,10 @@ async def commit_subject(
             topics_data=request.topics,
             source_ids=request.source_ids,
             learner_id=learner.id,
+            # From what the server observed, never from the body: the row remembers whether
+            # the generation read this learner's uploads, and moving sources in is grounding
+            # on its own.
+            private_source_derived=record.grounded_in_sources or bool(request.source_ids),
         )
     # Moving a source between subjects invalidated its chunk KC tags, which the call above
     # already deleted. Rebuilding them is a model call per chunk, so it happens in the
@@ -299,18 +312,13 @@ async def create_kc(
 
 @router.get("/topics/{topic_id}/kcs", response_model=list[KCRead])
 async def list_kcs(topic_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
-    subject = await svc.subject_of_topic(session, topic_id)
-    if subject is None or not svc.is_visible_to(subject, learner.id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "topic not found")
+    await svc.require_visible_topic(session, topic_id, learner.id)
     return await svc.list_kcs(session, topic_id)
 
 
 @router.get("/kcs/{kc_id}", response_model=KCDetail)
 async def get_kc(kc_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
-    kc = await svc.get_kc(session, kc_id)
-    subject = await svc.subject_of_kc(session, kc_id)
-    if kc is None or subject is None or not svc.is_visible_to(subject, learner.id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "kc not found")
+    _, kc = await svc.require_visible_kc(session, kc_id, learner.id)
     edges = await svc.list_prerequisites(session, kc_id)
     return KCDetail(
         id=kc.id,

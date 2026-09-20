@@ -20,7 +20,8 @@ Note: "alt" is a version suffix for the current build, not part of the product n
 
 ## Status
 
-**Phases 0–8 are complete; Phase 9 (experiment & evaluation suite) is in progress.** See
+**Phases 0–8 are complete; Phase 10 (identity, admin portal, private ownership) has landed;
+Phase 9 (experiment & evaluation suite) is in progress.** See
 [docs/ROADMAP.md](docs/ROADMAP.md) for the per-phase landed-notes.
 
 | Area | State |
@@ -34,17 +35,29 @@ Note: "alt" is a version suffix for the current build, not part of the product n
 | Frontend MVP (React + Vite) | ✅ Phase 7 |
 | Notes (durable learning artifact) | ✅ Phase 8 |
 | Eval sweeps + MLflow (9a) · real-data datasets (9b) · DSPy optimization (9c) | 🚧 Phase 9 |
-| Session authentication + recovery foundations | Implemented; production mail and further hardening remain |
+| Hosted identity (Clerk) · invitations · suspension | ✅ S21 — no deployment has yet been pointed at a real Clerk application |
+| Private curriculum ownership + reviewed publication | ✅ S25 |
 | Alpha admin portal + audited sudo | Implemented; default-off operational switch; further hardening remains |
 
-**Authentication resolves real learner sessions.** A separate development-only sign-in endpoint is
-available when configured. Private curriculum ownership, production mail,
-and remaining operational work are still required before the invited-alpha target is complete.
+**Identity is hosted; authorization is Guru's.** Clerk owns passwords, recovery mail, verification
+and social sign-in — Guru stores none of it, and one module imports the SDK. A Clerk token is
+exchanged once at `POST /api/v1/auth/exchange` for the opaque session cookie Guru already used, so
+nothing downstream knows Clerk exists. Guru keeps the decisions that are its own: who may enroll,
+who is an administrator, whose account is suspended, and who looked at whose data. A
+development-only sign-in endpoint remains for local work, and production refuses to boot while it
+is enabled. Production mail and the remaining operational work are still required before the
+invited-alpha target is complete.
 
 Authenticated alpha administrators can make short-lived, reason-required account visits with broad
 account access when `GURU_IMPERSONATION_ENABLED=true` (default: false). Visits and individual actions
 are audited. Admin practice remains distinct from learner ability/retention evidence, and admin chat
 history is labeled and excluded from inferred learner profile/memory updates.
+
+**Learner material is private by default.** Every subject is either one learner's own or curated
+for everyone, and `is_visible_to` / `is_writable_by` in `app/services/knowledge.py` are the whole
+authorization model for the graph — there are no roles beyond the single `is_admin` tier. Sharing
+is a request, an administrator's review of a frozen snapshot, and an immutable copy: it never makes
+the original public, and a subject built from the learner's own uploads cannot be published at all.
 
 ---
 
@@ -62,6 +75,12 @@ history is labeled and excluded from inferred learner profile/memory updates.
   are disabled in v0; previously stored material remains available.
 - **Notes** — per-learner, per-topic artifacts that grow as the learner studies, with format
   projections (outline / narrative / mnemonic / worked-examples) and full revision history.
+- **Identity and access** — hosted sign-in through Clerk, invitation-controlled enrollment,
+  account suspension and reinstatement, and short-lived reason-required administrator visits, all
+  audited at both ends.
+- **Private ownership and reviewed publication** — learner-owned subjects, topics, KCs, items and
+  content are visible only to their owner; publishing takes a frozen snapshot through an
+  administrator's review into an immutable, anonymous copy in the shared catalog.
 - **Evaluation suite** — a golden/live eval harness, a config-sweep + ablation runner with MLflow
   tracking, real-data dataset mining, and DSPy prompt compilation with measured deltas.
 - **Versioned API and React frontend** covering sign-in, chat, lessons/sessions, dashboard,
@@ -88,6 +107,7 @@ Key seams (each swappable without touching callers):
 | `app/rag/` **`Transcriber` / `Demuxer`** | ASR and video demux, so CI runs offline against fakes. |
 | `app/storage/` **blob store** | S3-compatible object storage (MinIO in dev). |
 | `app/workers/` **taskiq broker** | Redis queue in dev/prod, in-memory for tests. |
+| `app/core/identity.py` **identity provider** | The only module that imports the Clerk SDK. A proven identity is exchanged once for Guru's own session, so no router, service or graph knows who proved it; tests run against a fake. |
 | `get_current_learner` | Resolves a real session token to its learner; refuses unauthenticated requests. |
 
 ---
@@ -236,6 +256,18 @@ via pydantic-settings into `app/core/config.py`. Every field has a working dev d
 | `GURU_LOG_LEVEL` / `GURU_LOG_JSON` | `INFO` / `false` | Log level; `true` for JSON logs (prod) |
 | `GURU_CORS_ORIGINS` | `["http://localhost:5173"]` | Browser origins allowed to call the API |
 
+**Identity** — unset by default, which is the offline dev mode: no sign-in panel, and
+`POST /api/v1/auth/dev-login` issues a session with no credential. Production refuses to start in
+that mode.
+
+| Variable | Default | Purpose |
+| -------- | ------- | ------- |
+| `GURU_CLERK_SECRET_KEY` | *(empty)* | Clerk API key. Without it `/auth/exchange` and the invitation routes answer 503 |
+| `GURU_CLERK_JWT_KEY` | *(empty)* | The instance's JWKS public key, PEM-encoded. With it, verifying a token touches no network; without it a Clerk outage becomes a Guru outage |
+| `GURU_CLERK_AUTHORIZED_PARTIES` | *(empty)* | Whose tokens are accepted, checked against `azp`. Falls back to `GURU_CORS_ORIGINS` |
+| `GURU_CLERK_SIGN_UP_URL` | *(empty)* | Where an invitation link lands |
+| `GURU_DEV_AUTO_LOGIN` | `true` | Keeps `/auth/dev-login` alive. **Must be `false` in production** |
+
 **Models** — each role is a `provider:model` string. Providers: `ollama`, `openrouter`, `anthropic`.
 
 | Variable | Dev default | Notes |
@@ -301,7 +333,7 @@ guru-alt/
 ├── app/
 │   ├── __init__.py        # enables beartype runtime checks (dev/test)
 │   ├── main.py            # FastAPI app: lifespan, middleware, /health
-│   ├── api/v1/            # 12 routers, 52 endpoints
+│   ├── api/v1/            # 17 routers, 94 endpoints
 │   ├── core/              # config, db (engine/session/Base), logging, middleware
 │   ├── models/            # SQLAlchemy ORM models
 │   ├── schemas/           # Pydantic boundary schemas

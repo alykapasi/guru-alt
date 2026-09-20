@@ -1,5 +1,7 @@
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useCurrentLearner } from "../api/auth";
+import { ClerkSessionWatcher } from "../auth/ClerkPanels";
+import { clerkEnabled } from "../auth/mode";
 
 /** Gate for every route that needs a learner (S21).
  *
@@ -21,5 +23,11 @@ export function RequireLearner() {
   if (!learner) {
     return <Navigate to="/signin" replace state={{ from: location.pathname + location.search }} />;
   }
-  return <Outlet />;
+  return (
+    <>
+      {/* Clerk's session is the one that decides: if it ends elsewhere, Guru's must follow. */}
+      {clerkEnabled && <ClerkSessionWatcher />}
+      <Outlet />
+    </>
+  );
 }

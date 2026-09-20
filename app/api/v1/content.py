@@ -9,6 +9,7 @@ from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
 from app.models.content import ContentType
 from app.schemas.content import ContentBlockRead, GenerateRequest, SupportReportRead
 from app.services import content as svc
+from app.services import knowledge as knowledge_svc
 
 router = APIRouter(prefix="/content", tags=["content"])
 
@@ -24,6 +25,7 @@ async def generate_content(
 
     Cache-aware: an identical request reuses stored blocks rather than regenerating.
     """
+    await knowledge_svc.require_visible_kc(session, data.kc_id, learner.id)
     if data.type is not None:
         block = await svc.generate_block(
             session, llm, learner_id=learner.id, kc_id=data.kc_id, block_type=data.type
@@ -61,4 +63,5 @@ async def get_kc_content(
     block_type: Annotated[ContentType | None, Query(alias="type")] = None,
 ):
     """Read the cached content blocks for a KC, scoped to the learner (no generation)."""
+    await knowledge_svc.require_visible_kc(session, kc_id, learner.id)
     return await svc.list_blocks(session, learner_id=learner.id, kc_id=kc_id, block_type=block_type)

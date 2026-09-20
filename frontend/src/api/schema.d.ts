@@ -119,6 +119,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Invitations
+         * @description Every invitation ever issued, newest first — open, accepted, and revoked alike.
+         */
+        get: operations["invitations_api_v1_admin_invitations_get"];
+        put?: never;
+        /**
+         * Create Invitation
+         * @description Invite one address to enroll (S21).
+         *
+         *     The provider is asked to send the invitation before anything is written — see
+         *     ``app.services.accounts.invite`` for why that ordering is deliberate.
+         */
+        post: operations["create_invitation_api_v1_admin_invitations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/invitations/{invitation_id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke Invitation
+         * @description Close an open invitation, at the provider too when one is configured and will answer.
+         *
+         *     Unlike creating one, revoking never requires a provider. Guru's own row is what admits
+         *     people — see ``app.services.accounts.revoke_invitation`` — so refusing to revoke just
+         *     because no provider is configured (or it will not answer) would leave an administrator
+         *     unable to stop an enrollment they can see, which is the worse failure.
+         */
+        post: operations["revoke_invitation_api_v1_admin_invitations__invitation_id__revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/learners": {
         parameters: {
             query?: never;
@@ -150,6 +202,149 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/learners/{learner_id}/reinstate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reinstate Learner
+         * @description Let a suspended account sign in again (S21).
+         */
+        post: operations["reinstate_learner_api_v1_admin_learners__learner_id__reinstate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/learners/{learner_id}/suspend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Suspend Learner
+         * @description Stop an account immediately, with the reason on the record (S21).
+         *
+         *     The learner's own sessions end in the same transaction — see ``accounts.suspend`` — so this
+         *     bites a person already signed in, not only their next attempt to sign in.
+         */
+        post: operations["suspend_learner_api_v1_admin_learners__learner_id__suspend_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/publications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Publication Queue
+         * @description The review queue, oldest first — the order somebody works through it in.
+         */
+        get: operations["publication_queue_api_v1_admin_publications_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/publications/{publication_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Publication Detail
+         * @description Everything that would ship, answer keys included — this is the review (D3).
+         */
+        get: operations["publication_detail_api_v1_admin_publications__publication_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/publications/{publication_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Publication
+         * @description Materialize the snapshot as a shared subject. One transaction; see the service.
+         */
+        post: operations["approve_publication_api_v1_admin_publications__publication_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/publications/{publication_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject Publication
+         * @description Refuse, with a reason the author can act on.
+         */
+        post: operations["reject_publication_api_v1_admin_publications__publication_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/subjects/{subject_id}/withdraw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Withdraw Subject
+         * @description Unlist a published subject. Learners already studying it keep it (D7).
+         */
+        post: operations["withdraw_subject_api_v1_admin_subjects__subject_id__withdraw_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/dev-login": {
         parameters: {
             query?: never;
@@ -169,6 +364,12 @@ export interface paths {
          *     exact shape of an auth boundary that looks present and is not. This one is listed in the
          *     OpenAPI document, refuses to exist unless ``GURU_DEV_AUTO_LOGIN`` is on, and production
          *     refuses to *start* while it is (``app.core.release``).
+         *
+         *     It is also how the browser journeys sign in. They used to register through the password
+         *     form; Clerk owns that form now, and its hosted UI cannot be driven in a CI browser with no
+         *     network. Passing an address signs in as that account, creating it if needed, so each run
+         *     gets a fresh one — the same door, opened by the same switch, with no second mechanism to
+         *     keep safe.
          */
         post: operations["dev_login_api_v1_auth_dev_login_post"];
         delete?: never;
@@ -177,7 +378,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/auth/email": {
+    "/api/v1/auth/exchange": {
         parameters: {
             query?: never;
             header?: never;
@@ -187,34 +388,15 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Change Email
-         * @description Move to a new address, proving the password.
+         * Exchange
+         * @description Trade a proven identity for a Guru session (S21).
          *
-         *     No verification of the new address, which is the honest gap: until a message can be
-         *     delivered (``app.core.mail``) there is no way to establish that the learner owns what they
-         *     typed, and a typo here costs them the account.
+         *     The provider's token arrives in ``Authorization`` and is spent here, once. What the browser
+         *     keeps is the same httpOnly cookie every other route already takes — which is why nothing
+         *     downstream of this line knows Clerk exists, and why signing out, "log out everywhere" and
+         *     suspension keep working exactly as they did.
          */
-        post: operations["change_email_api_v1_auth_email_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/login": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Login
-         * @description Exchange credentials for a session.
-         */
-        post: operations["login_api_v1_auth_login_post"];
+        post: operations["exchange_api_v1_auth_exchange_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -278,93 +460,6 @@ export interface paths {
         get: operations["me_api_v1_auth_me_get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/password": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Change Password
-         * @description Set a new password. Every *other* session ends; this one keeps working.
-         *
-         *     Signing the learner out of the tab they are typing in would make the safe action annoying,
-         *     and a password change is often a response to suspecting another device — so the other
-         *     devices are what stop working.
-         */
-        post: operations["change_password_api_v1_auth_password_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/password-reset": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Request Password Reset
-         * @description Start a reset. Answers the same whether or not the address has an account.
-         */
-        post: operations["request_password_reset_api_v1_auth_password_reset_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/password-reset/confirm": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Confirm Password Reset
-         * @description Spend a reset token and set the new password. Every session ends.
-         *
-         *     A reset is what somebody does when they think the account may not be theirs alone, so
-         *     leaving the intruder's session working would make it a gesture.
-         */
-        post: operations["confirm_password_reset_api_v1_auth_password_reset_confirm_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/register": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Register
-         * @description Create an account and sign in as it.
-         */
-        post: operations["register_api_v1_auth_register_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1043,6 +1138,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/publications/{publication_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Publication
+         * @description Withdraw a request before anybody has decided it.
+         */
+        post: operations["cancel_publication_api_v1_publications__publication_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ready": {
         parameters: {
             query?: never;
@@ -1499,6 +1614,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/subjects/{subject_id}/publications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Publications
+         * @description Every request made for this subject, newest first, with the reviewer's note.
+         */
+        get: operations["list_publications_api_v1_subjects__subject_id__publications_get"];
+        put?: never;
+        /**
+         * Request Publication
+         * @description Freeze what would ship and put it in front of a reviewer.
+         */
+        post: operations["request_publication_api_v1_subjects__subject_id__publications_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/subjects/{subject_id}/topics": {
         parameters: {
             query?: never;
@@ -1666,6 +1805,31 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AccountRead
+         * @description A learner's account, as ``suspend``/``reinstate`` leave it.
+         *
+         *     A narrower cut than ``app.schemas.auth.LearnerRead`` — that schema is the *session's* view
+         *     of a learner and has no reason to carry ``suspended_at``; this is the *administrator's* view
+         *     after an act that is entirely about that one field.
+         */
+        AccountRead: {
+            /** Display Name */
+            display_name: string | null;
+            /** Email */
+            email: string | null;
+            /** Handle */
+            handle: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Admin */
+            is_admin: boolean;
+            /** Suspended At */
+            suspended_at: string | null;
+        };
         /** ActivityRead */
         ActivityRead: {
             /** Momentum */
@@ -1783,6 +1947,16 @@ export interface components {
             response: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * ApproveRequest
+         * @description Which items the reviewer struck out, and why they approved.
+         */
+        ApproveRequest: {
+            /** Excluded Item Ids */
+            excluded_item_ids?: string[];
+            /** Note */
+            note?: string | null;
         };
         /** Body_upload_source_api_v1_sources_upload_post */
         Body_upload_source_api_v1_sources_upload_post: {
@@ -1990,6 +2164,11 @@ export interface components {
         };
         /** CurriculumResponse */
         CurriculumResponse: {
+            /**
+             * Proposal Id
+             * Format: uuid
+             */
+            proposal_id: string;
             /** Subject Description */
             subject_description: string;
             /** Subject Name */
@@ -2027,6 +2206,19 @@ export interface components {
             name: string;
             /** Ok */
             ok: boolean;
+        };
+        /**
+         * DevLoginRequest
+         * @description Who the development sign-in should sign in as (S21).
+         *
+         *     Optional: with no address it signs in as the one shared development learner, as it always
+         *     has. With one, it signs in as that address' account and creates it if it does not exist —
+         *     which is how the browser journeys get a fresh account each run now that there is no
+         *     registration form for them to drive.
+         */
+        DevLoginRequest: {
+            /** Email */
+            email?: string | null;
         };
         /**
          * Diagnosis
@@ -2084,19 +2276,6 @@ export interface components {
             updated_at: string;
             /** Value */
             value: unknown;
-        };
-        /**
-         * EmailChange
-         * @description Move to a new address. The password is the proof, for the same reason as above.
-         */
-        EmailChange: {
-            /**
-             * Email
-             * Format: email
-             */
-            email: string;
-            /** Password */
-            password: string;
         };
         /**
          * FailureKind
@@ -2302,6 +2481,46 @@ export interface components {
             pending: number;
             /** Processing */
             processing: number;
+        };
+        /**
+         * InvitationCreate
+         * @description Invite one address to enroll (S21).
+         */
+        InvitationCreate: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+        };
+        /**
+         * InvitationRead
+         * @description One invitation: open, accepted, or revoked.
+         *
+         *     ``status`` is derived rather than stored, so there is exactly one place deciding what
+         *     "open" means — the same two columns `Invitation`'s own docstring names.
+         */
+        InvitationRead: {
+            /** Accepted At */
+            accepted_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Email */
+            email: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Invited By Handle */
+            invited_by_handle: string;
+            /** Revoked At */
+            revoked_at: string | null;
+            /** Status */
+            readonly status: string;
         };
         /** ItemCreate */
         ItemCreate: {
@@ -2597,6 +2816,8 @@ export interface components {
             is_admin: boolean;
             /** Last Call At */
             last_call_at: string | null;
+            /** Suspended At */
+            suspended_at: string | null;
             /** Unpriced Calls */
             unpriced_calls: number;
         };
@@ -2687,19 +2908,6 @@ export interface components {
              * Format: uri
              */
             url: string;
-        };
-        /**
-         * LoginRequest
-         * @description Exchange credentials for a session.
-         */
-        LoginRequest: {
-            /**
-             * Email
-             * Format: email
-             */
-            email: string;
-            /** Password */
-            password: string;
         };
         /**
          * MemoryCorrection
@@ -2873,34 +3081,6 @@ export interface components {
             /** Ordinal */
             ordinal: number;
         };
-        /**
-         * PasswordChange
-         * @description Set a new password, proving you know the current one.
-         *
-         *     The current password is required even though the caller already holds a valid session: a
-         *     session is not proof of the person, and a borrowed laptop is a session.
-         */
-        PasswordChange: {
-            /** Current Password */
-            current_password: string;
-            /** New Password */
-            new_password: string;
-        };
-        /** PasswordResetConfirm */
-        PasswordResetConfirm: {
-            /** New Password */
-            new_password: string;
-            /** Token */
-            token: string;
-        };
-        /** PasswordResetRequest */
-        PasswordResetRequest: {
-            /**
-             * Email
-             * Format: email
-             */
-            email: string;
-        };
         /** PlacementPromptRead */
         PlacementPromptRead: {
             /** Question */
@@ -2959,6 +3139,98 @@ export interface components {
             /** Dimensions */
             dimensions: components["schemas"]["DimensionRead"][];
         };
+        /**
+         * PublicationListRead
+         * @description A subject's publication history, newest first.
+         */
+        PublicationListRead: {
+            /** Publications */
+            publications: components["schemas"]["PublicationRead"][];
+        };
+        /**
+         * PublicationQueueRead
+         * @description The review queue, oldest first.
+         */
+        PublicationQueueRead: {
+            /** Publications */
+            publications: components["schemas"]["PublicationReviewRead"][];
+        };
+        /**
+         * PublicationRead
+         * @description One request, as its author sees it.
+         *
+         *     Deliberately without the snapshot. The author already has the subject it was taken from,
+         *     and a response that repeated the whole graph on every poll of a status would be paying for
+         *     it every time. The reviewer's view carries it; see `app.api.v1.admin`.
+         */
+        PublicationRead: {
+            /** Author Note */
+            author_note: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Published Subject Id */
+            published_subject_id: string | null;
+            /** Review Note */
+            review_note: string | null;
+            /** Reviewed At */
+            reviewed_at: string | null;
+            /** Status */
+            status: string;
+        };
+        /**
+         * PublicationRequest
+         * @description What an author says when asking for their subject to be shared.
+         */
+        PublicationRequest: {
+            /** Note */
+            note?: string | null;
+        };
+        /**
+         * PublicationReviewRead
+         * @description One request as the *reviewer* sees it: with the snapshot, and with who asked.
+         *
+         *     The author is named here and nowhere a learner can reach (D6). Anonymity is towards other
+         *     learners, not towards the person deciding — a reviewer judging material with no idea whose
+         *     it is cannot weigh a pattern of requests from one account.
+         */
+        PublicationReviewRead: {
+            /** Author Handle */
+            author_handle: string | null;
+            /** Author Note */
+            author_note: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Published Subject Id */
+            published_subject_id: string | null;
+            /** Review Note */
+            review_note: string | null;
+            /** Reviewed At */
+            reviewed_at: string | null;
+            /** Reviewer Handle */
+            reviewer_handle: string | null;
+            /** Snapshot */
+            snapshot: {
+                [key: string]: unknown;
+            };
+            /** Status */
+            status: string;
+        };
         /** ReadinessReport */
         ReadinessReport: {
             /** Dependencies */
@@ -2972,19 +3244,21 @@ export interface components {
             ready: boolean;
         };
         /**
-         * RegisterRequest
-         * @description Create an account.
+         * ReinstateRequest
+         * @description Let a suspended account sign in again. Unlike suspending, no reason is required — see
+         *     ``app.services.accounts.reinstate``.
          */
-        RegisterRequest: {
-            /** Display Name */
-            display_name?: string | null;
-            /**
-             * Email
-             * Format: email
-             */
-            email: string;
-            /** Password */
-            password: string;
+        ReinstateRequest: {
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * RejectRequest
+         * @description A refusal, with a reason the author can act on.
+         */
+        RejectRequest: {
+            /** Note */
+            note: string;
         };
         /** RetentionPolicyRead */
         RetentionPolicyRead: {
@@ -3237,6 +3511,11 @@ export interface components {
          * @description Request to commit a subject with its topics and KCs.
          */
         SubjectCommitRequest: {
+            /**
+             * Proposal Id
+             * Format: uuid
+             */
+            proposal_id: string;
             /** Source Ids */
             source_ids?: string[] | null;
             /** Subject Description */
@@ -3288,6 +3567,13 @@ export interface components {
             id: string;
             /** Name */
             name: string;
+            /** Owner Learner Id */
+            owner_learner_id?: string | null;
+            /**
+             * Private Source Derived
+             * @default false
+             */
+            private_source_derived: boolean;
             /** Slug */
             slug: string;
         };
@@ -3310,6 +3596,17 @@ export interface components {
             ][];
             /** Supported Fraction */
             supported_fraction: number | null;
+        };
+        /**
+         * SuspendRequest
+         * @description Stop an account, and say why (S21).
+         *
+         *     The reason is required by the schema, the same way ``ImpersonationRequest.reason`` is:
+         *     a request without one never reaches ``accounts.suspend`` at all.
+         */
+        SuspendRequest: {
+            /** Reason */
+            reason: string;
         };
         /** TopicCreate */
         TopicCreate: {
@@ -3408,6 +3705,14 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /**
+         * WithdrawRequest
+         * @description Unlisting a published subject, with the reason recorded.
+         */
+        WithdrawRequest: {
+            /** Reason */
+            reason: string;
         };
         /**
          * WriteBackAck
@@ -3577,6 +3882,90 @@ export interface operations {
             };
         };
     };
+    invitations_api_v1_admin_invitations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationRead"][];
+                };
+            };
+        };
+    };
+    create_invitation_api_v1_admin_invitations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvitationCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_invitation_api_v1_admin_invitations__invitation_id__revoke_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     learners_api_v1_admin_learners_get: {
         parameters: {
             query?: {
@@ -3609,9 +3998,81 @@ export interface operations {
             };
         };
     };
-    dev_login_api_v1_auth_dev_login_post: {
+    reinstate_learner_api_v1_admin_learners__learner_id__reinstate_post: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                learner_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReinstateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    suspend_learner_api_v1_admin_learners__learner_id__suspend_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                learner_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SuspendRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    publication_queue_api_v1_admin_publications_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3624,21 +4085,166 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["LearnerRead"];
+                    "application/json": components["schemas"]["PublicationQueueRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
     };
-    change_email_api_v1_auth_email_post: {
+    publication_detail_api_v1_admin_publications__publication_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationReviewRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_publication_api_v1_admin_publications__publication_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_publication_api_v1_admin_publications__publication_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RejectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationReviewRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    withdraw_subject_api_v1_admin_subjects__subject_id__withdraw_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WithdrawRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dev_login_api_v1_auth_dev_login_post: {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody: {
+        requestBody?: {
             content: {
-                "application/json": components["schemas"]["EmailChange"];
+                "application/json": components["schemas"]["DevLoginRequest"] | null;
             };
         };
         responses: {
@@ -3662,18 +4268,16 @@ export interface operations {
             };
         };
     };
-    login_api_v1_auth_login_post: {
+    exchange_api_v1_auth_exchange_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                authorization?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LoginRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -3747,134 +4351,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LearnerRead"];
-                };
-            };
-        };
-    };
-    change_password_api_v1_auth_password_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PasswordChange"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    request_password_reset_api_v1_auth_password_reset_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PasswordResetRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    confirm_password_reset_api_v1_auth_password_reset_confirm_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PasswordResetConfirm"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    register_api_v1_auth_register_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RegisterRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LearnerRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -4916,6 +5392,37 @@ export interface operations {
             };
         };
     };
+    cancel_publication_api_v1_publications__publication_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     ready_api_v1_ready_get: {
         parameters: {
             query?: never;
@@ -5603,6 +6110,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SacrificedEdgeRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_publications_api_v1_subjects__subject_id__publications_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationListRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_publication_api_v1_subjects__subject_id__publications_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationRead"];
                 };
             };
             /** @description Validation Error */

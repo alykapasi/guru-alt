@@ -27,7 +27,7 @@ from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import Item, Rubric
-from app.models.auth import AdminAction, Impersonation
+from app.models.auth import AccountAction, AdminAction, Impersonation, Invitation
 from app.models.chat import Conversation, Message, Turn
 from app.models.content import ContentBlock
 from app.models.learner import Learner
@@ -36,6 +36,7 @@ from app.models.lesson_plan import LessonPlan
 from app.models.memory import Memory
 from app.models.note import Note, NoteRender, NoteRevision
 from app.models.profile import LearnerProfile, ProfileDimension
+from app.models.publication import Publication
 from app.models.source import Chunk, Source
 from app.services import ingestion
 from app.storage.base import BlobStore
@@ -86,10 +87,11 @@ RETENTION: tuple[StoreRetention, ...] = (
         "Durable administrator action audit; bodies and credentials are never captured.",
     ),
     StoreRetention(
-        "password_reset_tokens",
+        "legacy_password_digests",
         "deleted",
-        "Cascades from the learner (S21). A reset token is a bearer credential for an account: "
-        "one that outlived the account would be a way to claim an address nobody owns any more.",
+        "Cascades from the learner (S21). A password hash for an account that no longer exists "
+        "is a credential for nobody, and the table empties itself as `poe identity-import` "
+        "hands each digest to Clerk.",
     ),
     StoreRetention("conversations", "deleted", "Cascades from the learner; messages with it."),
     StoreRetention("messages", "deleted", "Cascades from the conversation."),
@@ -154,6 +156,39 @@ RETENTION: tuple[StoreRetention, ...] = (
         "*curated* subject carries no owner, belongs to no one learner, and is retained — "
         "deleting one account must not empty the shared library for everybody else. The "
         "shared graph is unaffected by deleting a learner.",
+    ),
+    StoreRetention(
+        "invitations",
+        "partly deleted",
+        "Permission to enroll (S21). The invitation this learner accepted goes with the "
+        "account, because it holds their address. Invitations *they* issued as an "
+        "administrator are retained with the rest of the administrative record — who let "
+        "somebody in is not the invitee's to erase.",
+    ),
+    StoreRetention(
+        "account_actions",
+        "partly deleted",
+        "Administrative acts on accounts (S21): invitations, suspensions, reinstatements. The "
+        "same split as impersonations — the subject's id and handle and the address go, so "
+        "nothing left names them; that an administrator acted, when, and why is retained.",
+    ),
+    StoreRetention(
+        "curriculum_proposals",
+        "deleted",
+        "Cascades from the learner (S25b). The row records only what the server observed while "
+        "generating one curriculum — whether it was grounded in that learner's uploads — and "
+        "it is scaffolding for a commit that can no longer happen once the account is gone.",
+    ),
+    StoreRetention(
+        "publications",
+        "partly deleted",
+        "A request to share a subject and the decision made on it (S25b), split the same way "
+        "as impersonations. The author's half goes: their id is cleared by the foreign key and "
+        "the service clears the handle beside it. The reviewer's half is retained, because who "
+        "approved putting material into the shared library is the platform's own record, and "
+        "an audit any author can erase is not an audit. The snapshot is retained with it — it "
+        "is what was approved, and a published subject whose approval named nothing would be "
+        "material in the library with no account of how it got there.",
     ),
 )
 
@@ -272,12 +307,27 @@ async def delete_learner(
         .returning(Item.id)
     )
     report.items_deleted = len(authored.all())
+    # Their address is theirs, so the invitation they accepted goes with the account; the ones
+    # they issued as an administrator stay with the rest of the administrative record.
+    await session.execute(delete(Invitation).where(Invitation.accepted_learner_id == learner_id))
+    await session.execute(
+        update(AccountAction)
+        .where(AccountAction.learner_id == learner_id)
+        .values(learner_handle=None, email=None)
+    )
     # Before the learner row goes: the foreign key clears `learner_id` on its own, and after
     # that there is no way left to find the rows whose *handle* still names this person (P10).
     await session.execute(
         update(Impersonation)
         .where(Impersonation.learner_id == learner_id)
         .values(learner_handle=None)
+    )
+    # Same reasoning, same window (S25b): the author's handle is the half of a publication that
+    # still names this person once the foreign key has cleared their id. `reviewer_handle` is
+    # deliberately untouched — the administrator's half of the record is not the author's to
+    # erase, exactly as with impersonations above.
+    await session.execute(
+        update(Publication).where(Publication.author_id == learner_id).values(author_handle=None)
     )
     await session.execute(delete(Learner).where(Learner.id == learner_id))
     await session.commit()

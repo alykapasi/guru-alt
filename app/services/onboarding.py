@@ -128,7 +128,7 @@ async def generate_curriculum_for_onboarding(
     goal: str,
     source_ids: list[uuid.UUID] | None,
     learner_id: uuid.UUID,
-) -> CurriculumProposal | None:
+) -> tuple[CurriculumProposal | None, bool]:
     """Fetch excerpts from selected sources and generate curriculum.
 
     Args:
@@ -139,8 +139,14 @@ async def generate_curriculum_for_onboarding(
         learner_id: The learner for scoping retrieval
 
     Returns:
-        CurriculumProposal or None if generation fails. The call is recorded either way —
-        a generation that produced unparseable output still cost what it cost.
+        ``(proposal, grounded_in_sources)``. The proposal is None if generation fails; the
+        call is recorded either way, because a generation that produced unparseable output
+        still cost what it cost.
+
+        ``grounded_in_sources`` is whether source text actually reached the model, and it is
+        returned rather than inferred by the caller because this is the only place that knows
+        (S25b D4). Passing ``source_ids`` that retrieved nothing is *not* grounding: no excerpt
+        went into the curriculum, and flagging it would make an honest subject unpublishable.
     """
     materials = None
     if source_ids:
@@ -160,6 +166,7 @@ async def generate_curriculum_for_onboarding(
         if excerpts:
             materials = excerpts[:10]  # Cap total excerpts
 
+    grounded = materials is not None
     proposal, usage = await generate_curriculum(llm, goal, materials)
     if usage.total_tokens:
         await log_llm_call(
@@ -168,4 +175,4 @@ async def generate_curriculum_for_onboarding(
             spec=llm.spec(ModelRole.SMART),
             usage=usage,
         )
-    return proposal
+    return proposal, grounded

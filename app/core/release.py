@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
-from app.core import mail
 from app.core.config import AppEnv, Settings
 from app.llm.providers import DETERMINISTIC_PROVIDERS
 
@@ -108,12 +107,19 @@ def production_problems(settings: Settings) -> list[str]:
     # Auth (S21). The development sign-in seam issues a session for the dev learner with no
     # credential at all, so leaving it on in production is not a weak password — it is no
     # password, for anybody who finds the endpoint.
-    if settings.password_reset_enabled and not getattr(
-        mail.build_mailer(), "production_safe", False
-    ):
+    # Clerk is the only way in now, so a deployment without it is not "degraded sign-in" —
+    # it is a deployment nobody can enter, and the failure arrives as every sign-in 503ing
+    # rather than as anything that names the cause.
+    if not settings.clerk_secret_key:
         problems.append(
-            "GURU_PASSWORD_RESET_ENABLED is on with no production mail transport — the reset "
-            "token would be written to the application log instead of being delivered"
+            "GURU_CLERK_SECRET_KEY is unset — Clerk owns sign-in, so nobody could authenticate"
+        )
+    # The token's `azp` claim is checked against this list. Empty, every Clerk token from any
+    # application that shares the instance would be accepted — see `app.core.identity`.
+    if not (settings.clerk_authorized_parties or settings.cors_origins):
+        problems.append(
+            "neither GURU_CLERK_AUTHORIZED_PARTIES nor GURU_CORS_ORIGINS is set — there would "
+            "be no allowlist to check a Clerk token's authorized party against"
         )
 
     # The operational endpoints admit an administrator's session or the ops token (P10). A

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { register } from "./journey";
+import { signIn } from "./journey";
 
 /** The fourth browser journey (S58): put a document in, and have it come back usable.
  *
@@ -45,7 +45,7 @@ async function uploadNotes(page: Page, filename: string): Promise<void> {
 test("an uploaded file is accepted, ingested, and listed as ready", async ({ page }) => {
   const filename = `notes-${Date.now()}.txt`;
 
-  await register(page);
+  await signIn(page);
   await page.goto("/app/uploads");
   await expect(page.getByText("No materials yet.")).toBeVisible();
 
@@ -67,7 +67,7 @@ test("an ingested document can be built into a subject, and is filed under it", 
 }) => {
   const filename = `photosynthesis-${Date.now()}.txt`;
 
-  await register(page);
+  await signIn(page);
   await page.goto("/app/uploads");
   await uploadNotes(page, filename);
   await expect(page.getByText("done")).toBeVisible({ timeout: INGESTION_TIMEOUT });
