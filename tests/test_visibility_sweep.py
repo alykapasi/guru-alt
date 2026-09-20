@@ -32,7 +32,7 @@ from app.main import app
 from app.models.assessment import Item, ItemKC, ItemOrigin, ItemType
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
-from app.models.publication import CurriculumProposal
+from app.models.publication import CurriculumProposal, Publication, PublicationStatus
 from app.storage import InMemoryBlobStore
 from tests.conftest import sign_in
 
@@ -47,6 +47,7 @@ class Ids:
     kc2: uuid.UUID  # a second component in the same topic, stored as a prerequisite of `kc`
     item: uuid.UUID
     proposal: uuid.UUID  # a curriculum-generation record (S25b); `/subjects/commit` needs one
+    publication: uuid.UUID  # a pending publication request on `subject` (S25b)
 
 
 @dataclass(frozen=True)
@@ -77,7 +78,7 @@ class Case:
 
 
 def _random_ids() -> Ids:
-    return Ids(*(uuid.uuid4() for _ in range(6)))
+    return Ids(*(uuid.uuid4() for _ in range(7)))
 
 
 async def _private_graph(session: AsyncSession, owner: Learner) -> Ids:
@@ -107,6 +108,15 @@ async def _private_graph(session: AsyncSession, owner: Learner) -> Ids:
     # per learner to have anything to swap (S25b D4).
     proposal = CurriculumProposal(learner_id=owner.id, grounded_in_sources=False)
     session.add(proposal)
+    # A pending request, so `/publications/{id}/cancel` has one of each learner's to swap.
+    publication = Publication(
+        source_subject_id=subject.id,
+        author_id=owner.id,
+        author_handle=owner.handle,
+        status=PublicationStatus.PENDING,
+        snapshot={},
+    )
+    session.add(publication)
     await session.flush()
     return Ids(
         subject=subject.id,
@@ -115,6 +125,7 @@ async def _private_graph(session: AsyncSession, owner: Learner) -> Ids:
         kc2=kc2.id,
         item=item.id,
         proposal=proposal.id,
+        publication=publication.id,
     )
 
 
@@ -211,6 +222,31 @@ CASES: list[Case] = [
         "subject_id",
         ("subject",),
         lambda c, t, o: c.get(f"{API}/subjects/{t.subject}/prerequisite-conflicts"),
+    ),
+    Case(
+        "POST",
+        "/api/v1/subjects/{subject_id}/publications",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.post(f"{API}/subjects/{t.subject}/publications", json={}),
+        # The owner already has a pending request from the fixture, so asking again is a 409 —
+        # different from the 404 a stranger gets, which is all this case needs to show.
+    ),
+    Case(
+        "GET",
+        "/api/v1/subjects/{subject_id}/publications",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.get(f"{API}/subjects/{t.subject}/publications"),
+    ),
+    Case(
+        "POST",
+        "/api/v1/publications/{publication_id}/cancel",
+        "publication_id",
+        ("publication",),
+        # Not a graph id either, but the same rule applies: whose request it is must not be
+        # answerable, or publication activity becomes enumerable one id at a time (S25b).
+        lambda c, t, o: c.post(f"{API}/publications/{t.publication}/cancel"),
     ),
     Case(
         "POST",

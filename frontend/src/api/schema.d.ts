@@ -1038,6 +1038,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/publications/{publication_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Publication
+         * @description Withdraw a request before anybody has decided it.
+         */
+        post: operations["cancel_publication_api_v1_publications__publication_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ready": {
         parameters: {
             query?: never;
@@ -1488,6 +1508,30 @@ export interface paths {
         get: operations["subject_prerequisite_conflicts_api_v1_subjects__subject_id__prerequisite_conflicts_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/subjects/{subject_id}/publications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Publications
+         * @description Every request made for this subject, newest first, with the reviewer's note.
+         */
+        get: operations["list_publications_api_v1_subjects__subject_id__publications_get"];
+        put?: never;
+        /**
+         * Request Publication
+         * @description Freeze what would ship and put it in front of a reviewer.
+         */
+        post: operations["request_publication_api_v1_subjects__subject_id__publications_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2984,6 +3028,52 @@ export interface components {
         ProfileSnapshotRead: {
             /** Dimensions */
             dimensions: components["schemas"]["DimensionRead"][];
+        };
+        /**
+         * PublicationListRead
+         * @description A subject's publication history, newest first.
+         */
+        PublicationListRead: {
+            /** Publications */
+            publications: components["schemas"]["PublicationRead"][];
+        };
+        /**
+         * PublicationRead
+         * @description One request, as its author sees it.
+         *
+         *     Deliberately without the snapshot. The author already has the subject it was taken from,
+         *     and a response that repeated the whole graph on every poll of a status would be paying for
+         *     it every time. The reviewer's view carries it; see `app.api.v1.admin`.
+         */
+        PublicationRead: {
+            /** Author Note */
+            author_note: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Published Subject Id */
+            published_subject_id: string | null;
+            /** Review Note */
+            review_note: string | null;
+            /** Reviewed At */
+            reviewed_at: string | null;
+            /** Status */
+            status: string;
+        };
+        /**
+         * PublicationRequest
+         * @description What an author says when asking for their subject to be shared.
+         */
+        PublicationRequest: {
+            /** Note */
+            note?: string | null;
         };
         /** ReadinessReport */
         ReadinessReport: {
@@ -4956,6 +5046,37 @@ export interface operations {
             };
         };
     };
+    cancel_publication_api_v1_publications__publication_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     ready_api_v1_ready_get: {
         parameters: {
             query?: never;
@@ -5643,6 +5764,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SacrificedEdgeRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_publications_api_v1_subjects__subject_id__publications_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationListRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_publication_api_v1_subjects__subject_id__publications_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationRead"];
                 };
             };
             /** @description Validation Error */
