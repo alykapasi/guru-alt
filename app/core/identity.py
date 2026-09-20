@@ -102,7 +102,16 @@ def _classify_verification_error(exc: object) -> InvalidToken | ProviderError:
         TokenVerificationErrorReason.JWK_FAILED_TO_LOAD,
         TokenVerificationErrorReason.JWK_REMOTE_INVALID,
         TokenVerificationErrorReason.JWK_FAILED_TO_RESOLVE,
-        TokenVerificationErrorReason.JWK_KID_MISMATCH,
+        # JWK_KID_MISMATCH is deliberately *not* here, though it reads like a sibling of the
+        # three above. Those mean we could not obtain the JWKS; this one is only reachable
+        # once we have, and says the token names a signing key the set does not contain — a
+        # token from somewhere else, which is the caller's problem and a 401. Probing a live
+        # instance showed the cost of the other reading: any unauthenticated request carrying
+        # a random `kid` made /auth/exchange report a provider outage, so the one signal that
+        # is supposed to separate an attack from our breakage could be produced at will by
+        # the attacker. Rotation is the case for the other reading — a token signed by a key
+        # Clerk has since dropped arrives here — but the SDK refetches the set on a miss, so
+        # what survives that refetch is a token this instance never issued.
         TokenVerificationErrorReason.SECRET_KEY_MISSING,
         TokenVerificationErrorReason.SERVER_ERROR,
         # Unreachable today: the SDK raises this only for a token carrying one of its

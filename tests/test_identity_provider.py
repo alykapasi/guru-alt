@@ -148,13 +148,16 @@ _THE_TOKEN_IS_BAD = (
     Reason.TOKEN_IAT_IN_THE_FUTURE,
     Reason.TOKEN_NOT_ACTIVE_YET,
     Reason.TOKEN_INVALID_SIGNATURE,
+    # Reachable only after the JWKS loaded, so it means the token names a key this instance
+    # does not have — someone else's token, not our outage. Classified the other way until a
+    # live probe showed that any caller could then produce a "provider outage" at will.
+    Reason.JWK_KID_MISMATCH,
 )
 
 _WE_ARE_BROKEN = (
     Reason.JWK_FAILED_TO_LOAD,
     Reason.JWK_REMOTE_INVALID,
     Reason.JWK_FAILED_TO_RESOLVE,
-    Reason.JWK_KID_MISMATCH,
     Reason.SECRET_KEY_MISSING,
     Reason.SERVER_ERROR,
     Reason.INVALID_TOKEN_TYPE,
