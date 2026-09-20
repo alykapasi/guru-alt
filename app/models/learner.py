@@ -15,7 +15,7 @@ leaving it to be documented.
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, false
+from sqlalchemy import DateTime, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -26,12 +26,6 @@ class Learner(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """An end user of the platform."""
 
     __tablename__ = "learners"
-    __table_args__ = (
-        CheckConstraint(
-            "password_hash IS NULL OR email IS NOT NULL",
-            name="ck_learners_password_requires_email",
-        ),
-    )
 
     handle: Mapped[str] = mapped_column(unique=True, index=True)
     display_name: Mapped[str | None] = mapped_column(default=None)
@@ -39,7 +33,6 @@ class Learner(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # one account regardless of how it was typed. Unique, and Postgres does not count NULLs
     # as equal, so any number of credential-less learners coexist.
     email: Mapped[str | None] = mapped_column(unique=True, index=True, default=None)
-    password_hash: Mapped[str | None] = mapped_column(default=None)
     # The only authorization *tier* there is (P10). Not a role table and deliberately not one:
     # two tiers is what the product has, and a table of roles nobody assigns is a permission
     # model that exists only in the schema. It lives on the learner rather than beside them

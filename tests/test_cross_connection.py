@@ -150,35 +150,10 @@ async def test_two_simultaneous_submissions_of_one_attempt_record_one_observatio
         await _drop_subject(engine, subject)
 
 
-# --- one address, registered twice at once (S21) ----------------------------------------------
-
-
-async def test_two_simultaneous_registrations_of_one_address_create_one_account(
-    live_client: AsyncClient, engine: AsyncEngine
-) -> None:
-    """`register` checks for the address and then inserts, which is not atomic.
-
-    The unique constraint is what actually decides, and the loser is meant to come back as the
-    same 409 a plain duplicate gets. Nothing proved that until there were two connections.
-    """
-    address = f"race-{uuid.uuid4().hex[:8]}@example.com"
-    body = {"email": address, "password": "a sufficiently long password"}
-    try:
-        first, second = await asyncio.gather(
-            live_client.post(f"{API}/auth/register", json=body),
-            live_client.post(f"{API}/auth/register", json=body),
-        )
-        assert sorted([first.status_code, second.status_code]) == [201, 409]
-
-        async with AsyncSession(engine) as session:
-            accounts = await session.scalar(
-                select(func.count()).select_from(Learner).where(Learner.email == address)
-            )
-        assert accounts == 1
-    finally:
-        async with AsyncSession(engine) as session:
-            await session.execute(delete(Learner).where(Learner.email == address))
-            await session.commit()
+# The registration race that used to live here went with `/auth/register` (S21 task 9). The
+# property it guarded — one address cannot become two accounts under concurrency — is carried
+# by `test_one_new_identity_signing_in_twice_at_once_makes_one_account` below, which races the
+# door that actually exists now.
 
 
 # --- one new identity, signed in twice at once (S21) --------------------------------------------

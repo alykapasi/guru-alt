@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, func, text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -95,56 +95,6 @@ class Impersonation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
-
-
-class PasswordResetToken(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """A single-use, short-lived permission to set a new password (S21).
-
-    Stored as a fingerprint, never in full, for the same reason as a session token: a database
-    dump or a log line must not be a way in. It is a *separate* table from ``learner_sessions``
-    rather than a flag on one, because the two have opposite properties — a session is long
-    and renewable, a reset is short and spent on first use — and sharing a row would mean the
-    weaker rules governing both.
-    """
-
-    __tablename__ = "password_reset_tokens"
-
-    learner_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("learners.id", ondelete="CASCADE"), index=True
-    )
-    token_hash: Mapped[str] = mapped_column(unique=True, index=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    # Set rather than deleted, so a token presented twice is distinguishable from one that
-    # never existed for as long as the row is kept — the same argument as a revoked session.
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
-
-
-class SignInAttempt(UUIDPrimaryKeyMixin, Base):
-    """One failed sign-in, kept only long enough to throttle the next one (S21).
-
-    Recorded in the database rather than in a process's memory on purpose. An in-memory counter
-    is per-process, so a deployment behind two workers gives an attacker twice the budget and a
-    restart gives them a fresh one — which is to say it throttles the honest user who mistyped
-    and nobody else.
-
-    Both the address and the client are recorded, because they are two different attacks.
-    Repeated failures against one address is somebody working on one account; repeated failures
-    from one client across many addresses is credential stuffing, and the per-address counter
-    never sees it.
-
-    Only *failures* are written. A successful sign-in costs no write, so the common path is
-    unchanged, and being expensive is the entire point of the uncommon one.
-    """
-
-    __tablename__ = "sign_in_attempts"
-
-    # Normalised, and not a foreign key: an attempt against an address nobody has registered is
-    # exactly the kind that most needs counting, and a FK would make it unrecordable.
-    email: Mapped[str] = mapped_column(index=True)
-    client: Mapped[str] = mapped_column(index=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), index=True
-    )
 
 
 class AdminAction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -231,3 +181,25 @@ class AccountAction(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # The address an invitation was issued to. Cleared when that person's account is erased.
     email: Mapped[str | None] = mapped_column(default=None)
     reason: Mapped[str | None] = mapped_column(default=None)
+
+
+class LegacyPasswordDigest(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A password hash that outlived the password system, waiting to be imported (S21).
+
+    Guru stopped holding credentials when Clerk took them over, but the hashes are what lets
+    existing learners keep the password they already have: Clerk accepts an Argon2 digest at
+    import, so nobody has to be told to reset. Dropping the column in the same change that
+    shipped the import would have destroyed them before any operator could run it, so `0055`
+    moves them here instead and `poe identity-import` deletes each row as it succeeds.
+
+    The table is therefore expected to end up empty, and an empty one is the finished state
+    rather than a missing step. It carries no email: the address lives on the learner, and a
+    second copy here would be a second thing to keep true.
+    """
+
+    __tablename__ = "legacy_password_digests"
+
+    learner_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("learners.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    digest: Mapped[str]

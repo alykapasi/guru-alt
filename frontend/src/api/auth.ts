@@ -33,9 +33,6 @@ export function useCurrentLearner() {
   });
 }
 
-/** Sign-in and registration report the same shape of problem, so they share one error type. */
-export class AuthFailed extends Error {}
-
 /** A refused exchange, carrying the status because the caller must act on it (S21).
  *
  * 403 and 502 mean opposite things here and the page treats them oppositely: a 403 is Guru
@@ -84,47 +81,6 @@ export function useExchange() {
               ? "Could not reach the sign-in service. Try again in a moment."
               : "Could not sign you in.",
           ),
-        );
-      }
-      return data as CurrentLearner;
-    },
-    onSuccess: () => queryClient.clear(),
-  });
-}
-
-export function useLogin() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (body: { email: string; password: string }) => {
-      const { data, error, response } = await api.POST("/api/v1/auth/login", { body });
-      if (error || !data) {
-        throw new AuthFailed(
-          response.status === 401
-            ? "That email and password don't match an account."
-            : "Sign-in failed. Try again.",
-        );
-      }
-      return data as CurrentLearner;
-    },
-    // Everything cached was fetched as somebody else (or as nobody). Clearing beats
-    // invalidating: a stale conversation list belonging to the previous session must never
-    // be rendered to the new one, even for the moment before a refetch lands.
-    onSuccess: () => queryClient.clear(),
-  });
-}
-
-export function useRegister() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (body: { email: string; password: string; display_name?: string }) => {
-      const { data, error, response } = await api.POST("/api/v1/auth/register", { body });
-      if (error || !data) {
-        throw new AuthFailed(
-          response.status === 409
-            ? "That email is already registered. Sign in instead."
-            : response.status === 422
-              ? "Check the email address, and use a password of at least 12 characters."
-              : "Could not create the account. Try again.",
         );
       }
       return data as CurrentLearner;
