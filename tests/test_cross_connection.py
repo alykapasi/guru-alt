@@ -22,11 +22,13 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from app.api.deps import get_engine, get_llm_client
+from app.api.deps import get_engine, get_identity_provider, get_llm_client
 from app.core import db as core_db
 from app.core.config import Settings
+from app.core.identity import FakeIdentityProvider
 from app.llm.registry import fake_llm_client
 from app.main import app
+from app.models.auth import Invitation
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearningEvent
@@ -176,6 +178,54 @@ async def test_two_simultaneous_registrations_of_one_address_create_one_account(
     finally:
         async with AsyncSession(engine) as session:
             await session.execute(delete(Learner).where(Learner.email == address))
+            await session.commit()
+
+
+# --- one new identity, signed in twice at once (S21) --------------------------------------------
+
+
+async def test_one_new_identity_signing_in_twice_at_once_makes_one_account(
+    engine: AsyncEngine,
+) -> None:
+    """Two tabs, one new person. The unique constraint on `auth_subject` decides; nobody 500s."""
+    email = f"race-{uuid.uuid4().hex[:8]}@example.com"
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        session.add(
+            Invitation(email=email, invited_by_learner_id=None, invited_by_handle="operator")
+        )
+        await session.commit()
+
+    provider = FakeIdentityProvider()
+    user = provider.add_user(emails=[email])
+    token = provider.token_for(user.subject)
+
+    app.dependency_overrides[get_engine] = lambda: engine
+    app.dependency_overrides[get_identity_provider] = lambda: provider
+    client_stub = fake_llm_client()
+    app.dependency_overrides[get_llm_client] = lambda: client_stub
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = {"Authorization": f"Bearer {token}"}
+            first, second = await asyncio.gather(
+                client.post(f"{API}/auth/exchange", headers=headers),
+                client.post(f"{API}/auth/exchange", headers=headers),
+            )
+        assert first.status_code == second.status_code == 200, (first.text, second.text)
+
+        async with AsyncSession(engine) as session:
+            accounts = await session.scalar(
+                select(func.count())
+                .select_from(Learner)
+                .where(Learner.auth_subject == user.subject)
+            )
+        assert accounts == 1
+    finally:
+        app.dependency_overrides.clear()
+        await core_db.engine.dispose()
+        async with AsyncSession(engine) as session:
+            await session.execute(delete(Learner).where(Learner.auth_subject == user.subject))
+            await session.execute(delete(Invitation).where(Invitation.email == email))
             await session.commit()
 
 

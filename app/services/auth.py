@@ -67,14 +67,14 @@ def normalise_email(email: str) -> str:
     return email.strip().lower()
 
 
-def _handle_for(email: str) -> str:
+def handle_for(email: str) -> str:
     """A short public identifier derived from an address' local part."""
     local = email.partition("@")[0]
     cleaned = "".join(ch for ch in local if ch.isalnum() or ch in "-_.")[:_HANDLE_MAX]
     return cleaned or "learner"
 
 
-async def _unique_handle(session: AsyncSession, base: str) -> str:
+async def unique_handle(session: AsyncSession, base: str) -> str:
     """``base``, or ``base`` with a short suffix if it is taken.
 
     Racy by construction — two registrations can pass this check at once — which is why the
@@ -105,7 +105,7 @@ async def register(
         raise EmailTaken(address)
 
     learner = Learner(
-        handle=await _unique_handle(session, _handle_for(address)),
+        handle=await unique_handle(session, handle_for(address)),
         display_name=display_name,
         email=address,
         password_hash=security.hash_password(password),

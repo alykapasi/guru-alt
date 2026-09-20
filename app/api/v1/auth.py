@@ -8,12 +8,20 @@ there is one credential and one table behind both.
 
 from datetime import timedelta
 
+import structlog
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from sqlalchemy import select
 
-from app.api.deps import CurrentLearner, SessionDep, SettingsDep, session_token_from
+from app.api.deps import (
+    CurrentLearner,
+    IdentityProviderDep,
+    SessionDep,
+    SettingsDep,
+    session_token_from,
+)
 from app.core import mail
 from app.core.config import Settings
+from app.core.identity import InvalidToken, ProviderError
 from app.models.learner import Learner
 from app.schemas.auth import (
     EmailChange,
@@ -27,8 +35,11 @@ from app.schemas.auth import (
     SessionRead,
 )
 from app.services import auth as svc
+from app.services import identity
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+log = structlog.get_logger(__name__)
 
 DEV_LEARNER_HANDLE = "dev"
 
@@ -130,6 +141,62 @@ async def login(
     except svc.InvalidCredentials as exc:
         await svc.record_failed_sign_in(session, email=str(body.email), client=client)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, _REJECTED) from exc
+
+    issued = await svc.issue(session, learner, ttl=timedelta(hours=settings.session_ttl_hours))
+    _set_session_cookie(response, issued.token, settings)
+    return learner
+
+
+@router.post("/exchange", response_model=LearnerRead)
+async def exchange(
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    settings: SettingsDep,
+    provider: IdentityProviderDep,
+):
+    """Trade a proven identity for a Guru session (S21).
+
+    The provider's token arrives in ``Authorization`` and is spent here, once. What the browser
+    keeps is the same httpOnly cookie every other route already takes — which is why nothing
+    downstream of this line knows Clerk exists, and why signing out, "log out everywhere" and
+    suspension keep working exactly as they did.
+    """
+    if provider is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "sign-in is not configured on this server"
+        )
+    header = request.headers.get("authorization", "")
+    token = header[7:].strip() if header[:7].lower() == "bearer " else ""
+    if not token:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "not authenticated")
+
+    try:
+        subject = await provider.verify(token)
+        learner = await identity.enroll(session, provider, subject)
+    except InvalidToken as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "not authenticated") from exc
+    except identity.NotInvited as exc:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Guru is invite-only. Ask an administrator for an invitation.",
+        ) from exc
+    except identity.AccountSuspended as exc:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "This account is suspended. An administrator can reinstate it.",
+        ) from exc
+    except identity.AmbiguousIdentity as exc:
+        log.warning("identity.ambiguous", subject=subject, learners=str(exc))
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This sign-in matches more than one Guru account; an administrator has to resolve it.",
+        ) from exc
+    except ProviderError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "the sign-in provider could not be reached; try again",
+        ) from exc
 
     issued = await svc.issue(session, learner, ttl=timedelta(hours=settings.session_ttl_hours))
     _set_session_cookie(response, issued.token, settings)

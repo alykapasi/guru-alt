@@ -201,6 +201,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/exchange": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange
+         * @description Trade a proven identity for a Guru session (S21).
+         *
+         *     The provider's token arrives in ``Authorization`` and is spent here, once. What the browser
+         *     keeps is the same httpOnly cookie every other route already takes — which is why nothing
+         *     downstream of this line knows Clerk exists, and why signing out, "log out everywhere" and
+         *     suspension keep working exactly as they did.
+         */
+        post: operations["exchange_api_v1_auth_exchange_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -3658,6 +3683,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    exchange_api_v1_auth_exchange_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LearnerRead"];
                 };
             };
         };
