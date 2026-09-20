@@ -115,8 +115,32 @@ async def test_an_invitation_is_spent_once(
     second = provider.add_user(emails=["invitee@example.com"])
 
     assert (await _exchange(anon_client, provider.token_for(first.subject))).status_code == 200
-    # A second identity with the same address is not the invited person arriving twice.
-    assert (await _exchange(anon_client, provider.token_for(second.subject))).status_code == 403
+    # A second identity with the same address is not the invited person arriving twice: by now
+    # the address names an account a *different* identity already holds, which `_link` refuses
+    # (409) before `_create` would even see that the invitation is spent — the same refusal a
+    # concurrent version of this exact collision gets in test_cross_connection.py.
+    assert (await _exchange(anon_client, provider.token_for(second.subject))).status_code == 409
+
+
+async def test_an_invitation_stored_with_different_case_still_matches(
+    anon_client: AsyncClient, db_session: AsyncSession, provider: FakeIdentityProvider
+) -> None:
+    """The stored side is normalised too, not just the provider's.
+
+    Nothing in this codebase writes `Invitation.email` yet (Task 4 is the first, and its own
+    brief promises a normalised address) — but this module owns the comparison and must not
+    depend on every future writer getting that right. A row stored with different case must
+    still match, and the account it creates must still get the lower-cased address every other
+    account has.
+    """
+    await _invitation(db_session, "Weird@Example.com")
+    await db_session.commit()
+    user = provider.add_user(emails=["weird@example.com"])
+
+    r = await _exchange(anon_client, provider.token_for(user.subject))
+
+    assert r.status_code == 200, r.text
+    assert r.json()["email"] == "weird@example.com"
 
 
 async def test_an_existing_account_is_linked_by_its_verified_address(

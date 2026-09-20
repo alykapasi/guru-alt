@@ -229,6 +229,73 @@ async def test_one_new_identity_signing_in_twice_at_once_makes_one_account(
             await session.commit()
 
 
+# --- two identities, one address, claimed by whichever locks first (S21) ------------------------
+
+
+async def test_two_identities_racing_to_claim_one_address_do_not_silently_swap_owners(
+    engine: AsyncEngine,
+) -> None:
+    """Two *different* Clerk subjects, both verified for one existing, unclaimed address.
+
+    `_link` used to take no lock: both could read `auth_subject IS NULL`, both would write, and
+    whichever committed last would silently win — no error, no log. The loser's cookie kept
+    working for that one request (session lookup is by `learner_id`), but the account it just
+    linked already belonged to somebody else by the time its next Clerk session needed
+    renewing, and nothing anywhere explained why. Locked and re-checked, exactly one identity
+    may claim the account; the other is refused (409), not silently overridden.
+    """
+    email = f"race-{uuid.uuid4().hex[:8]}@example.com"
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        learner = Learner(handle=f"cx-link-{uuid.uuid4().hex[:8]}", email=email)
+        session.add(learner)
+        await session.commit()
+        learner_id = learner.id
+
+    provider = FakeIdentityProvider()
+    user_a = provider.add_user(emails=[email])
+    user_b = provider.add_user(emails=[email])
+
+    app.dependency_overrides[get_engine] = lambda: engine
+    app.dependency_overrides[get_identity_provider] = lambda: provider
+    client_stub = fake_llm_client()
+    app.dependency_overrides[get_llm_client] = lambda: client_stub
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            first, second = await asyncio.gather(
+                client.post(
+                    f"{API}/auth/exchange",
+                    headers={"Authorization": f"Bearer {provider.token_for(user_a.subject)}"},
+                ),
+                client.post(
+                    f"{API}/auth/exchange",
+                    headers={"Authorization": f"Bearer {provider.token_for(user_b.subject)}"},
+                ),
+            )
+        assert sorted([first.status_code, second.status_code]) == [200, 409], (
+            first.text,
+            second.text,
+        )
+        winning_subject = user_a.subject if first.status_code == 200 else user_b.subject
+
+        async with AsyncSession(engine) as session:
+            row = await session.get(Learner, learner_id)
+            assert row is not None
+            # Whoever actually got the 200 is who the row belongs to — not whichever request
+            # merely committed last, which is what the unlocked version let happen.
+            assert row.auth_subject == winning_subject
+            accounts = await session.scalar(
+                select(func.count()).select_from(Learner).where(Learner.email == email)
+            )
+        assert accounts == 1, "a race must not create a duplicate account"
+    finally:
+        app.dependency_overrides.clear()
+        await core_db.engine.dispose()
+        async with AsyncSession(engine) as session:
+            await session.execute(delete(Learner).where(Learner.id == learner_id))
+            await session.commit()
+
+
 # --- one source, claimed by two workers (S37) -------------------------------------------------
 
 

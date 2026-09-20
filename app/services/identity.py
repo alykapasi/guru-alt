@@ -9,7 +9,7 @@ product's access policy, and swapping providers would then change who can sign i
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,7 +32,12 @@ class AccountSuspended(EnrollmentError):
 
 
 class AmbiguousIdentity(EnrollmentError):
-    """The identity's verified addresses name more than one learner. Never guessed."""
+    """Which learner this identity is cannot be decided with confidence.
+
+    Two directions, one refusal: the identity's verified addresses name more than one learner,
+    or the learner they name already belongs to a *different* identity — including one that
+    just won a race against this one for the same account. Either way, never guessed.
+    """
 
 
 async def enroll(session: AsyncSession, provider: IdentityProvider, subject: str) -> Learner:
@@ -60,32 +65,62 @@ def _addresses(user: ProviderUser) -> list[str]:
 
 
 async def _link(session: AsyncSession, user: ProviderUser) -> Learner | None:
-    """An account this identity already belongs to, by external id or by verified address."""
+    """An account this identity already belongs to, by external id or by verified address.
+
+    Every candidate this reads is locked before its ``auth_subject`` decides anything. An
+    unclaimed row read and then written to, unlocked, is a row two identities can both claim at
+    once — whichever commits last silently wins, with no error and no log, and the loser finds
+    out only at their *next* sign-in, as an unexplained lockout. Locked, there are exactly three
+    outcomes once the row is re-read: nobody has claimed it (link it), this identity already has
+    (a retried exchange is not an error), or a *different* identity already has (refuse — two
+    Clerk identities cannot both own one Guru account, and silently moving it is worse than
+    refusing a real person).
+
+    The address query deliberately does not filter on ``auth_subject`` the way the old,
+    unlocked version did: filtering here would let Postgres's lock-wait re-check (the same
+    ``FOR UPDATE`` behaviour ``_create`` relies on) silently drop a row a racing claim just
+    took, so the loser would see no candidate at all instead of a taken one — the exact bug this
+    replaces, one query over.
+    """
     if user.external_id:
         try:
             learner_id = uuid.UUID(user.external_id)
         except ValueError:
             learner_id = None
         if learner_id is not None:
-            candidate = await session.get(Learner, learner_id)
-            if candidate is not None and candidate.auth_subject is None:
-                candidate.auth_subject = user.subject
-                return candidate
+            candidate = await session.scalar(
+                select(Learner).where(Learner.id == learner_id).with_for_update()
+            )
+            if candidate is not None:
+                if candidate.auth_subject == user.subject:
+                    return candidate
+                if candidate.auth_subject is None:
+                    candidate.auth_subject = user.subject
+                    return candidate
+                raise AmbiguousIdentity(candidate.handle)
 
     addresses = _addresses(user)
     if not addresses:
         return None
-    candidates = list(
-        await session.scalars(
-            select(Learner).where(Learner.email.in_(addresses), Learner.auth_subject.is_(None))
-        )
+    matches = list(
+        await session.scalars(select(Learner).where(Learner.email.in_(addresses)).with_for_update())
     )
-    if len(candidates) > 1:
-        raise AmbiguousIdentity(", ".join(sorted(c.handle for c in candidates)))
-    if not candidates:
-        return None
-    candidates[0].auth_subject = user.subject
-    return candidates[0]
+    mine = [m for m in matches if m.auth_subject == user.subject]
+    if mine:
+        return mine[0]
+    unclaimed = [m for m in matches if m.auth_subject is None]
+    if len(unclaimed) > 1:
+        raise AmbiguousIdentity(", ".join(sorted(m.handle for m in unclaimed)))
+    if unclaimed:
+        unclaimed[0].auth_subject = user.subject
+        return unclaimed[0]
+    if matches:
+        # Every address this identity verified already belongs to somebody else — a different
+        # identity just won a race for the same address, or simply already owns it. Refused
+        # here rather than falling through to `_create`, which would answer the wrong question
+        # (`NotInvited`) for an account that already exists.
+        raise AmbiguousIdentity(", ".join(sorted(m.handle for m in matches)))
+    return None
 
 
 async def _create(session: AsyncSession, user: ProviderUser) -> Learner:
@@ -94,7 +129,11 @@ async def _create(session: AsyncSession, user: ProviderUser) -> Learner:
     invitation = await session.scalar(
         select(Invitation)
         .where(
-            Invitation.email.in_(addresses),
+            # `addresses` is already normalised (`_addresses`); `Invitation.email` is matched
+            # the same way here rather than trusted to already be stored that way — this
+            # module owns the comparison, and it must not depend on every writer of that
+            # column (today none; Task 4 is the first) getting normalisation right.
+            func.lower(Invitation.email).in_(addresses),
             Invitation.accepted_at.is_(None),
             Invitation.revoked_at.is_(None),
         )
@@ -115,10 +154,11 @@ async def _create(session: AsyncSession, user: ProviderUser) -> Learner:
             return existing
         raise NotInvited(user.subject)
 
+    email = normalise_email(invitation.email)
     learner = Learner(
-        handle=await unique_handle(session, handle_for(invitation.email)),
+        handle=await unique_handle(session, handle_for(email)),
         display_name=user.display_name,
-        email=invitation.email,
+        email=email,
         auth_subject=user.subject,
     )
     session.add(learner)
