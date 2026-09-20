@@ -27,6 +27,7 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import NullPool
@@ -39,6 +40,7 @@ from app.main import app
 from app.models.learner import Learner
 from app.services import auth
 from app.services.llm_log import set_accounting_session_factory
+from app.storage import InMemoryBlobStore
 
 
 @pytest_asyncio.fixture
@@ -62,6 +64,29 @@ class _DiscardedAccounting:
 
     async def commit(self) -> None:
         pass
+
+
+@pytest.fixture(autouse=True)
+def object_store_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the suite's default object store in-memory, so no test can reach MinIO.
+
+    A test that resolves `get_blob_store` without overriding it built the real S3 client and
+    reached MinIO on :9000. That *passes* on a developer's machine, where `docker compose` is
+    up, and fails in CI, where the `test` job runs no object store — so the mistake is
+    invisible exactly where it is made, and two tests shipped that way.
+
+    Defaulting rather than refusing, because refusing is wrong for `/ready`: readiness probes
+    the store on purpose and is allowed to answer 503, but the store arrives as a dependency,
+    so raising at resolution time breaks the request before the handler can report anything.
+    An in-memory store answers `BlobNotFound`, which is the probe's definition of "the store
+    answered", and the endpoint behaves as it does in production.
+
+    A fresh store per test, since `monkeypatch` is function-scoped — nothing leaks between
+    tests. Fixtures that install their own store still win: they override the FastAPI
+    dependency and never call this at all.
+    """
+    store = InMemoryBlobStore()
+    monkeypatch.setattr("app.api.deps._blob_store", lambda: store)
 
 
 @pytest_asyncio.fixture(autouse=True)
