@@ -13,16 +13,26 @@ stand-in are one design, and a stand-in that drifts from the interface it double
 none.
 """
 
+import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+import httpx
 import structlog
 
 from app.core.config import Settings
 
 log = structlog.get_logger(__name__)
+
+# A session token is a three-segment JWT (base64url header, payload, signature) and nothing
+# else. ``verify_token_async`` dispatches on the token's *prefix* alone — an ``ak_``/``oat_``/
+# ``m2m_``/``mt_`` prefix (or a JWT-shaped string wearing one) routes to a *different* SDK path
+# that POSTs to Clerk's API with our secret key on every single call. Refusing anything that is
+# not shaped like a session token, and anything carrying one of those prefixes, before the SDK
+# ever sees it, is what keeps this call networkless for *any* input, not just well-behaved ones.
+_SESSION_TOKEN_SHAPE = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
 
 
 class IdentityError(Exception):
@@ -75,14 +85,47 @@ class IdentityProvider(Protocol):
     ) -> ProviderUser: ...
 
 
+def _classify_verification_error(exc: object) -> InvalidToken | ProviderError:
+    """Sort Clerk's one verification-error class into the two Guru actually has.
+
+    Only a genuine problem with the *presented* token becomes ``InvalidToken``: expired,
+    not-yet-valid, wrong signature, wrong audience/authorized-party, malformed. Everything else
+    this single SDK exception covers is about *our* configuration or Clerk's own availability —
+    a JWKS fetch that failed, a public key that would not resolve, a missing secret key, an
+    unexpected server error — and reporting one of those as a bad token would make a Clerk
+    outage look like every learner's session going bad at once, with nothing for an alert to
+    fire on and no way to tell the config mistake from an attack.
+    """
+    from clerk_backend_api.security.types import TokenVerificationErrorReason
+
+    configuration_or_availability = {
+        TokenVerificationErrorReason.JWK_FAILED_TO_LOAD,
+        TokenVerificationErrorReason.JWK_REMOTE_INVALID,
+        TokenVerificationErrorReason.JWK_FAILED_TO_RESOLVE,
+        TokenVerificationErrorReason.JWK_KID_MISMATCH,
+        TokenVerificationErrorReason.SECRET_KEY_MISSING,
+        TokenVerificationErrorReason.SERVER_ERROR,
+    }
+    if getattr(exc, "reason", None) in configuration_or_availability:
+        return ProviderError(str(exc))
+    return InvalidToken(str(exc))
+
+
 def _to_provider_user(user: object) -> ProviderUser:
-    """Map Clerk's user to ours, keeping only verified addresses, primary first."""
+    """Map Clerk's user to ours, keeping only verified addresses, primary first.
+
+    ``status`` is a ``(str, Enum)`` member on a real Clerk response (``VerificationStatus.
+    VERIFIED``), not a plain ``str`` — comparing it to ``"verified"`` directly relies on that
+    enum's ``str`` base for the equality, which holds for both the enum member and a plain
+    string. Wrapping it in ``str()`` first breaks this: ``str(VerificationStatus.VERIFIED)`` is
+    ``"VerificationStatus.VERIFIED"``, not ``"verified"``, so every address would silently drop.
+    """
     emails = list(getattr(user, "email_addresses", None) or [])
     primary_id = getattr(user, "primary_email_address_id", None)
     verified = [
         address
         for address in emails
-        if str(getattr(getattr(address, "verification", None), "status", "")) == "verified"
+        if getattr(getattr(address, "verification", None), "status", None) == "verified"
         and getattr(address, "email_address", None)
     ]
     verified.sort(key=lambda address: getattr(address, "id", None) != primary_id)
@@ -119,8 +162,17 @@ class ClerkIdentityProvider:
         self._sign_up_url = sign_up_url
 
     async def verify(self, token: str) -> str:
-        from clerk_backend_api.security.types import TokenVerificationError, VerifyTokenOptions
+        from clerk_backend_api.security.types import (
+            TokenPrefix,
+            TokenVerificationError,
+            VerifyTokenOptions,
+        )
         from clerk_backend_api.security.verifytoken import verify_token_async
+
+        if not _SESSION_TOKEN_SHAPE.match(token) or token.startswith(
+            tuple(prefix.value for prefix in TokenPrefix)
+        ):
+            raise InvalidToken("not a session token")
 
         try:
             claims = await verify_token_async(
@@ -132,7 +184,7 @@ class ClerkIdentityProvider:
                 ),
             )
         except TokenVerificationError as exc:
-            raise InvalidToken(str(exc)) from exc
+            raise _classify_verification_error(exc) from exc
         except Exception as exc:  # the SDK reaches the network when no jwt_key is configured
             raise ProviderError(f"could not verify the token: {exc}") from exc
         subject = claims.get("sub")
@@ -141,19 +193,22 @@ class ClerkIdentityProvider:
         return subject
 
     async def _call(self, method: str, **kwargs: object) -> object:
-        """One Clerk call, with every failure mode collapsed into ``ProviderError``."""
+        """One Clerk call. A bad resource/method name or keyword argument is a programming
+        error and is left to raise on its own terms; only a failure that is actually about
+        reaching Clerk, or a response it sent back, becomes ``ProviderError``.
+        """
         from clerk_backend_api import Clerk
         from clerk_backend_api.models import ClerkBaseError
 
         resource, _, name = method.partition(".")
-        try:
-            async with Clerk(bearer_auth=self._secret_key) as clerk:
-                call = getattr(getattr(clerk, resource), name)
+        async with Clerk(bearer_auth=self._secret_key) as clerk:
+            call = getattr(getattr(clerk, resource), name)
+            try:
                 return await call(**kwargs)
-        except ClerkBaseError as exc:
-            raise ProviderError(f"{method} failed: {exc}") from exc
-        except Exception as exc:
-            raise ProviderError(f"{method} could not be completed: {exc}") from exc
+            except ClerkBaseError as exc:
+                raise ProviderError(f"{method} failed: {exc}") from exc
+            except httpx.TransportError as exc:
+                raise ProviderError(f"{method} could not be completed: {exc}") from exc
 
     async def get_user(self, subject: str) -> ProviderUser:
         return _to_provider_user(await self._call("users.get_async", user_id=subject))
@@ -172,7 +227,13 @@ class ClerkIdentityProvider:
         await self._call("invitations.revoke_async", invitation_id=invitation_id)
 
     async def find_users_by_email(self, email: str) -> list[ProviderUser]:
-        found = await self._call("users.list_async", email_address=[email])
+        from clerk_backend_api.models import GetUserListRequest
+
+        # ``list_async`` is keyword-only and takes one ``request`` object; ``email_address``
+        # is a field *on* that request, not a parameter of the call itself.
+        found = await self._call(
+            "users.list_async", request=GetUserListRequest(email_address=[email])
+        )
         users = found if isinstance(found, list) else []
         return [_to_provider_user(user) for user in users]
 
@@ -226,6 +287,7 @@ class FakeIdentityProvider:
             raise ProviderError("the provider is unreachable")
 
     async def verify(self, token: str) -> str:
+        self._maybe_fail()
         subject = token.removeprefix("fake:")
         if not token.startswith("fake:") or subject not in self.users:
             raise InvalidToken("unknown token")
@@ -240,6 +302,14 @@ class FakeIdentityProvider:
 
     async def invite(self, email: str) -> str:
         self._maybe_fail()
+        # Mirrors Clerk: a second pending invitation to an address that already has one open is
+        # refused (422) unless the caller passes ``ignore_existing``, which ``invite`` does not.
+        if any(
+            address == email
+            for invitation_id, address in self.invitations.items()
+            if invitation_id not in self.revoked
+        ):
+            raise ProviderError(f"an invitation to {email} is already pending")
         invitation_id = f"inv_{uuid.uuid4().hex[:12]}"
         self.invitations[invitation_id] = email
         return invitation_id
@@ -250,17 +320,17 @@ class FakeIdentityProvider:
 
     async def find_users_by_email(self, email: str) -> list[ProviderUser]:
         self._maybe_fail()
-        wanted = email.strip().lower()
-        return [
-            user
-            for user in self.users.values()
-            if any(address.strip().lower() == wanted for address in user.verified_emails)
-        ]
+        # Exact match, mirroring Clerk's ``email_address`` filter: normalising an address (case,
+        # whitespace) is the caller's job, not this seam's, so the fake does not do it either.
+        return [user for user in self.users.values() if email in user.verified_emails]
 
     async def import_user(
         self, *, email: str, password_digest: str | None, external_id: str
     ) -> ProviderUser:
         self._maybe_fail()
+        # Mirrors Clerk: creating a user for an address that already exists is refused (422).
+        if any(email in user.verified_emails for user in self.users.values()):
+            raise ProviderError(f"a user with address {email} already exists")
         user = self.add_user(emails=[email], external_id=external_id)
         self.imported[user.subject] = password_digest
         return user
