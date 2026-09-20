@@ -129,11 +129,24 @@ async def _create(session: AsyncSession, user: ProviderUser) -> Learner:
     invitation = await session.scalar(
         select(Invitation)
         .where(
-            # `addresses` is already normalised (`_addresses`); `Invitation.email` is matched
-            # the same way here rather than trusted to already be stored that way — this
-            # module owns the comparison, and it must not depend on every writer of that
-            # column (today none; Task 4 is the first) getting normalisation right.
-            func.lower(Invitation.email).in_(addresses),
+            # `addresses` is already normalised (`_addresses`, i.e. `normalise_email`, i.e.
+            # `.strip().lower()`); `Invitation.email` is matched the same way here — both
+            # operations, not just the case fold — rather than trusted to already be stored
+            # that way. This module owns the comparison, and it must not depend on every
+            # writer of that column (today none; Task 4 is the first) getting it right.
+            #
+            # `func.trim()` mirrors Python's `.strip()` for the case that actually reaches a
+            # stored address — leading/trailing ASCII spaces, e.g. from a copy-paste — but
+            # Postgres's bare `TRIM()` strips only the space character by default, where
+            # Python's `str.strip()` strips a wider whitespace class (tab, newline, and more).
+            # A stored address dirtied by one of *those* would still slip past this filter.
+            # Closing that too would mean matching in Python after a broader, unfiltered
+            # fetch, which would lock every open invitation on every enrollment rather than
+            # only the ones for this identity's own addresses — real contention between
+            # unrelated sign-ins, traded for a byte-perfect mirror of a whitespace class an
+            # email address's edges are not a realistic place to find. Judged not worth it
+            # for a column nothing writes yet.
+            func.lower(func.trim(Invitation.email)).in_(addresses),
             Invitation.accepted_at.is_(None),
             Invitation.revoked_at.is_(None),
         )

@@ -143,6 +143,26 @@ async def test_an_invitation_stored_with_different_case_still_matches(
     assert r.json()["email"] == "weird@example.com"
 
 
+async def test_an_invitation_stored_with_surrounding_whitespace_still_matches(
+    anon_client: AsyncClient, db_session: AsyncSession, provider: FakeIdentityProvider
+) -> None:
+    """The other half of `normalise_email`: it strips, not just lower-cases.
+
+    `normalise_email` is `.strip().lower()` — both operations, not one. A stored address with a
+    stray leading or trailing space (a copy-paste artefact, say) must match exactly the way a
+    differently-cased one does above; the two halves of the same function must not drift apart
+    in what this module does at the comparison.
+    """
+    await _invitation(db_session, "  spacey@example.com  ")
+    await db_session.commit()
+    user = provider.add_user(emails=["spacey@example.com"])
+
+    r = await _exchange(anon_client, provider.token_for(user.subject))
+
+    assert r.status_code == 200, r.text
+    assert r.json()["email"] == "spacey@example.com"
+
+
 async def test_an_existing_account_is_linked_by_its_verified_address(
     anon_client: AsyncClient, db_session: AsyncSession, provider: FakeIdentityProvider
 ) -> None:
