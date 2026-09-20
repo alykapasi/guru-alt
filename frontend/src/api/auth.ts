@@ -36,6 +36,62 @@ export function useCurrentLearner() {
 /** Sign-in and registration report the same shape of problem, so they share one error type. */
 export class AuthFailed extends Error {}
 
+/** A refused exchange, carrying the status because the caller must act on it (S21).
+ *
+ * 403 and 502 mean opposite things here and the page treats them oppositely: a 403 is Guru
+ * saying this person may not come in, so Clerk's session should end too; a 502 is Guru unable
+ * to reach Clerk to ask, which says nothing about the person and must not sign them out.
+ */
+export class ExchangeFailed extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+/** The server's own explanation, when it sent one.
+ *
+ * Read from the parsed error rather than the `Response`: openapi-fetch has already consumed
+ * the body by the time we see it, so re-reading it yields nothing and every refusal would
+ * arrive wearing the same generic fallback.
+ */
+function detailOf(error: unknown, fallback: string): string {
+  const detail = (error as { detail?: unknown } | undefined)?.detail;
+  return typeof detail === "string" && detail.trim() ? detail : fallback;
+}
+
+/** Trade the Clerk session token for Guru's own session (S21).
+ *
+ * Once, at sign-in — not per request. Everything downstream (the session cookie, admin visits,
+ * SSE, every existing test) keeps working unchanged because what it gets back is the same
+ * `guru_session` cookie it always had.
+ */
+export function useExchange() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (token: string) => {
+      const { data, error, response } = await api.POST("/api/v1/auth/exchange", {
+        params: { header: { authorization: `Bearer ${token}` } },
+      });
+      if (error || !data) {
+        throw new ExchangeFailed(
+          response.status,
+          detailOf(
+            error,
+            response.status >= 500
+              ? "Could not reach the sign-in service. Try again in a moment."
+              : "Could not sign you in.",
+          ),
+        );
+      }
+      return data as CurrentLearner;
+    },
+    onSuccess: () => queryClient.clear(),
+  });
+}
+
 export function useLogin() {
   const queryClient = useQueryClient();
   return useMutation({
