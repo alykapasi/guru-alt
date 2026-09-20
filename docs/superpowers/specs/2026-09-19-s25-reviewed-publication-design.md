@@ -1,9 +1,9 @@
 # S25b — Reviewed publication — Design
 
 **Status:** Approved design (2026-09-19), amended 2026-09-20 with D8 (per-owner subject slugs),
-carried over from S25a's review, which deferred it for needing a migration that slice forbade.
-Feeds an implementation plan under
-`docs/superpowers/plans/`. Third of three V0 workstream-1 slices. It depends on
+carried over from S25a's review, which deferred it for needing a migration that slice forbade,
+and with D4's flag moved off the client onto a server-side record. Feeds an implementation plan
+under `docs/superpowers/plans/`. Third of three V0 workstream-1 slices. It depends on
 [S25a visibility](2026-09-19-s25-visibility-sweep-design.md) for the boundary it publishes across,
 and uses the admin tier as it stands after [S21](2026-09-19-s21-clerk-identity-design.md).
 
@@ -31,8 +31,24 @@ approval creates an immutable shared copy. Nothing private travels with it.
   sees that JSON, including answer keys, and approval materializes that JSON, not the subject's
   state at approval time.
 - **D4 — Private-source-derived subjects cannot be published.** This is tracked by a sticky flag
-  that is set whenever source material reaches the graph and is never cleared. There is no
-  override: an override would be a way around V03.
+  that is set whenever source material reaches the graph and is never cleared. Nothing in a
+  request body can clear it, and no route offers an override: an override would be a way around
+  V03.
+
+  **The flag is never taken from the client.** The original design had the curriculum proposal
+  carry a `grounded_in_sources` bit through the browser and back on commit, which is not a control
+  at all — a bit the client is handed is a bit the client can drop. `/onboarding/curriculum`
+  records what it actually did in a server-side row and returns that row's id; `/subjects/commit`
+  requires the id and reads grounding from the row. See *Setting the source-derived flag*.
+
+  **What this does not stop, stated plainly.** An author who deliberately requests a clean
+  proposal and then pastes a source-derived curriculum in as their own edits evades the flag,
+  because commit accepts an edited graph and no server-side comparison can tell a heavy edit from
+  a substitution. Closing that would mean the server committing only the graph it generated, which
+  removes the learner's review step — the wrong trade. So the flag is a guardrail against
+  publishing source-derived material *by accident*, and the administrator's review of the full
+  snapshot (D3) is the control that does not depend on the author's cooperation. The two are
+  layered deliberately; neither is claimed to be the whole answer.
 - **D5 — Existing subjects are treated as source-derived.** Nothing recorded whether they were
   generated from uploads. Guessing in the permissive direction is what V03 forbids, so the backfill
   sets the flag on every learner-owned subject. To publish one, recreate it without uploads.
@@ -71,6 +87,9 @@ approval creates an immutable shared copy. Nothing private travels with it.
   No backfill and no collision risk: this only *loosens* uniqueness, so every existing row already
   satisfies both constraints. A non-unique index on `slug` stays for the ordering in
   `list_subjects`.
+- `curriculum_proposals` (D4): `id`, `learner_id` (FK learners, CASCADE, indexed),
+  `grounded_in_sources` (bool, not null), `created_at`, `updated_at`. CASCADE rather than SET NULL
+  because this row is scaffolding for one learner's commit, not a record anybody audits later.
 - `publications`:
   - `id`, `created_at`;
   - `source_subject_id` (FK subjects, SET NULL);
@@ -112,11 +131,21 @@ somebody else's library.
 Every path that lets source material reach a subject sets
 `private_source_derived = true`, in the same transaction:
 
-1. Onboarding curriculum generation that passed `materials` (source excerpts) to
-   `generate_curriculum`. The proposal carries a `grounded_in_sources` bit through to subject
-   creation.
-2. Subject creation with `source_ids`, which reassigns sources.
+1. **Onboarding curriculum generation that passed `materials` to `generate_curriculum`**, recorded
+   server-side. `/onboarding/curriculum` writes a `curriculum_proposals` row — `learner_id`,
+   `grounded_in_sources` (whether any excerpt was actually retrieved and sent to the model, not
+   merely whether `source_ids` was non-empty), `created_at` — and returns its id alongside the
+   proposal. `/subjects/commit` **requires** `proposal_id`, resolves it for the calling learner
+   (anyone else's, or an unknown one, is the ordinary 404), and takes grounding from the row.
+   Required rather than optional because an optional id is one the client can simply omit; the
+   endpoint has exactly one caller, the onboarding commit, so requiring it costs nothing real.
+   Rows CASCADE with the learner; they are small and are not swept at this scale.
+2. Subject creation with `source_ids`, which reassigns sources. Independent of (1), so a commit
+   that moves sources in is flagged whatever its proposal row says.
 3. Source upload with a `subject_id`/`topic_id`, and any later source reassignment into the subject.
+
+The flag is a latch: every trigger sets it, nothing clears it, and re-running a trigger on an
+already-flagged subject is a no-op rather than an error.
 
 Audit at `78e4b60`: every topic, KC and edge row is written through `app/services/knowledge.py`,
 and the only generation feeding it source excerpts is (1). Item generation
@@ -186,6 +215,12 @@ gets its own test.
 - Refusals:
   - the source-derived flag is refused, and each trigger path in *Setting the source-derived flag*
     sets it;
+  - a commit whose body claims nothing about grounding is still flagged when its proposal row
+    says the generation used materials — the client cannot opt out by omission;
+  - a commit carrying another learner's `proposal_id`, or an unknown one, is a 404;
+  - a generation that passed `source_ids` but retrieved no excerpts records
+    `grounded_in_sources = false`: no source text reached the model, so the subject is not
+    source-derived and saying otherwise would make honest subjects unpublishable;
   - backfilled legacy subjects are refused;
   - a second pending request → 409.
 - Approval:
@@ -214,8 +249,9 @@ gets its own test.
 
 One commit per step, each tagged `[S25]`, in this order:
 
-1. migration `0056` (including the slug constraint swap), the source-derived flag at every trigger,
-   and the scoped slug de-duplication;
+1. migration `0056` (including the slug constraint swap and `curriculum_proposals`), the
+   source-derived flag at every trigger including the server-side proposal record, and the
+   scoped slug de-duplication;
 2. author request, snapshot and cancel;
 3. admin review and approval materialization;
 4. supersede, withdraw and catalog;
