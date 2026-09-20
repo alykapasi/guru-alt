@@ -325,6 +325,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/subjects/{subject_id}/withdraw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Withdraw Subject
+         * @description Unlist a published subject. Learners already studying it keep it (D7).
+         */
+        post: operations["withdraw_subject_api_v1_admin_subjects__subject_id__withdraw_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/dev-login": {
         parameters: {
             query?: never;
@@ -3680,6 +3700,14 @@ export interface components {
             type: string;
         };
         /**
+         * WithdrawRequest
+         * @description Unlisting a published subject, with the reason recorded.
+         */
+        WithdrawRequest: {
+            /** Reason */
+            reason: string;
+        };
+        /**
          * WriteBackAck
          * @description Acknowledges a queued write-back job — the created memories aren't returned
          *     synchronously; see ``GET /memory`` once the job has run.
@@ -4152,6 +4180,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PublicationReviewRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    withdraw_subject_api_v1_admin_subjects__subject_id__withdraw_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WithdrawRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectRead"];
                 };
             };
             /** @description Validation Error */

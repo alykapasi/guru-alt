@@ -29,6 +29,8 @@ SOURCE_DERIVED_REFUSAL = "This subject was built from your uploaded material, wh
 NO_KCS_REFUSAL = "This subject has no components yet, so there is nothing to publish."
 ALREADY_PENDING_REFUSAL = "This subject already has a publication request waiting for review."
 NOT_PENDING_REFUSAL = "This request has already been decided."
+NOT_PUBLISHED_REFUSAL = "Only a published subject can be withdrawn."
+WITHDRAW_REASON_REFUSAL = "Withdrawing needs a reason, so the decision can be explained later."
 
 
 class CannotPublish(ValueError):
@@ -383,6 +385,11 @@ async def approve(
             )
         )
 
+    # A newer version replaces the author's previous one (D7). Unlisting, not removal: the
+    # older copy stays reachable by id and stays in the catalog of anybody already studying it,
+    # because it was reviewed as shareable and their plan points at it.
+    await _supersede_previous(session, publication, copy)
+
     publication.status = PublicationStatus.APPROVED
     publication.reviewer_id = reviewer.id
     publication.reviewer_handle = reviewer.handle
@@ -426,3 +433,49 @@ async def pending(session: AsyncSession, status: str | None = None) -> list[Publ
     if status is not None:
         statement = statement.where(Publication.status == status)
     return list(await session.scalars(statement))
+
+
+async def _supersede_previous(
+    session: AsyncSession, publication: Publication, copy: Subject
+) -> None:
+    """Point this author's previously published copy at the new one.
+
+    Scoped to the *same source subject*, not merely the same author: publishing a second,
+    unrelated subject is not a new version of the first, and treating it as one would unlist
+    somebody's Calculus because they later shared their Physics.
+    """
+    if publication.source_subject_id is None:
+        return
+    previous = list(
+        await session.scalars(
+            select(Subject)
+            .join(Publication, Publication.id == Subject.publication_id)
+            .where(
+                Publication.source_subject_id == publication.source_subject_id,
+                Publication.id != publication.id,
+                Subject.id != copy.id,
+                Subject.superseded_by_id.is_(None),
+            )
+        )
+    )
+    for older in previous:
+        older.superseded_by_id = copy.id
+
+
+async def withdraw(session: AsyncSession, subject: Subject, reason: str) -> Subject:
+    """Unlist a published subject, recording why.
+
+    Only a published copy: withdrawing a learner's own subject would be a deletion wearing a
+    different name, and withdrawing a seeded curated subject is an operator's job for a
+    migration, not a review action. The reason is required because a subject that vanished
+    from the catalog with no recorded cause is one nobody can answer questions about later.
+    """
+    if not is_curated_copy(subject):
+        raise CannotPublish(NOT_PUBLISHED_REFUSAL)
+    if not reason.strip():
+        raise CannotPublish(WITHDRAW_REASON_REFUSAL)
+    subject.withdrawn_at = datetime.now(UTC)
+    subject.withdrawn_reason = reason
+    await session.commit()
+    await session.refresh(subject)
+    return subject

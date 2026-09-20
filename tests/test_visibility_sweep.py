@@ -272,6 +272,17 @@ CASES: list[Case] = [
     ),
     Case(
         "POST",
+        "/api/v1/admin/subjects/{subject_id}/withdraw",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.post(
+            f"{API}/admin/subjects/{t.subject}/withdraw", json={"reason": "a stated reason"}
+        ),
+        owner_exempt="every caller without the admin tier gets the same 403, whether the request exists or not — these are review routes, not learner routes",
+        refusal=403,
+    ),
+    Case(
+        "POST",
         "/api/v1/subjects/{subject_id}/publications",
         "subject_id",
         ("subject",),

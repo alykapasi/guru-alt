@@ -12,12 +12,13 @@ from dataclasses import dataclass
 from typing import Literal
 
 import structlog
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import prerequisites
 from app.models.knowledge import KC, Concept, KCEdge, Subject, Topic
 from app.models.learning import LearnerKCState
+from app.models.lesson_plan import LessonPlan
 from app.models.source import Chunk, ChunkKC, Source
 from app.schemas.knowledge import KCCreate, SubjectCreate, TopicCreate
 
@@ -447,7 +448,30 @@ async def list_subjects(
     statement = select(Subject).order_by(Subject.slug)
     if learner_id is not None:
         statement = statement.where(
-            or_(Subject.owner_learner_id.is_(None), Subject.owner_learner_id == learner_id)
+            or_(
+                Subject.owner_learner_id == learner_id,
+                # A curated subject is listed while it is the current version, and stops being
+                # listed once a newer one supersedes it or it is withdrawn (S25b D7). Unlisting
+                # is not removal: `is_visible_to` still admits it by id, deliberately, because
+                # it was reviewed as shareable and a learner mid-way through one should not
+                # find it gone. The third arm is what makes that real — somebody with a lesson
+                # plan on it keeps seeing it in their catalog, because for them it is not an
+                # old version, it is the thing they are studying.
+                and_(
+                    Subject.owner_learner_id.is_(None),
+                    Subject.superseded_by_id.is_(None),
+                    Subject.withdrawn_at.is_(None),
+                ),
+                and_(
+                    Subject.owner_learner_id.is_(None),
+                    select(LessonPlan.id)
+                    .where(
+                        LessonPlan.learner_id == learner_id,
+                        LessonPlan.subject_id == Subject.id,
+                    )
+                    .exists(),
+                ),
+            )
         )
     result = await session.scalars(statement)
     return result.all()

@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from app.api.deps import CurrentAdmin, IdentityProviderDep, SessionDep, SettingsDep
 from app.core.identity import ProviderError
+from app.models.knowledge import Subject
 from app.models.publication import Publication
 from app.schemas.admin import (
     AccountRead,
@@ -40,6 +41,7 @@ from app.schemas.publication import (
     PublicationQueueRead,
     PublicationReviewRead,
     RejectRequest,
+    WithdrawRequest,
 )
 from app.services import accounts, impersonation
 from app.services import publication as publication_svc
@@ -345,5 +347,19 @@ async def reject_publication(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such publication request")
     try:
         return await publication_svc.reject(session, publication, admin, body.note)
+    except publication_svc.CannotPublish as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+
+@router.post("/subjects/{subject_id}/withdraw", response_model=SubjectRead)
+async def withdraw_subject(
+    subject_id: uuid.UUID, body: WithdrawRequest, _: CurrentAdmin, session: SessionDep
+):
+    """Unlist a published subject. Learners already studying it keep it (D7)."""
+    subject = await session.get(Subject, subject_id)
+    if subject is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such subject")
+    try:
+        return await publication_svc.withdraw(session, subject, body.reason)
     except publication_svc.CannotPublish as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
