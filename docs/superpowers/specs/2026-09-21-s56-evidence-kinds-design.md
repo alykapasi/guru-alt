@@ -32,6 +32,11 @@ score and difficulty. The replay miner treats it as a step to reproduce.
 The estimate is the product. An estimate a learner can move by asserting it is not a
 measurement, and every consumer that presents it as one is repeating an unchecked claim.
 
+Today this is reachable only by an API client, because the one path that would exercise it
+crashes first (§9). That is a reprieve, not a defence: S54 exists to give self-rating a
+real interaction, and building it on this engine is what would turn a latent defect into a
+live one. The order matters — fix the engine, then open the path.
+
 ## Principle
 
 **A self-rating may ask for help. It may not make a claim.**
@@ -222,20 +227,61 @@ existing rows keep the `observation` type and are read as demonstrated, which is
 were recorded as. S56 already declares insufficiently-detailed legacy events unreplayable;
 this is a narrower case of the same rule.
 
-### 9. S54: reveal, then rate
+The zero is not evidence that nobody rates flashcards. It is a consequence of §9's crash:
+no self-rating has ever been recorded because none has ever completed. Both facts point
+the same way here, but only one of them is the reason.
 
-The flashcard panel presents the prompt with a **Reveal** control. The answer and the
-rating buttons (1–4, Again … Easy) appear only after reveal, in one step so a learner
-cannot rate without having seen what they were rating against.
+### 9. S54: reveal, then rate — and the crash underneath it
 
-Beneath the rating buttons, in plain words: **a self-rating sets when this comes back, not
-what Guru thinks you know.** The learner deserves to know which of the two things their
-click does, and saying so is also the honest defence against the rating being treated as a
-score.
+**A flashcard cannot currently be answered in guided practice.** Review steps default to a
+flashcard (`session_runner.py:243`); the workflow answers whatever item is live with
+`AnswerSubmit(response={"text": ...})` (`workflow.py:97`); `grade_flashcard` requires
+`rating` (1–4) or `recalled` (bool) and raises `SelfGradeError` on anything else. Verified
+by running it:
 
-Answer keys stay withheld before submission for every other item type — that is already
-true (`app/learning/item_presentation.py`) and the reveal path must not open a hole in it.
-The flashcard's answer is served on reveal, for flashcards only.
+```text
+SelfGradeError: flashcard response needs 'rating' (1-4) or 'recalled' (bool)
+```
+
+`workflow.py` contains no exception handling, and `SelfGradeError` is caught only at the
+API layer (`api/v1/assessment.py:74`). No test covers answering a flashcard through the
+workflow. So S54 is not a UI embellishment on a working path — it is the path.
+
+**The rating travels as structured data, not parsed prose.** `ChatTurnRequest` already
+carries `satisfied: bool | None` for the refinement graph's structured reply; `rating: int
+| None` follows that precedent exactly, threaded through `run_workflow_turn` into the
+resume `Command` and out of `await_response`. The `grade` node then builds
+`{"rating": n}` for a flashcard and `{"text": ...}` for everything else — the one place
+that knows the item type. Parsing "good" out of a chat message was the alternative and is
+rejected: a rating is a choice among four, not a sentence, and a learner who writes prose
+would be silently scored.
+
+**Where it happens.** Practice is conversational, so the interaction lives in the session
+view rather than in a new form surface. `ItemEvent` already carries `item_type`, so the
+panel branches on `flashcard` with no new plumbing: the stem, then a **Reveal answer**
+control, and only after reveal the answer and the four rating buttons (Again / Hard /
+Good / Easy → 1–4). A learner cannot rate without having seen what they are rating
+against.
+
+Beneath the buttons, in plain words: **a self-rating sets when this comes back, not what
+Guru thinks you know.** The learner deserves to know which of the two things their click
+does, and saying so is also the honest defence against the rating being read as a score.
+
+**Reveal is a server round trip.** `public_presentation` withholds a flashcard's `back`
+and must keep doing so — shipping the answer with the question and hiding it in the client
+would put it one devtools panel away and make the reveal theatre. A narrow
+`POST /items/{item_id}/reveal` returns the back for flashcards only, scoped by the same
+`get_item_for` ownership check every other item read uses, and 422s for any other type.
+Answer keys stay withheld before submission for every other item type — already true, and
+the reveal path must not open a hole in it.
+
+**One docstring stops being true.** `session_runner.review_item_type` switches a struggling
+KC from flashcard to open question, and its stated reason is that "a run of low
+self-ratings drives the ability estimate down while recording nothing at all about *why*"
+(`session_runner.py:270-280`). After §3 a run of low self-ratings drives nothing down. The
+behaviour is still right — an open question is the format that can diagnose, and that is
+the better half of the argument — but the rationale must be rewritten to the surviving
+one rather than left asserting a mechanism that no longer exists.
 
 ## Testing
 
@@ -271,8 +317,18 @@ does, including through `_recorded_grade`'s event-type filter.
 ignored, and a flashcard submission is recorded as self-reported regardless of what was
 sent.
 
-**Frontend:** the rating buttons are absent before reveal and present after; the
-explanatory line is on the panel.
+**The crash, first:** a flashcard answered through the guided-practice workflow records a
+self-rating instead of raising `SelfGradeError`. This is the regression test the whole of
+§9 exists to satisfy, and it fails today at `HEAD`.
+
+**Reveal is server-side:** `public_presentation` still returns no `back` for a flashcard,
+the reveal endpoint returns it, the same endpoint 422s for a non-flashcard item, and it
+refuses an item the learner does not own — the same `get_item_for` scoping every other
+item read is held to.
+
+**Frontend:** the rating buttons and the answer are absent before reveal and present
+after; the explanatory line is on the panel; a non-flashcard item renders exactly as it
+does today.
 
 Verification follows the established pattern: each new guard is regressed on purpose and
 the named test must fail. `uv run poe check` and `npm run build` green per commit.
