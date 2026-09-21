@@ -320,11 +320,19 @@ async def _flashcard_for(session, owner, back="Sugars and oxygen."):
 async def test_a_flashcard_back_is_not_shipped_with_the_question(
     db_session, api_client, api_learner
 ):
-    """Withheld before reveal, so the reveal is a real step and not an animation."""
-    item = await _flashcard_for(db_session, api_learner.id)
+    """Withheld before reveal, so the reveal is a real step and not an animation.
+
+    The key name *and* the answer text. Pinning only the name lets a presentation that
+    surfaced the same string under some other key leak it with this test still green — and
+    the leak, not the spelling of the field, is the thing being prevented.
+    """
+    secret = "Glucose-and-molecular-oxygen-zzq"
+    item = await _flashcard_for(db_session, api_learner.id, back=secret)
     r = await api_client.get(f"/api/v1/items/{item.id}")
     assert r.status_code == 200, r.text
-    assert "back" not in str(r.json())
+    body = str(r.json())
+    assert "back" not in body
+    assert secret not in body
 
 
 async def test_reveal_returns_the_back(db_session, api_client, api_learner):
