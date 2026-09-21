@@ -1979,6 +1979,8 @@ export interface components {
              * @enum {string}
              */
             mode: "chat" | "agentic" | "workflow";
+            /** Rating */
+            rating?: number | null;
             /**
              * Satisfied
              * @default false

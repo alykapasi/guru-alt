@@ -137,6 +137,10 @@ class ChatTurnRequest(BaseModel):
     # Explicit learner acceptance of the refinement gate's latest proposal. Ignored once a
     # conversation's goal is already committed (or no gate is in progress).
     satisfied: bool = False
+    # The learner's self-rating for a flashcard they have just revealed (1=Again … 4=Easy),
+    # following `satisfied` above: a structured reply to a structured question, not prose the
+    # server has to parse. Ignored unless the paused workflow is holding a flashcard.
+    rating: int | None = Field(default=None, ge=1, le=4)
     # "agentic" is a one-off tool-using action for this turn only — it bypasses the
     # refinement gate regardless of the conversation's goal/gate state. "workflow" starts (or,
     # if already sent, is overridden by) the guided-practice workflow, which likewise

@@ -272,17 +272,13 @@ async def review_item_type(
 ) -> ItemType:
     """Whether this due review is still worth self-rating, or needs diagnosing (S09/S10).
 
-    A flashcard is graded by the learner's own rating. That is the right instrument for
-    ordinary spaced repetition — it is fast, it costs nothing, and recall is the thing being
-    rehearsed. It is the wrong instrument for a component the learner keeps getting wrong,
-    because a run of low self-ratings drives the ability estimate down while recording nothing
-    at all about *why*, and "why" is what decides whether the answer is a notation slip, a
-    missing prerequisite, or a genuine misconception.
-
-    So a component that has failed its last few reviews is served an open question instead: the
-    same review, in the one format the grader can diagnose and split by component. The learner
-    is asked to produce the answer rather than rate their own recall of it, which is also the
-    stronger retention measure (S14).
+    So a component that has failed its last few reviews is served an open question instead.
+    A self-rating is the right instrument for ordinary spaced repetition and the wrong one
+    here: it records whether the memory came back and nothing about *why* it did not, and
+    "why" is what decides whether the answer is a notation slip, a missing prerequisite, or a
+    genuine misconception. An open question is the one format the grader can diagnose and
+    split by component — and asking the learner to produce the answer rather than rate their
+    recall of it is also the stronger retention measure (S14).
 
     Reads the same run of attempts the detour rule reads (``mastery.recent_struggle``) and the
     same definition of "failed", deliberately — see ``review_diagnose_min_failures``.

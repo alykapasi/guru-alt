@@ -301,6 +301,7 @@ def _build_stream(
             learner_id=learner_id,
             conversation=conversation,
             user_content=data.content,
+            rating=data.rating,
             max_tokens=settings.chat_max_tokens,
             max_rounds=settings.workflow_max_rounds,
             resume=choice.resume,

@@ -4,7 +4,9 @@ Loop: ``present`` (LLM presents a worked example + practice problem, streaming t
 ``await_response`` (pauses via ``interrupt()`` until the learner attempts it) -> ``grade``
 (grades the attempt through the existing answer->tracer->plan-revise transaction) -> ``respond``
 (LLM gives feedback, streaming tokens) -> conditional: correct or out of rounds -> ``END``, else
-back to ``await_response``.
+back to ``await_response``. One round can grade nothing: a self-rated flashcard answered without
+a rating goes straight back to ``await_response`` to be asked again, rather than being scored on
+a rating nobody gave.
 
 Unlike the plain tutor graph, this one is compiled **with a checkpointer** — the pause/resume
 across HTTP requests requires LangGraph to persist state between the interrupt and its resume
@@ -31,6 +33,7 @@ from app.agent.state import WorkflowState
 from app.learning import feedback, mastery
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
+from app.models.assessment import SELF_GRADABLE, ItemType
 from app.schemas.assessment import AnswerSubmit
 from app.services import assessment as assessment_svc
 from app.services import knowledge as knowledge_svc
@@ -74,7 +77,14 @@ def build_workflow_graph(
         reply = interrupt({"prompt": state["last_message"], "round": state["rounds"] + 1})
         response_text = reply.get("response_text", "")
         messages = [*state["messages"], ChatMessage(role=ChatRole.USER, content=response_text)]
-        return {"messages": messages, "response_text": response_text}
+        return {
+            "messages": messages,
+            "response_text": response_text,
+            "rating": reply.get("rating"),
+            # A fresh reply supersedes any pending re-ask, so `grade` decides this round on its
+            # own merits rather than inheriting the last one's verdict.
+            "awaiting_rating": False,
+        }
 
     async def grade(state: WorkflowState) -> dict[str, Any]:
         item = await assessment_svc.get_item_for(
@@ -88,6 +98,20 @@ def build_workflow_graph(
         priors = await mastery.estimate_kcs(session, learner_id, kc_ids)
         # Counted before the attempt is recorded, so the number means "times before this one".
         prior_kinds = await mastery.prior_failure_kinds(session, learner_id, kc_ids)
+        # A flashcard is graded by the learner's own rating, so it needs the rating — not the
+        # prose the other item types are graded from. This is the only node that knows the
+        # item's type, which is why the branch lives here rather than in the service.
+        if ItemType(item.item_type) in SELF_GRADABLE:
+            if state.get("rating") is None:
+                # No rating means the learner replied in prose to a card that asks for one.
+                # Re-ask rather than guess: inventing a rating would write self-reported
+                # evidence the learner never gave. The round is not consumed, and the usage
+                # carried on the checkpoint is cleared: this round calls no model, and the
+                # dispatcher bills whatever `usage` it is handed.
+                return {"rounds": state["rounds"], "awaiting_rating": True, "usage": Usage()}
+            response = {"rating": state["rating"]}
+        else:
+            response = {"text": state["response_text"]}
         result, states = await assessment_svc.answer_item(
             session,
             learner_id,
@@ -95,7 +119,7 @@ def build_workflow_graph(
             # Every round past the first followed a hint on this same problem (see `respond`),
             # so the round count *is* the help given. Reporting it stops three scaffolded
             # rounds from reading as three independent demonstrations (app.learning.assistance).
-            AnswerSubmit(response={"text": state["response_text"]}, hints_used=state["rounds"]),
+            AnswerSubmit(response=response, hints_used=state["rounds"]),
             llm=llm,
         )
         kcs = await knowledge_svc.get_kcs(session, kc_ids)
@@ -150,6 +174,13 @@ def build_workflow_graph(
         system = f"{state['system']}\n\n{note} {instruction}"
         return await _stream(state["messages"], system, state["max_tokens"])
 
+    def route_after_grade(state: WorkflowState) -> str:
+        # Nothing was graded this round, so there is no attempt for `respond` to give feedback
+        # on: go straight back to the card and ask for the rating again.
+        if state.get("awaiting_rating"):
+            return "await_response"
+        return "respond"
+
     def route_after_respond(state: WorkflowState) -> str:
         if state["correct"] or state["rounds"] >= state["max_rounds"]:
             return "end"
@@ -163,7 +194,9 @@ def build_workflow_graph(
     graph.add_edge(START, "present")
     graph.add_edge("present", "await_response")
     graph.add_edge("await_response", "grade")
-    graph.add_edge("grade", "respond")
+    graph.add_conditional_edges(
+        "grade", route_after_grade, {"respond": "respond", "await_response": "await_response"}
+    )
     graph.add_conditional_edges(
         "respond", route_after_respond, {"end": END, "await_response": "await_response"}
     )

@@ -91,6 +91,7 @@ async def run_workflow_turn(
     learner_id: uuid.UUID,
     conversation: Conversation,
     user_content: str,
+    rating: int | None = None,
     max_tokens: int,
     max_rounds: int,
     resume: bool,
@@ -103,6 +104,10 @@ async def run_workflow_turn(
     latter is an async-unsafe lazy relationship access unless the caller happened to eager-load
     it (see ``app.services.chat.get_conversation``'s ``populate_existing`` note); callers should
     resolve it once, the same way they already resolve ``conversation.subject_id``.
+
+    ``rating`` is the learner's flashcard self-rating for this round (1-4), when the client sent
+    one. It rides the resume alongside their message rather than being parsed out of it: a
+    rating is a choice among four, not a sentence. A fresh start has nothing paused to rate.
 
     ``persist_user`` is False when the caller has already written the learner's message
     and linked it to a durable turn record (S51); the content is still carried into this
@@ -129,7 +134,7 @@ async def run_workflow_turn(
     hits: list[RetrievalHit] = []
 
     if resume:
-        run_input = Command(resume={"response_text": user_content})
+        run_input = Command(resume={"response_text": user_content, "rating": rating})
     else:
         context = await learner_context.gather(
             session, llm, learner_id=learner_id, conversation=conversation, query=user_content
@@ -224,12 +229,19 @@ async def run_workflow_turn(
         citations=citations,
         check_result=check_result,
     )
-    cost = await log_llm_call(
-        learner_id=learner_id,
-        conversation_id=conversation.id,
-        role=ModelRole.SMART.value,
-        spec=spec,
-        usage=usage,
+    # A round can end without calling a model at all: a flashcard answered in prose is sent
+    # straight back to be rated, presenting nothing new. Accounting records calls, so a round
+    # that made none writes no row (same guard as ``assessment._grade``'s short-circuit).
+    cost = (
+        await log_llm_call(
+            learner_id=learner_id,
+            conversation_id=conversation.id,
+            role=ModelRole.SMART.value,
+            spec=spec,
+            usage=usage,
+        )
+        if usage.total_tokens
+        else None
     )
     await session.commit()
 

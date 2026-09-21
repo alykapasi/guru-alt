@@ -73,6 +73,14 @@ class WorkflowState(TypedDict):
     # failure kind calls for (``app.learning.feedback``). Absent on a checkpoint written
     # before this field existed, which is why ``respond`` reads it with ``.get``.
     diagnosis_note: NotRequired[str]
+    # The learner's flashcard self-rating for this round, when they gave one (1-4). NotRequired
+    # because it is genuinely absent on every non-flashcard round and on checkpoints written
+    # before this field existed.
+    rating: NotRequired[int | None]
+    # Set by ``grade`` when a flashcard round arrived without a rating: it graded nothing and
+    # the graph must ask again rather than invent one. Read only by the router that runs
+    # immediately after, and cleared by ``await_response`` when the next reply supersedes it.
+    awaiting_rating: NotRequired[bool]
     usage: Usage  # this call's LLM usage (present's or respond's — grade's own call self-logs)
     rounds: int  # graded attempts completed so far
     max_rounds: int
