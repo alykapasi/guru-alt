@@ -399,6 +399,9 @@ async def answer_item(
         attempt_id=submission.attempt_id,
         correct=result.correct,
         detail=result.detail,
+        # From the grader, not the request: `AnswerSubmit` has no such field, so a client
+        # cannot claim its self-rating was a demonstration.
+        evidence_kind=result.evidence_kind,
     )
     try:
         # Inside the guard, not before it: the tracer *flushes* the observation, so under a

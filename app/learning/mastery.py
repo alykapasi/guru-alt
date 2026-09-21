@@ -26,6 +26,7 @@ from app.learning import scheduler
 from app.learning.assistance import evidence_credit
 from app.learning.diagnosis import ACTIONABLE, FailureKind
 from app.learning.tracer import Estimate, GlickoEstimator, MasteryEstimator, aggregate
+from app.models.assessment import EvidenceKind
 from app.models.knowledge import KC, Topic
 from app.models.learning import LearnerKCState, LearningEvent
 
@@ -87,6 +88,11 @@ class Observation(BaseModel):
     reason an answer failed survives alongside the number, where the planner and any later
     analysis can reach it — a rationale that only ever reached the response body is a
     sentence nobody can query."""
+
+    evidence_kind: EvidenceKind = EvidenceKind.DEMONSTRATED
+    """Whether this attempt was judged or self-reported (S56). Set from the grader's own
+    ``GradeResult``, which is the only thing that knows. Self-reported evidence advances the
+    review schedule and nothing else — see ``record_observation``."""
 
     @field_validator("kc_weights")
     @classmethod
