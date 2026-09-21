@@ -200,7 +200,6 @@ async def test_one_question_answered_twice_shows_neither_transfer_nor_retention(
     assert ev.attempts == 2
     assert ev.distinct_items == 1
     assert ev.unassisted_items == 1, "the re-look is not an independent demonstration"
-    assert not ev.transfer_shown
     assert not ev.retention_shown(min_days=1.0)
 
 
@@ -223,7 +222,9 @@ async def test_a_re_look_does_not_extend_the_unaided_span(db_session: AsyncSessi
     assert ev.unassisted_span_days is None, "one unaided attempt has no span to measure"
 
 
-async def test_two_different_questions_unaided_show_transfer(db_session: AsyncSession) -> None:
+async def test_two_different_questions_unaided_are_two_items_not_retention(
+    db_session: AsyncSession,
+) -> None:
     learner = await _learner(db_session)
     _subject, kc = await _kc(db_session)
     a = await _item(db_session, kc, "a")
@@ -234,7 +235,6 @@ async def test_two_different_questions_unaided_show_transfer(db_session: AsyncSe
     (ev,) = (await mastery.kc_evidence(db_session, learner.id, [kc.id])).values()
 
     assert ev.unassisted_items == 2
-    assert ev.transfer_shown
     assert not ev.retention_shown(min_days=1.0), "same sitting is not retention"
 
 
@@ -250,7 +250,6 @@ async def test_a_hinted_answer_is_not_an_unassisted_item(db_session: AsyncSessio
 
     assert ev.distinct_items == 2
     assert ev.unassisted_items == 1
-    assert not ev.transfer_shown, "being walked through a second question is not transfer"
 
 
 async def test_an_unaided_answer_days_later_shows_retention(db_session: AsyncSession) -> None:
@@ -321,7 +320,6 @@ async def test_the_mastery_page_reports_what_the_estimate_rests_on(
 
     assert kc_read.distinct_items == 2
     assert kc_read.unassisted_items == 2
-    assert kc_read.transfer_shown
     assert kc_read.retention_shown
 
 

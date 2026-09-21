@@ -267,7 +267,6 @@ async def test_self_ratings_are_counted_beside_the_evidence_not_inside_it(
     assert evidence[kc.id].distinct_items == 0
     assert evidence[kc.id].unassisted_items == 0
     assert evidence[kc.id].self_reported_attempts == 3
-    assert evidence[kc.id].transfer_shown is False
 
 
 async def test_the_span_starts_at_a_demonstrated_attempt_not_a_self_rating(

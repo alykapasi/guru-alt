@@ -886,11 +886,6 @@ class KCEvidence(BaseModel):
     # interaction that vanished from the summary would make the history a lie of omission.
     self_reported_attempts: int
 
-    @property
-    def transfer_shown(self) -> bool:
-        """Solved more than one different problem for this KC, unaided."""
-        return self.unassisted_items >= 2
-
     def retention_shown(self, *, min_days: float) -> bool:
         """Demonstrated unaided at least twice, at least ``min_days`` apart.
 

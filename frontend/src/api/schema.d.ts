@@ -2734,11 +2734,6 @@ export interface components {
              */
             self_reported_attempts: number;
             /**
-             * Transfer Shown
-             * @default false
-             */
-            transfer_shown: boolean;
-            /**
              * Unassisted Items
              * @default 0
              */

@@ -27,9 +27,8 @@ class KCMasteryRead(BaseModel):
     # Self-rated reviews of this component (S56). Shown beside the demonstrated counts, never
     # added to them: a rating says the memory came back, not that the learner can do the thing.
     self_reported_attempts: int = 0
-    # Solved a *different* problem unaided, and demonstrated unaided after a delay. Both are
-    # false for a component whose whole history is one question in one sitting.
-    transfer_shown: bool = False
+    # Demonstrated unaided after a delay. False for a component whose whole history is one
+    # question in one sitting.
     retention_shown: bool = False
 
 
