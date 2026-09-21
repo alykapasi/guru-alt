@@ -80,16 +80,32 @@ def conservative(self) -> float:
 It lives in `tracer.py` because it is estimate arithmetic, not policy. The bar it is compared
 against is policy and lives with the caller.
 
-**In `app/services/lesson_plan.py`**, `MASTERY_ABILITY_THRESHOLD` and
-`MASTERY_UNCERTAINTY_THRESHOLD` are replaced by one constant:
+**In `app/core/config.py`**, `MASTERY_ABILITY_THRESHOLD` and `MASTERY_UNCERTAINTY_THRESHOLD`
+(today module constants in `app/services/lesson_plan.py`) are replaced by one setting:
 
 ```python
-MASTERY_CONSERVATIVE_BAR = 0.5
-"""v1-arbitrary, same standing as the two thresholds it replaces: not calibrated against
-outcome data. Chosen to sit exactly on the old rule's corner — ability 1.0 with uncertainty
-0.5 scores 0.5 — so this is a change of shape, not of strictness at the point both rules
-agree."""
+# The lower confidence bound a component must clear to count as mastered. v1-arbitrary,
+# the same standing as the two thresholds it replaces and as retention_min_days above it:
+# not calibrated against outcome data. Chosen to sit exactly on the old rule's corner —
+# ability 1.0 with uncertainty 0.5 scores 0.5 — so this is a change of shape, not of
+# strictness at the point where both rules agree.
+mastery_conservative_bar: float = 0.5
 ```
+
+It is a setting rather than a module constant in `services/lesson_plan.py` because
+`mastery.record_observation` needs it too (§6.1), and `app/learning/` importing from
+`app/services/` is the wrong direction. `mastery.py` already reads `get_settings()`.
+
+**Both threshold constants have six consumers, not five.** Besides the five call sites of
+`mastered_kc_ids`, `app/services/analytics.py` imports the two constants directly and has its
+own copy of the comparison, `_is_mastered`. It must move to the new rule in the same commit or
+the dashboard and the planner will disagree about what "mastered" means — the exact failure
+`mastered_kc_ids`'s docstring says it exists to prevent.
+
+`analytics._is_mastered` also needs §3.1's guard, and can have it for free: `subject_mastery`
+already computes an `assessed` set from `last_seen_at.is_not(None)` two statements earlier, so
+the call becomes `mastered=kc.id in assessed and _is_mastered(estimates[kc.id])` with no extra
+query.
 
 ### 3.1 The guard: a conservative estimate is not evidence that anything was measured
 
@@ -157,7 +173,7 @@ Like `estimate_kcs`, a component with no state row still appears, at the unknown
 `measured_at=None`: absent from the table is a fact about the learner, not a reason to leave it
 out of the answer.
 
-`mastered_kc_ids` becomes `measured_at is not None and current.conservative >= BAR` over this
+`mastered_kc_ids` becomes `measured_at is not None and current.conservative >= bar` over this
 one query. Its five call sites (`lesson_plan.py:188/230/258`, `checkpoints.py:122`, and via
 `learning/lesson_plan.py:466/499`) are unchanged — the signature does not move.
 
@@ -313,11 +329,25 @@ only ever a bag of components.
 
 ### 6.1 Where it is written
 
-In `mastery.record_observation`, after the ability update, for each component whose state was
-just updated and whose `achieved_at` is still NULL: if its conservative estimate meets the bar
-and `retention_shown(min_days=retention_min_days)` holds, set `achieved_at = now`.
+In `mastery.record_observation`, for each component whose state was just updated and whose
+`achieved_at` is still NULL: if its conservative estimate meets the bar and
+`retention_shown(min_days=retention_min_days)` holds, set `achieved_at = now`.
 
-The estimate here is the freshly written state, not a re-read through `kc_standings`. They are
+**It runs after the per-KC loop and after the existing `await session.flush()`, not inside the
+loop.** `retention_shown` is derived from `kc_evidence`, which queries the event log — and the
+event this observation just wrote is still pending in the session until that flush. Inside the
+loop the check would either miss the demonstration that just earned the achievement, or depend
+on SQLAlchemy's autoflush firing mid-iteration, which is the kind of thing that works until
+someone sets `autoflush=False`. After the flush, one `kc_evidence` call covers every component
+the observation touched.
+
+**The component list is collected in the ability branch only.** `record_observation` appends to
+`updated` in *both* branches — the `SELF_REPORTED` path appends and then `continue`s — so
+`updated` is the wrong input. A second list, appended to only after the ability assignment,
+keeps self-ratings structurally unable to reach the achievement check, the same way slice 1's
+`continue` keeps them from reaching `last_seen_at`.
+
+The estimate used is the freshly written state, not a re-read through `kc_standings`. They are
 the same number — `last_seen_at` was just set to `now`, so elapsed is zero and decay is the
 identity — but saying which one is meant keeps a later reader from adding a redundant query to
 "be safe" and, worse, from reaching for the decayed estimate in a context where the distinction
