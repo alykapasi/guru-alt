@@ -369,3 +369,45 @@ async def test_a_self_rating_contributes_no_diagnosis(db_session: AsyncSession) 
         ),
     )
     assert await mastery.prior_failure_kinds(db_session, learner.id, [kc.id]) == {}
+
+
+# --- the cursor in front of those estimators (S56) -------------------------------
+
+
+async def test_a_self_rating_does_not_force_a_profile_recompute(db_session: AsyncSession) -> None:
+    """`latest_evidence_at` is the freshness cursor deciding whether `refresh_profile` does any
+    work at all, and it had no event_type filter of any kind.
+
+    Unfiltered, a self-rating advanced it and bought a full pass over DIMENSION_SPECS — the
+    model-backed error-type classifier included, plus `_revise_lesson_plans` — over a history
+    the estimators provably ignore (test_the_profile_estimators_ignore_self_rated_attempts).
+    Bounded rather than a loop, since the cursor is set to the newest row afterwards, but one
+    wasted recompute per review batch is still one nobody asked for.
+    """
+    from app.services import profile as profile_svc
+
+    learner, (kc,) = await _seed(db_session)
+    graded_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC).replace(tzinfo=None)
+    db_session.add_all(
+        [
+            LearningEvent(
+                learner_id=learner.id,
+                kc_id=kc.id,
+                event_type="observation",
+                attempt_id=uuid.uuid4(),
+                payload={"score": 1.0},
+                created_at=graded_at,
+            ),
+            LearningEvent(
+                learner_id=learner.id,
+                kc_id=kc.id,
+                event_type=mastery.SELF_REPORT_EVENT,
+                attempt_id=uuid.uuid4(),
+                payload={"score": 1.0},
+                created_at=graded_at + timedelta(days=1),
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    assert await profile_svc.latest_evidence_at(db_session, learner.id) == graded_at
