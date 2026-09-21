@@ -429,6 +429,17 @@ CASES: list[Case] = [
         ("item",),
         lambda c, t, o: c.post(f"{API}/items/{t.item}/answer", json={"response": {"choice": 0}}),
     ),
+    Case(
+        "POST",
+        "/api/v1/items/{item_id}/reveal",
+        "item_id",
+        ("item",),
+        # The fixture item is an MCQ, so even the owner gets refused here (422: nothing to
+        # reveal) — but that is still a *different* refusal than the reference's 404, which is
+        # all this sweep checks. The flashcard-only rule itself is `test_assessment_privacy.py`'s
+        # job; this table only guards that `get_item_for` ran before anything else did.
+        lambda c, t, o: c.post(f"{API}/items/{t.item}/reveal"),
+    ),
     # --- placement and conversations -----------------------------------------------------
     Case(
         "GET",

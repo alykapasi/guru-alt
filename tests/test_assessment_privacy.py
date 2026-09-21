@@ -302,6 +302,70 @@ async def test_private_generated_assessment_export_and_erasure(db_session, api_l
     assert await db_session.get(Rubric, rubric_id) is None
 
 
+async def _flashcard_for(session, owner, back="Sugars and oxygen."):
+    _, kc = await _curriculum(session, owner=owner)
+    item = Item(
+        item_type=ItemType.FLASHCARD,
+        stem="What does photosynthesis produce?",
+        answer_key={"back": back},
+        owner_learner_id=owner,
+    )
+    session.add(item)
+    await session.flush()
+    session.add(ItemKC(item_id=item.id, kc_id=kc.id))
+    await session.commit()
+    return item
+
+
+async def test_a_flashcard_back_is_not_shipped_with_the_question(
+    db_session, api_client, api_learner
+):
+    """Withheld before reveal, so the reveal is a real step and not an animation."""
+    item = await _flashcard_for(db_session, api_learner.id)
+    r = await api_client.get(f"/api/v1/items/{item.id}")
+    assert r.status_code == 200, r.text
+    assert "back" not in str(r.json())
+
+
+async def test_reveal_returns_the_back(db_session, api_client, api_learner):
+    item = await _flashcard_for(db_session, api_learner.id)
+    r = await api_client.post(f"/api/v1/items/{item.id}/reveal")
+    assert r.status_code == 200, r.text
+    assert r.json()["back"] == "Sugars and oxygen."
+
+
+async def test_reveal_refuses_a_non_flashcard(db_session, api_client, api_learner):
+    """There is nothing to reveal on an MCQ but its answer key, and that is the one thing a
+    reveal endpoint must never be able to hand out."""
+    _, kc = await _curriculum(db_session, owner=api_learner.id)
+    item = Item(
+        item_type=ItemType.MCQ,
+        stem="Pick one",
+        answer_key={"choices": ["a", "b"], "correct": 0},
+        owner_learner_id=api_learner.id,
+    )
+    db_session.add(item)
+    await db_session.flush()
+    db_session.add(ItemKC(item_id=item.id, kc_id=kc.id))
+    await db_session.commit()
+
+    r = await api_client.post(f"/api/v1/items/{item.id}/reveal")
+    assert r.status_code == 422, r.text
+
+
+async def test_reveal_refuses_another_learners_item(db_session, api_client, api_learner):
+    """Same scoping as every other item read — `get_item_for`, not a bare primary-key load."""
+    from app.models.learner import Learner
+
+    stranger = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(stranger)
+    await db_session.flush()
+    item = await _flashcard_for(db_session, stranger.id)
+
+    r = await api_client.post(f"/api/v1/items/{item.id}/reveal")
+    assert r.status_code == 404, r.text
+
+
 async def test_paused_question_from_other_subject_is_not_current(db_session, api_learner):
     from app.services.checkpoints import paused_practice_is_current
 

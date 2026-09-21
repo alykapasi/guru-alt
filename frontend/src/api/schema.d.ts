@@ -740,6 +740,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/items/{item_id}/reveal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reveal Item
+         * @description Serve a flashcard's answer at the moment the learner asks to see it (S54).
+         *
+         *     A round trip rather than a field on the item, because ``public_presentation`` withholds the
+         *     back on purpose: shipping it with the question and hiding it behind a button would put the
+         *     answer one devtools panel away and make the reveal theatre. Flashcards only — every other
+         *     item type's answer key stays withheld until the answer is submitted, and a reveal endpoint
+         *     that could reach an MCQ's key would be the hole this module exists to prevent.
+         */
+        post: operations["reveal_item_api_v1_items__item_id__reveal_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/kcs/{kc_id}": {
         parameters: {
             query?: never;
@@ -3316,6 +3342,14 @@ export interface components {
             topic_id?: string | null;
         };
         /**
+         * RevealRead
+         * @description A flashcard's reverse face, handed over only when the learner asks for it.
+         */
+        RevealRead: {
+            /** Back */
+            back: string;
+        };
+        /**
          * ReviewItemRead
          * @description A KC whose FSRS review is due (the review-queue projection).
          *
@@ -4846,6 +4880,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GradeRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reveal_item_api_v1_items__item_id__reveal_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevealRead"];
                 };
             };
             /** @description Validation Error */
