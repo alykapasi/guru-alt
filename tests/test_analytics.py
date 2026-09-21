@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.learning import mastery
 from app.learning.activity import momentum_trend, streak_days
 from app.learning.mastery import Observation
+from app.learning.tracer import Estimate
 from app.models.assessment import EvidenceKind
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
@@ -376,3 +377,19 @@ async def test_a_flashcard_only_component_is_not_reported_as_assessed(
     kc_read = read.topics[0].kcs[0]
     assert kc_read.assessed is False
     assert kc_read.self_reported_attempts == 1
+
+
+async def test_a_placement_seed_is_not_reported_as_assessed(
+    db_session: AsyncSession,
+) -> None:
+    """A ruled decision, pinned so it can't drift back silently: ``seed_prior``'s own
+    docstring calls a placement seed "a soft signal... no real interaction to weigh", and it
+    writes ``ability``/``uncertainty`` without ever touching ``last_seen_at``. ``assessed``
+    exists so a number derived from no evidence is never shown as if it were one — and a
+    placement guess is exactly that kind of number, evidence or not the row it lives in.
+    """
+    learner, subject, kc = await _seed_subject_with_one_kc(db_session)
+    await mastery.seed_prior(db_session, learner.id, kc.id, Estimate(ability=1.0, uncertainty=0.6))
+
+    read = await svc.subject_mastery(db_session, learner.id, subject.id)
+    assert read.topics[0].kcs[0].assessed is False

@@ -268,3 +268,33 @@ async def test_self_ratings_are_counted_beside_the_evidence_not_inside_it(
     assert evidence[kc.id].unassisted_items == 0
     assert evidence[kc.id].self_reported_attempts == 3
     assert evidence[kc.id].transfer_shown is False
+
+
+async def test_the_span_starts_at_a_demonstrated_attempt_not_a_self_rating(
+    db_session: AsyncSession,
+) -> None:
+    """A mixed history, because an all-self-rated or all-demonstrated one can't expose this:
+    a self-rating first, then a demonstrated attempt 9 days later. The span must start at the
+    demonstrated attempt, not the self-rating — a span that started at the self-rating would
+    report 9 days of retention the learner never actually demonstrated.
+    """
+    learner, (kc,) = await _seed(db_session)
+    t0 = datetime.now(UTC)
+    await mastery.record_observation(
+        db_session,
+        Observation(
+            learner_id=learner.id,
+            kc_weights={kc.id: 1.0},
+            score=1.0,
+            evidence_kind=EvidenceKind.SELF_REPORTED,
+        ),
+        now=t0,
+    )
+    await mastery.record_observation(
+        db_session,
+        Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=1.0),
+        now=t0 + timedelta(days=9),
+    )
+    evidence = await mastery.kc_evidence(db_session, learner.id, [kc.id])
+    assert evidence[kc.id].span_days == 0.0
+    assert evidence[kc.id].retention_shown(min_days=1.0) is False

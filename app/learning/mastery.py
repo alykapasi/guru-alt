@@ -899,8 +899,11 @@ async def kc_evidence(
 
     One query for the whole set, like ``estimate_kcs``: this is read alongside a subject's
     mastery roll-up, and a per-KC call there would put the page back where S62 found it.
-    KCs with no observations are absent from the result rather than present and empty — the
-    caller already knows which it asked for, and "no evidence" is not a row.
+    A KC with no attempts at all (demonstrated or self-reported) is absent from the result
+    rather than present and empty — the caller already knows which it asked for, and "no
+    evidence" is not a row. A KC whose only history is self-reports *is* present, with every
+    demonstrated count at zero: the self-reports are why it has a row, and
+    ``self_reported_attempts`` says so (S56).
     """
     if not kc_ids:
         return {}
