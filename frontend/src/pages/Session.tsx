@@ -7,6 +7,11 @@ import { ItemPanel } from "../components/lessons/ItemPanel";
 import { CitationPane } from "../components/chat/CitationPane";
 import type { Citation } from "../api/sse";
 
+/** FSRS's four grades, by the label FlashcardPanel's buttons show — kept here rather than
+ * imported so that file (a component) exports only the component (react-refresh's rule). See
+ * app/learning/grading.py's _RATING_SCORE for the numbers these labels stand for. */
+const RATING_LABELS: Record<number, string> = { 1: "Again", 2: "Hard", 3: "Good", 4: "Easy" };
+
 /** A guided-practice session: the workflow-mode chat transcript plus a persistent side panel
  * for the item being practiced (see docs/ROADMAP.md Phase 7's design brief). Reuses the same
  * conversation/SSE machinery as the plain chat page — a session is just a conversation whose
@@ -41,6 +46,13 @@ export function Session() {
   // "practice" is mid-session (the learner should keep answering); "mastered"/"capped" are the
   // two ways a workflow run ends (see app/services/workflow.py::run_workflow_turn).
   const ended = sessionDetail === "mastered" || sessionDetail === "capped";
+
+  // A flashcard's rating rides the same turn request every other reply does (ChatTurnRequest.
+  // rating) — no second request path. `content` still carries the label so the transcript
+  // reads as what the learner did, rather than a bare digit nobody typed.
+  function handleRate(rating: number) {
+    void send(RATING_LABELS[rating] ?? String(rating), { mode: "workflow", rating });
+  }
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -84,7 +96,7 @@ export function Session() {
           answering to show it would defeat the click. */}
       <aside className="border-base-300 divide-base-300 flex w-80 shrink-0 flex-col divide-y border-l">
         {citation && <CitationPane citation={citation} onClose={() => setCitation(null)} />}
-        <ItemPanel item={item} detail={sessionDetail} />
+        <ItemPanel item={item} detail={sessionDetail} onRate={handleRate} />
       </aside>
     </div>
   );

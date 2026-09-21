@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { CircleCheck, RotateCcw, Sprout } from "lucide-react";
 import { useKC } from "../../api/hooks";
 import { RichText } from "../content/RichText";
+import { FlashcardPanel } from "./FlashcardPanel";
 import type { ItemEvent } from "../../api/sse";
 
 // The workflow's "mastered" detail means this one item was graded correct, ending the round
@@ -16,7 +17,15 @@ const DETAIL_COPY: Record<string, { label: string; icon: typeof Sprout }> = {
 /** The persistent side panel next to a guided-practice session's transcript — the current
  * practice item plus its outcome once the workflow ends (see MASTERPLAN's gamification
  * decision: a clear, understated success state, not a celebratory animation). */
-export function ItemPanel({ item, detail }: { item: ItemEvent | null; detail: string | null }) {
+export function ItemPanel({
+  item,
+  detail,
+  onRate,
+}: {
+  item: ItemEvent | null;
+  detail: string | null;
+  onRate: (rating: number) => void;
+}) {
   const kcId = item?.kcs[0]?.kc_id;
   const { data: kc } = useKC(kcId);
   const outcome = detail ? DETAIL_COPY[detail] : undefined;
@@ -32,7 +41,11 @@ export function ItemPanel({ item, detail }: { item: ItemEvent | null; detail: st
       ) : (
         <div className="flex flex-col gap-3">
           <p className="text-caption text-base-content/60">{kc?.name ?? "…"}</p>
-          <RichText content={item.stem} className="text-base-content/90" />
+          {item.item_type === "flashcard" ? (
+            <FlashcardPanel item={item} onRate={onRate} />
+          ) : (
+            <RichText content={item.stem} className="text-base-content/90" />
+          )}
         </div>
       )}
       {outcome && (

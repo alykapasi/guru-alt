@@ -14,7 +14,7 @@ export interface PendingTurn {
 interface FailedTurn {
   content: string;
   clientTurnId: string;
-  opts: { mode: "chat" | "agentic" | "workflow"; satisfied?: boolean };
+  opts: { mode: "chat" | "agentic" | "workflow"; satisfied?: boolean; rating?: number };
 }
 
 /** Owns one conversation's persisted history plus the live in-flight turn. Persisted messages
@@ -87,6 +87,7 @@ export function useChatConversation(conversationId: string | undefined) {
         mode: turn.opts.mode,
         satisfied: turn.opts.satisfied ?? false,
         client_turn_id: turn.clientTurnId,
+        rating: turn.opts.rating,
       };
       const controller = new AbortController();
       abortRef.current = controller;
@@ -148,7 +149,7 @@ export function useChatConversation(conversationId: string | undefined) {
   const send = useCallback(
     async (
       content: string,
-      opts: { mode: "chat" | "agentic" | "workflow"; satisfied?: boolean },
+      opts: { mode: "chat" | "agentic" | "workflow"; satisfied?: boolean; rating?: number },
     ) => {
       if (!conversationId || pending) return;
       await run({ content, clientTurnId: crypto.randomUUID(), opts });

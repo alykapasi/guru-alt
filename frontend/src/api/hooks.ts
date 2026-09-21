@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "./client";
+import { api, apiFetch } from "./client";
 
 /** Newest-first, per the backend's ordering (app/services/chat.py::list_conversations). */
 export function useConversations() {
@@ -27,6 +27,21 @@ export function useItem(itemId: string | null | undefined) {
       return data;
     },
   });
+}
+
+/** A flashcard's reverse face, fetched only when the learner asks to see it (S54) — see
+ * `app/api/v1/assessment.py`'s `reveal_item`. A plain function rather than a `useMutation`
+ * hook: `FlashcardPanel` calls it directly from a click handler and there is no cached query
+ * for a successful reveal to invalidate. Goes through `apiFetch` rather than the typed client
+ * because it is invoked outside a component, as the default for `FlashcardPanel`'s injectable
+ * `reveal` prop. */
+export async function defaultReveal(itemId: string): Promise<string> {
+  const res = await apiFetch(`/api/v1/items/${itemId}/reveal`, { method: "POST" });
+  if (!res.ok) {
+    throw new Error(`reveal failed: ${res.status} ${res.statusText}`);
+  }
+  const data = (await res.json()) as { back: string };
+  return data.back;
 }
 
 export function useCreateConversation() {
