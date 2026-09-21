@@ -2701,6 +2701,11 @@ export interface components {
              */
             retention_shown: boolean;
             /**
+             * Self Reported Attempts
+             * @default 0
+             */
+            self_reported_attempts: number;
+            /**
              * Transfer Shown
              * @default false
              */

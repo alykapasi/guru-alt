@@ -877,6 +877,10 @@ class KCEvidence(BaseModel):
     # Days between the first attempt at this KC and the most recent *unassisted* one. None
     # when nothing here was ever answered unaided.
     span_days: float | None
+    # Self-rated attempts at this component (S56). Counted separately rather than folded in:
+    # a rating is not backing for the estimate, but it is not nothing either, and an
+    # interaction that vanished from the summary would make the history a lie of omission.
+    self_reported_attempts: int
 
     @property
     def transfer_shown(self) -> bool:
@@ -913,24 +917,39 @@ async def kc_evidence(
     when = func.coalesce(
         LearningEvent.payload["observed_at"].astext.cast(DateTime), LearningEvent.created_at
     )
+    attempt_key = func.coalesce(LearningEvent.attempt_id, LearningEvent.id)
+    # The row set now includes self-reports (S56), so every aggregate that used to describe
+    # "the evidence" must say which rows demonstrated something and which merely claimed it.
+    # A self-rating gets its own count instead of vanishing, so the history stays honest.
+    demonstrated = LearningEvent.event_type == "observation"
+    self_rated = LearningEvent.event_type == SELF_REPORT_EVENT
     rows = await session.execute(
         select(
             LearningEvent.kc_id,
-            func.count(distinct(func.coalesce(LearningEvent.attempt_id, LearningEvent.id))),
-            func.count(distinct(item)),
-            func.count(distinct(case((unassisted, item)))),
-            func.min(when),
-            func.max(case((unassisted, when))),
+            func.count(distinct(case((demonstrated, attempt_key)))),
+            func.count(distinct(case((demonstrated, item)))),
+            func.count(distinct(case((and_(demonstrated, unassisted), item)))),
+            func.min(case((demonstrated, when))),
+            func.max(case((and_(demonstrated, unassisted), when))),
+            func.count(distinct(case((self_rated, attempt_key)))),
         )
         .where(
             LearningEvent.learner_id == learner_id,
-            LearningEvent.event_type == "observation",
+            LearningEvent.event_type.in_(ATTEMPT_EVENTS),
             LearningEvent.kc_id.in_(kc_ids),
         )
         .group_by(LearningEvent.kc_id)
     )
     out: dict[uuid.UUID, KCEvidence] = {}
-    for kc_id, attempts, items, unassisted_items, first_at, last_unassisted_at in rows:
+    for (
+        kc_id,
+        attempts,
+        items,
+        unassisted_items,
+        first_at,
+        last_unassisted_at,
+        self_reported,
+    ) in rows:
         if kc_id is None:
             continue
         span = None
@@ -942,5 +961,6 @@ async def kc_evidence(
             distinct_items=int(items or 0),
             unassisted_items=int(unassisted_items or 0),
             span_days=span,
+            self_reported_attempts=int(self_reported or 0),
         )
     return out

@@ -29,7 +29,12 @@ def _is_mastered(estimate: Estimate) -> bool:
 
 
 _NO_EVIDENCE = mastery.KCEvidence(
-    kc_id=uuid.UUID(int=0), attempts=0, distinct_items=0, unassisted_items=0, span_days=None
+    kc_id=uuid.UUID(int=0),
+    attempts=0,
+    distinct_items=0,
+    unassisted_items=0,
+    span_days=None,
+    self_reported_attempts=0,
 )
 
 
@@ -66,7 +71,15 @@ async def subject_mastery(
                 select(LearnerKCState.kc_id)
                 .join(KC, KC.id == LearnerKCState.kc_id)
                 .join(Topic, Topic.id == KC.topic_id)
-                .where(LearnerKCState.learner_id == learner_id, Topic.subject_id == subject_id)
+                .where(
+                    LearnerKCState.learner_id == learner_id,
+                    Topic.subject_id == subject_id,
+                    # Ability evidence, not merely a row. A flashcard-only component has a
+                    # state row so its FSRS card has somewhere to live, and `last_seen_at` is
+                    # now exactly "when we last had ability evidence" (S56) — so it is the
+                    # honest test for a flag that decides whether to show a number at all.
+                    LearnerKCState.last_seen_at.is_not(None),
+                )
             )
         ).all()
     )
@@ -98,6 +111,7 @@ async def subject_mastery(
                 assessed=kc.id in assessed,
                 distinct_items=_ev(evidence, kc.id).distinct_items,
                 unassisted_items=_ev(evidence, kc.id).unassisted_items,
+                self_reported_attempts=_ev(evidence, kc.id).self_reported_attempts,
                 transfer_shown=_ev(evidence, kc.id).transfer_shown,
                 retention_shown=_ev(evidence, kc.id).retention_shown(min_days=retention_min_days),
             )

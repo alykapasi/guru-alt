@@ -244,3 +244,27 @@ async def test_repeated_low_self_ratings_still_read_as_struggle(
         )
     struggle = await mastery.recent_struggle(db_session, learner.id, kc.id, threshold=0.5)
     assert struggle.consecutive_failures == 3
+
+
+async def test_self_ratings_are_counted_beside_the_evidence_not_inside_it(
+    db_session: AsyncSession,
+) -> None:
+    """The assertion that stops a self-rating being presented as backing for an estimate."""
+    learner, (kc,) = await _seed(db_session)
+    for _ in range(3):
+        await mastery.record_observation(
+            db_session,
+            Observation(
+                learner_id=learner.id,
+                kc_weights={kc.id: 1.0},
+                score=1.0,
+                item_id=uuid.uuid4(),
+                evidence_kind=EvidenceKind.SELF_REPORTED,
+            ),
+        )
+    evidence = await mastery.kc_evidence(db_session, learner.id, [kc.id])
+    assert evidence[kc.id].attempts == 0
+    assert evidence[kc.id].distinct_items == 0
+    assert evidence[kc.id].unassisted_items == 0
+    assert evidence[kc.id].self_reported_attempts == 3
+    assert evidence[kc.id].transfer_shown is False

@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import mastery
 from app.learning.activity import momentum_trend, streak_days
+from app.learning.mastery import Observation
+from app.models.assessment import EvidenceKind
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
@@ -68,7 +70,17 @@ async def test_a_component_with_evidence_behind_it_is_marked_assessed(
     db_session: AsyncSession,
 ) -> None:
     learner, subject, _topic, kc = await _subject_with_kc(db_session)
-    db_session.add(LearnerKCState(learner_id=learner.id, kc_id=kc.id, ability=0.3, uncertainty=0.5))
+    # `last_seen_at` set: this state row stands in for a graded observation, not a
+    # flashcard-only one — the two now differ in exactly this field (S56).
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=kc.id,
+            ability=0.3,
+            uncertainty=0.5,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
     await db_session.flush()
 
     result = await svc.subject_mastery(db_session, learner.id, subject.id)
@@ -84,7 +96,17 @@ async def test_coverage_counts_only_the_components_that_were_assessed(
     other = KC(topic_id=topic.id, slug=f"k-{uuid.uuid4().hex[:8]}", name="Neutrons")
     db_session.add(other)
     await db_session.flush()
-    db_session.add(LearnerKCState(learner_id=learner.id, kc_id=kc.id, ability=0.3, uncertainty=0.5))
+    # `last_seen_at` set: this state row stands in for a graded observation, not a
+    # flashcard-only one — the two now differ in exactly this field (S56).
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=kc.id,
+            ability=0.3,
+            uncertainty=0.5,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
     await db_session.flush()
 
     result = await svc.subject_mastery(db_session, learner.id, subject.id)
@@ -323,3 +345,34 @@ async def test_activity_still_counts_legacy_events_without_an_attempt_id(
     result = await svc.get_activity(db_session, learner.id)
 
     assert result.observations_last_7d == 2
+
+
+# --- self-reported evidence, and what `assessed` means (S56) -----------------
+
+
+async def _seed_subject_with_one_kc(session: AsyncSession) -> tuple[Learner, Subject, KC]:
+    learner, subject, _topic, kc = await _subject_with_kc(session)
+    return learner, subject, kc
+
+
+async def test_a_flashcard_only_component_is_not_reported_as_assessed(
+    db_session: AsyncSession,
+) -> None:
+    """A flashcard-only KC has a state row so its FSRS card has somewhere to live. Reading
+    that row as "assessed" would render the unknown prior as a confident-looking 50% for a
+    component nobody has ever been measured on — exactly what the flag exists to prevent.
+    """
+    learner, subject, kc = await _seed_subject_with_one_kc(db_session)
+    await mastery.record_observation(
+        db_session,
+        Observation(
+            learner_id=learner.id,
+            kc_weights={kc.id: 1.0},
+            score=1.0,
+            evidence_kind=EvidenceKind.SELF_REPORTED,
+        ),
+    )
+    read = await svc.subject_mastery(db_session, learner.id, subject.id)
+    kc_read = read.topics[0].kcs[0]
+    assert kc_read.assessed is False
+    assert kc_read.self_reported_attempts == 1
