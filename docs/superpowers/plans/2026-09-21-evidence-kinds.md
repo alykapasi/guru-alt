@@ -419,34 +419,33 @@ async def test_a_kc_whose_first_contact_is_a_flashcard_has_no_ability_evidence(
     assert state.due_at is not None
 
 
-async def test_a_retried_self_rating_is_recorded_once(db_session: AsyncSession) -> None:
-    """The idempotency key is the attempt, not the kind of evidence it produced. Without
-    `_recorded_grade` learning the new event type, a retried flashcard would re-grade, hit
-    the unique index on (learner, attempt, KC) and 500 where a graded answer replays.
-    """
-    learner, (kc,) = await _seed(db_session)
-    attempt = uuid.uuid4()
-    for _ in range(2):
-        await mastery.record_observation(
-            db_session,
-            Observation(
-                learner_id=learner.id,
-                kc_weights={kc.id: 1.0},
-                score=1.0,
-                attempt_id=attempt,
-                evidence_kind=EvidenceKind.SELF_REPORTED,
-            ),
-        )
-        await db_session.flush()
 ```
 
-That last test drives the tracer directly and will raise `IntegrityError` on the second
-write — which is the *correct* behaviour at that layer, and exactly what `answer_item`'s
-`except IntegrityError` block exists to turn into a replay. Write it instead against
-`assessment.answer_item` with a repeated `attempt_id`, asserting the second call returns the
-same `GradeResult` and that only one `self_report` event per KC exists. Model it on the
-existing retry test in `tests/test_assessment.py` — find it with
-`grep -n "attempt_id" tests/test_assessment.py`.
+**The idempotency test goes in `tests/test_assessment.py`, not here.** It must drive
+`assessment.answer_item`, because that is the layer where a retry becomes a replay:
+`record_observation` called twice with one `attempt_id` raises `IntegrityError`, which is
+correct at the tracer's layer and is exactly what `answer_item`'s `except IntegrityError`
+block exists to catch. A test at the tracer layer would assert the wrong thing.
+
+Find the existing graded-answer retry test with `grep -n "attempt_id" tests/test_assessment.py`
+and write the flashcard twin of it:
+
+```python
+async def test_a_retried_self_rating_replays_instead_of_re_recording(
+    db_session: AsyncSession,
+) -> None:
+    """The idempotency key is the attempt, not the kind of evidence it produced. Without
+    `_recorded_grade` learning the new event type, a retried flashcard would miss the replay,
+    re-grade, hit the unique index on (learner, attempt, KC) and 500 where a graded answer
+    quietly returns the first result.
+    """
+    # Seed a flashcard item owned by the learner, then submit the same attempt_id twice with
+    # {"rating": 3}. Assert: both calls return the same score, and exactly one self_report
+    # event exists per tagged KC.
+```
+
+Follow the existing retry test's fixtures and assertions exactly; only the item type and the
+response body differ.
 
 - [ ] **Step 2: Run them to verify they fail**
 
