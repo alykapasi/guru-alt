@@ -298,3 +298,74 @@ async def test_the_span_starts_at_a_demonstrated_attempt_not_a_self_rating(
     evidence = await mastery.kc_evidence(db_session, learner.id, [kc.id])
     assert evidence[kc.id].span_days == 0.0
     assert evidence[kc.id].retention_shown(min_days=1.0) is False
+
+
+# --- three consumers that never had to change (S56) -----------------------------
+
+
+def test_the_profile_estimators_ignore_self_rated_attempts() -> None:
+    """Every profile dimension reads `score` or `difficulty` — optimal challenge, pace,
+    cognitive load, error types. Inferring "this learner thrives at difficulty 0.7" from
+    scores the learner assigned themselves is circular.
+
+    No production code implements this: it falls out of self-report having its own event
+    type. That is exactly why it needs a test — behaviour nobody wrote is behaviour nobody
+    notices breaking.
+    """
+    from app.learning.profile_estimators import _observations
+
+    learner_id = uuid.uuid4()
+    events = [
+        LearningEvent(
+            learner_id=learner_id,
+            event_type="observation",
+            attempt_id=uuid.uuid4(),
+            payload={"score": 1.0},
+        ),
+        LearningEvent(
+            learner_id=learner_id,
+            event_type=mastery.SELF_REPORT_EVENT,
+            attempt_id=uuid.uuid4(),
+            payload={"score": 1.0},
+        ),
+    ]
+    assert [e.event_type for e in _observations(events)] == ["observation"]
+
+
+async def test_the_replay_miner_skips_self_rated_steps(db_session: AsyncSession) -> None:
+    """A self-report row records no estimator, no prior and no posterior, because none ran.
+    A replay handed one would be reproducing a step that never happened."""
+    from tests.eval.datasets.mine import mine_observation_sequences
+
+    learner, (kc,) = await _seed(db_session)
+    for _ in range(4):
+        await mastery.record_observation(
+            db_session,
+            Observation(
+                learner_id=learner.id,
+                kc_weights={kc.id: 1.0},
+                score=1.0,
+                evidence_kind=EvidenceKind.SELF_REPORTED,
+            ),
+        )
+    dataset = await mine_observation_sequences(db_session, min_length=3)
+    assert all(str(kc.id) != seq.kc_id for seq in dataset.sequences)
+
+
+async def test_a_self_rating_contributes_no_diagnosis(db_session: AsyncSession) -> None:
+    """`grade_flashcard` returns no diagnoses, so prior_failure_kinds finds nothing to count
+    either way. Pinned because that is a property of the grader, not of this slice: if a
+    flashcard ever gains a diagnosis, self-report starts feeding the failure-kind counts that
+    pick teaching moves, and this test is what says so out loud.
+    """
+    learner, (kc,) = await _seed(db_session)
+    await mastery.record_observation(
+        db_session,
+        Observation(
+            learner_id=learner.id,
+            kc_weights={kc.id: 1.0},
+            score=0.2,
+            evidence_kind=EvidenceKind.SELF_REPORTED,
+        ),
+    )
+    assert await mastery.prior_failure_kinds(db_session, learner.id, [kc.id]) == {}
