@@ -46,6 +46,10 @@ export function Session() {
   // A flashcard's rating rides the same turn request every other reply does (ChatTurnRequest.
   // rating) — no second request path. `content` still carries the label so the transcript
   // reads as what the learner did, rather than a bare digit nobody typed.
+  //
+  // Which is also why the buttons go dead while a turn is in flight: `send` early-returns on
+  // `pending` (useChatConversation), so a click landing then is silently dropped — the same
+  // reason the Composer is disabled, and the same treatment.
   function handleRate(rating: number) {
     const label = RATINGS.find((r) => r.value === rating)?.label ?? String(rating);
     void send(label, { mode: "workflow", rating });
@@ -93,7 +97,12 @@ export function Session() {
           answering to show it would defeat the click. */}
       <aside className="border-base-300 divide-base-300 flex w-80 shrink-0 flex-col divide-y border-l">
         {citation && <CitationPane citation={citation} onClose={() => setCitation(null)} />}
-        <ItemPanel item={item} detail={sessionDetail} onRate={handleRate} />
+        <ItemPanel
+          item={item}
+          detail={sessionDetail}
+          onRate={handleRate}
+          ratingDisabled={!!pending}
+        />
       </aside>
     </div>
   );

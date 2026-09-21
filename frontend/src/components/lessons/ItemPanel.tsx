@@ -21,10 +21,13 @@ export function ItemPanel({
   item,
   detail,
   onRate,
+  ratingDisabled = false,
 }: {
   item: ItemEvent | null;
   detail: string | null;
   onRate: (rating: number) => void;
+  /** A turn is already in flight, so `onRate` would be swallowed — see Session.tsx. */
+  ratingDisabled?: boolean;
 }) {
   const kcId = item?.kcs[0]?.kc_id;
   const { data: kc } = useKC(kcId);
@@ -46,7 +49,7 @@ export function ItemPanel({
             // `back`/`busy` state (see FlashcardPanel) must not survive a prop change, or the
             // next card renders beside the previous one's revealed answer with the reveal step
             // already skipped (same remount-on-id rationale as App.tsx's ChatRoute/SessionRoute).
-            <FlashcardPanel key={item.id} item={item} onRate={onRate} />
+            <FlashcardPanel key={item.id} item={item} onRate={onRate} disabled={ratingDisabled} />
           ) : (
             <RichText content={item.stem} className="text-base-content/90" />
           )}
