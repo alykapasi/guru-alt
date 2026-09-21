@@ -68,7 +68,10 @@ export function ClerkSignInPanel() {
   const problem = useExchangeOnce();
   return (
     <div className="flex flex-col items-center">
-      <SignIn routing="path" path="/signin" signUpUrl="/sign-up" />
+      {/* Themed in `clerk.css` against the `cl-*` classes, not through `appearance.elements`:
+          Clerk injects its stylesheet after ours, so class names handed to `appearance` land on
+          the elements and lose every tie on source order. */}
+      <SignIn routing="path" path="/signin" signUpUrl="/sign-up" fallback={<PanelSkeleton />} />
       {problem && <Problem>{problem}</Problem>}
     </div>
   );
@@ -78,8 +81,27 @@ export function ClerkSignUpPanel() {
   const problem = useExchangeOnce();
   return (
     <div className="flex flex-col items-center">
-      <SignUp routing="path" path="/sign-up" signInUrl="/signin" />
+      <SignUp routing="path" path="/sign-up" signInUrl="/signin" fallback={<PanelSkeleton />} />
       {problem && <Problem>{problem}</Problem>}
+    </div>
+  );
+}
+
+/** Holds the panel's space while Clerk loads.
+ *
+ * Clerk mounts an iframe and fetches its own bundle, so on a cold load the card is empty for a
+ * beat. Without something here the page is a heading over a blank box, which reads as broken
+ * rather than as loading — and on a slow connection it is the only thing anybody sees.
+ */
+function PanelSkeleton() {
+  return (
+    <div className="flex w-full flex-col gap-4" aria-busy="true" aria-live="polite">
+      <span className="sr-only">Loading the sign-in form…</span>
+      <div className="skeleton h-11 w-full" />
+      <div className="skeleton h-3 w-24 self-center" />
+      <div className="skeleton h-4 w-24" />
+      <div className="skeleton h-11 w-full" />
+      <div className="skeleton h-11 w-full" />
     </div>
   );
 }
