@@ -18,7 +18,7 @@ from app.agent.workflow import WorkflowState, build_workflow_graph, workflow_con
 from app.core.config import get_settings
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
-from app.models.chat import Conversation
+from app.models.chat import Conversation, Message
 from app.models.knowledge import KC
 from app.rag.retrieval import RetrievalHit, retrieve
 from app.schemas.chat import CheckResultRead
@@ -220,15 +220,23 @@ async def run_workflow_turn(
     check_result = CheckResultRead.model_validate(graded) if graded else None
 
     citations = extract_citations(last_message, hits) if not resume else []
-    assistant = await add_message(
-        session,
-        conversation.id,
-        ChatRole.ASSISTANT.value,
-        last_message,
-        model=spec.model,
-        citations=citations,
-        check_result=check_result,
-    )
+    # A round that generated nothing has nothing to add to the transcript. Both ``last_message``
+    # and ``check_result`` ride the checkpoint, so a flashcard handed back to be rated would
+    # otherwise write a fresh assistant message repeating the last one word for word, with the
+    # *previous* round's report attached to it — and ``add_message`` never dedupes, so every
+    # re-ask would add another. That round always ends paused at ``await_response``, which is
+    # why the row can be skipped at all: ``done`` below is its only reader.
+    assistant: Message | None = None
+    if not snapshot.values.get("awaiting_rating"):
+        assistant = await add_message(
+            session,
+            conversation.id,
+            ChatRole.ASSISTANT.value,
+            last_message,
+            model=spec.model,
+            citations=citations,
+            check_result=check_result,
+        )
     # A round can end without calling a model at all: a flashcard answered in prose is sent
     # straight back to be rated, presenting nothing new. Accounting records calls, so a round
     # that made none writes no row (same guard as ``assessment._grade``'s short-circuit).
@@ -262,7 +270,7 @@ async def run_workflow_turn(
     detail = "mastered" if snapshot.values["correct"] else "capped"
     yield TurnEvent(
         type="done",
-        message_id=str(assistant.id),
+        message_id=str(assistant.id) if assistant is not None else None,
         usage=usage,
         cost_usd=cost,
         item=item_read,

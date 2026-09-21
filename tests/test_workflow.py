@@ -20,7 +20,7 @@ from app.llm.providers.fake import FakeTurn
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
 from app.llm.types import ChatChunk, ModelRole
 from app.main import app
-from app.models.assessment import ItemType
+from app.models.assessment import Item, ItemType
 from app.models.chat import Conversation, ConversationPhase, LLMCall, Message
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
@@ -531,3 +531,68 @@ async def test_a_paused_question_that_is_still_current_resumes_normally(
     assert await is_awaiting_reply(llm, db_session, conv.id, learner_id=conv.learner_id)
     events = await _drain(db_session, llm, conv, user_content="a guess", resume=True)
     assert any(e.type == "awaiting_reply" for e in events)
+
+
+# --- a round that presents nothing (S54) --------------------------------------------------------
+
+
+async def _flashcard_for(session: AsyncSession, conv: Conversation) -> Item:
+    """A flashcard on the conversation's KC, for the workflow to hold instead of a SHORT item."""
+    kc = (
+        await session.scalars(select(KC).join(Topic).where(Topic.subject_id == conv.subject_id))
+    ).one()
+    item = await assessment_svc.create_item(
+        session,
+        ItemCreate(
+            item_type=ItemType.FLASHCARD,
+            stem="What does photosynthesis produce?",
+            answer_key={"back": "Sugars and oxygen."},
+            kcs=[ItemKCRef(kc_id=kc.id)],
+        ),
+        owner_learner_id=conv.learner_id,
+    )
+    await session.commit()
+    return item
+
+
+async def test_a_re_asked_flashcard_adds_nothing_to_the_transcript(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A round that grades nothing also presents nothing, so it records nothing.
+
+    A flashcard answered in prose is handed straight back to be rated. Both ``last_message``
+    and ``check_result`` ride the checkpoint, so an unconditional insert here would copy the
+    previous assistant reply into a brand-new row and re-attach the previous round's report to
+    it — once per re-ask, unbounded, for a model call that never happened.
+    """
+    conv = await _conversation_with_active_step(db_session)
+    card = await _flashcard_for(db_session, conv)
+
+    async def _card(*_args: object, **_kwargs: object) -> Item:
+        return card
+
+    monkeypatch.setattr("app.services.workflow.short_answer_item_for_kc", _card)
+    llm = fake_llm_client(script=[FakeTurn(text=PRESENT)])
+    await _drain(db_session, llm, conv, user_content="let's practice")
+
+    before = (
+        await db_session.scalars(
+            select(Message).where(Message.conversation_id == conv.id).order_by(Message.created_at)
+        )
+    ).all()
+    assert [m.role for m in before] == ["user", "assistant"]
+
+    events = await _drain(db_session, llm, conv, user_content="I think sugars?", resume=True)
+
+    # The card is put back in front of the learner, and nothing about that is a new reply.
+    assert any(e.type == "awaiting_reply" for e in events)
+    after = (
+        await db_session.scalars(
+            select(Message).where(Message.conversation_id == conv.id).order_by(Message.created_at)
+        )
+    ).all()
+    assert [m.role for m in after] == ["user", "assistant", "user"]
+    assert [m.id for m in after[:2]] == [m.id for m in before]
+    # present only: the re-ask called no model, so it is billed for none.
+    calls = (await db_session.scalars(select(LLMCall))).all()
+    assert len(calls) == 1
