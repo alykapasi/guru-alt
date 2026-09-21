@@ -290,7 +290,8 @@ async def find_item_for_kc(
         select(func.max(LearningEvent.created_at))
         .where(
             LearningEvent.learner_id == learner_id,
-            LearningEvent.event_type == "observation",
+            # Both kinds: an item they rated yesterday is not a fresh question today (S56).
+            LearningEvent.event_type.in_(("observation", mastery.SELF_REPORT_EVENT)),
             LearningEvent.payload["item_id"].astext == cast(Item.id, String),
         )
         .correlate(Item)
@@ -521,8 +522,13 @@ async def _recorded_grade(
             select(LearningEvent).where(
                 LearningEvent.learner_id == learner_id,
                 LearningEvent.attempt_id == attempt_id,
-                LearningEvent.event_type
-                == ("admin_observation" if session.info.get("admin_actor_id") else "observation"),
+                # A retried self-rating replays exactly as a graded attempt does — the
+                # idempotency key is the attempt, not the kind of evidence it produced.
+                LearningEvent.event_type.in_(
+                    ("admin_observation",)
+                    if session.info.get("admin_actor_id")
+                    else ("observation", mastery.SELF_REPORT_EVENT)
+                ),
             )
         )
     ).all()

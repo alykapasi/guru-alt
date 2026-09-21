@@ -32,14 +32,29 @@ from app.models.learning import LearnerKCState, LearningEvent
 
 _SECONDS_PER_DAY = 86_400.0
 
-EVENT_SCHEMA_VERSION = 3
-"""Payload shape of an ``observation`` event.
+EVENT_SCHEMA_VERSION = 4
+"""Payload shape of an ``observation`` or ``self_report`` event.
 
 1 — score/difficulty/weight/credit and the grader's verdict.
 2 — adds what an exact replay needs: the estimator's configuration, the timestamp the update
     actually used, the decay gap applied, the prediction made before the answer was seen, and
     the prior and posterior either side of the update. A version-1 row can still be scored, but
     it cannot be replayed exactly — it does not say what it was computed from.
+3 — adds the per-component score and the ``component_scored`` flag that says whether the
+    grader distinguished the components or the item's aggregate simply landed on each (S10).
+4 — splits self-rated evidence out under its own ``event_type`` (S56). A ``self_report`` row
+    carries the rating and its FSRS outcome but no prior/posterior pair, because nothing about
+    the ability estimate moved. Rows at versions 1-3 are all ``observation`` and are read as
+    demonstrated, which is what they were recorded as.
+"""
+
+SELF_REPORT_EVENT = "self_report"
+"""``LearningEvent.event_type`` for a self-rated attempt (S56).
+
+Its own type rather than a payload flag, because every reader of this log already filters
+``event_type == "observation"`` by name. That makes exclusion what a site inherits when nobody
+remembers to revisit it — so forgetting one under-counts activity instead of feeding
+self-report into a measurement. The sites that should keep seeing these name this constant.
 """
 
 DEFAULT_ESTIMATOR: MasteryEstimator = GlickoEstimator()
@@ -309,6 +324,42 @@ async def record_observation(
         # and the review schedule are built from, because both are per-KC facts.
         kc_score = obs.score if obs.kc_scores is None else obs.kc_scores.get(kc_id, obs.score)
         state = await _get_or_create_state(session, obs.learner_id, kc_id)
+        if obs.evidence_kind is EvidenceKind.SELF_REPORTED:
+            # Retention only (S56). The learner is reporting whether the memory came back,
+            # which is precisely the signal FSRS was built on and precisely not a measurement
+            # of what they can do unaided. `last_seen_at` is untouched on purpose: it is read
+            # only by decay, so refreshing it here would let self-report suppress the
+            # uncertainty growth that makes a stale estimate look stale.
+            state.fsrs_card, state.due_at = scheduler.review(
+                state.fsrs_card, score=kc_score, now=now
+            )
+            session.add(
+                LearningEvent(
+                    learner_id=obs.learner_id,
+                    kc_id=kc_id,
+                    event_type=SELF_REPORT_EVENT,
+                    attempt_id=attempt_id,
+                    payload={
+                        "score": kc_score,
+                        "item_score": obs.score,
+                        "component_scored": obs.kc_scores is not None,
+                        "difficulty": obs.difficulty,
+                        "weight": weight,
+                        "item_id": str(obs.item_id) if obs.item_id is not None else None,
+                        "response": obs.response,
+                        "latency_ms": obs.latency_ms,
+                        "hints_used": obs.hints_used,
+                        "prior_attempts": obs.prior_attempts,
+                        "correct": obs.correct,
+                        "detail": obs.detail,
+                        "schema_version": EVENT_SCHEMA_VERSION,
+                        "observed_at": now.isoformat(),
+                        "due_at": state.due_at.isoformat() if state.due_at else None,
+                    },
+                )
+            )
+            updated.append(state)
+            continue
         elapsed_days = _elapsed_days(state.last_seen_at, now)
         decayed = estimator.decay(_estimate_of(state), elapsed_days=elapsed_days)
         # The model's belief *before* seeing this answer. Recorded rather than recomputed

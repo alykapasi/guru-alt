@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_app_settings, get_llm_client
 from app.core.config import get_settings
+from app.learning import mastery
 from app.llm.registry import fake_llm_client
 from app.main import app
 from app.models.assessment import Item, ItemKC, ItemType
@@ -272,6 +273,8 @@ async def test_multi_kc_item_traces_every_kc(
 
 
 async def test_flashcard_self_graded(api_client: AsyncClient, db_session: AsyncSession) -> None:
+    """A self-rating advances FSRS but leaves ability at the unknown prior (S56): it is
+    retention evidence, not a measurement of what the learner can do unaided."""
     (kc,) = await _seed_kcs(db_session)
     body = {"item_type": "flashcard", "stem": "Capital of France?", "kcs": [{"kc_id": str(kc.id)}]}
     item_id = (await api_client.post(f"{API}/items", json=body)).json()["id"]
@@ -279,7 +282,7 @@ async def test_flashcard_self_graded(api_client: AsyncClient, db_session: AsyncS
     assert r.status_code == 200, r.text
     grade = r.json()
     assert grade["score"] == 1.0
-    assert grade["estimates"][0]["ability"] > 0.0
+    assert grade["estimates"][0]["ability"] == 0.0
 
     # Answering scheduled a future review, so nothing is due yet.
     due = await db_session.scalar(select(LearnerKCState).where(LearnerKCState.kc_id == kc.id))
@@ -568,6 +571,29 @@ async def test_retrying_a_rubric_attempt_does_not_call_the_model_again(
     assert first == second and first["score"] == 0.75
     calls = (await db_session.scalars(select(LLMCall).where(LLMCall.role == "smart"))).all()
     assert len(calls) == 1
+
+
+async def test_a_retried_self_rating_replays_instead_of_re_recording(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The idempotency key is the attempt, not the kind of evidence it produced. Without
+    `_recorded_grade` learning the new event type, a retried flashcard would miss the replay,
+    re-grade, hit the unique index on (learner, attempt, KC) and 500 where a graded answer
+    quietly returns the first result.
+    """
+    (kc,) = await _seed_kcs(db_session)
+    body = {"item_type": "flashcard", "stem": "Capital of France?", "kcs": [{"kc_id": str(kc.id)}]}
+    item_id = (await api_client.post(f"{API}/items", json=body)).json()["id"]
+    answer = {"response": {"rating": 3}, "attempt_id": str(uuid.uuid4())}
+
+    first = (await api_client.post(f"{API}/items/{item_id}/answer", json=answer)).json()
+    second = (await api_client.post(f"{API}/items/{item_id}/answer", json=answer)).json()
+
+    assert first == second
+    events = (
+        await db_session.scalars(select(LearningEvent).where(LearningEvent.kc_id == kc.id))
+    ).all()
+    assert [e.event_type for e in events] == [mastery.SELF_REPORT_EVENT]
 
 
 async def test_the_database_rejects_a_duplicate_attempt_row(
