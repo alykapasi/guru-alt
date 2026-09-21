@@ -291,7 +291,7 @@ async def find_item_for_kc(
         .where(
             LearningEvent.learner_id == learner_id,
             # Both kinds: an item they rated yesterday is not a fresh question today (S56).
-            LearningEvent.event_type.in_(("observation", mastery.SELF_REPORT_EVENT)),
+            LearningEvent.event_type.in_(mastery.ATTEMPT_EVENTS),
             LearningEvent.payload["item_id"].astext == cast(Item.id, String),
         )
         .correlate(Item)
@@ -527,7 +527,7 @@ async def _recorded_grade(
                 LearningEvent.event_type.in_(
                     ("admin_observation",)
                     if session.info.get("admin_actor_id")
-                    else ("observation", mastery.SELF_REPORT_EVENT)
+                    else mastery.ATTEMPT_EVENTS
                 ),
             )
         )

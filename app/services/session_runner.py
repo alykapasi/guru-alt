@@ -272,7 +272,7 @@ async def review_item_type(
 ) -> ItemType:
     """Whether this due review is still worth self-rating, or needs diagnosing (S09/S10).
 
-    So a component that has failed its last few reviews is served an open question instead.
+    A component that has failed its last few reviews is served an open question instead.
     A self-rating is the right instrument for ordinary spaced repetition and the wrong one
     here: it records whether the memory came back and nothing about *why* it did not, and
     "why" is what decides whether the answer is a notation slip, a missing prerequisite, or a

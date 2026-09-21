@@ -189,7 +189,9 @@ async def test_get_activity_counts_recent_vs_prior_window(db_session: AsyncSessi
     assert result.streak_days == 3
 
 
-async def test_get_activity_ignores_non_observation_events(db_session: AsyncSession) -> None:
+async def test_get_activity_ignores_a_placement_seed(db_session: AsyncSession) -> None:
+    """Not every non-observation event: a self-rating *is* counted, next test down. A
+    placement seed is not an attempt at all — nobody showed up for it."""
     learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
     db_session.add(learner)
     await db_session.flush()

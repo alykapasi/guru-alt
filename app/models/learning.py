@@ -29,6 +29,12 @@ class LearnerKCState(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     ability: Mapped[float] = mapped_column(default=0.0)
     uncertainty: Mapped[float] = mapped_column(default=1.0)
     # Real UTC instants — the tracer does elapsed-time math (decay, FSRS) on these.
+    # ``last_seen_at`` means "when we last had *ability* evidence", which since S56 is no
+    # longer the same as "when this KC was last practised": a self-rated flashcard review
+    # advances ``due_at`` and ``fsrs_card`` and deliberately leaves this alone, so a learner
+    # who reviewed yesterday can still carry a month-old ``last_seen_at``. That is what makes
+    # it the honest input to the decay math and to analytics' ``assessed`` flag, and the
+    # wrong column to ask "did they show up" — the event log answers that.
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     due_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None, index=True

@@ -353,10 +353,15 @@ async def test_the_replay_miner_skips_self_rated_steps(db_session: AsyncSession)
 
 
 async def test_a_self_rating_contributes_no_diagnosis(db_session: AsyncSession) -> None:
-    """`grade_flashcard` returns no diagnoses, so prior_failure_kinds finds nothing to count
-    either way. Pinned because that is a property of the grader, not of this slice: if a
-    flashcard ever gains a diagnosis, self-report starts feeding the failure-kind counts that
-    pick teaching moves, and this test is what says so out loud.
+    """Two independent things keep a self-rating out of the failure-kind counts that pick
+    teaching moves, and this pins the pair.
+
+    `grade_flashcard` returns no diagnosis, so there is nothing to count in the first place —
+    a property of the grader, not of this slice. And `prior_failure_kinds` filters
+    `event_type == "observation"`, so a flashcard that one day *did* carry a diagnosis would
+    still be excluded. Only both giving way at once turns this assertion red, which is
+    exactly why it is worth keeping: either guard alone looks removable to someone who has
+    not noticed the other.
     """
     learner, (kc,) = await _seed(db_session)
     await mastery.record_observation(
