@@ -27,6 +27,15 @@ const mcq: ItemEvent = {
   kcs: [],
 };
 
+const secondFlashcard: ItemEvent = {
+  id: "33333333-3333-3333-3333-333333333333",
+  item_type: "flashcard",
+  stem: "What is the derivative of e^x?",
+  difficulty: 0.5,
+  rubric_id: null,
+  kcs: [],
+};
+
 function stubReveal(back: string) {
   vi.stubGlobal(
     "fetch",
@@ -36,11 +45,15 @@ function stubReveal(back: string) {
 
 function renderPanel(item: ItemEvent, onRate = vi.fn()) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const wrap = (i: ItemEvent) => (
     <QueryClientProvider client={queryClient}>
-      <ItemPanel item={item} detail={null} onRate={onRate} />
-    </QueryClientProvider>,
+      <ItemPanel item={i} detail={null} onRate={onRate} />
+    </QueryClientProvider>
   );
+  const utils = render(wrap(item));
+  // Rerenders the *same mounted tree* with a different item — the scenario a fresh `render`
+  // call cannot reproduce, since a new tree would remount FlashcardPanel regardless of `key`.
+  return { ...utils, rerenderWithItem: (next: ItemEvent) => utils.rerender(wrap(next)) };
 }
 
 describe("ItemPanel", () => {
@@ -58,5 +71,24 @@ describe("ItemPanel", () => {
     renderPanel(mcq);
     expect(screen.getByText(mcq.stem)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /reveal/i })).not.toBeInTheDocument();
+  });
+
+  it("does not carry a revealed answer into the next flashcard", async () => {
+    // Reproduces the real sequence: useChatConversation's setLiveItem swaps one non-null
+    // ItemEvent for another, never unmounting ItemPanel in between (see useChatConversation.ts's
+    // `awaiting_reply`/`done` handlers) — so the regression only shows up on a *rerender* of the
+    // same tree, not a fresh mount.
+    stubReveal("cos x");
+    const { rerenderWithItem } = renderPanel(flashcard);
+    await userEvent.click(screen.getByRole("button", { name: /reveal/i }));
+    expect(await screen.findByText("cos x")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^good$/i })).toBeInTheDocument();
+
+    rerenderWithItem(secondFlashcard);
+
+    expect(screen.getByText(secondFlashcard.stem)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /reveal/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^good$/i })).not.toBeInTheDocument();
+    expect(screen.queryByText("cos x")).not.toBeInTheDocument();
   });
 });

@@ -2,15 +2,7 @@ import { useState } from "react";
 import { RichText } from "../content/RichText";
 import type { ItemEvent } from "../../api/sse";
 import { defaultReveal } from "../../api/hooks";
-
-/** FSRS's four grades, in the order the learner sees them. The numbers are the contract with
- * `grade_flashcard` (1=Again … 4=Easy) — see app/learning/grading.py's _RATING_SCORE. */
-const RATINGS: { label: string; value: number }[] = [
-  { label: "Again", value: 1 },
-  { label: "Hard", value: 2 },
-  { label: "Good", value: 3 },
-  { label: "Easy", value: 4 },
-];
+import { RATINGS } from "../../lib/flashcardRatings";
 
 /** Think, reveal, then rate (S54).
  *

@@ -42,7 +42,11 @@ export function ItemPanel({
         <div className="flex flex-col gap-3">
           <p className="text-caption text-base-content/60">{kc?.name ?? "…"}</p>
           {item.item_type === "flashcard" ? (
-            <FlashcardPanel item={item} onRate={onRate} />
+            // Keyed on item.id so a new flashcard remounts FlashcardPanel fresh — its local
+            // `back`/`busy` state (see FlashcardPanel) must not survive a prop change, or the
+            // next card renders beside the previous one's revealed answer with the reveal step
+            // already skipped (same remount-on-id rationale as App.tsx's ChatRoute/SessionRoute).
+            <FlashcardPanel key={item.id} item={item} onRate={onRate} />
           ) : (
             <RichText content={item.stem} className="text-base-content/90" />
           )}

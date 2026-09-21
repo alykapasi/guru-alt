@@ -5,12 +5,8 @@ import { MessageList } from "../components/chat/MessageList";
 import { Composer } from "../components/chat/Composer";
 import { ItemPanel } from "../components/lessons/ItemPanel";
 import { CitationPane } from "../components/chat/CitationPane";
+import { RATINGS } from "../lib/flashcardRatings";
 import type { Citation } from "../api/sse";
-
-/** FSRS's four grades, by the label FlashcardPanel's buttons show — kept here rather than
- * imported so that file (a component) exports only the component (react-refresh's rule). See
- * app/learning/grading.py's _RATING_SCORE for the numbers these labels stand for. */
-const RATING_LABELS: Record<number, string> = { 1: "Again", 2: "Hard", 3: "Good", 4: "Easy" };
 
 /** A guided-practice session: the workflow-mode chat transcript plus a persistent side panel
  * for the item being practiced (see docs/ROADMAP.md Phase 7's design brief). Reuses the same
@@ -51,7 +47,8 @@ export function Session() {
   // rating) — no second request path. `content` still carries the label so the transcript
   // reads as what the learner did, rather than a bare digit nobody typed.
   function handleRate(rating: number) {
-    void send(RATING_LABELS[rating] ?? String(rating), { mode: "workflow", rating });
+    const label = RATINGS.find((r) => r.value === rating)?.label ?? String(rating);
+    void send(label, { mode: "workflow", rating });
   }
 
   return (
