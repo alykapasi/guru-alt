@@ -17,7 +17,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.learning import note_distill
+from app.learning import mastery, note_distill
 from app.learning.note_distill import FALLBACK_FORMAT, FORMATS, NOTES_ROLE
 from app.llm import LLMClient
 from app.models.assessment import Item
@@ -144,7 +144,8 @@ async def _has_new_activity(
             LearningEvent.learner_id == learner_id,
             LearningEvent.kc_id.in_(kc_ids),
             LearningEvent.created_at > events_watermark,
-            LearningEvent.event_type == "observation",
+            # Both kinds: reviewing flashcards is new activity worth distilling from.
+            LearningEvent.event_type.in_(mastery.ATTEMPT_EVENTS),
         )
         .limit(1)
     )
@@ -738,7 +739,8 @@ async def notes_index(
                 .where(
                     KC.topic_id.in_(topic_ids),
                     LearningEvent.learner_id == learner_id,
-                    LearningEvent.event_type == "observation",
+                    # Both kinds: this is "when did anything last happen in this topic".
+                    LearningEvent.event_type.in_(mastery.ATTEMPT_EVENTS),
                 )
                 .group_by(KC.topic_id)
             )

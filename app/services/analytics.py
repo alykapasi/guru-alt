@@ -152,7 +152,8 @@ async def get_activity(session: AsyncSession, learner_id: uuid.UUID) -> Activity
         await session.execute(
             select(LearningEvent.created_at, LearningEvent.attempt_id, LearningEvent.id).where(
                 LearningEvent.learner_id == learner_id,
-                LearningEvent.event_type == "observation",
+                # Both kinds: streak and momentum measure effort, not evidence.
+                LearningEvent.event_type.in_(mastery.ATTEMPT_EVENTS),
                 LearningEvent.created_at >= lookback_start,
             )
         )

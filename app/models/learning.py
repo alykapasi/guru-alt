@@ -63,11 +63,12 @@ class LearningEvent(UUIDPrimaryKeyMixin, Base):
         # than a column, so without an expression index the lookup is a scan of every
         # observation the learner has ever produced. Partial, because only observations
         # carry an item.
+        # Both event types, because a self-rated attempt answers the same question (S56).
         Index(
             "ix_learning_events_learner_item",
             "learner_id",
             text("(payload ->> 'item_id')"),
-            postgresql_where=text("event_type = 'observation'"),
+            postgresql_where=text("event_type IN ('observation', 'self_report')"),
         ),
     )
 

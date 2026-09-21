@@ -163,9 +163,21 @@ async def test_a_self_rating_writes_its_own_event_type(db_session: AsyncSession)
     assert [e.event_type for e in events] == [mastery.SELF_REPORT_EVENT]
     assert events[0].payload["score"] == 0.8
     assert events[0].payload["detail"]["rating"] == 3
-    # Nothing moved, so there is no prior/posterior pair to record. Asserting their absence
-    # rather than their equality: a replay must not be handed a step it can "reproduce".
-    assert "posterior_ability" not in events[0].payload
+    # Nothing moved, so none of the replay/update machinery belongs in this payload. A
+    # set-difference over every forbidden key, not just one: asserting only
+    # `posterior_ability`'s absence would pass even if a regression re-added the other eight.
+    forbidden = {
+        "credit",
+        "estimator",
+        "estimator_config",
+        "elapsed_days",
+        "predicted",
+        "prior_ability",
+        "prior_uncertainty",
+        "posterior_ability",
+        "posterior_uncertainty",
+    }
+    assert forbidden.isdisjoint(events[0].payload)
 
 
 async def test_a_kc_whose_first_contact_is_a_flashcard_has_no_ability_evidence(
@@ -188,3 +200,47 @@ async def test_a_kc_whose_first_contact_is_a_flashcard_has_no_ability_evidence(
     assert state.last_seen_at is None
     assert state.fsrs_card is not None
     assert state.due_at is not None
+
+
+# --- the sites that opt back in (S56) -------------------------------------------
+
+
+async def test_a_self_rating_counts_as_having_seen_the_item(db_session: AsyncSession) -> None:
+    """Re-asks are re-asks whoever marked them: the question is "have they just seen this",
+    and a learner who rated a card five minutes ago has."""
+    learner, (kc,) = await _seed(db_session)
+    item_id = uuid.uuid4()
+    await mastery.record_observation(
+        db_session,
+        Observation(
+            learner_id=learner.id,
+            kc_weights={kc.id: 1.0},
+            score=1.0,
+            item_id=item_id,
+            evidence_kind=EvidenceKind.SELF_REPORTED,
+        ),
+    )
+    count = await mastery.recent_attempts_at_item(db_session, learner.id, item_id)
+    assert count == 1
+
+
+async def test_repeated_low_self_ratings_still_read_as_struggle(
+    db_session: AsyncSession,
+) -> None:
+    """A self-rating may ask for help even though it may not make a claim. Three "Again"s
+    are a learner saying they are stuck, and a detour is help, not a measurement."""
+    learner, (kc,) = await _seed(db_session)
+    now = datetime.now(UTC)
+    for day in range(3):
+        await mastery.record_observation(
+            db_session,
+            Observation(
+                learner_id=learner.id,
+                kc_weights={kc.id: 1.0},
+                score=0.2,
+                evidence_kind=EvidenceKind.SELF_REPORTED,
+            ),
+            now=now + timedelta(days=day),
+        )
+    struggle = await mastery.recent_struggle(db_session, learner.id, kc.id, threshold=0.5)
+    assert struggle.consecutive_failures == 3

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.learning import mastery
 from app.learning.activity import momentum_trend, streak_days
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
@@ -174,6 +175,27 @@ async def test_get_activity_ignores_non_observation_events(db_session: AsyncSess
 
     result = await svc.get_activity(db_session, learner.id)
     assert result.observations_last_7d == 0
+
+
+async def test_flashcard_reviews_count_as_activity(db_session: AsyncSession) -> None:
+    """Reviewing flashcards is showing up. Streak and momentum measure effort, not evidence,
+    so they are one of the few places self-report belongs."""
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+    db_session.add(
+        LearningEvent(
+            learner_id=learner.id,
+            event_type=mastery.SELF_REPORT_EVENT,
+            attempt_id=uuid.uuid4(),
+            payload={"score": 1.0},
+        )
+    )
+    await db_session.flush()
+
+    result = await svc.get_activity(db_session, learner.id)
+    assert result.observations_last_7d == 1
+    assert result.streak_days == 1
 
 
 # --- pure policy: streak_days / momentum_trend -------------------------------

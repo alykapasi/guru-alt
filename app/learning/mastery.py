@@ -57,6 +57,14 @@ remembers to revisit it — so forgetting one under-counts activity instead of f
 self-report into a measurement. The sites that should keep seeing these name this constant.
 """
 
+ATTEMPT_EVENTS: tuple[str, str] = ("observation", SELF_REPORT_EVENT)
+"""Both kinds of learner attempt, for the sites that ask a question both answer.
+
+Used where the question is about the learner's *action* — did they just see this item, are
+they stuck, did they show up — rather than about what their ability estimate rests on. The
+sites that do ask the latter filter on ``"observation"`` alone, deliberately.
+"""
+
 DEFAULT_ESTIMATOR: MasteryEstimator = GlickoEstimator()
 """The estimator the engine runs today. Swapping it (→ DKT) touches only this binding."""
 
@@ -461,7 +469,8 @@ async def recent_attempts_at_item(
             .select_from(LearningEvent)
             .where(
                 LearningEvent.learner_id == learner_id,
-                LearningEvent.event_type == "observation",
+                # Both kinds: "have they just seen this question" is true whoever marked it.
+                LearningEvent.event_type.in_(ATTEMPT_EVENTS),
                 LearningEvent.created_at >= since,
                 LearningEvent.payload["item_id"].astext == str(item_id),
             )
@@ -592,7 +601,8 @@ async def recent_struggle(
             .where(
                 LearningEvent.learner_id == learner_id,
                 LearningEvent.kc_id == kc_id,
-                LearningEvent.event_type == "observation",
+                # Both kinds: a run of "Again" is a learner asking for help, which is not a claim.
+                LearningEvent.event_type.in_(ATTEMPT_EVENTS),
             )
             .order_by(when.desc(), LearningEvent.id.desc())
             .limit(limit)

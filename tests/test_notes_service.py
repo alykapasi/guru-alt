@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.learning import note_distill
+from app.learning import mastery, note_distill
 from app.llm import LLMClient
 from app.llm.providers.fake import FakeProvider, FakeTurn
 from app.llm.registry import ModelSpec, fake_llm_client
@@ -141,6 +141,35 @@ async def test_placement_seed_alone_is_not_stale_and_refresh_is_noop(
     await _add_observation(db_session, learner, kc)
     view = await notes_svc.note_view(db_session, learner.id, topic)
     assert view.stale is True
+
+
+async def test_a_flashcard_review_makes_a_topic_worth_redistilling(
+    db_session: AsyncSession,
+) -> None:
+    """The probe that decides *whether* to distill counts a review, even though the sample
+    the model is later shown does not (see the exclusion test)."""
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="S")
+    db_session.add_all([learner, subject])
+    await db_session.flush()
+    topic = Topic(subject_id=subject.id, slug="t", name="T")
+    db_session.add(topic)
+    await db_session.flush()
+    kc = KC(topic_id=topic.id, slug="kc", name="KC")
+    db_session.add(kc)
+    await db_session.flush()
+    watermark = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1)
+    db_session.add(
+        LearningEvent(
+            learner_id=learner.id,
+            kc_id=kc.id,
+            event_type=mastery.SELF_REPORT_EVENT,
+            payload={"score": 1.0},
+        )
+    )
+    await db_session.flush()
+
+    assert await notes_svc._has_new_activity(db_session, learner.id, topic, watermark, watermark)
 
 
 async def test_no_change_advances_watermark_without_revision(db_session: AsyncSession) -> None:
