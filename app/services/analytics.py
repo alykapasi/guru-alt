@@ -33,7 +33,8 @@ _NO_EVIDENCE = mastery.KCEvidence(
     attempts=0,
     distinct_items=0,
     unassisted_items=0,
-    span_days=None,
+    unassisted_attempts=0,
+    unassisted_span_days=None,
     self_reported_attempts=0,
 )
 

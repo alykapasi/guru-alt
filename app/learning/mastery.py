@@ -874,9 +874,13 @@ class KCEvidence(BaseModel):
     # same question in the sitting — the assistance signal S13 already records.
     distinct_items: int
     unassisted_items: int
-    # Days between the first attempt at this KC and the most recent *unassisted* one. None
-    # when nothing here was ever answered unaided.
-    span_days: float | None
+    # Distinct unassisted attempts, and the days between the first and the last of them.
+    # Both endpoints are unassisted on purpose: a span measured from the first attempt of
+    # *any* kind reported a hinted January and an unaided March as sixty days of retention,
+    # on one demonstration. The span is None below two attempts, because one demonstration
+    # has no span to measure and a 0.0 would read as "measured, and it was zero".
+    unassisted_attempts: int
+    unassisted_span_days: float | None
     # Self-rated attempts at this component (S56). Counted separately rather than folded in:
     # a rating is not backing for the estimate, but it is not nothing either, and an
     # interaction that vanished from the summary would make the history a lie of omission.
@@ -888,8 +892,17 @@ class KCEvidence(BaseModel):
         return self.unassisted_items >= 2
 
     def retention_shown(self, *, min_days: float) -> bool:
-        """Demonstrated unaided at least ``min_days`` after first meeting the component."""
-        return self.span_days is not None and self.span_days >= min_days
+        """Demonstrated unaided at least twice, at least ``min_days`` apart.
+
+        Both conditions are stated although a positive ``min_days`` implies the count: a
+        configured 0 would otherwise silently collapse this back to "was ever answered
+        unaided", which is the bug this rule replaced.
+        """
+        return (
+            self.unassisted_attempts >= 2
+            and self.unassisted_span_days is not None
+            and self.unassisted_span_days >= min_days
+        )
 
 
 async def kc_evidence(
@@ -926,14 +939,17 @@ async def kc_evidence(
     # A self-rating gets its own count instead of vanishing, so the history stays honest.
     demonstrated = LearningEvent.event_type == "observation"
     self_rated = LearningEvent.event_type == SELF_REPORT_EVENT
+    # Every retention endpoint is an unassisted demonstration; see KCEvidence.
+    unassisted_when = case((and_(demonstrated, unassisted), when))
     rows = await session.execute(
         select(
             LearningEvent.kc_id,
             func.count(distinct(case((demonstrated, attempt_key)))),
             func.count(distinct(case((demonstrated, item)))),
             func.count(distinct(case((and_(demonstrated, unassisted), item)))),
-            func.min(case((demonstrated, when))),
-            func.max(case((and_(demonstrated, unassisted), when))),
+            func.count(distinct(case((and_(demonstrated, unassisted), attempt_key)))),
+            func.min(unassisted_when),
+            func.max(unassisted_when),
             func.count(distinct(case((self_rated, attempt_key)))),
         )
         .where(
@@ -949,21 +965,24 @@ async def kc_evidence(
         attempts,
         items,
         unassisted_items,
-        first_at,
+        unassisted_attempts,
+        first_unassisted_at,
         last_unassisted_at,
         self_reported,
     ) in rows:
         if kc_id is None:
             continue
+        unassisted_attempts = int(unassisted_attempts or 0)
         span = None
-        if first_at is not None and last_unassisted_at is not None:
-            span = (last_unassisted_at - first_at).total_seconds() / _SECONDS_PER_DAY
+        if unassisted_attempts >= 2:
+            span = (last_unassisted_at - first_unassisted_at).total_seconds() / _SECONDS_PER_DAY
         out[kc_id] = KCEvidence(
             kc_id=kc_id,
             attempts=int(attempts or 0),
             distinct_items=int(items or 0),
             unassisted_items=int(unassisted_items or 0),
-            span_days=span,
+            unassisted_attempts=unassisted_attempts,
+            unassisted_span_days=span,
             self_reported_attempts=int(self_reported or 0),
         )
     return out

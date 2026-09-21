@@ -219,7 +219,8 @@ async def test_a_re_look_does_not_extend_the_unaided_span(db_session: AsyncSessi
 
     (ev,) = (await mastery.kc_evidence(db_session, learner.id, [kc.id])).values()
 
-    assert ev.span_days == 0.0, "the clock stops at the last unaided attempt, not the last one"
+    assert ev.unassisted_attempts == 1
+    assert ev.unassisted_span_days is None, "one unaided attempt has no span to measure"
 
 
 async def test_two_different_questions_unaided_show_transfer(db_session: AsyncSession) -> None:
@@ -262,7 +263,7 @@ async def test_an_unaided_answer_days_later_shows_retention(db_session: AsyncSes
 
     (ev,) = (await mastery.kc_evidence(db_session, learner.id, [kc.id])).values()
 
-    assert ev.span_days is not None and ev.span_days > 8
+    assert ev.unassisted_span_days is not None and ev.unassisted_span_days > 8
     assert ev.retention_shown(min_days=1.0)
     assert not ev.retention_shown(min_days=30.0)
 
@@ -277,7 +278,7 @@ async def test_a_delay_spent_being_hinted_is_not_retention(db_session: AsyncSess
 
     (ev,) = (await mastery.kc_evidence(db_session, learner.id, [kc.id])).values()
 
-    assert ev.span_days is None
+    assert ev.unassisted_span_days is None
     assert not ev.retention_shown(min_days=1.0)
 
 
@@ -348,3 +349,27 @@ async def test_the_mastery_page_stays_flat_in_queries(db_session: AsyncSession) 
 
 def test_the_retention_floor_is_configured_not_hardcoded() -> None:
     assert get_settings().retention_min_days > 0
+
+
+async def test_one_unaided_answer_after_a_hinted_one_is_not_retention(
+    db_session: AsyncSession,
+) -> None:
+    """A span needs two unaided endpoints, not one.
+
+    The span ran from the first *any* attempt to the last *unassisted* one, so being walked
+    through a question in January and answering one unaided in March scored sixty days of
+    retention on a single demonstration — "a time span alone", which is exactly what S14 says
+    does not establish retention.
+    """
+    learner = await _learner(db_session)
+    _subject, kc = await _kc(db_session)
+    a = await _item(db_session, kc, "a")
+    b = await _item(db_session, kc, "b")
+    await _answer(db_session, learner, kc, a, when=T0, hints=2)
+    await _answer(db_session, learner, kc, b, when=T0 + timedelta(days=60))
+
+    (ev,) = (await mastery.kc_evidence(db_session, learner.id, [kc.id])).values()
+
+    assert ev.unassisted_attempts == 1
+    assert ev.unassisted_span_days is None
+    assert not ev.retention_shown(min_days=1.0)

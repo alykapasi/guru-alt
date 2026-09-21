@@ -296,7 +296,7 @@ async def test_the_span_starts_at_a_demonstrated_attempt_not_a_self_rating(
         now=t0 + timedelta(days=9),
     )
     evidence = await mastery.kc_evidence(db_session, learner.id, [kc.id])
-    assert evidence[kc.id].span_days == 0.0
+    assert evidence[kc.id].unassisted_span_days is None
     assert evidence[kc.id].retention_shown(min_days=1.0) is False
 
 
