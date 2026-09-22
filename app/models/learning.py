@@ -41,6 +41,12 @@ class LearnerKCState(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     # Opaque serialized FSRS card (stability/difficulty/state) — see app.learning.scheduler.
     fsrs_card: Mapped[dict | None] = mapped_column(JSONB, default=None)
+    # When this component first met the achievement bar: a conservative estimate at or above
+    # the bar, with retention demonstrated. Set once by `record_observation` and never
+    # cleared — later evidence can lower the current estimate, and that is what the estimate
+    # is for, but it cannot unmake a demonstration that happened. NULL on every row predating
+    # this column; see migration 0058 for why that is not backfilled.
+    achieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
 
 class LearningEvent(UUIDPrimaryKeyMixin, Base):

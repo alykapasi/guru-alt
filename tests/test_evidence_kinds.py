@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.learning import mastery
 from app.learning.grading import auto_grade, grade_flashcard
 from app.learning.mastery import Observation
@@ -415,3 +416,75 @@ async def test_a_self_rating_does_not_force_a_profile_recompute(db_session: Asyn
     await db_session.flush()
 
     assert await profile_svc.latest_evidence_at(db_session, learner.id) == graded_at
+
+
+# --- per-component achievement (S01) ---------------------------------------------
+
+
+async def test_a_self_rating_never_records_an_achievement(db_session: AsyncSession) -> None:
+    """A rating moves the review schedule and nothing else (S56).
+
+    The exclusion is structural, not a condition: the self-report branch returns before the
+    ability assignment, so the achievement check placed after it is unreachable from a
+    rating. This test is what proves the structure held.
+    """
+    learner, (kc,) = await _seed(db_session)
+    t0 = datetime.now(UTC)
+    for day in (0, 30):
+        await mastery.record_observation(
+            db_session,
+            Observation(
+                learner_id=learner.id,
+                kc_weights={kc.id: 1.0},
+                score=1.0,
+                evidence_kind=EvidenceKind.SELF_REPORTED,
+            ),
+            now=t0 + timedelta(days=day),
+        )
+
+    state = await db_session.scalar(
+        select(mastery.LearnerKCState).where(mastery.LearnerKCState.kc_id == kc.id)
+    )
+    assert state is not None and state.achieved_at is None
+
+
+async def test_an_achievement_survives_the_estimate_falling(db_session: AsyncSession) -> None:
+    """Current confidence and historical achievement are different claims.
+
+    V0_DECISIONS asks for both and says a historical achievement does not promise permanent
+    knowledge — but it also does not stop having happened.
+    """
+    learner, (kc,) = await _seed(db_session)
+    t0 = datetime.now(UTC)
+    # Five unaided successes minutes apart, then a sixth a day later. Two things have to be
+    # true on the same call for this to be a real test of the achievement check's placement:
+    # the conservative estimate must clear `mastery_conservative_bar` (0.5) — four successes
+    # reach only 0.299, confirmed against the live estimator, not assumed, so six is the
+    # smallest count that gets there — and the retention span (first unaided attempt to last)
+    # must first clear `retention_min_days` on that *same* call. Spacing the first five within
+    # fractions of a day keeps the span under a day until the last attempt lands it there, so
+    # the event that completes the span is the very one still pending until this call's own
+    # flush — exactly the ordering the achievement check depends on.
+    for offset in (0.0, 0.001, 0.002, 0.003, 0.004, 1.0):
+        await mastery.record_observation(
+            db_session,
+            Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=1.0),
+            now=t0 + timedelta(days=offset),
+        )
+    state = await db_session.scalar(
+        select(mastery.LearnerKCState).where(mastery.LearnerKCState.kc_id == kc.id)
+    )
+    assert state is not None
+    earned = state.achieved_at
+    assert earned is not None
+
+    for day in range(32, 44):
+        await mastery.record_observation(
+            db_session,
+            Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=0.0),
+            now=t0 + timedelta(days=day),
+        )
+
+    await db_session.refresh(state)
+    assert state.achieved_at == earned, "an achievement is not revoked by later evidence"
+    assert state.ability - state.uncertainty < get_settings().mastery_conservative_bar

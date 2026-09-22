@@ -305,8 +305,7 @@ async def kc_standings(
             current=estimator.decay(
                 _estimate_of(state), elapsed_days=_elapsed_days(state.last_seen_at, now)
             ),
-            # Wired to LearnerKCState.achieved_at in the task that adds the column.
-            achieved_at=None,
+            achieved_at=state.achieved_at,
         )
         for state in states
     }
@@ -323,6 +322,38 @@ async def kc_standings(
         )
         for kc_id in kc_ids
     }
+
+
+async def _record_achievements(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    states: Sequence[LearnerKCState],
+    *,
+    now: datetime,
+) -> None:
+    """Stamp ``achieved_at`` on components that have just earned it, once and for good.
+
+    Called after ``record_observation``'s flush rather than inside its loop: retention comes
+    from ``kc_evidence``, which queries the event log, and the event that earns the
+    achievement is still pending in the session until that flush. Inside the loop this would
+    either miss the demonstration that just completed the span, or depend on autoflush firing
+    mid-iteration — which works until someone sets ``autoflush=False``.
+    """
+    pending = [state for state in states if state.achieved_at is None]
+    if not pending:
+        return
+    settings = get_settings()
+    evidence = await kc_evidence(session, learner_id, [state.kc_id for state in pending])
+    for state in pending:
+        found = evidence.get(state.kc_id)
+        if found is None or not found.retention_shown(min_days=settings.retention_min_days):
+            continue
+        # The state was written moments ago, so `last_seen_at` is `now` and decay is the
+        # identity — the stored estimate *is* the current one here. Said explicitly so a
+        # later reader neither adds a redundant `kc_standings` call nor reaches for the
+        # decayed estimate in a context where that distinction does not yet exist.
+        if _estimate_of(state).conservative >= settings.mastery_conservative_bar:
+            state.achieved_at = now
 
 
 async def record_observation(
@@ -397,6 +428,10 @@ async def record_observation(
     # A caller-supplied id doubles as an idempotency key, enforced by a unique index.
     attempt_id = obs.attempt_id or uuid.uuid4()
     updated: list[LearnerKCState] = []
+    # Only the ability path appends here. The self-report branch appends to `updated` and
+    # returns before the ability assignment, so a rating is structurally unable to reach the
+    # achievement check — the same way it cannot reach `last_seen_at`.
+    demonstrated_states: list[LearnerKCState] = []
     for kc_id, raw_w in obs.kc_weights.items():
         weight = raw_w / total_w
         # The score for *this* component where the grader could tell them apart, the item's
@@ -502,7 +537,10 @@ async def record_observation(
                 },
             )
         )
+        demonstrated_states.append(state)
         updated.append(state)
+    await session.flush()
+    await _record_achievements(session, obs.learner_id, demonstrated_states, now=now)
     await session.flush()
     return updated
 
