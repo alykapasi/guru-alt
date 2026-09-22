@@ -18,14 +18,17 @@ from app.learning.tracer import Estimate, aggregate
 from app.models.knowledge import KC, Topic
 from app.models.learning import LearnerKCState, LearningEvent
 from app.schemas.analytics import ActivityRead, KCMasteryRead, SubjectMasteryRead, TopicMasteryRead
-from app.services.lesson_plan import MASTERY_ABILITY_THRESHOLD, MASTERY_UNCERTAINTY_THRESHOLD
 
 
-def _is_mastered(estimate: Estimate) -> bool:
-    return (
-        estimate.ability >= MASTERY_ABILITY_THRESHOLD
-        and estimate.uncertainty <= MASTERY_UNCERTAINTY_THRESHOLD
-    )
+def _is_mastered(estimate: Estimate, *, bar: float) -> bool:
+    """The planner's rule, minus the coverage guard each caller supplies.
+
+    The guard is the caller's because what counts as "measured" differs by level: one KC has
+    a `last_seen_at`, a topic has a count of assessed components. Both are already in hand at
+    each call site, so agreeing with the planner costs no extra query — and disagreeing with
+    it is precisely what ``mastered_kc_ids`` exists to prevent.
+    """
+    return estimate.conservative >= bar
 
 
 _NO_EVIDENCE = mastery.KCEvidence(
@@ -91,6 +94,7 @@ async def subject_mastery(
     # shows the estimate.
     evidence = await mastery.kc_evidence(session, learner_id, kc_ids)
     retention_min_days = get_settings().retention_min_days
+    conservative_bar = get_settings().mastery_conservative_bar
 
     by_topic: dict[uuid.UUID, tuple[Topic, list[KC]]] = {}
     for topic, kc in rows:
@@ -108,7 +112,7 @@ async def subject_mastery(
                 kc_name=kc.name,
                 ability=estimates[kc.id].ability,
                 uncertainty=estimates[kc.id].uncertainty,
-                mastered=_is_mastered(estimates[kc.id]),
+                mastered=kc.id in assessed and _is_mastered(estimates[kc.id], bar=conservative_bar),
                 assessed=kc.id in assessed,
                 distinct_items=_ev(evidence, kc.id).distinct_items,
                 unassisted_items=_ev(evidence, kc.id).unassisted_items,
@@ -129,7 +133,11 @@ async def subject_mastery(
                 topic_name=topic.name,
                 ability=topic_estimate.ability,
                 uncertainty=topic_estimate.uncertainty,
-                mastered=_is_mastered(topic_estimate),
+                # A topic is not mastered on the strength of components nobody measured: the
+                # aggregate averages an unseen KC in at the prior, which is a real number
+                # standing in for no evidence.
+                mastered=topic_assessed == len(kc_reads)
+                and _is_mastered(topic_estimate, bar=conservative_bar),
                 assessed_kcs=topic_assessed,
                 total_kcs=len(kc_reads),
                 kcs=kc_reads,
@@ -143,7 +151,8 @@ async def subject_mastery(
         subject_id=subject_id,
         ability=subject_estimate.ability,
         uncertainty=subject_estimate.uncertainty,
-        mastered=_is_mastered(subject_estimate),
+        mastered=subject_assessed == subject_total
+        and _is_mastered(subject_estimate, bar=conservative_bar),
         assessed_kcs=subject_assessed,
         total_kcs=subject_total,
         topics=topic_reads,

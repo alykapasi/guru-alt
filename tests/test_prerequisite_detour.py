@@ -7,7 +7,7 @@ because they never learned projections got the same component again, rescaffolde
 """
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -369,8 +369,16 @@ async def _plan(session: AsyncSession, learner: Learner, subject: Subject):
 async def test_a_stuck_learner_is_sent_to_the_prerequisite(db_session: AsyncSession) -> None:
     learner, subject, prereq, blocked = await _graph(db_session)
     # Mastered the prerequisite's *step* out of the way so least squares is what is active.
+    # Mastery takes ability evidence as well as a confident row, so the fixture has to have
+    # been measured — an unmeasured row is a placement seed, and the step would stay active.
     db_session.add(
-        LearnerKCState(learner_id=learner.id, kc_id=prereq.id, ability=2.0, uncertainty=0.2)
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=prereq.id,
+            ability=2.0,
+            uncertainty=0.2,
+            last_seen_at=datetime.now(UTC),
+        )
     )
     await db_session.flush()
     plan = await _plan(db_session, learner, subject)
@@ -462,8 +470,16 @@ async def test_which_prerequisite_a_stuck_learner_is_sent_to_is_decided_not_obse
 async def _stuck(session: AsyncSession) -> tuple[Learner, Subject, KC, KC]:
     """A learner active on ``blocked`` with a lapsed prerequisite and two failures behind them."""
     learner, subject, prereq, blocked = await _graph(session)
+    # Measured, not merely asserted: mastery needs ability evidence, and this row exists to
+    # carry the prerequisite's step past the planner before it is lapsed below.
     session.add(
-        LearnerKCState(learner_id=learner.id, kc_id=prereq.id, ability=2.0, uncertainty=0.2)
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=prereq.id,
+            ability=2.0,
+            uncertainty=0.2,
+            last_seen_at=datetime.now(UTC),
+        )
     )
     await session.flush()
     await _plan(session, learner, subject)

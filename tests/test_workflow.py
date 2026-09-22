@@ -5,6 +5,7 @@ alongside the router wiring (see the mode="workflow" dispatch commit)."""
 import json
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
@@ -29,7 +30,6 @@ from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.schemas.assessment import ItemCreate, ItemKCRef
 from app.services import assessment as assessment_svc
 from app.services import lesson_plan as lesson_plan_svc
-from app.services.lesson_plan import MASTERY_ABILITY_THRESHOLD, MASTERY_UNCERTAINTY_THRESHOLD
 from app.services.turn_common import TurnEvent
 from app.services.workflow import is_awaiting_reply, run_workflow_turn
 from tests.embedding import FAKE_SPACE
@@ -505,8 +505,11 @@ async def test_a_paused_question_the_learner_has_since_outgrown_is_not_resumed(
         LearnerKCState(
             learner_id=conv.learner_id,
             kc_id=kc.id,
-            ability=MASTERY_ABILITY_THRESHOLD + 0.5,
-            uncertainty=MASTERY_UNCERTAINTY_THRESHOLD - 0.1,
+            ability=1.5,
+            uncertainty=0.4,
+            # Mastery is a conservative bound *plus* ability evidence: a confident row that
+            # nobody ever measured is a placement seed, not a demonstration.
+            last_seen_at=datetime.now(UTC),
         )
     )
     await db_session.flush()

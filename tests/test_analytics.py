@@ -120,7 +120,15 @@ async def test_coverage_counts_only_the_components_that_were_assessed(
 
 async def test_subject_mastery_flags_mastered_at_every_level(db_session: AsyncSession) -> None:
     learner, subject, _topic, kc = await _subject_with_kc(db_session)
-    db_session.add(LearnerKCState(learner_id=learner.id, kc_id=kc.id, ability=1.5, uncertainty=0.2))
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=kc.id,
+            ability=1.5,
+            uncertainty=0.2,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
     await db_session.flush()
 
     result = await svc.subject_mastery(db_session, learner.id, subject.id)

@@ -280,6 +280,15 @@ class Settings(BaseSettings):
     # study S59 covers.
     retention_min_days: float = 1.0
 
+    # The lower confidence bound a component must clear to count as mastered. v1-arbitrary,
+    # the same standing as the two thresholds it replaces and as retention_min_days above:
+    # not calibrated against outcome data. Chosen to sit exactly on the old rule's corner —
+    # ability 1.0 with uncertainty 0.5 scores 0.5 — so this is a change of shape, not of
+    # strictness at the point where both rules agree. A setting rather than a module
+    # constant in services/lesson_plan.py because mastery.record_observation needs it too,
+    # and app/learning/ importing from app/services/ is the wrong direction.
+    mastery_conservative_bar: float = 0.5
+
     # How often practice should aim for the learner to succeed. Practice and assessment want
     # opposite things from a question (see app.learning.difficulty): this is the teaching side,
     # and it is a taste parameter, not a derivation — 0.75 is the middle of the range the

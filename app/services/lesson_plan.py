@@ -33,11 +33,6 @@ from app.services.llm_log import log_llm_call
 
 log = structlog.get_logger(__name__)
 
-MASTERY_ABILITY_THRESHOLD = 1.0
-MASTERY_UNCERTAINTY_THRESHOLD = 0.5
-"""v1-arbitrary "well mastered" bar — same spirit as placement's level->estimate mapping,
-not calibrated against real outcome data."""
-
 
 @dataclass(frozen=True)
 class PlanGroundingContext:
@@ -70,18 +65,26 @@ async def mastered_kc_ids(
 
     Public because it is the system's one definition of "mastered", and a second caller
     (``app.services.checkpoints``, deciding whether a paused question is still worth asking)
-    re-implementing the two-threshold comparison would give the planner and the resumer the
-    power to disagree about whether a learner had finished something.
+    re-implementing the comparison would give the planner and the resumer the power to
+    disagree about whether a learner had finished something.
+
+    Two conditions, and the first is not redundant. The conservative estimate trades ability
+    against uncertainty, so a confident-looking placement seed clears it outright; requiring
+    ability evidence is what keeps a self-reported background from reading as mastery. This
+    asks about *now* on purpose — retention and freshness belong to the goal's question, not
+    the planner's, and a planner that waited days for a second demonstration could never
+    finish a step.
     """
-    mastered: set[uuid.UUID] = set()
-    for kc_id in kc_ids:
-        estimate = await mastery.estimate_kc(session, learner_id, kc_id)
-        if (
-            estimate.ability >= MASTERY_ABILITY_THRESHOLD
-            and estimate.uncertainty <= MASTERY_UNCERTAINTY_THRESHOLD
-        ):
-            mastered.add(kc_id)
-    return mastered
+    ids = list(kc_ids)
+    if not ids:
+        return set()
+    bar = get_settings().mastery_conservative_bar
+    standings = await mastery.kc_standings(session, learner_id, ids)
+    return {
+        kc_id
+        for kc_id, standing in standings.items()
+        if standing.measured_at is not None and standing.current.conservative >= bar
+    }
 
 
 async def _due_review_kc_ids(

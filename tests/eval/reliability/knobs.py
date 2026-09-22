@@ -79,17 +79,17 @@ KNOBS: list[Knob] = [
         settled_by="the delayed-unassisted-probe design S59 defers, which is what defines it",
     ),
     Knob(
-        id="mastery.ability_threshold",
-        where="app.services.lesson_plan.MASTERY_ABILITY_THRESHOLD",
-        value=1.0,
-        governs="the ability at which a component is treated as well mastered and dropped",
-        settled_by="the ability above which unassisted transfer tasks are actually passed",
+        id="mastery.conservative_bar",
+        where="app.core.config.Settings.mastery_conservative_bar",
+        value=0.5,
+        governs="the lower confidence bound at which a component is treated as mastered",
+        settled_by="the bound above which unassisted transfer tasks are actually passed",
     ),
     Knob(
-        id="mastery.uncertainty_threshold",
-        where="app.services.lesson_plan.MASTERY_UNCERTAINTY_THRESHOLD",
-        value=0.5,
-        governs="how sure the estimate must be before that mastery claim is acted on",
+        id="mastery.conservative_k",
+        where="app.learning.tracer.CONSERVATIVE_K",
+        value=1.0,
+        governs="how far below the point estimate that mastery claim is made, in SDs",
         settled_by="the uncertainty at which the estimate stops predicting the next outcome",
     ),
     Knob(
@@ -177,10 +177,9 @@ def live() -> dict[str, float]:
     want to know what numbers are in force.
     """
     from app.core.config import get_settings
-    from app.learning import activity
+    from app.learning import activity, tracer
     from app.learning import lesson_plan as learning_plan
     from app.rag.adapters import pdf
-    from app.services import lesson_plan as service_plan
     from app.services import placement
 
     s = get_settings()
@@ -191,8 +190,8 @@ def live() -> dict[str, float]:
         "review.diagnose_min_failures": float(s.review_diagnose_min_failures),
         "practice.target_success_rate": float(s.practice_target_success_rate),
         "retention.min_days": float(s.retention_min_days),
-        "mastery.ability_threshold": float(service_plan.MASTERY_ABILITY_THRESHOLD),
-        "mastery.uncertainty_threshold": float(service_plan.MASTERY_UNCERTAINTY_THRESHOLD),
+        "mastery.conservative_bar": float(s.mastery_conservative_bar),
+        "mastery.conservative_k": float(tracer.CONSERVATIVE_K),
         "profile.help_seeking_low": float(learning_plan.HELP_SEEKING_LOW),
         "profile.help_seeking_high": float(learning_plan.HELP_SEEKING_HIGH),
         "profile.persistence_high": float(learning_plan.PERSISTENCE_HIGH),

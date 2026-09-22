@@ -253,6 +253,78 @@ async def estimate_kcs(
     return {kc_id: by_kc.get(kc_id, Estimate()) for kc_id in kc_ids}
 
 
+class KCStanding(BaseModel):
+    """Everything the mastery *state row* knows about one component.
+
+    Both estimates are carried because they answer different questions, and the difference is
+    load-bearing: ``current`` has uncertainty decayed to now and is what "can they do this
+    today" means, while ``at_measurement`` is what we actually saw and is what "we measured
+    them at the bar, and it was a long time ago" means. Deriving one from the other at each
+    call site is how two callers come to disagree about staleness.
+    """
+
+    kc_id: uuid.UUID
+    # None when the component has no *ability* evidence — the meaning S56 pinned. A placement
+    # seed writes a state row and leaves this unset, which is what keeps a background claim
+    # from reading as mastery.
+    measured_at: datetime | None
+    at_measurement: Estimate
+    current: Estimate
+    achieved_at: datetime | None
+
+
+async def kc_standings(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    kc_ids: Sequence[uuid.UUID],
+    *,
+    now: datetime | None = None,
+    estimator: MasteryEstimator = DEFAULT_ESTIMATOR,
+) -> dict[uuid.UUID, KCStanding]:
+    """State-row facts for many components in one query.
+
+    Like ``estimate_kcs``, a component with no row still appears, at the unknown prior with
+    ``measured_at=None``: absent from the table is a fact about the learner, not a reason to
+    leave it out of the answer.
+    """
+    now = now or datetime.now(UTC)
+    if not kc_ids:
+        return {}
+    states = (
+        await session.scalars(
+            select(LearnerKCState).where(
+                LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id.in_(kc_ids)
+            )
+        )
+    ).all()
+    by_kc = {
+        state.kc_id: KCStanding(
+            kc_id=state.kc_id,
+            measured_at=state.last_seen_at,
+            at_measurement=_estimate_of(state),
+            current=estimator.decay(
+                _estimate_of(state), elapsed_days=_elapsed_days(state.last_seen_at, now)
+            ),
+            # Wired to LearnerKCState.achieved_at in the task that adds the column.
+            achieved_at=None,
+        )
+        for state in states
+    }
+    return {
+        kc_id: by_kc.get(
+            kc_id,
+            KCStanding(
+                kc_id=kc_id,
+                measured_at=None,
+                at_measurement=Estimate(),
+                current=Estimate(),
+                achieved_at=None,
+            ),
+        )
+        for kc_id in kc_ids
+    }
+
+
 async def record_observation(
     session: AsyncSession,
     obs: Observation,

@@ -11,6 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.learning import mastery
+from app.learning.tracer import Estimate
 from app.llm.registry import fake_llm_client
 from app.models.assessment import Item, ItemKC, ItemType
 from app.models.knowledge import KC, KCEdge, Subject, Topic
@@ -44,7 +46,17 @@ async def _graph(session: AsyncSession) -> tuple[Learner, Subject, KC, KC]:
 
 
 async def _mastered_state(session: AsyncSession, learner_id: uuid.UUID, kc_id: uuid.UUID) -> None:
-    session.add(LearnerKCState(learner_id=learner_id, kc_id=kc_id, ability=1.5, uncertainty=0.3))
+    session.add(
+        LearnerKCState(
+            learner_id=learner_id,
+            kc_id=kc_id,
+            ability=1.5,
+            uncertainty=0.3,
+            # Mastery now requires ability evidence, not just a confident row — a placement
+            # seed writes a row too. A fixture for "mastered" has to have been measured.
+            last_seen_at=datetime.now(UTC),
+        )
+    )
     await session.flush()
 
 
@@ -557,3 +569,53 @@ async def test_a_goal_inside_the_cap_defers_nothing(db_session: AsyncSession) ->
         db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
     )
     assert plan.objective_kc_count == 3 and plan.deferred_kc_count == 0
+
+
+async def test_a_placement_seed_alone_is_never_mastered(db_session: AsyncSession) -> None:
+    """A background claim is not a demonstration, however strong.
+
+    The old rule excluded a "strong" seed only because that seed's uncertainty happened to
+    sit above the uncertainty threshold — tuned to 0.45 it would have counted. The
+    conservative estimate on its own is *more* permissive here, so the rule is paired with a
+    requirement that the estimate rests on ability evidence at all.
+    """
+    learner, _subject, root, _dependent = await _graph(db_session)
+    seeded = Estimate(ability=1.75, uncertainty=0.6)
+    await mastery.seed_prior(db_session, learner.id, root.id, seeded)
+
+    mastered = await svc.mastered_kc_ids(db_session, learner.id, [root.id])
+
+    assert root.id not in mastered
+    # The guard is what excluded it, not the arithmetic: assert the estimate would have
+    # passed the bar on its own, so a later loosening of the guard fails this test.
+    assert seeded.conservative >= get_settings().mastery_conservative_bar
+
+
+async def test_a_measured_component_at_the_old_corner_is_still_mastered(
+    db_session: AsyncSession,
+) -> None:
+    """The bar sits on the old rule's corner, so the two agree where both had an opinion.
+
+    The corner itself is pinned on the *measurement*, which is where the claim is exact.
+    The planner judges the estimate decayed to now, and decay only ever grows uncertainty,
+    so a component measured exactly at the bar sits a hair under it the instant afterwards
+    — 0.49999999993839706 for a row seeded milliseconds earlier. That is the rule working,
+    not a disagreement about where the corner is, so the service-level assertion uses a row
+    the old rule also called mastered with room for an instant to pass.
+    """
+    learner, _subject, root, _dependent = await _graph(db_session)
+    assert Estimate(ability=1.0, uncertainty=0.5).conservative == (
+        get_settings().mastery_conservative_bar
+    )
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=root.id,
+            ability=1.0,
+            uncertainty=0.4,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+
+    assert root.id in await svc.mastered_kc_ids(db_session, learner.id, [root.id])
