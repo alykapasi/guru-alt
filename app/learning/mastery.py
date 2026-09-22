@@ -335,9 +335,12 @@ async def _record_achievements(
 
     Called after ``record_observation``'s flush rather than inside its loop: retention comes
     from ``kc_evidence``, which queries the event log, and the event that earns the
-    achievement is still pending in the session until that flush. Inside the loop this would
-    either miss the demonstration that just completed the span, or depend on autoflush firing
-    mid-iteration — which works until someone sets ``autoflush=False``.
+    achievement is still pending in the session until that flush. Placed here explicitly
+    rather than left to the session's own ``autoflush`` to paper over the ordering —
+    ``autoflush`` is on by default in both ``app.core.db`` and the test suite's sessions, so
+    it would currently save a call made from inside the loop too, and quietly stop doing so
+    the day someone disables it. The explicit flush is what makes the ordering true by
+    construction instead of by whatever the session happens to be configured with.
     """
     pending = [state for state in states if state.achieved_at is None]
     if not pending:

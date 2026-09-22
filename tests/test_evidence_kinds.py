@@ -424,9 +424,14 @@ async def test_a_self_rating_does_not_force_a_profile_recompute(db_session: Asyn
 async def test_a_self_rating_never_records_an_achievement(db_session: AsyncSession) -> None:
     """A rating moves the review schedule and nothing else (S56).
 
-    The exclusion is structural, not a condition: the self-report branch returns before the
-    ability assignment, so the achievement check placed after it is unreachable from a
-    rating. This test is what proves the structure held.
+    Two independent things keep a rating out of `achieved_at`, and this test cannot tell them
+    apart. The exclusion is structural: the self-report branch returns before the ability
+    assignment, so the achievement check placed after it is unreachable from a rating at all.
+    It is also independently blocked one layer down even if that structure were removed: a
+    self-report writes a `self_report` event, not `observation`, and `kc_evidence`'s retention
+    counters only count the latter, so `retention_shown` would still read false. Confirmed by
+    mutation — moving the append into the self-report branch leaves this test passing, because
+    the second guard alone is enough.
     """
     learner, (kc,) = await _seed(db_session)
     t0 = datetime.now(UTC)
@@ -488,3 +493,77 @@ async def test_an_achievement_survives_the_estimate_falling(db_session: AsyncSes
     await db_session.refresh(state)
     assert state.achieved_at == earned, "an achievement is not revoked by later evidence"
     assert state.ability - state.uncertainty < get_settings().mastery_conservative_bar
+
+
+async def test_a_demonstrated_component_that_never_clears_the_bar_stays_unachieved(
+    db_session: AsyncSession,
+) -> None:
+    """Retention alone is not achievement — the conservative estimate still has to clear the bar.
+
+    Two unaided attempts a day apart already satisfy `retention_shown` (2 attempts, 1-day
+    span), so this isolates the other half of the rule: the estimate itself. Confirmed against
+    the live estimator, not assumed — two observations at score 1.0 land ability/uncertainty at
+    conservative ≈ -0.15, well under `mastery_conservative_bar` (0.5).
+    """
+    learner, (kc,) = await _seed(db_session)
+    t0 = datetime.now(UTC)
+    for day in (0, 1):
+        await mastery.record_observation(
+            db_session,
+            Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=1.0),
+            now=t0 + timedelta(days=day),
+        )
+    state = await db_session.scalar(
+        select(mastery.LearnerKCState).where(mastery.LearnerKCState.kc_id == kc.id)
+    )
+    assert state is not None
+    assert state.ability - state.uncertainty < get_settings().mastery_conservative_bar
+    assert state.achieved_at is None
+
+
+async def test_an_achievement_keeps_its_original_date_through_a_later_recovery(
+    db_session: AsyncSession,
+) -> None:
+    """The `pending` filter in `_record_achievements`, exercised directly.
+
+    An estimate that falls and then recovers above the bar a second time must not move
+    `achieved_at` to the recovery date — the fact already happened once. In the "falls and
+    stays down" test above, the bar check alone would block a re-stamp with no help from the
+    filter; recovering *back above* the bar is the case the filter actually exists for, so this
+    asserts the original date survives a second crossing, not just a fall.
+    """
+    learner, (kc,) = await _seed(db_session)
+    t0 = datetime.now(UTC)
+    for offset in (0.0, 0.001, 0.002, 0.003, 0.004, 1.0):
+        await mastery.record_observation(
+            db_session,
+            Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=1.0),
+            now=t0 + timedelta(days=offset),
+        )
+    state = await db_session.scalar(
+        select(mastery.LearnerKCState).where(mastery.LearnerKCState.kc_id == kc.id)
+    )
+    assert state is not None
+    earned = state.achieved_at
+    assert earned is not None
+
+    for day in (31, 32, 33):
+        await mastery.record_observation(
+            db_session,
+            Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=0.0),
+            now=t0 + timedelta(days=day),
+        )
+    await db_session.refresh(state)
+    assert state.ability - state.uncertainty < get_settings().mastery_conservative_bar
+
+    for day in range(34, 41):
+        await mastery.record_observation(
+            db_session,
+            Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=1.0),
+            now=t0 + timedelta(days=day),
+        )
+    await db_session.refresh(state)
+    assert state.ability - state.uncertainty >= get_settings().mastery_conservative_bar, (
+        "the scenario must actually re-cross the bar, or the filter is not being exercised"
+    )
+    assert state.achieved_at == earned, "a second crossing is not a second achievement"
