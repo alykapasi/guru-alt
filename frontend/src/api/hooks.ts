@@ -264,6 +264,59 @@ export function useGenerateLessonPlan(subjectId: string | undefined) {
   });
 }
 
+/** Switches how much the planner may decide for the learner on its own (V07/S11): guided takes
+ * detours on its own, exploration only offers them. Same cache-write as useGenerateLessonPlan —
+ * the response is a full plan, so there is nothing to invalidate. */
+export function useSetGuidance(subjectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (guidance: "guided" | "exploration") => {
+      const { data, error } = await api.PATCH(
+        "/api/v1/subjects/{subject_id}/lesson-plan/guidance",
+        {
+          params: { path: { subject_id: subjectId! } },
+          body: { guidance },
+        },
+      );
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(["lesson-plan", subjectId], data);
+    },
+  });
+}
+
+/** A learner's answer to an offered detour — take it or skip it (S11). A 409 means the detour
+ * closed before the decision landed (the blocker resolved itself, say); there is nothing to
+ * patch onto a plan that no longer has that offer, so the error is left to the query's own
+ * default refetch rather than handled here. */
+export function useDecideDetour(subjectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      prereqKcId,
+      decision,
+    }: {
+      prereqKcId: string;
+      decision: "accept" | "skip";
+    }) => {
+      const { data, error } = await api.POST(
+        "/api/v1/subjects/{subject_id}/lesson-plan/detours/{prereq_kc_id}",
+        {
+          params: { path: { subject_id: subjectId!, prereq_kc_id: prereqKcId } },
+          body: { decision },
+        },
+      );
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(["lesson-plan", subjectId], data);
+    },
+  });
+}
+
 export function usePlacementPrompt(subjectId: string | undefined) {
   return useQuery({
     queryKey: ["placement-prompt", subjectId],

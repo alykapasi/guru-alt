@@ -10,14 +10,36 @@ type LessonStep = components["schemas"]["LessonStepRead"];
  * can reorder the plan to put a prerequisite first when a learner is stuck, and a reordering
  * nobody explains is indistinguishable from the plan changing its mind — which is the thing a
  * learner would reasonably lose trust over. The two fields the planner records for exactly
- * this (`detour_for`, `detour_reason`) are what the row says out loud. */
-export function LessonStepRow({ step }: { step: LessonStep }) {
+ * this (`detour_for`, `detour_reason`) are what the row says out loud.
+ *
+ * In exploration guidance (V07) a detour is only *proposed* until the learner decides — the row
+ * offers "Take detour" / "Skip" for that, and "Skip" alone once it is under way (`active`/
+ * `pending`). `onDecide`/`deciding` are only meaningful for a detour row; other rows ignore
+ * them. */
+export function LessonStepRow({
+  step,
+  onDecide,
+  deciding,
+}: {
+  step: LessonStep;
+  onDecide?: (decision: "accept" | "skip") => void;
+  deciding?: boolean;
+}) {
   const { data: kc } = useKC(step.kc_id);
   // The component the learner was actually working towards when this detour was inserted.
   const { data: blockedKc } = useKC(step.detour_for ?? undefined);
   const isActive = step.status === "active";
   const isDone = step.status === "done";
+  const isSkipped = step.status === "skipped";
+  const isProposed = step.status === "proposed";
   const isDetour = step.step_type === "detour";
+  // Struck through once the row is settled — completed or dismissed — same as "done" always was.
+  const isSettled = isDone || isSkipped;
+  const isDisproved = isDone && step.detour_outcome === "disproved";
+  // Open to a decision until it resolves (done) or is dismissed (skipped); proposed additionally
+  // offers "take", active/pending offer only "skip".
+  const decidable = isDetour && !isDone && !isSkipped;
+  const blockedName = blockedKc?.name;
 
   return (
     <div
@@ -31,13 +53,13 @@ export function LessonStepRow({ step }: { step: LessonStep }) {
               : isDetour
                 ? "bg-warning/15 text-warning"
                 : "border-base-300 border"
-          }`}
+          } ${isSkipped ? "opacity-50" : ""}`}
         >
           {isDone ? <Check size={12} /> : isDetour ? <CornerDownRight size={12} /> : null}
         </span>
         <span
           className={`text-body flex-1 truncate ${
-            isDone ? "text-base-content/40 line-through" : "text-base-content/90"
+            isSettled ? "text-base-content/40 line-through" : "text-base-content/90"
           }`}
         >
           {kc?.name ?? "…"}
@@ -45,14 +67,52 @@ export function LessonStepRow({ step }: { step: LessonStep }) {
         <span
           className={`text-caption shrink-0 ${isDetour ? "text-warning" : "text-base-content/50"}`}
         >
-          {isDetour ? "Detour" : step.step_type === "review" ? "Review" : "New"}
+          {isSkipped
+            ? "Skipped"
+            : isDetour
+              ? "Detour"
+              : step.step_type === "review"
+                ? "Review"
+                : "New"}
         </span>
       </div>
       {isDetour && (
-        <p className="text-caption text-base-content/60 pl-9">
-          {blockedKc?.name ? `Clearing the way back to ${blockedKc.name}.` : "Clearing the way."}
-          {step.detour_reason ? ` ${step.detour_reason}` : ""}
-        </p>
+        <div className="flex items-center justify-between gap-2 pl-9">
+          <p className="text-caption text-base-content/60">
+            {isProposed
+              ? `Offered because ${blockedName ?? "…"} is proving hard.`
+              : isDisproved
+                ? blockedName
+                  ? `Turned out not to be the gap — back to ${blockedName}.`
+                  : "Turned out not to be the gap."
+                : blockedName
+                  ? `Clearing the way back to ${blockedName}.`
+                  : "Clearing the way."}
+            {!isProposed && !isDisproved && step.detour_reason ? ` ${step.detour_reason}` : ""}
+          </p>
+          {decidable && (
+            <div className="flex shrink-0 gap-1">
+              {isProposed && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-xs"
+                  disabled={deciding}
+                  onClick={() => onDecide?.("accept")}
+                >
+                  Take detour
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs"
+                disabled={deciding}
+                onClick={() => onDecide?.("skip")}
+              >
+                Skip
+              </button>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
