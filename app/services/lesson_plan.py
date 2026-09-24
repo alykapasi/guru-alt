@@ -219,7 +219,7 @@ def _open_detour_keys(steps: Iterable[Any]) -> set[tuple[str, str]]:
 
 
 def _closed_detours(steps: Iterable[Any]) -> dict[tuple[str, str, str], str]:
-    """``(prerequisite, blocked, disambiguator) -> outcome`` for every detour step that has
+    """``(prerequisite, blocked, offered_at) -> outcome`` for every detour step that has
     closed — one entry **per step**, not per route.
 
     A route closed ``"mastered"`` is not barred from reopening (``mastery.closed_detour_routes``
@@ -229,24 +229,23 @@ def _closed_detours(steps: Iterable[Any]) -> dict[tuple[str, str, str], str]:
     ``_apply_revision`` saw no *new* key and silently wrote no event for it — a second skip or
     disproval on a re-detoured route was never remembered.
 
-    ``opened_at`` disambiguates real (guided/accepted) steps, each stamped when it began. A
-    step can close with no ``opened_at`` — a still-``"proposed"`` offer whose KC gets mastered
-    before it is ever accepted (``revise_steps`` rule 1 applies to every detour status, not
-    only open ones) — so that case falls back to its occurrence index among same-route steps,
-    in ``steps``' own order, which keeps repeats of *that* apart too.
+    ``offered_at`` is what disambiguates the two steps: ``revise_steps`` stamps it on every
+    detour insertion, in both guidance modes, and two detours on one route can never be
+    inserted in the same revision (the ``already_open`` check), so it is unique per route. A
+    fix round 1 attempt used an occurrence index among same-route steps for offers with no
+    ``opened_at`` instead — but ``revise_steps`` re-sorts closed steps by their *previous*
+    order on every call, so that index was not stable between the "before" and "after" reads
+    of the same steps and could itself misattribute a closure. Falling back to ``opened_at``
+    (never present without ``offered_at`` on anything written by this code) and then to
+    ``""`` only matters for a detour step written before either stamp existed, which reopening
+    the route key for is acceptable — those predate proposals entirely.
     """
-    seen: dict[tuple[str, str], int] = {}
     closed: dict[tuple[str, str, str], str] = {}
     for step in steps:
         if step.get("step_type") != "detour" or not step.get("detour_outcome"):
             continue
         route = (str(step.get("kc_id")), str(step.get("detour_for")))
-        opened_at = step.get("opened_at")
-        if opened_at:
-            disambiguator = str(opened_at)
-        else:
-            disambiguator = f"#{seen.get(route, 0)}"
-            seen[route] = seen.get(route, 0) + 1
+        disambiguator = step.get("offered_at") or step.get("opened_at") or ""
         closed[(*route, disambiguator)] = str(step.get("detour_outcome"))
     return closed
 

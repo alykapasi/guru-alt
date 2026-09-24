@@ -327,6 +327,16 @@ def test_exploration_only_proposes() -> None:
     assert [s["kc_id"] for s in steps] == [str(prereq), str(blocked)]
 
 
+def test_offered_at_is_stamped_on_insertion_in_both_modes() -> None:
+    """Fix round 2 (S11): unlike ``opened_at``, ``offered_at`` marks when a step first
+    entered the plan regardless of guidance — it is what a caller keys a per-step outcome on,
+    since a route can legitimately reopen after closing ``mastered`` and the route alone
+    cannot tell two steps on it apart."""
+    for guidance in ("guided", "exploration"):
+        steps, _blocked, prereq = _with_detour(guidance)
+        assert _by_kc(steps, prereq)["offered_at"] == NOW.isoformat()
+
+
 def test_a_proposal_is_never_activated_by_revision() -> None:
     steps, blocked, prereq = _with_detour("exploration")
     for _ in range(3):
@@ -1076,6 +1086,63 @@ async def test_a_route_closed_mastered_can_reopen_and_its_own_skip_is_remembered
     assert len(detour_steps) == 2
     second = next(s for s in detour_steps if s["status"] == "active")
     assert second["opened_at"] != first["opened_at"]
+
+    plan = await svc.decide_detour(
+        db_session,
+        learner_id=learner.id,
+        subject_id=subject.id,
+        prereq_kc_id=prereq.id,
+        decision="skip",
+    )
+    assert plan is not None
+
+    outcomes = await _outcome_events(db_session, learner)
+    assert {e.payload["outcome"] for e in outcomes} == {"mastered", "skipped"}
+    assert len(outcomes) == 2
+    assert await mastery.closed_detour_routes(db_session, learner.id, blocked.id) == {prereq.id}
+
+
+async def test_two_never_accepted_proposals_on_one_route_are_remembered_separately(
+    db_session: AsyncSession,
+) -> None:
+    """Review fix round 2, finding 1: the round-1 fix's fallback for a step with no
+    `opened_at` (an occurrence index among same-route steps) was order-dependent —
+    `revise_steps` re-sorts closed steps by their *previous* order, so the index a step got in
+    the "before" read of `plan.steps` was not guaranteed to match the index it gets in the
+    "after" read of `revised`. This is the case that actually needs it: neither proposal here
+    is ever accepted, so neither ever gets an `opened_at` — only `offered_at`, stamped on
+    every insertion regardless of guidance, tells the two apart."""
+    learner, subject, prereq, blocked = await _exploring(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)  # P1 proposed
+
+    # Master the prerequisite without ever accepting the offer: P1 closes "mastered" still
+    # `"proposed"` (revise_steps rule 1 applies to every detour status, not only open ones).
+    state = await db_session.scalar(
+        select(LearnerKCState).where(
+            LearnerKCState.learner_id == learner.id, LearnerKCState.kc_id == prereq.id
+        )
+    )
+    assert state is not None
+    state.ability, state.uncertainty, state.last_seen_at = 2.0, 0.2, datetime.now(UTC)
+    await db_session.flush()
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    first = _detour_step(plan, prereq)
+    assert (first["status"], first["detour_outcome"]) == ("done", "mastered")
+    assert first.get("opened_at") is None
+
+    # Mastery slips: still failing the blocked component, so the route reopens — P2 proposed.
+    state.ability, state.uncertainty = -1.0, 0.9
+    await db_session.flush()
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    detour_steps = [
+        s for s in plan.steps if s["step_type"] == "detour" and s["kc_id"] == str(prereq.id)
+    ]
+    assert len(detour_steps) == 2
+    second = next(s for s in detour_steps if s["status"] == "proposed")
+    assert second.get("opened_at") is None
+    assert second["offered_at"] != first["offered_at"]
 
     plan = await svc.decide_detour(
         db_session,

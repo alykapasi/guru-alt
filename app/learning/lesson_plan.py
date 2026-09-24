@@ -74,6 +74,12 @@ class StepDict(TypedDict):
     # acceptance). Disproval only counts evidence from after it, so an old pass cannot close
     # a new detour. Absent on detours written before this existed — those are never disproved.
     opened_at: NotRequired[str | None]
+    # When this detour step first entered the plan — stamped on insertion, in *both* guidance
+    # modes, unlike `opened_at` (S11 fix round 2). This is what tells two steps on the same
+    # route apart once a route has legitimately reopened: the route alone cannot, since a
+    # route closed `"mastered"` is never barred from a later detour. Absent on detours written
+    # before this existed.
+    offered_at: NotRequired[str | None]
     detour_outcome: NotRequired[DetourOutcome | None]
 
 
@@ -495,14 +501,19 @@ def revise_steps(
     ``mastery.due_reviews`` returns them) — that order becomes the review-step ordering.
 
     0. A ``detour`` (S11) is inserted ahead of everything as its own step, unless one for that
-       prerequisite is already open (``OPEN_DETOUR_STATUSES``). Under guided guidance it is
-       inserted taken — ``status="pending"``, ``opened_at`` stamped now — and sorts before due
-       reviews: a detour is the direct response to the failure that just happened, and putting
-       a queue of flashcards between the two breaks that connection, while FSRS intervals are
-       measured in days and tolerate a few minutes. Under exploration guidance it is only
-       *proposed* (V07): ``status="proposed"``, no ``opened_at``, and it sorts immediately
-       before the step it was proposed for rather than ahead of everything — the learner has
-       not agreed to go yet, so nothing else in the plan moves for it.
+       prerequisite is already open (``OPEN_DETOUR_STATUSES``). Every insertion stamps
+       ``offered_at`` now, in *either* mode — the moment this step, as opposed to some earlier
+       one on the same route, entered the plan (S11 fix round 2: a route can legitimately
+       reopen after closing ``"mastered"``, and ``offered_at`` is what a caller keys a
+       per-step outcome record on instead of the route alone). Under guided guidance it is
+       also inserted taken — ``status="pending"``, ``opened_at`` stamped the same moment — and
+       sorts before due reviews: a detour is the direct response to the failure that just
+       happened, and putting a queue of flashcards between the two breaks that connection,
+       while FSRS intervals are measured in days and tolerate a few minutes. Under exploration
+       guidance it is only *proposed* (V07): ``status="proposed"``, no ``opened_at`` yet, and
+       it sorts immediately before the step it was proposed for rather than ahead of
+       everything — the learner has not agreed to go yet, so nothing else in the plan moves
+       for it.
     1. A ``"new"`` step whose KC is now mastered flips to ``"done"``. A ``"detour"`` step whose
        KC is now mastered flips to ``"done"`` with ``detour_outcome="mastered"`` — a proposal
        included, since a proposal is dropped once there is nothing left for it to test, and a
@@ -578,6 +589,7 @@ def revise_steps(
         # they have demonstrated; the decision is made against mastery, but the plan may have
         # moved on since.
         if not already_open and prereq_id not in mastered:
+            offered_at = (now or datetime.now(UTC)).isoformat()
             result.append(
                 StepDict(
                     kc_id=prereq_id,
@@ -589,11 +601,8 @@ def revise_steps(
                     preferred_item_type=None,
                     detour_for=str(detour.blocked_kc_id),
                     detour_reason=detour.reason,
-                    opened_at=(
-                        None
-                        if guidance == "exploration"
-                        else (now or datetime.now(UTC)).isoformat()
-                    ),
+                    offered_at=offered_at,
+                    opened_at=None if guidance == "exploration" else offered_at,
                 )
             )
 
