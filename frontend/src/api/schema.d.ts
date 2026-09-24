@@ -662,6 +662,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/practice": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Practice Action
+         * @description Pause, resume, or skip guided practice explicitly (S52) — the frontend's own controls,
+         *     as opposed to the intent gate that infers a pause/skip from an ordinary chat message.
+         *
+         *     One turn at a time here too: held under the same conversation-wide claim ``messages`` uses,
+         *     so an explicit control cannot race a turn already in flight for this conversation.
+         */
+        post: operations["practice_action_api_v1_conversations__conversation_id__practice_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/turns": {
         parameters: {
             query?: never;
@@ -3242,6 +3266,29 @@ export interface components {
             /** Background */
             background: string;
         };
+        /** PracticeActionSubmit */
+        PracticeActionSubmit: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "pause" | "resume" | "skip";
+        };
+        /**
+         * PracticeStateRead
+         * @description Where practice stands after a pause/resume/skip (S52). ``ended`` is true when a resume
+         *     found the paused question no longer fits the plan — not an error, the learner did nothing
+         *     wrong.
+         */
+        PracticeStateRead: {
+            /** Ended */
+            ended: boolean;
+            item: components["schemas"]["ItemRead"] | null;
+            /** Phase */
+            phase: string;
+            /** Prompt */
+            prompt: string | null;
+        };
         /**
          * PrerequisiteCreate
          * @description Declare that ``prereq_kc_id`` is a prerequisite of the KC in the path.
@@ -4859,6 +4906,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    practice_action_api_v1_conversations__conversation_id__practice_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PracticeActionSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PracticeStateRead"];
                 };
             };
             /** @description Validation Error */

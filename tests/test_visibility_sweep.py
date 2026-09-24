@@ -30,6 +30,7 @@ from app.core.db import Base
 from app.llm.registry import fake_llm_client
 from app.main import app
 from app.models.assessment import Item, ItemKC, ItemOrigin, ItemType
+from app.models.chat import Conversation
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.publication import CurriculumProposal, Publication, PublicationStatus
@@ -48,6 +49,7 @@ class Ids:
     item: uuid.UUID
     proposal: uuid.UUID  # a curriculum-generation record (S25b); `/subjects/commit` needs one
     publication: uuid.UUID  # a pending publication request on `subject` (S25b)
+    conversation: uuid.UUID  # a chat conversation on `subject`, owned by the same learner (S52)
 
 
 @dataclass(frozen=True)
@@ -78,7 +80,7 @@ class Case:
 
 
 def _random_ids() -> Ids:
-    return Ids(*(uuid.uuid4() for _ in range(7)))
+    return Ids(*(uuid.uuid4() for _ in range(8)))
 
 
 async def _private_graph(session: AsyncSession, owner: Learner) -> Ids:
@@ -117,6 +119,10 @@ async def _private_graph(session: AsyncSession, owner: Learner) -> Ids:
         snapshot={},
     )
     session.add(publication)
+    # `/conversations/{conversation_id}/practice` needs a conversation to target (S52); the
+    # subject scoping matches every other row in this private graph.
+    conversation = Conversation(learner_id=owner.id, subject_id=subject.id)
+    session.add(conversation)
     await session.flush()
     return Ids(
         subject=subject.id,
@@ -126,6 +132,7 @@ async def _private_graph(session: AsyncSession, owner: Learner) -> Ids:
         item=item.id,
         proposal=proposal.id,
         publication=publication.id,
+        conversation=conversation.id,
     )
 
 
@@ -463,6 +470,15 @@ CASES: list[Case] = [
         "subject_id",
         ("subject",),
         lambda c, t, o: c.post(f"{API}/conversations", json={"subject_id": str(t.subject)}),
+    ),
+    Case(
+        "POST",
+        "/api/v1/conversations/{conversation_id}/practice",
+        "conversation_id",
+        ("conversation",),
+        lambda c, t, o: c.post(
+            f"{API}/conversations/{t.conversation}/practice", json={"action": "pause"}
+        ),
     ),
     # --- notes ---------------------------------------------------------------------------
     Case(

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.agent import checkpointing
 from app.api.deps import get_llm_client
@@ -21,7 +21,7 @@ from app.models.chat import Conversation, ConversationPhase
 from app.models.knowledge import KC
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
-from app.services import practice
+from app.services import practice, turn_lock
 from app.services import workflow as workflow_svc
 from tests.test_workflow import (
     API,
@@ -439,3 +439,62 @@ def test_a_paused_tutor_turn_keeps_the_pause() -> None:
         )
         is ConversationPhase.PRACTICE_PAUSED
     )
+
+
+# --- the explicit HTTP controls (Task 7) --------------------------------------------------
+
+
+async def test_the_practice_controls_over_http(
+    api_client, db_session, api_learner, restore_llm
+) -> None:
+    _install([FakeTurn(text=PRESENT)])
+    cid = await _started(api_client, db_session, api_learner)
+    url = f"{API}/conversations/{cid}/practice"
+
+    assert (await api_client.post(url, json={"action": "resume"})).status_code == 409
+    r = await api_client.post(url, json={"action": "pause"})
+    assert r.status_code == 200 and r.json()["phase"] == "practice_paused"
+    assert (await api_client.post(url, json={"action": "pause"})).status_code == 409
+
+    r = await api_client.post(url, json={"action": "resume"})
+    body = r.json()
+    assert (body["phase"], body["prompt"], body["ended"]) == ("awaiting_answer", PRESENT, False)
+    assert body["item"]["id"] == (await _row(api_client, cid))["active_item_id"]
+
+    r = await api_client.post(url, json={"action": "skip"})
+    assert r.status_code == 200 and r.json()["phase"] == "chatting"
+    assert (await api_client.post(url, json={"action": "skip"})).status_code == 409
+    assert (await api_client.post(url, json={"action": "hover"})).status_code == 422
+
+
+async def test_skip_works_on_a_tutor_chat_check(api_client, db_session, api_learner) -> None:
+    _l, subject = await _learner_and_subject_with_active_step(db_session, learner=api_learner)
+    r = await api_client.post(f"{API}/conversations", json={"subject_id": str(subject.id)})
+    cid = r.json()["id"]
+    conv = await db_session.get(Conversation, uuid.UUID(cid))
+    item = await db_session.scalar(select(Item).limit(1))  # the bank item seeded by the helper
+    conv.phase, conv.active_item_id, conv.active_item_scaffolds = (
+        ConversationPhase.AWAITING_ANSWER,
+        item.id,
+        2,
+    )
+    await db_session.commit()
+    r = await api_client.post(f"{API}/conversations/{cid}/practice", json={"action": "skip"})
+    assert r.status_code == 200
+    await db_session.refresh(conv)
+    assert (conv.phase, conv.active_item_id, conv.active_item_scaffolds) == ("chatting", None, 0)
+
+
+async def test_a_control_waits_for_the_turn_in_progress(
+    api_client, db_session, api_learner, restore_llm, engine: AsyncEngine
+) -> None:
+    """Review focus 3."""
+    _install([FakeTurn(text=PRESENT)])
+    cid = await _started(api_client, db_session, api_learner)
+    claim = await turn_lock.claim(engine, uuid.UUID(cid))
+    assert claim is not None
+    try:
+        r = await api_client.post(f"{API}/conversations/{cid}/practice", json={"action": "pause"})
+        assert r.status_code == 409
+    finally:
+        await claim.release()

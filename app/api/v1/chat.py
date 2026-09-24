@@ -40,6 +40,8 @@ from app.schemas.chat import (
     ConversationRead,
     ConversationUpdate,
     MessageRead,
+    PracticeActionSubmit,
+    PracticeStateRead,
     TurnRead,
 )
 from app.services import agentic as agentic_svc
@@ -50,6 +52,7 @@ from app.services import practice as practice_svc
 from app.services import refinement as refinement_svc
 from app.services import turn as turn_svc
 from app.services import workflow as workflow_svc
+from app.services.assessment import item_to_read
 from app.services.turn_common import TurnEvent
 
 log = structlog.get_logger(__name__)
@@ -437,6 +440,50 @@ async def list_turns(
     if conversation is None or conversation.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
     return await turn_svc.recent_turns(session, conversation_id, limit=max(1, min(limit, 50)))
+
+
+@router.post("/conversations/{conversation_id}/practice", response_model=PracticeStateRead)
+async def practice_action(
+    conversation_id: uuid.UUID,
+    data: PracticeActionSubmit,
+    session: SessionDep,
+    learner: CurrentLearner,
+    llm: LLMClientDep,
+    db_engine: EngineDep,
+):
+    """Pause, resume, or skip guided practice explicitly (S52) — the frontend's own controls,
+    as opposed to the intent gate that infers a pause/skip from an ordinary chat message.
+
+    One turn at a time here too: held under the same conversation-wide claim ``messages`` uses,
+    so an explicit control cannot race a turn already in flight for this conversation.
+    """
+    conversation = await svc.get_conversation(session, conversation_id, learner_id=learner.id)
+    if conversation is None or conversation.learner_id != learner.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    claim = await turn_lock.claim(db_engine, conversation_id)
+    if claim is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "a turn is already in progress for this conversation"
+        )
+    try:
+        action = {
+            "pause": practice_svc.pause,
+            "resume": practice_svc.resume,
+            "skip": practice_svc.skip,
+        }
+        state = await action[data.action](
+            session, llm, learner_id=learner.id, conversation=conversation
+        )
+    except practice_svc.PracticeConflict as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    finally:
+        await claim.release()
+    return PracticeStateRead(
+        phase=state.phase.value,
+        item=item_to_read(state.item) if state.item is not None else None,
+        prompt=state.prompt,
+        ended=state.ended,
+    )
 
 
 @router.post("/conversations/{conversation_id}/messages")

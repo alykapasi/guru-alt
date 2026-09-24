@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.assessment import ItemRead
+
 
 class ConversationCreate(BaseModel):
     title: str | None = None
@@ -152,3 +154,18 @@ class ChatTurnRequest(BaseModel):
     # turn again rather than a second turn asking the same thing (S51). Optional: a turn sent
     # without one is unconstrained, exactly as before this existed.
     client_turn_id: uuid.UUID | None = None
+
+
+class PracticeActionSubmit(BaseModel):
+    action: Literal["pause", "resume", "skip"]
+
+
+class PracticeStateRead(BaseModel):
+    """Where practice stands after a pause/resume/skip (S52). ``ended`` is true when a resume
+    found the paused question no longer fits the plan — not an error, the learner did nothing
+    wrong."""
+
+    phase: str
+    item: ItemRead | None
+    prompt: str | None
+    ended: bool
