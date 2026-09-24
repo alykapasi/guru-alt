@@ -81,6 +81,12 @@ class WorkflowState(TypedDict):
     # the graph must ask again rather than invent one. Read only by the router that runs
     # immediately after, and cleared by ``await_response`` when the next reply supersedes it.
     awaiting_rating: NotRequired[bool]
+    # Tutor replies given while this question was paused for a side discussion (S52), carried
+    # in on the resume payload from ``Conversation.practice_scaffolds``. NotRequired: absent on
+    # the opening round, which has never been paused, and on checkpoints written before this
+    # field existed. ``grade`` adds it to ``rounds`` — help given before an attempt discounts it
+    # the same way regardless of which of the two counts it as.
+    scaffolds: NotRequired[int]
     usage: Usage  # this call's LLM usage (present's or respond's — grade's own call self-logs)
     rounds: int  # graded attempts completed so far
     max_rounds: int

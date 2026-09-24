@@ -81,6 +81,9 @@ def build_workflow_graph(
             "messages": messages,
             "response_text": response_text,
             "rating": reply.get("rating"),
+            # Help given while this same question was paused for a side discussion (S52) —
+            # see `grade` below.
+            "scaffolds": int(reply.get("scaffolds", 0)),
             # A fresh reply supersedes any pending re-ask, so `grade` decides this round on its
             # own merits rather than inheriting the last one's verdict.
             "awaiting_rating": False,
@@ -119,7 +122,12 @@ def build_workflow_graph(
             # Every round past the first followed a hint on this same problem (see `respond`),
             # so the round count *is* the help given. Reporting it stops three scaffolded
             # rounds from reading as three independent demonstrations (app.learning.assistance).
-            AnswerSubmit(response=response, hints_used=state["rounds"]),
+            AnswerSubmit(
+                response=response,
+                # A paused side discussion (S52) is the same kind of help as another round on
+                # the same problem — both are given before this attempt, so both discount it.
+                hints_used=state["rounds"] + state.get("scaffolds", 0),
+            ),
             llm=llm,
         )
         kcs = await knowledge_svc.get_kcs(session, kc_ids)

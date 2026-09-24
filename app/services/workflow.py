@@ -18,6 +18,7 @@ from app.agent.workflow import WorkflowState, build_workflow_graph, workflow_con
 from app.core.config import get_settings
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
+from app.models.assessment import Item
 from app.models.chat import Conversation, Message
 from app.models.knowledge import KC
 from app.rag.retrieval import RetrievalHit, retrieve
@@ -44,19 +45,21 @@ WORKFLOW_SYSTEM_PROMPT = (
 )
 
 
-async def is_awaiting_reply(
+async def paused_item_id(
     llm: LLMClient, session: AsyncSession, conversation_id: uuid.UUID, *, learner_id: uuid.UUID
-) -> bool:
-    """Whether the workflow is paused mid-practice *and* the question is still worth asking.
+) -> uuid.UUID | None:
+    """The item a paused workflow is waiting on, or ``None`` when there is nothing to resume.
 
     ``aget_state`` never executes node bodies, so the real ``session``/``learner_id`` closed
     into ``build_workflow_graph`` here cost nothing extra.
 
-    The second half of that sentence is what S17's durability made necessary. A volatile
-    checkpoint could not outlive much, so a paused question was never very stale; a durable one
-    outlives the plan revision that changed what the learner should be doing and the mastery
-    they picked up somewhere else. Resuming then puts a question in front of them that the
-    system itself no longer thinks they should be answering — and grades the answer.
+    ``None`` covers two different things on purpose: no paused workflow at all, and one whose
+    question has stopped being worth asking. The second is what S17's durability made
+    necessary. A volatile checkpoint could not outlive much, so a paused question was never
+    very stale; a durable one outlives the plan revision that changed what the learner should
+    be doing and the mastery they picked up somewhere else. Resuming then would put a question
+    in front of them that the system itself no longer thinks they should be answering — and
+    grade the answer.
 
     A checkpoint that fails the check is discarded rather than left to be re-evaluated on every
     subsequent turn, and the caller sees "not paused": the turn goes to ordinary chat, which is
@@ -64,24 +67,63 @@ async def is_awaiting_reply(
     """
     conversation = await session.get(Conversation, conversation_id)
     if conversation is None or conversation.learner_id != learner_id:
-        return False
+        return None
     graph = build_workflow_graph(
         llm, session, learner_id=learner_id, subject_id=conversation.subject_id
     )
     config = workflow_config(str(conversation_id))
     snapshot = await graph.aget_state(config)
     if not snapshot.next:
-        return False
+        return None
     if await checkpoints.paused_practice_is_current(
         session,
         learner_id=learner_id,
         item_id=snapshot.values.get("item_id"),
         subject_id=conversation.subject_id,
     ):
-        return True
+        return uuid.UUID(snapshot.values["item_id"])
     log.info("workflow.paused_state_stale", conversation_id=str(conversation_id))
     await checkpointing.discard_thread(str(conversation_id))
-    return False
+    return None
+
+
+async def is_awaiting_reply(
+    llm: LLMClient, session: AsyncSession, conversation_id: uuid.UUID, *, learner_id: uuid.UUID
+) -> bool:
+    """Whether the workflow is paused mid-practice *and* the question is still worth asking.
+
+    Delegates to :func:`paused_item_id` — see there for what "worth asking" means and why a
+    stale checkpoint is discarded rather than re-evaluated.
+    """
+    return await paused_item_id(llm, session, conversation_id, learner_id=learner_id) is not None
+
+
+async def paused_prompt(
+    llm: LLMClient, session: AsyncSession, conversation_id: uuid.UUID, *, learner_id: uuid.UUID
+) -> tuple[str, Item] | None:
+    """The paused checkpoint's last presented text and the item it belongs to, or ``None``.
+
+    ``None`` under the same two conditions as :func:`paused_item_id` — no paused workflow, or
+    one whose question has stopped being current (and is discarded there, same as there). This
+    is what a resume hands back to the learner: the exact question they left, not a freshly
+    rebuilt one.
+    """
+    conversation = await session.get(Conversation, conversation_id)
+    if conversation is None or conversation.learner_id != learner_id:
+        return None
+    item_id = await paused_item_id(llm, session, conversation_id, learner_id=learner_id)
+    if item_id is None:
+        return None
+    item = await assessment_svc.get_item_for(
+        session, item_id, learner_id=learner_id, subject_id=conversation.subject_id
+    )
+    if item is None:
+        return None
+    graph = build_workflow_graph(
+        llm, session, learner_id=learner_id, subject_id=conversation.subject_id
+    )
+    snapshot = await graph.aget_state(workflow_config(str(conversation_id)))
+    return snapshot.values["last_message"], item
 
 
 async def run_workflow_turn(
@@ -134,7 +176,18 @@ async def run_workflow_turn(
     hits: list[RetrievalHit] = []
 
     if resume:
-        run_input = Command(resume={"response_text": user_content, "rating": rating})
+        run_input = Command(
+            resume={
+                "response_text": user_content,
+                "rating": rating,
+                # Help given while this same question was paused for a side discussion (S52) —
+                # carried into the graph as WorkflowState.scaffolds, which `grade` adds to
+                # `rounds`. Not reset here: it keeps counting toward every attempt on this
+                # question until something that ends the question (skip, or a fresh start)
+                # clears it.
+                "scaffolds": conversation.practice_scaffolds,
+            }
+        )
     else:
         context = await learner_context.gather(
             session, llm, learner_id=learner_id, conversation=conversation, query=user_content
@@ -187,6 +240,11 @@ async def run_workflow_turn(
             "rounds": 0,
             "max_rounds": max_rounds,
         }
+        # A fresh start carries no help from whatever came before it. Pause/resume/skip already
+        # reset this at their own moments, but a start reached without going through any of them
+        # — this conversation never paused at all — still must not inherit a stale count left
+        # over from an earlier question (S52, review focus 4).
+        conversation.practice_scaffolds = 0
 
     spec = llm.spec(ModelRole.SMART)
     last_message = ""
