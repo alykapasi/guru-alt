@@ -514,16 +514,20 @@ def revise_steps(
        with no ``opened_at`` (written before this existed) is never disproved, since there is
        no trustworthy start for "after" to mean anything, and a proposal is never disproved at
        all — it was never acted on, so there is nothing to disprove.
-    3. An existing non-closed ``"review"`` step whose KC is no longer due flips to ``"done"``
+    3. A ``"proposed"`` detour whose blocked step (``detour_for``) is now ``"done"``, or is no
+       longer in the plan at all, is dropped outright — no ``detour_outcome``, since an offer
+       nobody answered is not a decision. A ``pending``/``active`` (guided) detour is untouched
+       by this: it was already taken, not merely offered, so it runs its own course.
+    4. An existing non-closed ``"review"`` step whose KC is no longer due flips to ``"done"``
        (it was reviewed, or the retention window passed). A due KC with no existing non-closed
        review step gets a new ``"pending"`` one.
-    4. ``order`` is recomputed: an accepted (non-proposed) open detour first, then reviews
+    5. ``order`` is recomputed: an accepted (non-proposed) open detour first, then reviews
        (soonest-due first), then new steps and proposals (a proposal immediately before the
        new step it targets), then closed (``"done"``/``"skipped"``) steps last.
-    5. ``active`` is recomputed: the first step whose status is not ``"done"``, ``"skipped"``
+    6. ``active`` is recomputed: the first step whose status is not ``"done"``, ``"skipped"``
        or ``"proposed"`` — a proposal is never made active by revision; it only becomes active
        once the learner accepts it via ``decide_detour``.
-    6. Scaffolding hints refresh on every step not ``"done"`` or ``"skipped"``; those keep the
+    7. Scaffolding hints refresh on every step not ``"done"`` or ``"skipped"``; those keep the
        hints they were actually taught under.
     """
     result: list[StepDict] = [StepDict(**step) for step in steps]  # shallow per-step copy
@@ -548,6 +552,19 @@ def revise_steps(
                 and step.get("opened_at")
             ):
                 step["status"], step["detour_outcome"] = "done", "disproved"
+
+    blocked_status = {
+        step["kc_id"]: step["status"] for step in result if step["step_type"] == "new"
+    }
+    result = [
+        step
+        for step in result
+        if not (
+            step["step_type"] == "detour"
+            and step["status"] == "proposed"
+            and blocked_status.get(step.get("detour_for") or "", "done") == "done"
+        )
+    ]
 
     if detour is not None:
         prereq_id = str(detour.prereq_kc_id)

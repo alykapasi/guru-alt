@@ -424,6 +424,54 @@ def test_a_proposal_is_not_disproved_but_is_dropped_once_mastered() -> None:
     assert (dropped["status"], dropped["detour_outcome"]) == ("done", "mastered")
 
 
+def test_a_hand_built_proposal_with_an_opened_at_stamp_is_still_never_disproved() -> None:
+    # `revise_steps` itself never puts an `opened_at` on a proposal, but a step dict handed
+    # back in (e.g. round-tripped from persistence, or built by another caller) should not
+    # depend on that invariant holding elsewhere — the "proposed" status alone, not the
+    # absence of a timestamp, is what protects an offer from being treated as disproved.
+    blocked, prereq = _ids(2)
+    hand_built = StepDict(
+        kc_id=str(prereq),
+        order=0,
+        step_type="detour",
+        status="proposed",
+        target_difficulty=None,
+        hint_density=None,
+        preferred_item_type=None,
+        detour_for=str(blocked),
+        detour_reason=DETOUR_DIAGNOSED,
+        opened_at=NOW.isoformat(),
+    )
+    steps = _revise([hand_built, _step(blocked, status="active")], disproved_kc_ids=[prereq])
+    proposal = _by_kc(steps, prereq)
+    assert proposal["status"] == "proposed"
+    assert proposal.get("detour_outcome") is None
+
+
+def test_a_proposal_is_dropped_once_its_step_is_done() -> None:
+    # An offer nobody answered is not a decision left open — once the step it was for is done
+    # some other way, the offer is stale and revision drops it rather than leaving it stranded.
+    steps, blocked, prereq = _with_detour("exploration")
+    after = _revise(steps, mastered_kc_ids=[blocked])
+    assert not any(s["kc_id"] == str(prereq) for s in after)
+
+
+def test_a_proposal_is_dropped_when_its_step_is_no_longer_in_the_plan() -> None:
+    steps, blocked, prereq = _with_detour("exploration")
+    without_blocked = [s for s in steps if s["kc_id"] != str(blocked)]
+    after = _revise(without_blocked)
+    assert not any(s["kc_id"] == str(prereq) for s in after)
+
+
+def test_a_guided_detour_is_not_dropped_by_the_new_pruning_rule() -> None:
+    # `pending`/`active` detours are a decision already acted on, not an outstanding offer —
+    # the pruning rule only ever touches proposals, so guided mode is unchanged.
+    steps, blocked, prereq = _with_detour("guided")
+    without_blocked = [s for s in steps if s["kc_id"] != str(blocked)]
+    after = _revise(without_blocked)
+    assert _by_kc(after, prereq)["status"] == "active"
+
+
 # --- the struggle signal -----------------------------------------------------
 
 
