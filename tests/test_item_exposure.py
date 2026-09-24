@@ -186,7 +186,7 @@ async def test_selection_does_not_cost_a_query_per_candidate(db_session: AsyncSe
 # --- what the estimate rests on ---------------------------------------------
 
 
-async def test_one_question_answered_twice_shows_neither_transfer_nor_retention(
+async def test_one_question_answered_twice_does_not_show_retention(
     db_session: AsyncSession,
 ) -> None:
     learner = await _learner(db_session)
