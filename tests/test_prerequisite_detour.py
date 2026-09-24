@@ -1035,3 +1035,58 @@ async def test_a_new_plan_is_guided(db_session: AsyncSession) -> None:
     learner, subject, _prereq, _blocked = await _graph(db_session)
     plan = await _plan(db_session, learner, subject)
     assert plan is not None and plan.guidance == "guided"
+
+
+async def test_a_route_closed_mastered_can_reopen_and_its_own_skip_is_remembered(
+    db_session: AsyncSession,
+) -> None:
+    """Review fix round 1, finding 1: `closed_detour_routes` does not bar a route that closed
+    `"mastered"` — mastery can slip and send the learner back to it. That second trip is a
+    different *step* on the same route, and its own close needs its own event; keying the
+    diff on the route alone let the second closure collide with the first in the dict and
+    silently write nothing."""
+    learner, subject, prereq, blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)  # detour 1
+
+    # Master the prerequisite: the open detour closes "mastered".
+    state = await db_session.scalar(
+        select(LearnerKCState).where(
+            LearnerKCState.learner_id == learner.id, LearnerKCState.kc_id == prereq.id
+        )
+    )
+    assert state is not None
+    state.ability, state.uncertainty, state.last_seen_at = 2.0, 0.2, datetime.now(UTC)
+    await db_session.flush()
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    first = _detour_step(plan, prereq)
+    assert (first["status"], first["detour_outcome"]) == ("done", "mastered")
+    assert await mastery.closed_detour_routes(db_session, learner.id, blocked.id) == set()
+
+    # Mastery slips: still failing the blocked component, so the route reopens.
+    state.ability, state.uncertainty = -1.0, 0.9
+    await db_session.flush()
+    plan = await svc.revise_plan(
+        db_session, learner_id=learner.id, subject_id=subject.id
+    )  # detour 2
+    assert plan is not None
+    detour_steps = [
+        s for s in plan.steps if s["step_type"] == "detour" and s["kc_id"] == str(prereq.id)
+    ]
+    assert len(detour_steps) == 2
+    second = next(s for s in detour_steps if s["status"] == "active")
+    assert second["opened_at"] != first["opened_at"]
+
+    plan = await svc.decide_detour(
+        db_session,
+        learner_id=learner.id,
+        subject_id=subject.id,
+        prereq_kc_id=prereq.id,
+        decision="skip",
+    )
+    assert plan is not None
+
+    outcomes = await _outcome_events(db_session, learner)
+    assert {e.payload["outcome"] for e in outcomes} == {"mastered", "skipped"}
+    assert len(outcomes) == 2
+    assert await mastery.closed_detour_routes(db_session, learner.id, blocked.id) == {prereq.id}

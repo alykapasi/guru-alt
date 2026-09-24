@@ -218,13 +218,37 @@ def _open_detour_keys(steps: Iterable[Any]) -> set[tuple[str, str]]:
     }
 
 
-def _closed_detours(steps: Iterable[Any]) -> dict[tuple[str, str], str]:
-    """``(prerequisite, blocked) -> outcome`` for every detour step that has closed."""
-    return {
-        (str(step.get("kc_id")), str(step.get("detour_for"))): str(step.get("detour_outcome"))
-        for step in steps
-        if step.get("step_type") == "detour" and step.get("detour_outcome")
-    }
+def _closed_detours(steps: Iterable[Any]) -> dict[tuple[str, str, str], str]:
+    """``(prerequisite, blocked, disambiguator) -> outcome`` for every detour step that has
+    closed — one entry **per step**, not per route.
+
+    A route closed ``"mastered"`` is not barred from reopening (``mastery.closed_detour_routes``
+    only closes on disproved/skipped), so mastery slipping can send the learner back to the
+    same ``(prereq, blocked)`` pair a second time. Keying this on the route alone collapsed
+    that second step's later close into the first step's dict entry, so the diff in
+    ``_apply_revision`` saw no *new* key and silently wrote no event for it — a second skip or
+    disproval on a re-detoured route was never remembered.
+
+    ``opened_at`` disambiguates real (guided/accepted) steps, each stamped when it began. A
+    step can close with no ``opened_at`` — a still-``"proposed"`` offer whose KC gets mastered
+    before it is ever accepted (``revise_steps`` rule 1 applies to every detour status, not
+    only open ones) — so that case falls back to its occurrence index among same-route steps,
+    in ``steps``' own order, which keeps repeats of *that* apart too.
+    """
+    seen: dict[tuple[str, str], int] = {}
+    closed: dict[tuple[str, str, str], str] = {}
+    for step in steps:
+        if step.get("step_type") != "detour" or not step.get("detour_outcome"):
+            continue
+        route = (str(step.get("kc_id")), str(step.get("detour_for")))
+        opened_at = step.get("opened_at")
+        if opened_at:
+            disambiguator = str(opened_at)
+        else:
+            disambiguator = f"#{seen.get(route, 0)}"
+            seen[route] = seen.get(route, 0) + 1
+        closed[(*route, disambiguator)] = str(step.get("detour_outcome"))
+    return closed
 
 
 def _apply_plan_level_hints(plan: LessonPlan, scaffolding: engine.ScaffoldingHints) -> None:
@@ -327,6 +351,25 @@ async def generate_lesson_plan(
     return plan
 
 
+async def _revision_inputs(
+    session: AsyncSession, *, learner_id: uuid.UUID, subject_id: uuid.UUID, plan: LessonPlan
+) -> tuple[set[uuid.UUID], list[uuid.UUID], engine.ScaffoldingHints]:
+    """The three reads every revision needs: current mastery of this plan's ``"new"`` step
+    KCs, this subject's due reviews, and the learner's scaffolding hints — gathered once here
+    so :func:`revise_plan` and :func:`decide_detour` do not each read them their own way.
+
+    Returns ``mastered`` rather than folding it into :func:`_apply_revision`'s own work,
+    because ``revise_plan`` needs it a step earlier than that — to ask
+    :func:`_prerequisite_detour` whether a fresh detour trigger applies at all.
+    """
+    new_kc_ids = {uuid.UUID(step["kc_id"]) for step in plan.steps if step["step_type"] == "new"}
+    all_kc_ids = {kc.id for kc in await knowledge_svc.list_kcs_for_subject(session, subject_id)}
+    mastered = await mastered_kc_ids(session, learner_id, new_kc_ids)
+    due_reviews = await _due_review_kc_ids(session, learner_id, all_kc_ids)
+    scaffolding = await _scaffolding(session, learner_id)
+    return mastered, due_reviews, scaffolding
+
+
 async def revise_plan(
     session: AsyncSession, *, learner_id: uuid.UUID, subject_id: uuid.UUID
 ) -> LessonPlan | None:
@@ -344,11 +387,9 @@ async def revise_plan(
     if plan is None:
         return None
 
-    new_kc_ids = {uuid.UUID(step["kc_id"]) for step in plan.steps if step["step_type"] == "new"}
-    all_kc_ids = {kc.id for kc in await knowledge_svc.list_kcs_for_subject(session, subject_id)}
-    mastered = await mastered_kc_ids(session, learner_id, new_kc_ids)
-    due_reviews = await _due_review_kc_ids(session, learner_id, all_kc_ids)
-    scaffolding = await _scaffolding(session, learner_id)
+    mastered, due_reviews, scaffolding = await _revision_inputs(
+        session, learner_id=learner_id, subject_id=subject_id, plan=plan
+    )
 
     # Decided against the plan *before* revision, on purpose: the answer that triggered this
     # was given for whatever step was active then, and that is the component the evidence is
@@ -376,7 +417,7 @@ async def _apply_revision(
     due_reviews: Sequence[uuid.UUID],
     scaffolding: engine.ScaffoldingHints,
     detour: engine.Detour | None,
-    outcomes_before: dict[tuple[str, str], str] | None = None,
+    outcomes_before: dict[tuple[str, str, str], str] | None = None,
 ) -> LessonPlan:
     """The revision core shared by :func:`revise_plan` and :func:`decide_detour`: re-derive
     step status/order/hints, close any open detour the learner's own recent evidence has
@@ -458,8 +499,8 @@ async def _apply_revision(
     # Every detour that closed just now — mastered, disproved, or skipped — is a decision
     # about the plan, not evidence about the learner (test_outcomes_are_decisions_not_evidence),
     # and gets its own event distinct from the answers that may have caused it.
-    for (prereq, blocked), outcome in _closed_detours(revised).items():
-        if (prereq, blocked) not in outcomes_before:
+    for (prereq, blocked, disambiguator), outcome in _closed_detours(revised).items():
+        if (prereq, blocked, disambiguator) not in outcomes_before:
             mastery.record_detour_outcome(
                 session,
                 learner_id=learner_id,
@@ -534,11 +575,9 @@ async def decide_detour(
         ),
     )
 
-    new_kc_ids = {uuid.UUID(step["kc_id"]) for step in plan.steps if step["step_type"] == "new"}
-    all_kc_ids = {kc.id for kc in await knowledge_svc.list_kcs_for_subject(session, subject_id)}
-    mastered = await mastered_kc_ids(session, learner_id, new_kc_ids)
-    due_reviews = await _due_review_kc_ids(session, learner_id, all_kc_ids)
-    scaffolding = await _scaffolding(session, learner_id)
+    mastered, due_reviews, scaffolding = await _revision_inputs(
+        session, learner_id=learner_id, subject_id=subject_id, plan=plan
+    )
 
     return await _apply_revision(
         session,
