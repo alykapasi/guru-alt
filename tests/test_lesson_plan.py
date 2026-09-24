@@ -422,6 +422,31 @@ async def test_lesson_plan_endpoints_round_trip(
     assert r.status_code == 404
 
 
+async def test_a_closed_goal_can_be_reopened(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Reopening is the same call with ``false``: closing early and changing your mind must
+    not require destroying the plan."""
+    r = await api_client.post(f"{API}/subjects", json={"slug": "phys", "name": "Physics"})
+    subject_id = r.json()["id"]
+    r = await api_client.post(
+        f"{API}/subjects/{subject_id}/topics", json={"slug": "t", "name": "T"}
+    )
+    topic_id = r.json()["id"]
+    await api_client.post(f"{API}/topics/{topic_id}/kcs", json={"slug": "a", "name": "A"})
+    r = await api_client.post(f"{API}/subjects/{subject_id}/lesson-plan", json={})
+    assert r.status_code == 200, r.text
+
+    closure = f"{API}/subjects/{subject_id}/lesson-plan/closure"
+    r = await api_client.patch(closure, json={"closed": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["goal_status"]["closed_at"] is not None
+
+    r = await api_client.patch(closure, json={"closed": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["goal_status"]["closed_at"] is None
+
+
 # --- a failed revision must not lose a committed grade (S35) ------------------
 
 
