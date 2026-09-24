@@ -10,6 +10,7 @@ import {
   useSubmitPlacement,
 } from "../../api/hooks";
 import type { components } from "../../api/schema";
+import { GoalStatusBar } from "./GoalStatusBar";
 import { LessonStepRow } from "./LessonStepRow";
 
 type PlacementResult = components["schemas"]["PlacementResultRead"];
@@ -135,6 +136,7 @@ export function LessonPlanPanel({ subjectId }: { subjectId: string }) {
           </p>
         )}
       </div>
+      <GoalStatusBar status={plan.goal_status} deferredCount={plan.deferred_kc_count} />
       <div className="flex flex-col gap-1">
         {plan.steps.map((step) => (
           <LessonStepRow key={step.order} step={step} />
