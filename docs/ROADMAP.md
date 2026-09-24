@@ -674,8 +674,9 @@ scoped materials.
 > **Two new backend endpoints, both thin plumbing over already-tested code, no new math:**
 > `GET /subjects/{id}/mastery` walks `app/learning/mastery.py`'s existing `estimate_kc`/
 > `rollup_topic`/`rollup_subject` (unit-tested since an earlier phase, just never exposed) and
-> reuses the lesson plan's own `MASTERY_ABILITY_THRESHOLD`/`MASTERY_UNCERTAINTY_THRESHOLD` so a
-> KC/topic/subject's "mastered" badge means the same thing here as it does on the lesson-plan
+> reuses the lesson plan's own mastery rule (the conservative estimate, ability − uncertainty,
+> at or above the `mastery_conservative_bar` setting, on a KC that has actually been measured)
+> so a KC/topic/subject's "mastered" badge means the same thing here as it does on the lesson-plan
 > page. `GET /activity` is new: a pure `streak_days`/`momentum_trend` policy
 > (`app/learning/activity.py`) over the raw `learning_events` log — no new tables, streak
 > defined as consecutive days with a real graded observation (not an app-open), momentum as a
@@ -720,9 +721,9 @@ scoped materials.
 >
 > **A real gap surfaced live, not a bug**: finishing a workflow round with a correct answer ends
 > that round (`detail: "mastered"`) but does **not** by itself flip the lesson-plan step to
-> `"done"` — that requires the KC's rolling ability/uncertainty estimate to cross a fixed
-> threshold (`app/services/lesson_plan.py`'s `MASTERY_ABILITY_THRESHOLD`/
-> `MASTERY_UNCERTAINTY_THRESHOLD`), which one correct short-answer response usually doesn't reach
+> `"done"` — that requires the KC's rolling conservative estimate (ability − uncertainty) to reach
+> the `mastery_conservative_bar` setting on measured evidence (`app/services/lesson_plan.py`'s
+> `mastered_kc_ids`), which one correct short-answer response usually doesn't reach
 > from a cold start — exactly the point of a continuous IRT model (partial, accumulating
 > evidence, not a binary pass/fail). Caught via live verification: the UI originally said
 > "Mastered!" after one correct answer, which overclaimed what the backend event actually meant;

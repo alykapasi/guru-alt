@@ -90,7 +90,7 @@ KNOBS: list[Knob] = [
         where="app.learning.tracer.CONSERVATIVE_K",
         value=1.0,
         governs="how far below the point estimate that mastery claim is made, in SDs",
-        settled_by="the uncertainty at which the estimate stops predicting the next outcome",
+        settled_by="the SD margin that best predicts unaided success at the next delayed check",
     ),
     Knob(
         id="profile.help_seeking_low",

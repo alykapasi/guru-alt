@@ -341,21 +341,28 @@ async def _record_achievements(
     it would currently save a call made from inside the loop too, and quietly stop doing so
     the day someone disables it. The explicit flush is what makes the ordering true by
     construction instead of by whatever the session happens to be configured with.
+
+    The bar is checked first because it is free — the state is already in memory — and most
+    observations do not clear it, so the event-log query runs only for the components that
+    could actually be achieved, and not at all when none can.
     """
-    pending = [state for state in states if state.achieved_at is None]
-    if not pending:
-        return
     settings = get_settings()
-    evidence = await kc_evidence(session, learner_id, [state.kc_id for state in pending])
-    for state in pending:
+    # The state was written moments ago, so `last_seen_at` is `now` and decay is the
+    # identity — the stored estimate *is* the current one here. Said explicitly so a later
+    # reader neither adds a redundant `kc_standings` call nor reaches for the decayed
+    # estimate in a context where that distinction does not yet exist.
+    candidates = [
+        state
+        for state in states
+        if state.achieved_at is None
+        and _estimate_of(state).conservative >= settings.mastery_conservative_bar
+    ]
+    if not candidates:
+        return
+    evidence = await kc_evidence(session, learner_id, [state.kc_id for state in candidates])
+    for state in candidates:
         found = evidence.get(state.kc_id)
-        if found is None or not found.retention_shown(min_days=settings.retention_min_days):
-            continue
-        # The state was written moments ago, so `last_seen_at` is `now` and decay is the
-        # identity — the stored estimate *is* the current one here. Said explicitly so a
-        # later reader neither adds a redundant `kc_standings` call nor reaches for the
-        # decayed estimate in a context where that distinction does not yet exist.
-        if _estimate_of(state).conservative >= settings.mastery_conservative_bar:
+        if found is not None and found.retention_shown(min_days=settings.retention_min_days):
             state.achieved_at = now
 
 

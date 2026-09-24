@@ -14,6 +14,7 @@ from app.models.assessment import EvidenceKind, ItemType
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearningEvent
+from app.services import lesson_plan as lesson_plan_svc
 
 
 def test_a_self_rated_flashcard_is_marked_self_reported() -> None:
@@ -482,6 +483,16 @@ async def test_an_achievement_survives_the_estimate_falling(db_session: AsyncSes
     assert state is not None
     earned = state.achieved_at
     assert earned is not None
+    # `now` pinned to the last observation each time, so decay is the identity and the counts
+    # depend on the evidence rather than on how long ago this test's `t0` was.
+    before = await lesson_plan_svc.goal_status(
+        db_session,
+        learner_id=learner.id,
+        objective_kc_ids=[str(kc.id)],
+        closed_at=None,
+        now=t0 + timedelta(days=1.0),
+    )
+    assert (before.achieved_kc_count, before.current_kc_count) == (1, 1)
 
     for day in range(32, 44):
         await mastery.record_observation(
@@ -493,6 +504,15 @@ async def test_an_achievement_survives_the_estimate_falling(db_session: AsyncSes
     await db_session.refresh(state)
     assert state.achieved_at == earned, "an achievement is not revoked by later evidence"
     assert state.ability - state.uncertainty < get_settings().mastery_conservative_bar
+    after = await lesson_plan_svc.goal_status(
+        db_session,
+        learner_id=learner.id,
+        objective_kc_ids=[str(kc.id)],
+        closed_at=None,
+        now=t0 + timedelta(days=43),
+    )
+    # The current count dropped and the historical one did not: the two claims, side by side.
+    assert (after.achieved_kc_count, after.current_kc_count) == (1, 0)
 
 
 async def test_a_demonstrated_component_that_never_clears_the_bar_stays_unachieved(

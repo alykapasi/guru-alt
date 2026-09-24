@@ -1,4 +1,4 @@
-"""The lesson plan: generate/regenerate and view."""
+"""The lesson plan: generate/regenerate, view, and close or reopen its goal."""
 
 import uuid
 

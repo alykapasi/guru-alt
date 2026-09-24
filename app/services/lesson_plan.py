@@ -76,6 +76,11 @@ async def mastered_kc_ids(
     asks about *now* on purpose — retention and freshness belong to the goal's question, not
     the planner's, and a planner that waited days for a second demonstration could never
     finish a step.
+
+    It also means the planner never reopens a component for being old. Decay caps uncertainty
+    and never lowers ability, so a component measured well above the bar stays mastered here
+    however long ago that was. That is deliberate: staleness is reported, by ``goal_status``,
+    not acted on, and re-surfacing idle material is FSRS's due-review scheduling.
     """
     ids = list(kc_ids)
     if not ids:
