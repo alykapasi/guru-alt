@@ -164,6 +164,24 @@ async def plan_read(
     return LessonPlanRead.model_validate(plan).model_copy(update={"goal_status": status})
 
 
+async def set_goal_closed(
+    session: AsyncSession, *, learner_id: uuid.UUID, subject_id: uuid.UUID, closed: bool
+) -> LessonPlan | None:
+    """Record or withdraw the learner's closure of this plan's goal.
+
+    Touches one column and nothing else — no estimate, no achievement, no step status. A
+    closed goal is still computed and still reported in full; the UI leads with the closure,
+    the engine does not know about it.
+    """
+    plan = await _get_plan(session, learner_id, subject_id)
+    if plan is None:
+        return None
+    plan.goal_closed_at = datetime.now(UTC) if closed else None
+    await session.commit()
+    await session.refresh(plan)
+    return plan
+
+
 async def _due_review_kc_ids(
     session: AsyncSession, learner_id: uuid.UUID, subject_kc_ids: set[uuid.UUID]
 ) -> list[uuid.UUID]:
@@ -279,6 +297,10 @@ async def generate_lesson_plan(
     if plan is None:
         plan = LessonPlan(learner_id=learner_id, subject_id=subject_id)
         session.add(plan)
+    # A regenerate of the *same* goal is a revision, not a new intention, so it keeps the
+    # learner's closure. A different goal has not been closed by anyone.
+    if plan.goal != goal:
+        plan.goal_closed_at = None
     plan.goal = goal
     plan.objective_kc_ids = [str(kc_id) for kc_id in objective]
     plan.steps = cast("list[dict[str, Any]]", steps)

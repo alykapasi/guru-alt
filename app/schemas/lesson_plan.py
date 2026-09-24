@@ -10,6 +10,13 @@ class LessonPlanSubmit(BaseModel):
     goal: str | None = None
 
 
+class LessonPlanClosureSubmit(BaseModel):
+    """Whether the learner considers this goal finished. Reopening is the same call with
+    ``false``: closing early and changing your mind must not require destroying the plan."""
+
+    closed: bool
+
+
 class LessonStepRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

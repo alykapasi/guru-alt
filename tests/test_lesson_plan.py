@@ -655,3 +655,73 @@ async def test_stale_evidence_is_reported_without_dropping_the_component(
     assert status.current_kc_count == 0
     assert status.achieved_kc_count == 1
     assert status.achieved_at == long_ago
+
+
+async def test_closing_a_goal_changes_no_evidence(db_session: AsyncSession) -> None:
+    """Closure is an intention, not a measurement (V0_DECISIONS).
+
+    There is deliberately no code path from `goal_closed_at` to any estimate; this is the
+    test that says so out loud.
+    """
+    learner, subject, root, _dependent = await _graph(db_session)
+    state = LearnerKCState(
+        learner_id=learner.id,
+        kc_id=root.id,
+        ability=0.2,
+        uncertainty=0.9,
+        last_seen_at=datetime.now(UTC),
+    )
+    db_session.add(state)
+    await db_session.flush()
+    before = (state.ability, state.uncertainty, state.achieved_at)
+
+    plan = await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+    await svc.set_goal_closed(db_session, learner_id=learner.id, subject_id=subject.id, closed=True)
+
+    await db_session.refresh(state)
+    await db_session.refresh(plan)
+    assert plan.goal_closed_at is not None
+    assert (state.ability, state.uncertainty, state.achieved_at) == before
+
+    status = await svc.goal_status(
+        db_session,
+        learner_id=learner.id,
+        objective_kc_ids=[str(root.id)],
+        closed_at=plan.goal_closed_at,
+    )
+    assert status.closed_at is not None
+    assert status.achieved_kc_count == 0, "closing did not fabricate an achievement"
+
+
+async def test_closure_belongs_to_the_goal_it_was_given_for(db_session: AsyncSession) -> None:
+    """Regenerating the same goal is a revision and keeps the closure; changing the goal
+    clears it, because a different goal has not been closed by anyone."""
+    learner, subject, _root, _dependent = await _graph(db_session)
+    await svc.generate_lesson_plan(
+        db_session,
+        fake_llm_client(),
+        learner_id=learner.id,
+        subject_id=subject.id,
+        goal="learn derivatives",
+    )
+    await svc.set_goal_closed(db_session, learner_id=learner.id, subject_id=subject.id, closed=True)
+
+    same = await svc.generate_lesson_plan(
+        db_session,
+        fake_llm_client(),
+        learner_id=learner.id,
+        subject_id=subject.id,
+        goal="learn derivatives",
+    )
+    assert same.goal_closed_at is not None, "a regenerate of the same goal is a revision"
+
+    changed = await svc.generate_lesson_plan(
+        db_session,
+        fake_llm_client(),
+        learner_id=learner.id,
+        subject_id=subject.id,
+        goal="learn integrals",
+    )
+    assert changed.goal_closed_at is None

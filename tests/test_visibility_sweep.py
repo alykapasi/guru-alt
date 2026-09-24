@@ -540,6 +540,15 @@ CASES: list[Case] = [
         lambda c, t, o: c.get(f"{API}/subjects/{t.subject}/lesson-plan"),
     ),
     Case(
+        "PATCH",
+        "/api/v1/subjects/{subject_id}/lesson-plan/closure",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.patch(
+            f"{API}/subjects/{t.subject}/lesson-plan/closure", json={"closed": True}
+        ),
+    ),
+    Case(
         "GET",
         "/api/v1/subjects/{subject_id}/mastery",
         "subject_id",

@@ -1546,6 +1546,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/subjects/{subject_id}/lesson-plan/closure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Set Lesson Plan Closure */
+        patch: operations["set_lesson_plan_closure_api_v1_subjects__subject_id__lesson_plan_closure_patch"];
+        trace?: never;
+    };
     "/api/v1/subjects/{subject_id}/mastery": {
         parameters: {
             query?: never;
@@ -2869,6 +2886,15 @@ export interface components {
             suspended_at: string | null;
             /** Unpriced Calls */
             unpriced_calls: number;
+        };
+        /**
+         * LessonPlanClosureSubmit
+         * @description Whether the learner considers this goal finished. Reopening is the same call with
+         *     ``false``: closing early and changing your mind must not require destroying the plan.
+         */
+        LessonPlanClosureSubmit: {
+            /** Closed */
+            closed: boolean;
         };
         /**
          * LessonPlanRead
@@ -6038,6 +6064,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["LessonPlanSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonPlanRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_lesson_plan_closure_api_v1_subjects__subject_id__lesson_plan_closure_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LessonPlanClosureSubmit"];
             };
         };
         responses: {
