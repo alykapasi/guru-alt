@@ -294,7 +294,16 @@ async def _choose_flow(
         conversation.practice_scaffolds = 0
         await session.commit()
     if data.mode == "agentic":
-        return FlowChoice(TurnFlow.AGENTIC, workflow_paused=workflow_awaiting, resume=False)
+        # An interjection steps around practice, paused or not: a pause stays a pause (only the
+        # explicit control resumes), and an open question stays open.
+        held = paused_item is not None and conversation.phase == ConversationPhase.PRACTICE_PAUSED
+        return FlowChoice(
+            TurnFlow.AGENTIC,
+            workflow_paused=workflow_awaiting,
+            resume=False,
+            practice_paused=held,
+            paused_item_id=paused_item if held else None,
+        )
     if paused_item is not None:
         # Before anything that resumes the graph: a paused practice still has a live
         # checkpoint, and only the explicit practice control may resume it.

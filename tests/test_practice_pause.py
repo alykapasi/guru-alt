@@ -341,6 +341,42 @@ async def test_a_withdrawal_skips_without_evidence(
     assert await _graded_events(db_session, api_learner.id) == []
 
 
+async def test_an_agentic_turn_does_not_end_a_pause(
+    api_client, db_session, api_learner, restore_llm
+) -> None:
+    """Only the explicit control resumes (spec §4.2) — an agentic interjection steps around the
+    pause rather than ending it. As in the side-question test, the paused tutor's reply reads as
+    an attempt so that a message wrongly sent through the gate would be graded."""
+    _install(
+        [
+            FakeTurn(text=PRESENT),
+            FakeTurn(text='{"intent": "deferral"}'),
+            FakeTurn(text=TUTOR_REPLY),
+            FakeTurn(text="Here is what I found."),
+            FakeTurn(text='{"intent": "attempt"}'),
+            FakeTurn(text=RIGHT_GRADE),
+            FakeTurn(text=RESPOND_2),
+        ]
+    )
+    cid = await _started(api_client, db_session, api_learner)
+    await api_client.post(f"{API}/conversations/{cid}/messages", json={"content": "what is ATP?"})
+    paused = await _row(api_client, cid)
+    assert paused["phase"] == "practice_paused"
+
+    await api_client.post(
+        f"{API}/conversations/{cid}/messages",
+        json={"content": "search my notes for ATP", "mode": "agentic"},
+    )
+    row = await _row(api_client, cid)
+    assert (row["phase"], row["active_item_id"]) == ("practice_paused", paused["active_item_id"])
+
+    await api_client.post(
+        f"{API}/conversations/{cid}/messages", json={"content": "sunlight -> sugars"}
+    )
+    assert (await _row(api_client, cid))["phase"] == "practice_paused"
+    assert await _graded_events(db_session, api_learner.id) == []
+
+
 async def test_a_stale_pause_is_released_to_ordinary_chat(
     api_client, db_session, api_learner, restore_llm
 ) -> None:
