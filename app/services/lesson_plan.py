@@ -12,8 +12,9 @@ reviews, profile shifts) — see ``app.learning.lesson_plan.revise_steps``.
 """
 
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import structlog
@@ -27,6 +28,7 @@ from app.learning.placement_inference import KCCandidate
 from app.llm import LLMClient
 from app.models.knowledge import KC, Subject
 from app.models.lesson_plan import LessonPlan
+from app.schemas.lesson_plan import GoalStatusRead, LessonPlanRead
 from app.services import knowledge as knowledge_svc
 from app.services import profile as profile_svc
 from app.services.llm_log import log_llm_call
@@ -85,6 +87,81 @@ async def mastered_kc_ids(
         for kc_id, standing in standings.items()
         if standing.measured_at is not None and standing.current.conservative >= bar
     }
+
+
+async def goal_status(
+    session: AsyncSession,
+    *,
+    learner_id: uuid.UUID,
+    objective_kc_ids: Sequence[str],
+    closed_at: datetime | None,
+    now: datetime | None = None,
+) -> GoalStatusRead:
+    """What the learner has demonstrated toward this goal, and how current it still is.
+
+    Achievement deliberately ignores freshness. If it did not, a long objective could never
+    be achieved: the first component learned would go stale before the last was reached, and
+    the goal would sit permanently one component short with no way to catch up. Historical
+    achievement and stale current evidence are two different things V0_DECISIONS asks for,
+    and the learner is shown both.
+    """
+    now = now or datetime.now(UTC)
+    kc_ids = [uuid.UUID(kc_id) for kc_id in objective_kc_ids]
+    if not kc_ids:
+        return GoalStatusRead(
+            objective_kc_count=0,
+            achieved_kc_count=0,
+            current_kc_count=0,
+            stale_kc_count=0,
+            achieved_at=None,
+            closed_at=closed_at,
+        )
+    settings = get_settings()
+    bar = settings.mastery_conservative_bar
+    max_age = timedelta(days=settings.goal_evidence_max_age_days)
+    standings = await mastery.kc_standings(session, learner_id, kc_ids, now=now)
+
+    achieved_dates = [s.achieved_at for s in standings.values() if s.achieved_at is not None]
+    current = 0
+    stale = 0
+    for standing in standings.values():
+        if standing.measured_at is None:
+            continue
+        if now - standing.measured_at <= max_age:
+            # Decayed to now: "can they do this today".
+            current += int(standing.current.conservative >= bar)
+        else:
+            # As of the measurement: "we saw them do this, and it was a long time ago".
+            stale += int(standing.at_measurement.conservative >= bar)
+    return GoalStatusRead(
+        objective_kc_count=len(kc_ids),
+        achieved_kc_count=len(achieved_dates),
+        current_kc_count=current,
+        stale_kc_count=stale,
+        # The goal is achieved only when every component is, and it is dated by the last one
+        # to arrive — the moment the whole objective was first true at once.
+        achieved_at=max(achieved_dates) if len(achieved_dates) == len(kc_ids) else None,
+        closed_at=closed_at,
+    )
+
+
+async def plan_read(
+    session: AsyncSession, plan: LessonPlan, *, now: datetime | None = None
+) -> LessonPlanRead:
+    """The API's view of a plan, including a freshly computed goal status.
+
+    Assembled here rather than in the routes so the two that return a plan cannot drift into
+    reporting different things, and returned as the schema rather than folded onto the ORM
+    object so nothing downstream mistakes a computed status for a stored column.
+    """
+    status = await goal_status(
+        session,
+        learner_id=plan.learner_id,
+        objective_kc_ids=plan.objective_kc_ids,
+        closed_at=plan.goal_closed_at,
+        now=now,
+    )
+    return LessonPlanRead.model_validate(plan).model_copy(update={"goal_status": status})
 
 
 async def _due_review_kc_ids(

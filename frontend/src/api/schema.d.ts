@@ -2360,6 +2360,27 @@ export interface components {
             /** Session Id */
             session_id: string;
         };
+        /**
+         * GoalStatusRead
+         * @description What is and is not known about the learner's progress toward this plan's goal.
+         *
+         *     Four separate facts, deliberately not collapsed into one enum: a goal can be achieved and
+         *     stale, or closed and unfinished, and an enum would need a member per combination.
+         */
+        GoalStatusRead: {
+            /** Achieved At */
+            achieved_at: string | null;
+            /** Achieved Kc Count */
+            achieved_kc_count: number;
+            /** Closed At */
+            closed_at: string | null;
+            /** Current Kc Count */
+            current_kc_count: number;
+            /** Objective Kc Count */
+            objective_kc_count: number;
+            /** Stale Kc Count */
+            stale_kc_count: number;
+        };
         /** GoalTurnRequest */
         GoalTurnRequest: {
             /** Content */
@@ -2868,6 +2889,15 @@ export interface components {
             example_tags: string[];
             /** Goal */
             goal: string | null;
+            /**
+             * @default {
+             *       "achieved_kc_count": 0,
+             *       "current_kc_count": 0,
+             *       "objective_kc_count": 0,
+             *       "stale_kc_count": 0
+             *     }
+             */
+            goal_status: components["schemas"]["GoalStatusRead"];
             /**
              * Id
              * Format: uuid

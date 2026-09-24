@@ -289,6 +289,14 @@ class Settings(BaseSettings):
     # and app/learning/ importing from app/services/ is the wrong direction.
     mastery_conservative_bar: float = 0.5
 
+    # When ability evidence stops counting as current. Uncalibrated, like the two settings
+    # above it: the estimate cannot express this at all — decay caps uncertainty and never
+    # lowers ability, so an arbitrarily high past score never lapses on its own — which
+    # leaves a flat window as the honest stand-in until S59's delayed-outcome study supplies
+    # a real one. Generous on purpose: staleness is reported and never acted on, so erring
+    # long costs little.
+    goal_evidence_max_age_days: float = 60.0
+
     # How often practice should aim for the learner to succeed. Practice and assessment want
     # opposite things from a question (see app.learning.difficulty): this is the teaching side,
     # and it is a taste parameter, not a derivation — 0.75 is the middle of the range the

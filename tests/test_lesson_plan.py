@@ -619,3 +619,39 @@ async def test_a_measured_component_at_the_old_corner_is_still_mastered(
     await db_session.flush()
 
     assert root.id in await svc.mastered_kc_ids(db_session, learner.id, [root.id])
+
+
+async def test_stale_evidence_is_reported_without_dropping_the_component(
+    db_session: AsyncSession,
+) -> None:
+    """A component measured at the bar long ago is stale, not unlearned.
+
+    Staleness is judged on the estimate *as of the measurement*. Judged on the decayed one, a
+    component the learner clearly had and drifted away from would fail the bar because it is
+    old and fall out of both counts — rendering as though they had never learned it.
+    """
+    learner, _subject, root, _dependent = await _graph(db_session)
+    long_ago = datetime.now(UTC) - timedelta(days=400)
+    # Chosen so the two estimates disagree: as measured, 1.2 - 0.3 = 0.9 clears the 0.5 bar;
+    # decayed 400 days, uncertainty regrows to its 1.0 cap and 1.2 - 1.0 = 0.2 does not. A
+    # higher ability would clear the bar either way and could not tell the estimates apart.
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=root.id,
+            ability=1.2,
+            uncertainty=0.3,
+            last_seen_at=long_ago,
+            achieved_at=long_ago,
+        )
+    )
+    await db_session.flush()
+
+    status = await svc.goal_status(
+        db_session, learner_id=learner.id, objective_kc_ids=[str(root.id)], closed_at=None
+    )
+
+    assert status.stale_kc_count == 1
+    assert status.current_kc_count == 0
+    assert status.achieved_kc_count == 1
+    assert status.achieved_at == long_ago
