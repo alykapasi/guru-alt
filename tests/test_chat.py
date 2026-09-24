@@ -950,10 +950,10 @@ async def test_a_turn_that_fails_to_start_frees_the_conversation(
     """A claim that outlived a failed dispatch would wedge the conversation permanently."""
     conversation_id = await _goal_set_conversation(api_client, db_session)
 
-    async def boom(*args: object, **kwargs: object) -> bool:
+    async def boom(*args: object, **kwargs: object) -> uuid.UUID | None:
         raise RuntimeError("checkpoint lookup exploded")
 
-    monkeypatch.setattr(chat_router.workflow_svc, "is_awaiting_reply", boom)
+    monkeypatch.setattr(chat_router.workflow_svc, "paused_item_id", boom)
     with pytest.raises(RuntimeError):
         await api_client.post(
             f"{API}/conversations/{conversation_id}/messages", json={"content": "hello"}

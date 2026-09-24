@@ -310,7 +310,12 @@ def fake_llm() -> Iterator[None]:
     # One shared client/FakeProvider instance across both HTTP requests below — a fresh
     # instance per dependency resolution (as in test_refinement.py's fixture, harmless there
     # since it's unscripted) would reset the scripted _call_index each request.
-    script = [FakeTurn(text=PRESENT), FakeTurn(text=RIGHT_GRADE), FakeTurn(text=RESPOND_2)]
+    script = [
+        FakeTurn(text=PRESENT),
+        FakeTurn(text='{"intent": "attempt"}'),
+        FakeTurn(text=RIGHT_GRADE),
+        FakeTurn(text=RESPOND_2),
+    ]
     client = fake_llm_client(script=script)
     app.dependency_overrides[get_llm_client] = lambda: client
     yield
