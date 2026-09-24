@@ -7,8 +7,10 @@ because they never learned projections got the same component again, rescaffolde
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,10 +22,12 @@ from app.learning.lesson_plan import (
     DETOUR_DIAGNOSED,
     DETOUR_REPEATED_FAILURE,
     Detour,
+    DetourNotOpen,
     ScaffoldingHints,
     StepDict,
     StepStatus,
     StepType,
+    decide_detour,
     prerequisite_detour,
     revise_steps,
 )
@@ -276,6 +280,148 @@ def test_plans_written_before_detours_existed_revise_unchanged() -> None:
     )
     assert [s["kc_id"] for s in revised] == [str(a), str(b)]
     assert revised[0]["status"] == "active"
+
+
+# --- the learner's say (S11, V07) --------------------------------------------
+
+NOW = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+
+
+def _with_detour(guidance: str = "guided") -> tuple[list[StepDict], uuid.UUID, uuid.UUID]:
+    blocked, prereq = _ids(2)
+    steps = revise_steps(
+        [_step(blocked, status="active")],
+        mastered_kc_ids=[],
+        due_review_kc_ids=[],
+        scaffolding=NO_HINTS,
+        detour=Detour(prereq_kc_id=prereq, blocked_kc_id=blocked, reason=DETOUR_DIAGNOSED),
+        guidance=guidance,  # ty: ignore[invalid-argument-type]
+        now=NOW,
+    )
+    return steps, blocked, prereq
+
+
+def _by_kc(steps: list[StepDict], kc: uuid.UUID) -> StepDict:
+    return next(s for s in steps if s["kc_id"] == str(kc))
+
+
+def _revise(steps: list[StepDict], **kwargs: Any) -> list[StepDict]:
+    base: dict[str, Any] = {"mastered_kc_ids": [], "due_review_kc_ids": [], "scaffolding": NO_HINTS}
+    return revise_steps(steps, **(base | kwargs))
+
+
+def test_guided_takes_the_detour_and_records_when_it_opened() -> None:
+    steps, blocked, prereq = _with_detour("guided")
+    assert _by_kc(steps, prereq)["status"] == "active"
+    assert _by_kc(steps, prereq)["opened_at"] == NOW.isoformat()
+    assert _by_kc(steps, blocked)["status"] == "pending"
+
+
+def test_exploration_only_proposes() -> None:
+    steps, blocked, prereq = _with_detour("exploration")
+    proposal = _by_kc(steps, prereq)
+    assert proposal["status"] == "proposed"
+    assert proposal.get("opened_at") is None
+    assert _by_kc(steps, blocked)["status"] == "active"
+    # Directly before the step it was proposed for.
+    assert [s["kc_id"] for s in steps] == [str(prereq), str(blocked)]
+
+
+def test_a_proposal_is_never_activated_by_revision() -> None:
+    steps, blocked, prereq = _with_detour("exploration")
+    for _ in range(3):
+        steps = _revise(steps, guidance="exploration")
+    assert _by_kc(steps, prereq)["status"] == "proposed"
+    assert _by_kc(steps, blocked)["status"] == "active"
+
+
+def test_a_proposal_blocks_a_second_one_for_the_same_prerequisite() -> None:
+    steps, blocked, prereq = _with_detour("exploration")
+    again = _revise(
+        steps,
+        guidance="exploration",
+        detour=Detour(prereq_kc_id=prereq, blocked_kc_id=blocked, reason=DETOUR_DIAGNOSED),
+    )
+    assert sum(1 for s in again if s["step_type"] == "detour") == 1
+
+
+def test_accepting_makes_it_the_active_step() -> None:
+    steps, blocked, prereq = _with_detour("exploration")
+    later = NOW + timedelta(minutes=5)
+    steps = _revise(
+        decide_detour(steps, prereq_kc_id=prereq, decision="accept", now=later),
+        guidance="exploration",
+    )
+    assert _by_kc(steps, prereq)["status"] == "active"
+    assert _by_kc(steps, prereq)["opened_at"] == later.isoformat()
+    assert _by_kc(steps, blocked)["status"] == "pending"
+
+
+def test_skipping_returns_to_the_blocked_step_in_either_mode() -> None:
+    for guidance in ("guided", "exploration"):
+        steps, blocked, prereq = _with_detour(guidance)
+        steps = _revise(
+            decide_detour(steps, prereq_kc_id=prereq, decision="skip", now=NOW),
+            guidance=guidance,
+        )
+        skipped = _by_kc(steps, prereq)
+        assert skipped["status"] == "skipped"
+        assert skipped["detour_outcome"] == "skipped"
+        assert _by_kc(steps, blocked)["status"] == "active"
+
+
+def test_a_skipped_detour_does_not_stop_a_new_one_being_offered() -> None:
+    # "Already open" must not count a skipped step; whether that route is *allowed* again is
+    # the service's call (closed_detour_routes), not the engine's.
+    steps, blocked, prereq = _with_detour("guided")
+    steps = decide_detour(steps, prereq_kc_id=prereq, decision="skip", now=NOW)
+    again = _revise(
+        steps,
+        detour=Detour(prereq_kc_id=prereq, blocked_kc_id=blocked, reason=DETOUR_DIAGNOSED),
+        now=NOW,
+    )
+    assert [s["status"] for s in again if s["step_type"] == "detour"].count("active") == 1
+
+
+def test_accept_on_an_accepted_detour_is_refused() -> None:
+    steps, _blocked, prereq = _with_detour("guided")
+    with pytest.raises(DetourNotOpen):
+        decide_detour(steps, prereq_kc_id=prereq, decision="accept", now=NOW)
+
+
+def test_deciding_on_a_detour_that_is_not_there_is_refused() -> None:
+    steps, _blocked, _prereq = _with_detour("guided")
+    with pytest.raises(DetourNotOpen):
+        decide_detour(steps, prereq_kc_id=uuid.uuid4(), decision="skip", now=NOW)
+
+
+def test_a_disproved_gap_ends_the_detour_and_goes_back() -> None:
+    steps, blocked, prereq = _with_detour("guided")
+    steps = _revise(steps, disproved_kc_ids=[prereq])
+    done = _by_kc(steps, prereq)
+    assert (done["status"], done["detour_outcome"]) == ("done", "disproved")
+    assert _by_kc(steps, blocked)["status"] == "active"
+
+
+def test_mastery_wins_over_disproval() -> None:
+    steps, _blocked, prereq = _with_detour("guided")
+    steps = _revise(steps, mastered_kc_ids=[prereq], disproved_kc_ids=[prereq])
+    assert _by_kc(steps, prereq)["detour_outcome"] == "mastered"
+
+
+def test_a_detour_with_no_start_time_cannot_be_disproved() -> None:
+    # Written before this slice: no trustworthy start, so an old pass must not close it.
+    steps, _blocked, prereq = _with_detour("guided")
+    _by_kc(steps, prereq).pop("opened_at")
+    steps = _revise(steps, disproved_kc_ids=[prereq])
+    assert _by_kc(steps, prereq)["status"] == "active"
+
+
+def test_a_proposal_is_not_disproved_but_is_dropped_once_mastered() -> None:
+    steps, _blocked, prereq = _with_detour("exploration")
+    assert _by_kc(_revise(steps, disproved_kc_ids=[prereq]), prereq)["status"] == "proposed"
+    dropped = _by_kc(_revise(steps, mastered_kc_ids=[prereq]), prereq)
+    assert (dropped["status"], dropped["detour_outcome"]) == ("done", "mastered")
 
 
 # --- the struggle signal -----------------------------------------------------
