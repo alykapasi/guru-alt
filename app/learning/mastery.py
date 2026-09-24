@@ -12,12 +12,23 @@ tracer update + event together so an interaction is recorded atomically.
 """
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import DateTime, Float, Integer, and_, case, distinct, func, select
+from sqlalchemy import (
+    ColumnElement,
+    DateTime,
+    Float,
+    Integer,
+    and_,
+    case,
+    distinct,
+    func,
+    or_,
+    select,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -821,6 +832,7 @@ def record_detour(
     prereq_kc_id: uuid.UUID,
     reason: str,
     consecutive_failures: int,
+    proposed: bool = False,
 ) -> None:
     """Record that a learner was sent to ``prereq_kc_id`` before ``blocked_kc_id``.
 
@@ -830,6 +842,11 @@ def record_detour(
     data. Added to the session, not committed: it belongs to the same transaction as the plan
     revision that caused it, so a rolled-back revision does not leave a detour on the record
     that never happened.
+
+    ``proposed`` (S11): whether this trip was only *offered* (exploration guidance) rather than
+    taken outright (guided). An offer is still worth recording — it is still a route the
+    learner was sent, and the cap on repeat trips (``detour_attempts``) does not care whether
+    the learner had a say in taking it.
     """
     session.add(
         LearningEvent(
@@ -842,6 +859,7 @@ def record_detour(
                 "prereq_kc_id": str(prereq_kc_id),
                 "reason": reason,
                 "consecutive_failures": consecutive_failures,
+                "proposed": proposed,
             },
         )
     )
@@ -874,6 +892,124 @@ async def detour_attempts(
             continue  # a payload written by hand or by a future shape; not a reason to fail
         counts[kc_id] = counts.get(kc_id, 0) + 1
     return counts
+
+
+DETOUR_OUTCOME_EVENT = "detour_outcome"
+"""``LearningEvent.event_type`` for how a detour ended (S11): the gap was real
+(``"mastered"``), it wasn't (``"disproved"``), or the learner declined the trip
+(``"skipped"``).
+
+A decision about the plan, not evidence about the learner — it never touches the tracer or
+FSRS. Tagged to the **blocked** component, like ``DETOUR_EVENT``, for the same reason: the
+record is about whether that route helped *it*.
+"""
+
+
+def record_detour_outcome(
+    session: AsyncSession,
+    *,
+    learner_id: uuid.UUID,
+    blocked_kc_id: uuid.UUID,
+    prereq_kc_id: uuid.UUID,
+    outcome: str,
+) -> None:
+    """Record how a detour to ``prereq_kc_id`` (for ``blocked_kc_id``) ended.
+
+    Added to the session, not committed — like ``record_detour``, it belongs to the same
+    transaction as the plan revision that closed the detour, so a rolled-back revision does
+    not leave an outcome on the record that never happened.
+    """
+    session.add(
+        LearningEvent(
+            learner_id=learner_id,
+            kc_id=blocked_kc_id,
+            event_type=(
+                "admin_detour_outcome"
+                if session.info.get("admin_actor_id")
+                else DETOUR_OUTCOME_EVENT
+            ),
+            payload={
+                "admin_actor_id": session.info.get("admin_actor_id"),
+                "admin_action_id": session.info.get("admin_action_id"),
+                "prereq_kc_id": str(prereq_kc_id),
+                "outcome": outcome,
+            },
+        )
+    )
+
+
+CLOSED_DETOUR_OUTCOMES = frozenset({"disproved", "skipped"})
+"""Outcomes that bar a route from being offered again for this blocked component (S11).
+
+Not ``"mastered"``: mastering the prerequisite is success, not a reason to bar the route
+should it ever legitimately reopen (e.g. the component later needs review again and slips)."""
+
+
+async def closed_detour_routes(
+    session: AsyncSession, learner_id: uuid.UUID, blocked_kc_id: uuid.UUID
+) -> set[uuid.UUID]:
+    """Prerequisites whose detour route for ``blocked_kc_id`` is closed for good.
+
+    A route closes the moment any outcome event for it lands on ``"disproved"`` or
+    ``"skipped"`` — the hypothesis was tested and rejected, or the learner already declined it,
+    and either way offering it again would repeat a question already answered.
+    """
+    rows = (
+        await session.execute(
+            select(
+                LearningEvent.payload["prereq_kc_id"].astext,
+                LearningEvent.payload["outcome"].astext,
+            ).where(
+                LearningEvent.learner_id == learner_id,
+                LearningEvent.kc_id == blocked_kc_id,
+                LearningEvent.event_type == DETOUR_OUTCOME_EVENT,
+            )
+        )
+    ).all()
+    closed: set[uuid.UUID] = set()
+    for raw_prereq, outcome in rows:
+        if outcome not in CLOSED_DETOUR_OUTCOMES:
+            continue
+        try:
+            closed.add(uuid.UUID(str(raw_prereq)))
+        except (TypeError, ValueError):
+            continue  # a payload written by hand or by a future shape; not a reason to fail
+    return closed
+
+
+async def passed_since(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    opened: Mapping[uuid.UUID, datetime],
+    *,
+    threshold: float,
+) -> set[uuid.UUID]:
+    """Which of these KCs the learner has answered well, alone, since each one's detour began.
+
+    What disproves a detour (S11): one demonstrated, unassisted attempt at or above the
+    threshold. A self-rating is not an answer, and help turns an answer into a joint one.
+    """
+    if not opened:
+        return set()
+    when = _observed_when()
+    # `when` reads as a naive UTC timestamp — `LearningEvent.created_at` is written naive by
+    # Postgres's `now()` (UTC in this deployment), and `observed_at`'s offset is dropped on
+    # cast to `DateTime`. Every `at` compared against it must be naive UTC too, or asyncpg
+    # refuses to bind an offset-aware value against a `timestamp without time zone` column.
+    naive_opened = {
+        kc: at.astimezone(UTC).replace(tzinfo=None) if at.tzinfo is not None else at
+        for kc, at in opened.items()
+    }
+    rows = await session.execute(
+        select(distinct(LearningEvent.kc_id)).where(
+            LearningEvent.learner_id == learner_id,
+            LearningEvent.event_type == "observation",
+            _unassisted_clause(),
+            LearningEvent.payload["score"].astext.cast(Float) >= threshold,
+            or_(*(and_(LearningEvent.kc_id == kc, when >= at) for kc, at in naive_opened.items())),
+        )
+    )
+    return {kc_id for (kc_id,) in rows}
 
 
 async def rollup_topic(
@@ -1020,6 +1156,23 @@ class KCEvidence(BaseModel):
         )
 
 
+def _unassisted_clause() -> ColumnElement[bool]:
+    """An attempt made with no hints and not a re-look at the same question (S14)."""
+    return and_(
+        func.coalesce(LearningEvent.payload["hints_used"].astext.cast(Integer), 0) == 0,
+        func.coalesce(LearningEvent.payload["prior_attempts"].astext.cast(Integer), 0) == 0,
+    )
+
+
+def _observed_when() -> ColumnElement[datetime]:
+    """`observed_at` and not `created_at`, for the reason S56 records: `created_at` is the
+    transaction's clock, so a batch written together ties and an event recorded with an
+    explicit time does not match it at all. Older rows have no `observed_at` and fall back."""
+    return func.coalesce(
+        LearningEvent.payload["observed_at"].astext.cast(DateTime), LearningEvent.created_at
+    )
+
+
 async def kc_evidence(
     session: AsyncSession, learner_id: uuid.UUID, kc_ids: Sequence[uuid.UUID]
 ) -> dict[uuid.UUID, KCEvidence]:
@@ -1037,17 +1190,9 @@ async def kc_evidence(
         return {}
     # An attempt is unassisted when it used no hints and was not a re-look at the same
     # question in the same sitting. Both are recorded per event by ``record_observation``.
-    unassisted = and_(
-        func.coalesce(LearningEvent.payload["hints_used"].astext.cast(Integer), 0) == 0,
-        func.coalesce(LearningEvent.payload["prior_attempts"].astext.cast(Integer), 0) == 0,
-    )
+    unassisted = _unassisted_clause()
     item = LearningEvent.payload["item_id"].astext
-    # `observed_at` and not `created_at`, for the reason S56 records: `created_at` is the
-    # transaction's clock, so a batch written together ties and an event recorded with an
-    # explicit time does not match it at all. Older rows have no `observed_at` and fall back.
-    when = func.coalesce(
-        LearningEvent.payload["observed_at"].astext.cast(DateTime), LearningEvent.created_at
-    )
+    when = _observed_when()
     attempt_key = func.coalesce(LearningEvent.attempt_id, LearningEvent.id)
     # The row set now includes self-reports (S56), so every aggregate that used to describe
     # "the evidence" must say which rows demonstrated something and which merely claimed it.

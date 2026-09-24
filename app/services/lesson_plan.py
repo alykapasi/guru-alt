@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import structlog
 from sqlalchemy import select, update
@@ -202,17 +202,28 @@ async def _scaffolding(session: AsyncSession, learner_id: uuid.UUID) -> engine.S
 
 
 def _open_detour_keys(steps: Iterable[Any]) -> set[tuple[str, str]]:
-    """``(prerequisite, blocked)`` for every detour step currently open.
+    """``(prerequisite, blocked)`` for every detour step still open — taken (pending/active)
+    or merely offered (proposed); see ``engine.OPEN_DETOUR_STATUSES``.
 
     Compared either side of a revision to tell a detour that was *inserted* from one that was
-    merely decided: ``revise_steps`` drops a detour whose step is already open or whose KC has
-    since been mastered, and a decision that changed nothing is not something the learner was
-    sent on.
+    merely decided: ``revise_steps`` drops a detour whose step is already open, whose KC has
+    since been mastered, or — for a stale proposal — whose blocked step already closed some
+    other way (``S11`` pruning), and a decision that changed nothing is not something the
+    learner was sent on.
     """
     return {
         (str(step.get("kc_id")), str(step.get("detour_for")))
         for step in steps
-        if step.get("step_type") == "detour" and step.get("status") != "done"
+        if step.get("step_type") == "detour" and step.get("status") in engine.OPEN_DETOUR_STATUSES
+    }
+
+
+def _closed_detours(steps: Iterable[Any]) -> dict[tuple[str, str], str]:
+    """``(prerequisite, blocked) -> outcome`` for every detour step that has closed."""
+    return {
+        (str(step.get("kc_id")), str(step.get("detour_for"))): str(step.get("detour_outcome"))
+        for step in steps
+        if step.get("step_type") == "detour" and step.get("detour_outcome")
     }
 
 
@@ -326,7 +337,8 @@ async def revise_plan(
 
     Also advances the horizon: components of the objective that did not fit the step cap move
     in as earlier ones finish, so a goal bigger than the cap is worked through rather than
-    truncated (:func:`engine.horizon_extension`).
+    truncated (:func:`engine.horizon_extension`). And closes any open detour the learner's own
+    recent, unassisted evidence has disproved (S11) — see :func:`_apply_revision`.
     """
     plan = await _get_plan(session, learner_id, subject_id)
     if plan is None:
@@ -344,7 +356,59 @@ async def revise_plan(
     detour = await _prerequisite_detour(
         session, learner_id=learner_id, plan=plan, mastered=mastered
     )
+    return await _apply_revision(
+        session,
+        learner_id=learner_id,
+        plan=plan,
+        mastered=mastered,
+        due_reviews=due_reviews,
+        scaffolding=scaffolding,
+        detour=detour,
+    )
+
+
+async def _apply_revision(
+    session: AsyncSession,
+    *,
+    learner_id: uuid.UUID,
+    plan: LessonPlan,
+    mastered: set[uuid.UUID],
+    due_reviews: Sequence[uuid.UUID],
+    scaffolding: engine.ScaffoldingHints,
+    detour: engine.Detour | None,
+    outcomes_before: dict[tuple[str, str], str] | None = None,
+) -> LessonPlan:
+    """The revision core shared by :func:`revise_plan` and :func:`decide_detour`: re-derive
+    step status/order/hints, close any open detour the learner's own recent evidence has
+    disproved, record whatever detour opened or closed as a result, and persist.
+
+    ``detour`` is the *trigger* to insert (or ``None``) — ``decide_detour`` passes ``None``
+    since the learner's decision is itself the event driving this revision, not a fresh
+    struggle signal to act on. Only that trigger path reads ``plan.steps`` as an "open
+    detours, before" snapshot (for the insertion diff below), so only it needs one.
+
+    ``outcomes_before`` defaults to a read of ``plan.steps`` as handed in, which is right for
+    ``revise_plan``. ``decide_detour`` passes its own snapshot taken *before* applying
+    ``engine.decide_detour`` — by the time ``plan.steps`` reaches here it already carries the
+    learner's decision (a skip's own ``detour_outcome``), so reading "before" off it here would
+    see the very outcome this call is supposed to be noticing as new.
+    """
     open_detours_before = _open_detour_keys(plan.steps)
+    if outcomes_before is None:
+        outcomes_before = _closed_detours(plan.steps)
+    now = datetime.now(UTC)
+    # Every open (taken, not merely offered) detour, keyed by when it began. Disproval only
+    # counts evidence from at or after that moment, so an old pass cannot close a new detour.
+    opened = {
+        uuid.UUID(step["kc_id"]): datetime.fromisoformat(step["opened_at"])
+        for step in plan.steps
+        if step.get("step_type") == "detour"
+        and step.get("status") in ("pending", "active")
+        and step.get("opened_at")
+    }
+    disproved = await mastery.passed_since(
+        session, learner_id, opened, threshold=get_settings().detour_failure_threshold
+    )
 
     revised = engine.revise_steps(
         cast("list[engine.StepDict]", plan.steps),
@@ -352,6 +416,9 @@ async def revise_plan(
         due_review_kc_ids=due_reviews,
         scaffolding=scaffolding,
         detour=detour,
+        guidance=cast("engine.Guidance", plan.guidance),
+        disproved_kc_ids=disproved,
+        now=now,
     )
     # Only now is it known which steps this revision finished, and so how much room the
     # horizon has for the rest of the objective. Extending before that would never see any.
@@ -362,14 +429,16 @@ async def revise_plan(
         extension_ids = [uuid.UUID(kc_id) for kc_id in extension]
         # A KC arriving from the deferred tail may already be mastered (placement, or work in
         # another plan), so it gets the same status derivation as anything else.
-        mastered |= await mastered_kc_ids(session, learner_id, extension_ids)
+        mastered = mastered | await mastered_kc_ids(session, learner_id, extension_ids)
         revised = engine.revise_steps(
             [*revised, *engine.build_initial_steps(extension_ids)],
             mastered_kc_ids=mastered,
             due_review_kc_ids=due_reviews,
             scaffolding=scaffolding,
-            # Not passed again: the first pass already inserted it, and re-deciding here would
-            # append a second identical step for the same prerequisite.
+            guidance=cast("engine.Guidance", plan.guidance),
+            now=now,
+            # Not passed again: the first pass already inserted/proposed it, and re-deciding
+            # here would append a second identical step for the same prerequisite.
         )
     # Recorded on *insertion*, not on decision: ``revise_steps`` declines a detour whose step
     # is already open or whose KC turned out to be mastered, and counting a decision that
@@ -384,6 +453,19 @@ async def revise_plan(
                 prereq_kc_id=detour.prereq_kc_id,
                 reason=detour.reason,
                 consecutive_failures=detour.consecutive_failures,
+                proposed=plan.guidance == "exploration",
+            )
+    # Every detour that closed just now — mastered, disproved, or skipped — is a decision
+    # about the plan, not evidence about the learner (test_outcomes_are_decisions_not_evidence),
+    # and gets its own event distinct from the answers that may have caused it.
+    for (prereq, blocked), outcome in _closed_detours(revised).items():
+        if (prereq, blocked) not in outcomes_before:
+            mastery.record_detour_outcome(
+                session,
+                learner_id=learner_id,
+                blocked_kc_id=uuid.UUID(blocked),
+                prereq_kc_id=uuid.UUID(prereq),
+                outcome=outcome,
             )
 
     plan.steps = cast("list[dict[str, Any]]", revised)
@@ -393,6 +475,81 @@ async def revise_plan(
     await session.commit()
     await session.refresh(plan)
     return plan
+
+
+async def set_guidance(
+    session: AsyncSession,
+    *,
+    learner_id: uuid.UUID,
+    subject_id: uuid.UUID,
+    guidance: engine.Guidance,
+) -> LessonPlan | None:
+    """Set how much say the learner has over a prerequisite detour for this plan (S11).
+
+    Touches one column and nothing else — no step is rewritten, so an open proposal or an
+    already-taken detour is left exactly as it was (spec §2: switching modes mid-decision does
+    not retroactively rewrite it). The next revision reads the new mode.
+    """
+    plan = await _get_plan(session, learner_id, subject_id)
+    if plan is None:
+        return None
+    plan.guidance = guidance
+    await session.commit()
+    await session.refresh(plan)
+    return plan
+
+
+async def decide_detour(
+    session: AsyncSession,
+    *,
+    learner_id: uuid.UUID,
+    subject_id: uuid.UUID,
+    prereq_kc_id: uuid.UUID,
+    decision: Literal["accept", "skip"],
+    now: datetime | None = None,
+) -> LessonPlan | None:
+    """Apply the learner's decision on an offered or open detour (S11), then run the same
+    revision :func:`revise_plan` performs — minus a fresh detour trigger, since this call is
+    itself the event driving the revision, not a new struggle signal to act on.
+
+    Raises :class:`engine.DetourNotOpen` when ``prereq_kc_id`` names a detour that is not open,
+    or an ``"accept"`` on one that was never offered (the engine's own guard).
+    """
+    plan = await _get_plan(session, learner_id, subject_id)
+    if plan is None:
+        return None
+
+    # Snapshotted *before* the decision is applied: a skip stamps its own ``detour_outcome``
+    # onto the step below, and reading "before" off the plan after that would see the very
+    # outcome this call is meant to notice as new (never recording the event at all).
+    outcomes_before = _closed_detours(plan.steps)
+
+    plan.steps = cast(
+        "list[dict[str, Any]]",
+        engine.decide_detour(
+            cast("list[engine.StepDict]", plan.steps),
+            prereq_kc_id=prereq_kc_id,
+            decision=decision,
+            now=now or datetime.now(UTC),
+        ),
+    )
+
+    new_kc_ids = {uuid.UUID(step["kc_id"]) for step in plan.steps if step["step_type"] == "new"}
+    all_kc_ids = {kc.id for kc in await knowledge_svc.list_kcs_for_subject(session, subject_id)}
+    mastered = await mastered_kc_ids(session, learner_id, new_kc_ids)
+    due_reviews = await _due_review_kc_ids(session, learner_id, all_kc_ids)
+    scaffolding = await _scaffolding(session, learner_id)
+
+    return await _apply_revision(
+        session,
+        learner_id=learner_id,
+        plan=plan,
+        outcomes_before=outcomes_before,
+        mastered=mastered,
+        due_reviews=due_reviews,
+        scaffolding=scaffolding,
+        detour=None,
+    )
 
 
 async def _prerequisite_detour(
@@ -450,6 +607,15 @@ async def _prerequisite_detour(
     ]
     if not prereq_ids:
         return None  # every route upstream has been tried; the difficulty is not up there
+
+    # And the ones the learner has already ruled on (S11): a route disproved or explicitly
+    # skipped is a closed question, and re-offering it would ask the learner to answer it
+    # again. A route that closed as ``mastered`` is not filtered — mastering it is success,
+    # not a reason to bar it should the component ever legitimately need it again.
+    closed = await mastery.closed_detour_routes(session, learner_id, blocked_id)
+    prereq_ids = [kc_id for kc_id in prereq_ids if kc_id not in closed]
+    if not prereq_ids:
+        return None  # every remaining route was already disproved or declined
 
     names = {kc.id: kc.name for kc in await knowledge_svc.get_kcs(session, prereq_ids)}
     return engine.prerequisite_detour(

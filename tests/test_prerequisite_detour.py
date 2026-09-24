@@ -33,7 +33,7 @@ from app.learning.lesson_plan import (
 )
 from app.learning.mastery import Observation
 from app.llm.registry import fake_llm_client
-from app.models.assessment import RUBRIC_GRADABLE
+from app.models.assessment import RUBRIC_GRADABLE, EvidenceKind
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
@@ -843,3 +843,195 @@ async def test_a_format_preference_does_not_override_a_detour(db_session: AsyncS
     other = next(s for s in revised.steps if s["step_type"] == "new" and s["status"] != "done")
     assert detour_step["preferred_item_type"] == engine.DETOUR_ITEM_TYPE
     assert other["preferred_item_type"] == "flashcard"
+
+
+# --- the learner's say, end to end (S11) -------------------------------------
+
+
+async def _outcome_events(session: AsyncSession, learner: Learner) -> list[LearningEvent]:
+    rows = await session.scalars(
+        select(LearningEvent).where(
+            LearningEvent.learner_id == learner.id,
+            LearningEvent.event_type == mastery.DETOUR_OUTCOME_EVENT,
+        )
+    )
+    return list(rows)
+
+
+async def _exploring(session: AsyncSession) -> tuple[Learner, Subject, KC, KC]:
+    learner, subject, prereq, blocked = await _stuck(session)
+    await svc.set_guidance(
+        session, learner_id=learner.id, subject_id=subject.id, guidance="exploration"
+    )
+    return learner, subject, prereq, blocked
+
+
+def _detour_step(plan, prereq: KC) -> dict:
+    return next(
+        s for s in plan.steps if s["step_type"] == "detour" and s["kc_id"] == str(prereq.id)
+    )
+
+
+async def test_exploration_proposes_and_records_the_offer(db_session: AsyncSession) -> None:
+    learner, subject, prereq, blocked = await _exploring(db_session)
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    assert _detour_step(plan, prereq)["status"] == "proposed"
+    active = next(s for s in plan.steps if s["status"] == "active")
+    assert active["kc_id"] == str(blocked.id)
+    events = await _detour_events(db_session, learner)
+    assert len(events) == 1 and events[0].payload["proposed"] is True
+
+
+async def test_accepting_then_answering_well_disproves_the_gap(db_session: AsyncSession) -> None:
+    learner, subject, prereq, blocked = await _exploring(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    await svc.decide_detour(
+        db_session,
+        learner_id=learner.id,
+        subject_id=subject.id,
+        prereq_kc_id=prereq.id,
+        decision="accept",
+    )
+    await _observe(db_session, learner, prereq, 0.9)
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    step = _detour_step(plan, prereq)
+    assert (step["status"], step["detour_outcome"]) == ("done", "disproved")
+    assert next(s for s in plan.steps if s["status"] == "active")["kc_id"] == str(blocked.id)
+    outcomes = await _outcome_events(db_session, learner)
+    assert [(e.kc_id, e.payload["outcome"]) for e in outcomes] == [(blocked.id, "disproved")]
+
+
+async def test_a_pass_from_before_the_detour_does_not_disprove_it(
+    db_session: AsyncSession,
+) -> None:
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    # A good, unassisted answer on the prerequisite — an hour before the detour opens.
+    await mastery.record_observation(
+        db_session,
+        Observation(learner_id=learner.id, kc_weights={prereq.id: 1.0}, score=0.95),
+        now=datetime.now(UTC) - timedelta(hours=1),
+    )
+    await db_session.flush()
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    assert _detour_step(plan, prereq)["status"] == "active"
+
+
+async def test_an_assisted_pass_does_not_disprove_it(db_session: AsyncSession) -> None:
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    await mastery.record_observation(
+        db_session,
+        Observation(learner_id=learner.id, kc_weights={prereq.id: 1.0}, score=0.95, hints_used=1),
+    )
+    await db_session.flush()
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    assert _detour_step(plan, prereq)["status"] == "active"
+
+
+async def test_a_self_rating_does_not_disprove_it(db_session: AsyncSession) -> None:
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    await mastery.record_observation(
+        db_session,
+        Observation(
+            learner_id=learner.id,
+            kc_weights={prereq.id: 1.0},
+            score=1.0,
+            evidence_kind=EvidenceKind.SELF_REPORTED,
+        ),
+    )
+    await db_session.flush()
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    assert _detour_step(plan, prereq)["status"] == "active"
+
+
+async def test_skipping_returns_to_the_blocked_step_and_is_remembered(
+    db_session: AsyncSession,
+) -> None:
+    learner, subject, prereq, blocked = await _stuck(db_session)  # guided: already active
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    plan = await svc.decide_detour(
+        db_session,
+        learner_id=learner.id,
+        subject_id=subject.id,
+        prereq_kc_id=prereq.id,
+        decision="skip",
+    )
+    assert plan is not None
+    assert _detour_step(plan, prereq)["status"] == "skipped"
+    assert next(s for s in plan.steps if s["status"] == "active")["kc_id"] == str(blocked.id)
+    assert [e.payload["outcome"] for e in await _outcome_events(db_session, learner)] == ["skipped"]
+
+    # Still failing the blocked component: the skipped route is not offered again.
+    await _observe(db_session, learner, blocked, 0.1)
+    await _observe(db_session, learner, blocked, 0.1)
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    assert not any(
+        s["step_type"] == "detour" and s["status"] in ("active", "pending", "proposed")
+        for s in plan.steps
+    )
+
+
+async def test_a_mastered_route_is_not_closed(db_session: AsyncSession) -> None:
+    learner, _subject, prereq, blocked = await _stuck(db_session)
+    mastery.record_detour_outcome(
+        db_session,
+        learner_id=learner.id,
+        blocked_kc_id=blocked.id,
+        prereq_kc_id=prereq.id,
+        outcome="mastered",
+    )
+    await db_session.flush()
+    assert await mastery.closed_detour_routes(db_session, learner.id, blocked.id) == set()
+
+
+async def test_outcomes_are_decisions_not_evidence(db_session: AsyncSession) -> None:
+    learner, subject, prereq, blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    before = await mastery.kc_evidence(db_session, learner.id, [prereq.id, blocked.id])
+    await svc.decide_detour(
+        db_session,
+        learner_id=learner.id,
+        subject_id=subject.id,
+        prereq_kc_id=prereq.id,
+        decision="skip",
+    )
+    after = await mastery.kc_evidence(db_session, learner.id, [prereq.id, blocked.id])
+    assert after == before
+    struggle = await mastery.recent_struggle(db_session, learner.id, blocked.id, threshold=0.5)
+    assert struggle.consecutive_failures == 2
+
+
+async def test_switching_guidance_leaves_an_open_proposal_alone(
+    db_session: AsyncSession,
+) -> None:
+    """Review focus 1: changing the setting does not rewrite steps (spec §2)."""
+    learner, subject, prereq, _blocked = await _exploring(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    await svc.set_guidance(
+        db_session, learner_id=learner.id, subject_id=subject.id, guidance="guided"
+    )
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    assert _detour_step(plan, prereq)["status"] == "proposed"
+    plan = await svc.decide_detour(
+        db_session,
+        learner_id=learner.id,
+        subject_id=subject.id,
+        prereq_kc_id=prereq.id,
+        decision="accept",
+    )
+    assert plan is not None and _detour_step(plan, prereq)["status"] == "active"
+
+
+async def test_a_new_plan_is_guided(db_session: AsyncSession) -> None:
+    learner, subject, _prereq, _blocked = await _graph(db_session)
+    plan = await _plan(db_session, learner, subject)
+    assert plan is not None and plan.guidance == "guided"

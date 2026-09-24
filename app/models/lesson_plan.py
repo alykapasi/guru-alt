@@ -67,3 +67,9 @@ class LessonPlan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # different goal has not been closed, but not on a plain regenerate of the same goal,
     # which is a revision rather than a new intention.
     goal_closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+    # How much say the learner has over a prerequisite detour (S11): "guided" takes one as soon
+    # as it is triggered (today's behaviour); "exploration" only proposes one, and the learner
+    # accepts or skips it (app.learning.lesson_plan.decide_detour). Per-plan, not per-learner —
+    # it is a teaching-style choice about one subject, not an account-wide setting.
+    guidance: Mapped[str] = mapped_column(Text, server_default="guided", default="guided")
