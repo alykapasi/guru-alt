@@ -1563,6 +1563,40 @@ export interface paths {
         patch: operations["set_lesson_plan_closure_api_v1_subjects__subject_id__lesson_plan_closure_patch"];
         trace?: never;
     };
+    "/api/v1/subjects/{subject_id}/lesson-plan/detours/{prereq_kc_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide Lesson Plan Detour */
+        post: operations["decide_lesson_plan_detour_api_v1_subjects__subject_id__lesson_plan_detours__prereq_kc_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/subjects/{subject_id}/lesson-plan/guidance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Set Lesson Plan Guidance */
+        patch: operations["set_lesson_plan_guidance_api_v1_subjects__subject_id__lesson_plan_guidance_patch"];
+        trace?: never;
+    };
     "/api/v1/subjects/{subject_id}/mastery": {
         parameters: {
             query?: never;
@@ -2252,6 +2286,14 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
+        /** DetourDecisionSubmit */
+        DetourDecisionSubmit: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "accept" | "skip";
+        };
         /**
          * DevLoginRequest
          * @description Who the development sign-in should sign in as (S21).
@@ -2897,6 +2939,18 @@ export interface components {
             closed: boolean;
         };
         /**
+         * LessonPlanGuidanceSubmit
+         * @description How much the planner may decide for the learner (V07). Guided takes detours on its own;
+         *     exploration offers them.
+         */
+        LessonPlanGuidanceSubmit: {
+            /**
+             * Guidance
+             * @enum {string}
+             */
+            guidance: "guided" | "exploration";
+        };
+        /**
          * LessonPlanRead
          * @description A plan, plus how much of its objective is not yet in the plan.
          *
@@ -2924,6 +2978,8 @@ export interface components {
              *     }
              */
             goal_status: components["schemas"]["GoalStatusRead"];
+            /** Guidance */
+            guidance: string;
             /**
              * Id
              * Format: uuid
@@ -2958,6 +3014,8 @@ export interface components {
         LessonStepRead: {
             /** Detour For */
             detour_for?: string | null;
+            /** Detour Outcome */
+            detour_outcome?: string | null;
             /** Detour Reason */
             detour_reason?: string | null;
             /** Hint Density */
@@ -2967,6 +3025,8 @@ export interface components {
              * Format: uuid
              */
             kc_id: string;
+            /** Opened At */
+            opened_at?: string | null;
             /** Order */
             order: number;
             /** Preferred Item Type */
@@ -6099,6 +6159,77 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["LessonPlanClosureSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonPlanRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_lesson_plan_detour_api_v1_subjects__subject_id__lesson_plan_detours__prereq_kc_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+                prereq_kc_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DetourDecisionSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonPlanRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_lesson_plan_guidance_api_v1_subjects__subject_id__lesson_plan_guidance_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LessonPlanGuidanceSubmit"];
             };
         };
         responses: {

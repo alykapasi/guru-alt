@@ -4,6 +4,7 @@ import itertools
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 import pytest
 from httpx import AsyncClient
@@ -985,3 +986,132 @@ async def test_closure_belongs_to_the_goal_it_was_given_for(db_session: AsyncSes
         goal="learn integrals",
     )
     assert changed.goal_closed_at is None
+
+
+# --- guidance and detour decisions over the route (S11) ------------------------------------
+
+
+async def _plan_for(session: AsyncSession, learner: Learner) -> Subject:
+    """A plan for `learner`, on a fresh single-KC subject."""
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Physics")
+    session.add(subject)
+    await session.flush()
+    topic = Topic(subject_id=subject.id, slug="t", name="T")
+    session.add(topic)
+    await session.flush()
+    kc = KC(topic_id=topic.id, slug="a", name="A")
+    session.add(kc)
+    await session.flush()
+    await svc.generate_lesson_plan(
+        session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+    return subject
+
+
+async def _subject_without_plan(session: AsyncSession, learner: Learner) -> Subject:
+    """A subject `learner` can see, with nothing planned on it yet."""
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Physics")
+    session.add(subject)
+    await session.flush()
+    return subject
+
+
+async def _stuck_for(
+    session: AsyncSession,
+    learner: Learner,
+    *,
+    guidance: Literal["guided", "exploration"] = "guided",
+) -> tuple[Subject, KC, KC]:
+    """`learner`, stuck on a dependent KC with a lapsed prerequisite and two failures behind
+    them (as ``tests/test_prerequisite_detour.py::_stuck`` does, but for a caller-supplied
+    learner), under `guidance`, and revised so the resulting detour is actually in `plan.steps`."""
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Chemistry")
+    session.add(subject)
+    await session.flush()
+    topic = Topic(subject_id=subject.id, slug="t", name="T")
+    session.add(topic)
+    await session.flush()
+    prereq = KC(topic_id=topic.id, slug="a-root", name="A Root")
+    blocked = KC(topic_id=topic.id, slug="b-dependent", name="B Dependent")
+    session.add_all([prereq, blocked])
+    await session.flush()
+    session.add(KCEdge(kc_id=blocked.id, prereq_kc_id=prereq.id))
+    await session.flush()
+    # Mastered the prerequisite's step out of the way so the dependent is what is active.
+    session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=prereq.id,
+            ability=2.0,
+            uncertainty=0.2,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
+    await session.flush()
+    await svc.generate_lesson_plan(
+        session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+
+    # Now let the prerequisite lapse, and fail the dependent twice.
+    state = await session.scalar(
+        select(LearnerKCState).where(
+            LearnerKCState.learner_id == learner.id, LearnerKCState.kc_id == prereq.id
+        )
+    )
+    assert state is not None
+    state.ability = -1.0
+    state.uncertainty = 0.9
+    await session.flush()
+    for _ in range(2):
+        await mastery.record_observation(
+            session,
+            mastery.Observation(learner_id=learner.id, kc_weights={blocked.id: 1.0}, score=0.1),
+        )
+    await session.flush()
+
+    await svc.set_guidance(session, learner_id=learner.id, subject_id=subject.id, guidance=guidance)
+    revised = await svc.revise_plan(session, learner_id=learner.id, subject_id=subject.id)
+    assert revised is not None
+    return subject, prereq, blocked
+
+
+async def test_guidance_is_set_over_the_route(api_client, db_session, api_learner) -> None:
+    subject = await _plan_for(db_session, api_learner)  # this file's helper that makes a plan
+    r = await api_client.patch(
+        f"{API}/subjects/{subject.id}/lesson-plan/guidance", json={"guidance": "exploration"}
+    )
+    assert r.status_code == 200 and r.json()["guidance"] == "exploration"
+    r = await api_client.patch(
+        f"{API}/subjects/{subject.id}/lesson-plan/guidance", json={"guidance": "wander"}
+    )
+    assert r.status_code == 422
+
+
+async def test_detour_decisions_over_the_route(api_client, db_session, api_learner) -> None:
+    subject, prereq, _blocked = await _stuck_for(db_session, api_learner, guidance="exploration")
+    url = f"{API}/subjects/{subject.id}/lesson-plan/detours/{prereq.id}"
+
+    r = await api_client.post(url, json={"decision": "accept"})
+    assert r.status_code == 200
+    step = next(s for s in r.json()["steps"] if s["kc_id"] == str(prereq.id))
+    assert step["status"] == "active" and step["opened_at"] is not None
+
+    # Review focus 2: a double-submitted accept is refused, not applied twice.
+    assert (await api_client.post(url, json={"decision": "accept"})).status_code == 409
+
+    r = await api_client.post(url, json={"decision": "skip"})
+    assert r.status_code == 200
+    step = next(s for s in r.json()["steps"] if s["kc_id"] == str(prereq.id))
+    assert (step["status"], step["detour_outcome"]) == ("skipped", "skipped")
+
+    assert (await api_client.post(url, json={"decision": "skip"})).status_code == 409
+    assert (await api_client.post(url, json={"decision": "maybe"})).status_code == 422
+
+
+async def test_deciding_without_a_plan_is_404(api_client, db_session, api_learner) -> None:
+    subject = await _subject_without_plan(db_session, api_learner)
+    r = await api_client.post(
+        f"{API}/subjects/{subject.id}/lesson-plan/detours/{uuid.uuid4()}",
+        json={"decision": "skip"},
+    )
+    assert r.status_code == 404

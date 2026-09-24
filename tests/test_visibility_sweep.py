@@ -549,6 +549,38 @@ CASES: list[Case] = [
         ),
     ),
     Case(
+        "PATCH",
+        "/api/v1/subjects/{subject_id}/lesson-plan/guidance",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.patch(
+            f"{API}/subjects/{t.subject}/lesson-plan/guidance", json={"guidance": "exploration"}
+        ),
+    ),
+    Case(
+        "POST",
+        "/api/v1/subjects/{subject_id}/lesson-plan/detours/{prereq_kc_id}",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.post(
+            f"{API}/subjects/{t.subject}/lesson-plan/detours/{o.kc2}", json={"decision": "skip"}
+        ),
+    ),
+    Case(
+        "POST",
+        "/api/v1/subjects/{subject_id}/lesson-plan/detours/{prereq_kc_id}",
+        "prereq_kc_id",
+        ("kc2",),
+        lambda c, t, o: c.post(
+            f"{API}/subjects/{o.subject}/lesson-plan/detours/{t.kc2}", json={"decision": "skip"}
+        ),
+        owner_exempt=(
+            "prereq_kc_id is never ownership-checked on its own — decide_detour only matches it "
+            "against the caller's own plan's own steps, which subject_id (the case above) "
+            "already scopes, so a foreign or random id here gets the identical answer"
+        ),
+    ),
+    Case(
         "GET",
         "/api/v1/subjects/{subject_id}/mastery",
         "subject_id",
