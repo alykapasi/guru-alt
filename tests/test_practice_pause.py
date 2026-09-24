@@ -39,6 +39,24 @@ async def _presented(session: AsyncSession, script: list[FakeTurn]):
     return conv, llm
 
 
+async def _reload(session: AsyncSession, conv: Conversation) -> Conversation:
+    """Force a genuine DB round-trip instead of reusing the in-memory object.
+
+    This suite's ``db_session`` fixture sets ``expire_on_commit=False``, so an object a caller
+    just mutated keeps holding whatever Python value was assigned — here, the actual
+    ``ConversationPhase`` enum member ``pause``/``resume`` assigned to ``.phase``. A real
+    request never gets that: it loads a fresh row, and asyncpg hands back a plain ``str`` for a
+    text column. Expunging and re-fetching reproduces that plain-``str`` phase, which is exactly
+    what exposed an `is`-vs-`==` phase comparison bug in review (V07): the comparison passed
+    against a same-process enum object but silently failed — every time — against a freshly
+    loaded row.
+    """
+    session.expunge(conv)
+    reloaded = await session.get(Conversation, conv.id)
+    assert reloaded is not None
+    return reloaded
+
+
 async def _make_paused_question_stale(session: AsyncSession, conv: Conversation) -> None:
     """Copied from tests/test_workflow.py's
     test_a_paused_question_the_learner_has_since_outgrown_is_not_resumed: record enough
@@ -97,6 +115,11 @@ async def test_pause_then_resume_returns_the_same_question(db_session: AsyncSess
     paused = await practice.pause(db_session, llm, learner_id=conv.learner_id, conversation=conv)
     assert paused.phase is ConversationPhase.PRACTICE_PAUSED
     assert conv.active_item_id is not None
+
+    # Reload the row rather than reuse the object `pause` just mutated — see `_reload`. This is
+    # what a real request's `resume` call actually receives.
+    conv = await _reload(db_session, conv)
+    assert type(conv.phase) is str
 
     resumed = await practice.resume(db_session, llm, learner_id=conv.learner_id, conversation=conv)
     assert resumed.ended is False
@@ -175,3 +198,16 @@ async def test_pause_without_live_practice_is_a_conflict(db_session: AsyncSessio
         await practice.pause(
             db_session, fake_llm_client(), learner_id=conv.learner_id, conversation=conv
         )
+
+
+async def test_pause_when_already_paused_is_a_conflict(db_session: AsyncSession) -> None:
+    conv, llm = await _presented(db_session, [])
+    await practice.pause(db_session, llm, learner_id=conv.learner_id, conversation=conv)
+
+    # Reload, same as the resume test above: the already-paused guard has to work against a
+    # freshly loaded row's plain-`str` phase, not only the enum object `pause` left in memory.
+    conv = await _reload(db_session, conv)
+    assert type(conv.phase) is str
+
+    with pytest.raises(practice.PracticeConflict):
+        await practice.pause(db_session, llm, learner_id=conv.learner_id, conversation=conv)

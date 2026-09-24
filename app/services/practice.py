@@ -102,7 +102,7 @@ async def pause(
     item_id = await workflow_svc.paused_item_id(
         llm, session, conversation.id, learner_id=learner_id
     )
-    if item_id is None or conversation.phase is ConversationPhase.PRACTICE_PAUSED:
+    if item_id is None or conversation.phase == ConversationPhase.PRACTICE_PAUSED:
         raise PracticeConflict("no live practice to pause")
     conversation.phase = ConversationPhase.PRACTICE_PAUSED
     conversation.active_item_id = item_id
@@ -121,7 +121,7 @@ async def resume(
     question itself, if there still is one, is exactly what the learner left (the checkpoint's
     own ``last_message``), never a freshly regenerated one.
     """
-    if conversation.phase is not ConversationPhase.PRACTICE_PAUSED:
+    if conversation.phase != ConversationPhase.PRACTICE_PAUSED:
         raise PracticeConflict("practice is not paused")
     paused = await workflow_svc.paused_prompt(llm, session, conversation.id, learner_id=learner_id)
     if paused is None:
