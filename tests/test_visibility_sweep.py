@@ -37,7 +37,7 @@ from app.llm.registry import fake_llm_client
 from app.main import app
 from app.models.assessment import Item, ItemKC, ItemOrigin, ItemType
 from app.models.chat import Conversation
-from app.models.knowledge import KC, KCEdge, Subject, Topic
+from app.models.knowledge import KC, ConceptLink, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.publication import CurriculumProposal, Publication, PublicationStatus
 from app.storage import InMemoryBlobStore
@@ -56,6 +56,7 @@ class Ids:
     proposal: uuid.UUID  # a curriculum-generation record (S25b); `/subjects/commit` needs one
     publication: uuid.UUID  # a pending publication request on `subject` (S25b)
     conversation: uuid.UUID  # a chat conversation on `subject`, owned by the same learner (S52)
+    link: uuid.UUID  # an endorsed private concept link between kc and kc2 (S24)
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,7 @@ class Case:
 
 
 def _random_ids() -> Ids:
-    return Ids(*(uuid.uuid4() for _ in range(8)))
+    return Ids(*(uuid.uuid4() for _ in range(9)))
 
 
 async def _private_graph(session: AsyncSession, owner: Learner) -> Ids:
@@ -102,6 +103,17 @@ async def _private_graph(session: AsyncSession, owner: Learner) -> Ids:
     session.add_all([kc, kc2])
     await session.flush()
     session.add(KCEdge(prereq_kc_id=kc2.id, kc_id=kc.id))
+    a_kc, b_kc = sorted((kc.id, kc2.id))
+    link = ConceptLink(
+        kc_a_id=a_kc,
+        kc_b_id=b_kc,
+        scope="private",
+        owner_learner_id=owner.id,
+        verdict="endorsed",
+        endorsed_by="judge",
+        reason="Same idea.",
+    )
+    session.add(link)
     item = Item(
         item_type=ItemType.MCQ,
         stem="Private question",
@@ -139,6 +151,7 @@ async def _private_graph(session: AsyncSession, owner: Learner) -> Ids:
         proposal=proposal.id,
         publication=publication.id,
         conversation=conversation.id,
+        link=link.id,
     )
 
 
@@ -707,6 +720,27 @@ CASES: list[Case] = [
         lambda c, t, o: c.post(
             f"{API}/retrieve", json={"query": "anything", "topic_id": str(t.topic)}
         ),
+    ),
+    # --- concept links ---------------------------------------------------------------------
+    Case(
+        "POST",
+        "/api/v1/concept-links/{link_id}/decision",
+        "link_id",
+        ("link",),
+        lambda c, t, o: c.post(
+            f"{API}/concept-links/{t.link}/decision", json={"decision": "decline"}
+        ),
+    ),
+    Case(
+        "POST",
+        "/api/v1/admin/concept-links/{link_id}",
+        "link_id",
+        ("link",),
+        lambda c, t, o: c.post(
+            f"{API}/admin/concept-links/{t.link}", json={"endorse": True, "reason": "x"}
+        ),
+        owner_exempt="every caller without the admin tier gets the same 403, whether the link exists or not — these are review routes, not learner routes",
+        refusal=403,
     ),
 ]
 

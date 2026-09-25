@@ -21,6 +21,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/concept-links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Concept Link Queue
+         * @description Curated candidate links, undecided first (S24).
+         */
+        get: operations["concept_link_queue_api_v1_admin_concept_links_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/concept-links/{link_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide Concept Link
+         * @description Endorse or reject one curated link, once, with a reason learners will read.
+         */
+        post: operations["decide_concept_link_api_v1_admin_concept_links__link_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/impersonate": {
         parameters: {
             query?: never;
@@ -500,6 +540,44 @@ export interface paths {
         get: operations["get_chunk_api_v1_chunks__chunk_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/concept-links/suggestions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Suggestions */
+        get: operations["list_suggestions_api_v1_concept_links_suggestions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/concept-links/{link_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide Link
+         * @description 404 for a link that is not endorsed or not the caller's to see; 409 for a decision that
+         *     does not follow from the last one (accepting a declined link, revoking an undecided one).
+         */
+        post: operations["decide_link_api_v1_concept_links__link_id__decision_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2175,6 +2253,72 @@ export interface components {
             /** Verdict */
             verdict: string;
         };
+        /** ConceptLinkDecisionSubmit */
+        ConceptLinkDecisionSubmit: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "accept" | "decline" | "revoke";
+        };
+        /** ConceptLinkReviewRead */
+        ConceptLinkReviewRead: {
+            /** Decided At */
+            decided_at: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Kc A Id
+             * Format: uuid
+             */
+            kc_a_id: string;
+            /** Kc A Name */
+            kc_a_name: string;
+            /**
+             * Kc B Id
+             * Format: uuid
+             */
+            kc_b_id: string;
+            /** Kc B Name */
+            kc_b_name: string;
+            /** Reason */
+            reason: string | null;
+            /** Subject A Name */
+            subject_a_name: string;
+            /** Subject B Name */
+            subject_b_name: string;
+            /** Verdict */
+            verdict: ("endorsed" | "rejected") | null;
+        };
+        /**
+         * ConceptLinkSuggestionRead
+         * @description An endorsed link the learner can accept (``decision`` null) or revoke (``"accepted"``).
+         */
+        ConceptLinkSuggestionRead: {
+            a: components["schemas"]["LinkSideRead"];
+            b: components["schemas"]["LinkSideRead"];
+            /** Decision */
+            decision: "accepted" | null;
+            /** Endorsed By */
+            endorsed_by: ("admin" | "judge") | null;
+            /**
+             * Link Id
+             * Format: uuid
+             */
+            link_id: string;
+            /** Reason */
+            reason: string | null;
+        };
+        /** ConceptLinkVerdictSubmit */
+        ConceptLinkVerdictSubmit: {
+            /** Endorse */
+            endorse: boolean;
+            /** Reason */
+            reason: string;
+        };
         /**
          * ContentBlockRead
          * @description A generated, KC-tagged content block with its grounding citations.
@@ -3077,6 +3221,23 @@ export interface components {
              */
             url: string;
         };
+        /** LinkSideRead */
+        LinkSideRead: {
+            /**
+             * Kc Id
+             * Format: uuid
+             */
+            kc_id: string;
+            /** Kc Name */
+            kc_name: string;
+            /**
+             * Subject Id
+             * Format: uuid
+             */
+            subject_id: string;
+            /** Subject Name */
+            subject_name: string;
+        };
         /**
          * MemoryCorrection
          * @description What the learner says is actually true (S16).
@@ -3955,6 +4116,61 @@ export interface operations {
             };
         };
     };
+    concept_link_queue_api_v1_admin_concept_links_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConceptLinkReviewRead"][];
+                };
+            };
+        };
+    };
+    decide_concept_link_api_v1_admin_concept_links__link_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                link_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConceptLinkVerdictSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConceptLinkReviewRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     impersonate_api_v1_admin_impersonate_post: {
         parameters: {
             query?: never;
@@ -4592,6 +4808,61 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChunkRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_suggestions_api_v1_concept_links_suggestions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConceptLinkSuggestionRead"][];
+                };
+            };
+        };
+    };
+    decide_link_api_v1_concept_links__link_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                link_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConceptLinkDecisionSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConceptLinkSuggestionRead"];
                 };
             };
             /** @description Validation Error */

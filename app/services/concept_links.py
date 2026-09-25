@@ -10,17 +10,20 @@ one reading of that rule; nothing else re-derives it.
 import uuid
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import combinations
+from typing import Literal, cast
 
 import structlog
 from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.learning import link_judge
+from app.learning import link_judge, mastery
 from app.llm import LLMClient
 from app.models.knowledge import KC, ConceptLink, ConceptLinkDecision, KCEdge, Subject, Topic
+from app.schemas.concept_links import ConceptLinkReviewRead
 from app.services.llm_log import log_llm_call
 
 log = structlog.get_logger(__name__)
@@ -272,3 +275,212 @@ async def dispatch_judge(
             "concept_links.judge_enqueue_failed", learner_id=str(learner_id), error=str(exc)
         )
         return False
+
+
+@dataclass(frozen=True)
+class LinkSide:
+    kc_id: uuid.UUID
+    kc_name: str
+    subject_id: uuid.UUID
+    subject_name: str
+
+
+@dataclass(frozen=True)
+class Suggestion:
+    link_id: uuid.UUID
+    reason: str | None
+    endorsed_by: str | None
+    decision: str | None  # None (undecided, or revoked) | "accepted"
+    a: LinkSide
+    b: LinkSide
+
+
+async def _decidable(
+    session: AsyncSession, learner_id: uuid.UUID, link_id: uuid.UUID
+) -> ConceptLink:
+    """The link, if this learner may decide it: endorsed, and visible to them. One answer
+    (``LinkNotFound``) for every other case, so a caller cannot probe for other learners' pairs."""
+    link = await session.scalar(
+        select(ConceptLink).where(ConceptLink.id == link_id, _visible_link(learner_id))
+    )
+    if link is None or link.verdict != ENDORSED:
+        raise LinkNotFound(str(link_id))
+    return link
+
+
+async def _reseed_from_remaining_links(
+    session: AsyncSession, learner_id: uuid.UUID, target_kc_id: uuid.UUID
+) -> None:
+    """After a revoke actually withdraws a head start, hand ``target_kc_id`` to any other link
+    still in effect for this learner (S24 controller ruling).
+
+    Reads ``links_in_effect`` after the revoked decision has been flushed, so that link no
+    longer counts. ``seed_transfer`` already keeps only the strongest source, so calling it for
+    every remaining link is safe even when more than one is in effect.
+    """
+    in_effect = await links_in_effect(session, learner_id, [target_kc_id])
+    for source_kc_id in in_effect.get(target_kc_id, ()):
+        a, b = sorted((target_kc_id, source_kc_id))
+        other_link = await session.scalar(
+            select(ConceptLink).where(ConceptLink.kc_a_id == a, ConceptLink.kc_b_id == b)
+        )
+        if other_link is not None:
+            await mastery.seed_transfer(
+                session,
+                learner_id,
+                target_kc_id=target_kc_id,
+                source_kc_id=source_kc_id,
+                link_id=other_link.id,
+            )
+
+
+async def decide(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    link_id: uuid.UUID,
+    decision: Literal["accept", "decline", "revoke"],
+) -> ConceptLinkDecision:
+    """Record the learner's half of a link and apply it (S24).
+
+    - ``accept`` (from undecided or revoked): seeds each side from the other where one has
+      evidence and the other none (``mastery.seed_transfer``).
+    - ``decline`` (from undecided): final — the pair is not offered again.
+    - ``revoke`` (from accepted): withdraws any head start not yet answered on, and hands the
+      target to any other link still in effect for this learner (controller ruling).
+    A repeat of the current decision returns it unchanged. Anything else is ``LinkConflict``.
+    """
+    link = await _decidable(session, learner_id, link_id)
+    row = await session.scalar(
+        select(ConceptLinkDecision).where(
+            ConceptLinkDecision.learner_id == learner_id, ConceptLinkDecision.link_id == link_id
+        )
+    )
+    current = row.decision if row is not None else None
+    target = {"accept": ACCEPTED, "decline": DECLINED, "revoke": REVOKED}[decision]
+    if current == target:
+        assert row is not None  # current == target implies a row
+        return row
+    allowed = {
+        ACCEPTED: (None, REVOKED),
+        DECLINED: (None,),
+        REVOKED: (ACCEPTED,),
+    }[target]
+    if current not in allowed:
+        raise LinkConflict(f"cannot {decision} a link that is {current or 'undecided'}")
+    if row is None:
+        row = ConceptLinkDecision(learner_id=learner_id, link_id=link_id, decision=target)
+        session.add(row)
+    else:
+        row.decision, row.decided_at = target, datetime.now(UTC)
+    pairs = ((link.kc_a_id, link.kc_b_id), (link.kc_b_id, link.kc_a_id))
+    if target == ACCEPTED:
+        for target_kc, source_kc in pairs:
+            await mastery.seed_transfer(
+                session, learner_id, target_kc_id=target_kc, source_kc_id=source_kc, link_id=link.id
+            )
+    elif target == REVOKED:
+        for target_kc, source_kc in pairs:
+            withdrawn = await mastery.revoke_transfer(
+                session, learner_id, target_kc_id=target_kc, source_kc_id=source_kc, link_id=link.id
+            )
+            if withdrawn:
+                # Flush so the decision row above is already `revoked` when `links_in_effect`
+                # (queried inside the reseed) re-reads it — otherwise this same link would
+                # still count as in effect and could hand the target right back to itself.
+                await session.flush()
+                await _reseed_from_remaining_links(session, learner_id, target_kc)
+    await session.flush()
+    return row
+
+
+async def suggestions(session: AsyncSession, learner_id: uuid.UUID) -> list[Suggestion]:
+    """Endorsed links this learner can see and has not declined — undecided (or revoked) ones
+    to accept, accepted ones to revoke. Refreshes candidates first, so a newly endorsed curated
+    pair touching a subject the learner can see shows up without waiting for anything."""
+    await sync_candidates(session, learner_id)
+    decided = {
+        d.link_id: d.decision
+        for d in await session.scalars(
+            select(ConceptLinkDecision).where(ConceptLinkDecision.learner_id == learner_id)
+        )
+    }
+    links = [
+        link
+        for link in await session.scalars(
+            select(ConceptLink)
+            .where(_visible_link(learner_id), ConceptLink.verdict == ENDORSED)
+            .order_by(ConceptLink.decided_at)
+        )
+        if decided.get(link.id) != DECLINED
+    ]
+    kc_ids = {kc for link in links for kc in (link.kc_a_id, link.kc_b_id)}
+    sides = (
+        {
+            kc.id: LinkSide(
+                kc_id=kc.id, kc_name=kc.name, subject_id=subject.id, subject_name=subject.name
+            )
+            for kc, subject in (
+                await session.execute(
+                    select(KC, Subject)
+                    .join(Topic, KC.topic_id == Topic.id)
+                    .join(Subject, Topic.subject_id == Subject.id)
+                    .where(KC.id.in_(kc_ids))
+                )
+            ).all()
+        }
+        if kc_ids
+        else {}
+    )
+    return [
+        Suggestion(
+            link_id=link.id,
+            reason=link.reason,
+            endorsed_by=link.endorsed_by,
+            decision=ACCEPTED if decided.get(link.id) == ACCEPTED else None,
+            a=sides[link.kc_a_id],
+            b=sides[link.kc_b_id],
+        )
+        for link in links
+        if link.kc_a_id in sides and link.kc_b_id in sides
+    ]
+
+
+async def review_rows(session: AsyncSession) -> list[ConceptLinkReviewRead]:
+    """Curated links for an administrator to decide, each side's names joined in, in
+    ``curated_queue`` order (S24)."""
+    links = await curated_queue(session)
+    kc_ids = {kc for link in links for kc in (link.kc_a_id, link.kc_b_id)}
+    names = (
+        {
+            kc_id: (kc_name, subject_name)
+            for kc_id, kc_name, subject_name in (
+                await session.execute(
+                    select(KC.id, KC.name, Subject.name)
+                    .join(Topic, KC.topic_id == Topic.id)
+                    .join(Subject, Topic.subject_id == Subject.id)
+                    .where(KC.id.in_(kc_ids))
+                )
+            ).all()
+        }
+        if kc_ids
+        else {}
+    )
+    return [
+        ConceptLinkReviewRead(
+            id=link.id,
+            kc_a_id=link.kc_a_id,
+            kc_b_id=link.kc_b_id,
+            kc_a_name=names[link.kc_a_id][0],
+            kc_b_name=names[link.kc_b_id][0],
+            subject_a_name=names[link.kc_a_id][1],
+            subject_b_name=names[link.kc_b_id][1],
+            # `verdict` is `str | None` on the row (curated_queue's own where-clause is what
+            # actually narrows it) — cast to the response's closed vocabulary rather than
+            # widen the schema to match the column.
+            verdict=cast('Literal["endorsed", "rejected"] | None', link.verdict),
+            reason=link.reason,
+            decided_at=link.decided_at,
+        )
+        for link in links
+        if link.kc_a_id in names and link.kc_b_id in names
+    ]
