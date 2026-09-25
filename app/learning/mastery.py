@@ -22,6 +22,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     Integer,
+    String,
     and_,
     case,
     distinct,
@@ -953,11 +954,13 @@ def record_detour_outcome(
     )
 
 
-CLOSED_DETOUR_OUTCOMES = frozenset({"disproved", "skipped"})
+CLOSED_DETOUR_OUTCOMES = frozenset({"skipped"})
 """Outcomes that bar a route from being offered again for this blocked component (S11).
 
-Not ``"mastered"``: mastering the prerequisite is success, not a reason to bar the route
-should it ever legitimately reopen (e.g. the component later needs review again and slips)."""
+Only the learner's own "no". Not ``"mastered"``: mastering the prerequisite is success, not a
+reason to bar the route should it ever legitimately reopen. Not ``"disproved"`` either: that
+is an inference from a handful of answers and can be wrong, and a permanent bar would make a
+wrong one unrecoverable — ``detour_max_repeats`` already stops a route being tried forever."""
 
 
 async def closed_detour_routes(
@@ -965,9 +968,8 @@ async def closed_detour_routes(
 ) -> set[uuid.UUID]:
     """Prerequisites whose detour route for ``blocked_kc_id`` is closed for good.
 
-    A route closes the moment any outcome event for it lands on ``"disproved"`` or
-    ``"skipped"`` — the hypothesis was tested and rejected, or the learner already declined it,
-    and either way offering it again would repeat a question already answered.
+    A route closes the moment any outcome event for it lands on ``"skipped"`` — the learner
+    already declined it, and offering it again would ask a question they have answered.
     """
     rows = (
         await session.execute(
@@ -998,14 +1000,19 @@ async def passed_since(
     opened: Mapping[uuid.UUID, datetime],
     *,
     threshold: float,
+    passes: int,
 ) -> set[uuid.UUID]:
-    """Which of these KCs the learner has answered well, alone, since each one's detour began.
+    """Which of these KCs the learner has answered well, alone, ``passes`` times running since
+    each one's detour began.
 
-    What disproves a detour (S11): one demonstrated, unassisted attempt at or above the
-    threshold. A self-rating is not an answer, and help turns an answer into a joint one. An
-    answer given straight after a worked example of the same problem (guided practice) is not
-    one either: it shows the teaching landed, which is the detour working, not the detour
-    being unnecessary.
+    What disproves a detour (S11). One answer is too small a sample to conclude anything — a
+    guess or an easy item gets there — so this looks for a run: counting back from the latest
+    demonstrated attempt, ``passes`` unassisted, untaught passes on different questions before
+    any failure. A failure ends the run; a pass that was helped or taught is neither, so it
+    neither counts nor breaks it. A self-rating is not an answer, help turns an answer into a
+    joint one, and an answer given straight after a worked example (guided practice) shows the
+    teaching landed — the detour working, not the detour being unnecessary. Questions are told
+    apart by ``item_id``; an attempt with none is its own question.
     """
     if not opened:
         return set()
@@ -1018,17 +1025,35 @@ async def passed_since(
         kc: at.astimezone(UTC).replace(tzinfo=None) if at.tzinfo is not None else at
         for kc, at in opened.items()
     }
+    score = LearningEvent.payload["score"].astext.cast(Float)
+    counts = and_(
+        _unassisted_clause(),
+        func.coalesce(LearningEvent.payload["taught_first"].astext, "false") != "true",
+    )
     rows = await session.execute(
-        select(distinct(LearningEvent.kc_id)).where(
+        select(
+            LearningEvent.kc_id,
+            score >= threshold,
+            counts,
+            func.coalesce(LearningEvent.payload["item_id"].astext, LearningEvent.id.cast(String)),
+        )
+        .where(
             LearningEvent.learner_id == learner_id,
             _demonstrated_clause(),
-            _unassisted_clause(),
-            func.coalesce(LearningEvent.payload["taught_first"].astext, "false") != "true",
-            LearningEvent.payload["score"].astext.cast(Float) >= threshold,
             or_(*(and_(LearningEvent.kc_id == kc, when >= at) for kc, at in naive_opened.items())),
         )
+        .order_by(LearningEvent.kc_id, when.desc(), LearningEvent.created_at.desc())
     )
-    return {kc_id for (kc_id,) in rows}
+    items: dict[uuid.UUID, set[str]] = {}
+    broken: set[uuid.UUID] = set()
+    for kc_id, passed, counted, item in rows:
+        if kc_id in broken:
+            continue
+        if not passed:
+            broken.add(kc_id)  # the run, counted back from the latest, ends at a failure
+        elif counted:
+            items.setdefault(kc_id, set()).add(item)
+    return {kc_id for kc_id, seen in items.items() if len(seen) >= passes}
 
 
 async def rollup_topic(

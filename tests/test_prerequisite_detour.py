@@ -903,7 +903,8 @@ async def test_accepting_then_answering_well_disproves_the_gap(db_session: Async
         prereq_kc_id=prereq.id,
         decision="accept",
     )
-    await _observe(db_session, learner, prereq, 0.9)
+    for _ in range(3):
+        await _observe(db_session, learner, prereq, 0.9)
     plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
     assert plan is not None
     step = _detour_step(plan, prereq)
@@ -933,11 +934,8 @@ async def test_a_pass_from_before_the_detour_does_not_disprove_it(
 async def test_an_assisted_pass_does_not_disprove_it(db_session: AsyncSession) -> None:
     learner, subject, prereq, _blocked = await _stuck(db_session)
     await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
-    await mastery.record_observation(
-        db_session,
-        Observation(learner_id=learner.id, kc_weights={prereq.id: 1.0}, score=0.95, hints_used=1),
-    )
-    await db_session.flush()
+    for _ in range(3):
+        await _pass(db_session, learner, prereq, hints_used=1)
     plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
     assert plan is not None
     assert _detour_step(plan, prereq)["status"] == "active"
@@ -968,17 +966,8 @@ async def test_a_pass_straight_after_a_worked_example_does_not_disprove_it(
     # first answer is the detour working — not evidence the prerequisite was never the gap.
     learner, subject, prereq, _blocked = await _stuck(db_session)
     await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
-    await mastery.record_observation(
-        db_session,
-        Observation(
-            learner_id=learner.id,
-            kc_weights={prereq.id: 1.0},
-            score=0.95,
-            hints_used=0,
-            taught_first=True,
-        ),
-    )
-    await db_session.flush()
+    for _ in range(3):
+        await _pass(db_session, learner, prereq, taught_first=True)
     plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
     assert plan is not None
     assert _detour_step(plan, prereq).get("detour_outcome") != "disproved"
@@ -990,21 +979,111 @@ async def test_a_pass_straight_after_a_worked_example_does_not_disprove_it(
 async def test_the_same_pass_without_a_worked_example_still_disproves_it(
     db_session: AsyncSession,
 ) -> None:
-    # The control for the test above: the same correct, hint-free answer from a check or a
-    # review (not taught first) is still an unaided demonstration and still disproves.
+    # The control for the test above: the same correct, hint-free answers from a check or a
+    # review (not taught first) are unaided demonstrations, and a run of them still disproves.
     learner, subject, prereq, blocked = await _stuck(db_session)
     await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
-    await mastery.record_observation(
-        db_session,
-        Observation(learner_id=learner.id, kc_weights={prereq.id: 1.0}, score=0.95, hints_used=0),
-    )
-    await db_session.flush()
+    for _ in range(3):
+        await _pass(db_session, learner, prereq)
     plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
     assert plan is not None
     step = _detour_step(plan, prereq)
     assert (step["status"], step["detour_outcome"]) == ("done", "disproved")
     outcomes = await _outcome_events(db_session, learner)
     assert [(e.kc_id, e.payload["outcome"]) for e in outcomes] == [(blocked.id, "disproved")]
+
+
+async def _pass(
+    session: AsyncSession,
+    learner: Learner,
+    kc: KC,
+    *,
+    hints_used: int = 0,
+    taught_first: bool = False,
+    item_id: uuid.UUID | None = None,
+) -> None:
+    await mastery.record_observation(
+        session,
+        Observation(
+            learner_id=learner.id,
+            kc_weights={kc.id: 1.0},
+            score=0.95,
+            hints_used=hints_used,
+            taught_first=taught_first,
+            item_id=item_id,
+        ),
+    )
+    await session.flush()
+
+
+async def _still_open(
+    session: AsyncSession, learner: Learner, subject: Subject, prereq: KC
+) -> bool:
+    plan = await svc.revise_plan(session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    return _detour_step(plan, prereq)["status"] == "active"
+
+
+async def test_one_or_two_passes_are_not_enough_to_disprove_it(
+    db_session: AsyncSession,
+) -> None:
+    # One answer is too small a sample to call a learner solid: a guess or an easy item gets
+    # there. The detour stays open until a full run of `detour_disprove_passes`.
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    for _ in range(get_settings().detour_disprove_passes - 1):
+        await _pass(db_session, learner, prereq)
+        assert await _still_open(db_session, learner, subject, prereq)
+    assert await _outcome_events(db_session, learner) == []
+
+
+async def test_a_failure_starts_the_run_over(db_session: AsyncSession) -> None:
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    await _pass(db_session, learner, prereq)
+    await _pass(db_session, learner, prereq)
+    await _observe(db_session, learner, prereq, 0.1)
+    await _pass(db_session, learner, prereq)
+    await _pass(db_session, learner, prereq)
+    assert await _still_open(db_session, learner, subject, prereq)
+    await _pass(db_session, learner, prereq)
+    assert not await _still_open(db_session, learner, subject, prereq)
+
+
+async def test_a_helped_pass_neither_counts_nor_breaks_the_run(db_session: AsyncSession) -> None:
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    await _pass(db_session, learner, prereq)
+    await _pass(db_session, learner, prereq, hints_used=1)
+    await _pass(db_session, learner, prereq, taught_first=True)
+    await _pass(db_session, learner, prereq)
+    assert await _still_open(db_session, learner, subject, prereq)
+    await _pass(db_session, learner, prereq)
+    assert not await _still_open(db_session, learner, subject, prereq)
+
+
+async def test_the_same_question_answered_again_counts_once(db_session: AsyncSession) -> None:
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    item = uuid.uuid4()
+    for _ in range(3):
+        await _pass(db_session, learner, prereq, item_id=item)
+    assert await _still_open(db_session, learner, subject, prereq)
+
+
+async def test_a_disproved_route_is_not_closed(db_session: AsyncSession) -> None:
+    # A disproval is an inference from a handful of answers and can be wrong; only the
+    # learner's own skip bars a route for good. `detour_max_repeats` stops endless retries.
+    learner, _subject, prereq, blocked = await _stuck(db_session)
+    mastery.record_detour_outcome(
+        db_session,
+        learner_id=learner.id,
+        blocked_kc_id=blocked.id,
+        prereq_kc_id=prereq.id,
+        outcome="disproved",
+    )
+    await db_session.flush()
+    assert await mastery.closed_detour_routes(db_session, learner.id, blocked.id) == set()
 
 
 async def test_skipping_returns_to_the_blocked_step_and_is_remembered(

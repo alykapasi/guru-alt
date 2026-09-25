@@ -321,6 +321,13 @@ class Settings(BaseSettings):
     # Uncalibrated, like its neighbours (S18).
     detour_max_repeats: int = 2
 
+    # How many passes in a row it takes to conclude a detour's prerequisite was never the gap
+    # (S11). One correct answer is too small a sample to call a learner solid — a guess or an
+    # easy item gets there — so a detour ends early only on this many consecutive unassisted,
+    # untaught passes on different questions since it opened; a failure starts the count over.
+    # Every one of those answers still feeds mastery as usual. Uncalibrated (S18).
+    detour_disprove_passes: int = 3
+
     # When a due review stops being worth self-rating (S09/S10). A flashcard is graded by the
     # learner's own rating, so a component failed repeatedly on review produces a falling
     # ability and no account of *why* — the one situation where the cheap format is the wrong

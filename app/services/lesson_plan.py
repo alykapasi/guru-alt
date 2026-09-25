@@ -222,9 +222,9 @@ def _closed_detours(steps: Iterable[Any]) -> dict[tuple[str, str, str], str]:
     """``(prerequisite, blocked, offered_at) -> outcome`` for every detour step that has
     closed — one entry **per step**, not per route.
 
-    A route closed ``"mastered"`` is not barred from reopening (``mastery.closed_detour_routes``
-    only closes on disproved/skipped), so mastery slipping can send the learner back to the
-    same ``(prereq, blocked)`` pair a second time. Keying this on the route alone collapsed
+    A route closed ``"mastered"`` or ``"disproved"`` is not barred from reopening
+    (``mastery.closed_detour_routes`` only closes on skipped), so the learner can be sent back
+    to the same ``(prereq, blocked)`` pair a second time. Keying this on the route alone collapsed
     that second step's later close into the first step's dict entry, so the diff in
     ``_apply_revision`` saw no *new* key and silently wrote no event for it — a second skip or
     disproval on a re-detoured route was never remembered.
@@ -446,8 +446,13 @@ async def _apply_revision(
         and step.get("status") in ("pending", "active")
         and step.get("opened_at")
     }
+    settings = get_settings()
     disproved = await mastery.passed_since(
-        session, learner_id, opened, threshold=get_settings().detour_failure_threshold
+        session,
+        learner_id,
+        opened,
+        threshold=settings.detour_failure_threshold,
+        passes=settings.detour_disprove_passes,
     )
 
     revised = engine.revise_steps(
@@ -646,14 +651,14 @@ async def _prerequisite_detour(
     if not prereq_ids:
         return None  # every route upstream has been tried; the difficulty is not up there
 
-    # And the ones the learner has already ruled on (S11): a route disproved or explicitly
-    # skipped is a closed question, and re-offering it would ask the learner to answer it
-    # again. A route that closed as ``mastered`` is not filtered — mastering it is success,
-    # not a reason to bar it should the component ever legitimately need it again.
+    # And the ones the learner has already declined (S11): re-offering a skipped route would
+    # ask them a question they have answered. A route that closed ``mastered`` or
+    # ``disproved`` is not filtered — mastering it is success, and a disproval is an inference
+    # that can be wrong; ``detour_max_repeats`` above is what stops either repeating forever.
     closed = await mastery.closed_detour_routes(session, learner_id, blocked_id)
     prereq_ids = [kc_id for kc_id in prereq_ids if kc_id not in closed]
     if not prereq_ids:
-        return None  # every remaining route was already disproved or declined
+        return None  # every remaining route was already declined
 
     names = {kc.id: kc.name for kc in await knowledge_svc.get_kcs(session, prereq_ids)}
     return engine.prerequisite_detour(

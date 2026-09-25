@@ -112,16 +112,20 @@ Both write in one transaction with the outcome event below.
 In `revise_steps`, an open, accepted detour step (`pending`/`active`) closes as:
 
 1. **`mastered`** — its KC is in `mastered_kc_ids` (today's rule).
-2. **`disproved`** — its KC is in a new `disproved_kc_ids` input: the service found a
-   **demonstrated, unassisted** attempt on that KC with `score >= detour_failure_threshold` and
-   `observed_at >= opened_at`. A step without `opened_at` (pre-slice) can never be disproved —
-   there is no trustworthy start time, and an old pass must not close a new detour.
+2. **`disproved`** — its KC is in a new `disproved_kc_ids` input: the service found a **run**
+   of `detour_disprove_passes` (default 3) **demonstrated, unassisted, untaught** passes
+   (`score >= detour_failure_threshold`) on different questions with `observed_at >= opened_at`,
+   counted back from the latest attempt. A failure ends the run; a helped or taught pass neither
+   counts nor breaks it. One pass is too small a sample to call the learner solid — a guess or
+   an easy item gets there — so it only feeds mastery, as every answer does. A step without
+   `opened_at` (pre-slice) can never be disproved — there is no trustworthy start time, and an
+   old pass must not close a new detour.
 
 Both set `status="done"` and the outcome. Mastered wins when both hold. The return needs no new
 mechanism: with the detour closed, the ordering makes the blocked step active again.
 
 `disproved_kc_ids` comes from a new `mastery.passed_since(session, learner_id, {kc_id:
-opened_at}, *, threshold) -> set[uuid.UUID]`. It uses the same "demonstrated" and "unassisted"
+opened_at}, *, threshold, passes) -> set[uuid.UUID]`. It uses the same "demonstrated" and "unassisted"
 definitions as `kc_evidence` (slice 2), not a second copy of them. A self-rating
 (`self_report` event) can never disprove.
 
@@ -138,9 +142,10 @@ same transaction as the revision or decision that closed the step, detected by d
 outcomes before and after (the same pattern `_open_detour_keys` already uses for insertion).
 
 `_prerequisite_detour` drops a candidate prerequisite for a blocked component when an outcome
-event says `disproved` or `skipped` for that pair (new `mastery.closed_detour_routes(session,
+event says `skipped` for that pair (new `mastery.closed_detour_routes(session,
 learner_id, blocked_kc_id) -> set[uuid.UUID]`). `mastered` does not exhaust a route: the detour
-worked. `detour_max_repeats` stays as the backstop. Nothing clears these except a new plan
+worked. Nor does `disproved`: it is an inference from a handful of answers and can be wrong, and
+a permanent bar would make a wrong one unrecoverable. `detour_max_repeats` stays as the backstop. Nothing clears these except a new plan
 generation for a different goal (which already starts from fresh steps; the events are kept).
 
 `ATTEMPT_EVENTS`, retention counters, analytics, and replay must ignore `detour_outcome` the
@@ -260,9 +265,11 @@ not establish its callers).
    stays active.
 3. Accept makes it active with `opened_at`; skip on proposed and on active returns the blocked
    step to active, in both modes.
-4. A skipped route is not proposed again for that component; a disproved route likewise; a
-   mastered one is not excluded.
-5. A demonstrated, unassisted pass after `opened_at` closes the detour as `disproved`.
+4. A skipped route is not proposed again for that component; disproved and mastered ones are
+   not excluded.
+5. A run of `detour_disprove_passes` demonstrated, unassisted, untaught passes on different
+   questions after `opened_at` closes the detour as `disproved`; fewer does not, a failure
+   restarts the count, and the same question answered again counts once.
 6. **Guards:** a pass before `opened_at` does not disprove; an assisted pass does not; a
    self-rating does not; a detour without `opened_at` does not.
 7. Outcome events are written once per closure and ignored by attempts, retention, analytics.

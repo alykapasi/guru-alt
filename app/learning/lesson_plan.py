@@ -521,7 +521,7 @@ def revise_steps(
        review again gets a fresh review step, not an un-done "new" step).
     2. A taken (non-proposed) detour whose KC is in ``disproved_kc_ids`` *and* has a truthy
        ``opened_at`` flips to ``"done"`` with ``detour_outcome="disproved"`` — the grader's
-       hypothesis was wrong, and the learner goes back to the step it was blocking. A detour
+       hypothesis looks wrong, and the learner goes back to the step it was blocking. A detour
        with no ``opened_at`` (written before this existed) is never disproved, since there is
        no trustworthy start for "after" to mean anything, and a proposal is never disproved at
        all — it was never acted on, so there is nothing to disprove.
