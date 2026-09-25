@@ -51,6 +51,21 @@ function stub(rows: unknown[], decisionStatusCode: number = 200) {
   return calls;
 }
 
+/** For the two load-failure tests: the GET response is the only thing under test, so a plain
+ * stub of it (no method branching) is enough. */
+function serveGet(body: unknown, status: number = 200) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ),
+  );
+}
+
 function renderQueue() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -94,6 +109,24 @@ describe("the concept-link queue", () => {
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     expect(
       screen.getByText("Couldn't save that verdict. Refresh and try again."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows an alert rather than throwing when the queue fails to load", async () => {
+    serveGet({ detail: "internal error" }, 500);
+    renderQueue();
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(
+      screen.getByText("Couldn't load concept links. Refresh to try again."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the same alert rather than throwing when the response isn't a list", async () => {
+    serveGet({});
+    renderQueue();
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(
+      screen.getByText("Couldn't load concept links. Refresh to try again."),
     ).toBeInTheDocument();
   });
 });

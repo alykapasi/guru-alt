@@ -8,9 +8,19 @@ type Row = components["schemas"]["ConceptLinkReviewRead"];
  * (S24). An endorsement is half a link — learners still choose — so the reason is required:
  * it is what a learner reads when deciding. Decided rows stay listed with their verdict. */
 export function ConceptLinkQueue() {
-  const { data, isLoading } = useConceptLinkQueue();
+  const { data, isLoading, isError } = useConceptLinkQueue();
   if (isLoading) return <p className="text-caption text-base-content/50">Loading concept links…</p>;
-  if (!data || data.length === 0) {
+  // Checked before the empty case, and by shape rather than truthiness: a query error or an
+  // unexpected response body is still a truthy, non-array `data` in the second case, and
+  // `.map`-ing it below would take down the whole Admin page — there is no error boundary here.
+  if (isError || !Array.isArray(data)) {
+    return (
+      <p className="text-caption text-error" role="alert">
+        Couldn't load concept links. Refresh to try again.
+      </p>
+    );
+  }
+  if (data.length === 0) {
     return <p className="text-caption text-base-content/50">No concept links to review.</p>;
   }
   return (
