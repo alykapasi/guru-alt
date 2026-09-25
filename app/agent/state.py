@@ -90,6 +90,10 @@ class WorkflowState(TypedDict):
     # The idempotency key for the answer this round grades (S34), carried in on the resume
     # payload. NotRequired: absent on the opening round and on older checkpoints.
     attempt_id: NotRequired[str | None]
+    # Whether this question opened with a worked example (S11/S24). False only on a
+    # check-first step, which poses the problem cold. NotRequired: absent on checkpoints
+    # written before this existed, which all opened with one.
+    taught_first: NotRequired[bool]
     usage: Usage  # this call's LLM usage (present's or respond's — grade's own call self-logs)
     rounds: int  # graded attempts completed so far
     max_rounds: int

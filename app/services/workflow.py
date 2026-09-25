@@ -44,6 +44,13 @@ WORKFLOW_SYSTEM_PROMPT = (
     "graded against this one. Keep it focused and conversational."
 )
 
+CHECK_FIRST_SYSTEM_PROMPT = (
+    "You are Guru, confirming something the learner has already shown in another subject. Do "
+    "not give a worked example. Pose the practice problem below for the learner to attempt in "
+    "their own words — do not invent a different problem, since their answer is graded against "
+    "this one. If they struggle, you will teach it afterwards. Keep it brief and friendly."
+)
+
 
 async def paused_item_id(
     llm: LLMClient, session: AsyncSession, conversation_id: uuid.UUID, *, learner_id: uuid.UUID
@@ -226,8 +233,12 @@ async def run_workflow_turn(
                 limit=get_settings().chat_grounding_limit,
             )
             grounding = format_grounding(hits)
+        # A provisional component (S24) is confirmed, not taught: asking first is the "short
+        # confirmation" V04 calls for, and an answer given without a worked example is exactly
+        # the unaided pass that confirms it.
+        base_prompt = CHECK_FIRST_SYSTEM_PROMPT if step.check_first else WORKFLOW_SYSTEM_PROMPT
         system = learner_context.compose(
-            WORKFLOW_SYSTEM_PROMPT,
+            base_prompt,
             context,
             extra=[f"Knowledge component: {step.kc_name}. Practice problem: {item.stem}"],
             grounding=grounding,
@@ -247,6 +258,7 @@ async def run_workflow_turn(
             "usage": Usage(),
             "rounds": 0,
             "max_rounds": max_rounds,
+            "taught_first": not step.check_first,
         }
         # A fresh start carries no help from whatever came before it. Pause/resume/skip already
         # reset this at their own moments, but a start reached without going through any of them

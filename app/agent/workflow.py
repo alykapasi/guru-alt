@@ -135,10 +135,12 @@ def build_workflow_graph(
                 attempt_id=uuid.UUID(raw) if (raw := state.get("attempt_id")) else None,
             ),
             llm=llm,
-            # Guided practice always shows a worked example before posing the problem, so even
-            # a first-round answer came straight after being taught. It counts as evidence as
-            # before; it just cannot disprove a prerequisite detour (S11).
-            taught_first=True,
+            # Guided practice usually shows a worked example before posing the problem, so even
+            # a first-round answer came straight after being taught — except a check-first step
+            # (S24), which poses the problem cold to confirm a provisional component rather than
+            # teach it. Either way the answer counts as evidence as before; a taught-first one
+            # just cannot disprove a prerequisite detour (S11).
+            taught_first=state.get("taught_first", True),
         )
         kcs = await knowledge_svc.get_kcs(session, kc_ids)
         return {

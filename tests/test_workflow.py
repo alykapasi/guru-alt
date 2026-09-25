@@ -30,6 +30,7 @@ from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRef
 from app.services import assessment as assessment_svc
 from app.services import lesson_plan as lesson_plan_svc
+from app.services import workflow as workflow_svc
 from app.services.turn_common import TurnEvent
 from app.services.workflow import is_awaiting_reply, run_workflow_turn
 from tests.embedding import FAKE_SPACE
@@ -96,6 +97,23 @@ async def _conversation_without_a_plan(session: AsyncSession) -> Conversation:
     await session.commit()
     await session.refresh(conversation)
     return conversation
+
+
+async def _mark_active_step_check_first(session: AsyncSession, conv: Conversation) -> None:
+    """Flip the stored plan's active step to check_first=True, the way S24's revision would
+    once ``provisional_kc_ids`` covers it — done directly here so these tests don't need a
+    provisional-mastery setup just to reach the flag."""
+    assert conv.subject_id is not None
+    plan = await lesson_plan_svc.get_lesson_plan(
+        session, learner_id=conv.learner_id, subject_id=conv.subject_id
+    )
+    assert plan is not None
+    steps = [dict(step) for step in plan.steps]
+    for step in steps:
+        if step["status"] == "active":
+            step["check_first"] = True
+    plan.steps = steps
+    await session.commit()
 
 
 async def _drain(
@@ -285,6 +303,49 @@ async def test_a_guided_practice_grade_is_recorded_as_taught_first(
     assert len(events) == 1
     assert events[0].payload["hints_used"] == 0
     assert events[0].payload["taught_first"] is True
+
+
+async def test_a_check_first_step_poses_the_problem_without_a_worked_example(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conv = await _conversation_with_active_step(db_session)
+    await _mark_active_step_check_first(db_session, conv)
+
+    # Simplest observable: the system prompt the start composes. Patch learner_context.compose
+    # to record its first argument, then start practice.
+    captured: list[str] = []
+    monkeypatch.setattr(
+        workflow_svc.learner_context,
+        "compose",
+        lambda base, *a, **k: captured.append(base) or base,
+    )
+
+    await _drain(db_session, fake_llm_client(PRESENT), conv, user_content="let's practice")
+
+    assert captured == [workflow_svc.CHECK_FIRST_SYSTEM_PROMPT]
+
+
+async def test_an_answer_on_a_check_first_step_is_not_marked_taught(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conv = await _conversation_with_active_step(db_session)
+    await _mark_active_step_check_first(db_session, conv)
+
+    seen: list[bool] = []
+    real = assessment_svc.answer_item
+
+    async def capture(session, learner_id, item, submission, **kwargs):
+        seen.append(kwargs.get("taught_first", False))
+        return await real(session, learner_id, item, submission, **kwargs)
+
+    monkeypatch.setattr(assessment_svc, "answer_item", capture)
+    llm = fake_llm_client(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=RIGHT_GRADE), FakeTurn(text=RESPOND_2)]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice")
+    await _drain(db_session, llm, conv, user_content="sunlight -> sugars", resume=True)
+
+    assert seen == [False]
 
 
 async def test_resume_round_never_cites_even_if_respond_text_has_marker_syntax(
