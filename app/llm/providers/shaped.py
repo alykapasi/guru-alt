@@ -223,6 +223,17 @@ def _verdict(answer: str) -> tuple[float, dict[str, object], str]:
     )
 
 
+def _intent(prompt: str) -> str:
+    """Every reply to an open question is an attempt.
+
+    The intent gate reads anything unrecognisable as a deferral and pauses practice (S52), so
+    without this shape no answer typed in a journey would ever reach the grader. Always an
+    attempt, even "no", because the pass/fail switch belongs to ``_verdict``: a journey drives
+    a failing grade by answering briefly, not by being classified out of grading altogether.
+    """
+    return json.dumps({"intent": "attempt"})
+
+
 def _grade(prompt: str) -> str:
     score, diagnosis, rationale = _verdict(_answer_of(prompt))
     return json.dumps({"score": score, "rationale": rationale, "diagnosis": diagnosis})
@@ -251,6 +262,7 @@ SHAPES: tuple[Shape, ...] = (
     Shape("flashcard item", "one flashcard question", _flashcard),
     Shape("per-component grade", "several numbered knowledge components", _grade_components),
     Shape("grade", "against the question and rubric", _grade),
+    Shape("intent", "Classify what the learner's reply does about that question", _intent),
 )
 
 
