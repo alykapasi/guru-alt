@@ -34,7 +34,7 @@ from app.learning.lesson_plan import (
 from app.learning.mastery import Observation
 from app.llm.registry import fake_llm_client
 from app.models.assessment import RUBRIC_GRADABLE, EvidenceKind
-from app.models.knowledge import KC, KCEdge, Subject, Topic
+from app.models.knowledge import KC, ConceptLink, ConceptLinkDecision, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
 from app.models.profile import ProfileDimension
@@ -179,11 +179,14 @@ def test_no_prerequisites_means_no_detour() -> None:
 
 
 def _step(
-    kc_id: uuid.UUID, step_type: StepType = "new", status: StepStatus = "pending"
+    kc_id: uuid.UUID,
+    step_type: StepType = "new",
+    status: StepStatus = "pending",
+    order: int = 0,
 ) -> StepDict:
     return StepDict(
         kc_id=str(kc_id),
-        order=0,
+        order=order,
         step_type=step_type,
         status=status,
         target_difficulty=None,
@@ -280,6 +283,69 @@ def test_plans_written_before_detours_existed_revise_unchanged() -> None:
     )
     assert [s["kc_id"] for s in revised] == [str(a), str(b)]
     assert revised[0]["status"] == "active"
+
+
+# --- cross-subject prerequisites (S24) ----------------------------------------
+
+
+def _external(prereq: uuid.UUID, blocked: uuid.UUID) -> engine.Detour:
+    return engine.Detour(
+        prereq_kc_id=prereq,
+        blocked_kc_id=blocked,
+        reason=engine.DETOUR_EXTERNAL,
+        source_subject_id=uuid.uuid4(),
+        source_subject_name="Linear Algebra",
+    )
+
+
+def test_an_external_prerequisite_sits_just_before_the_step_that_needs_it() -> None:
+    first, blocked, foreign = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    steps = [_step(first, status="active", order=0), _step(blocked, status="pending", order=1)]
+    revised = _revise(steps, external_detours=[_external(foreign, blocked)])
+    assert [s["kc_id"] for s in revised] == [str(first), str(foreign), str(blocked)]
+    ext = _by_kc(revised, foreign)
+    assert (ext["step_type"], ext["status"], ext["source_subject_name"]) == (
+        "detour",
+        "pending",
+        "Linear Algebra",
+    )
+    assert _by_kc(revised, first)["status"] == "active"
+
+
+def test_exploration_offers_an_external_prerequisite() -> None:
+    blocked, foreign = uuid.uuid4(), uuid.uuid4()
+    revised = _revise(
+        [_step(blocked, status="active")],
+        external_detours=[_external(foreign, blocked)],
+        guidance="exploration",
+    )
+    assert _by_kc(revised, foreign)["status"] == "proposed"
+
+
+def test_an_external_prerequisite_is_never_disproved() -> None:
+    blocked, foreign = uuid.uuid4(), uuid.uuid4()
+    steps = _revise(
+        [_step(blocked, status="active")], external_detours=[_external(foreign, blocked)]
+    )
+    steps = _revise(steps, disproved_kc_ids=[foreign])
+    assert _by_kc(steps, foreign)["status"] != "done"
+
+
+def test_an_external_step_is_dropped_once_its_step_is_done() -> None:
+    blocked, foreign = uuid.uuid4(), uuid.uuid4()
+    steps = _revise(
+        [_step(blocked, status="active")], external_detours=[_external(foreign, blocked)]
+    )
+    steps = _revise(steps, mastered_kc_ids=[blocked])
+    assert all(s["kc_id"] != str(foreign) for s in steps)
+
+
+def test_a_provisional_component_is_checked_first() -> None:
+    kc = uuid.uuid4()
+    steps = _revise([_step(kc, status="active")], provisional_kc_ids=[kc])
+    assert _by_kc(steps, kc)["check_first"] is True
+    steps = _revise(steps)
+    assert _by_kc(steps, kc)["check_first"] is False
 
 
 # --- the learner's say (S11, V07) --------------------------------------------
@@ -1282,3 +1348,128 @@ async def test_two_never_accepted_proposals_on_one_route_are_remembered_separate
     assert {e.payload["outcome"] for e in outcomes} == {"mastered", "skipped"}
     assert len(outcomes) == 2
     assert await mastery.closed_detour_routes(db_session, learner.id, blocked.id) == {prereq.id}
+
+
+# --- cross-subject prerequisites, end to end (S24) ---------------------------
+
+
+async def _foreign_prereq(session: AsyncSession, *, owner: Learner | None = None):
+    """Subject B's `blocked` requires `foreign` from subject A."""
+    learner = owner or Learner(handle=f"x-{uuid.uuid4().hex[:8]}")
+    session.add(learner)
+    subject_a = Subject(slug=f"a-{uuid.uuid4().hex[:8]}", name="Linear Algebra")
+    subject_b = Subject(slug=f"b-{uuid.uuid4().hex[:8]}", name="Graphics")
+    session.add_all([subject_a, subject_b])
+    await session.flush()
+    ta = Topic(subject_id=subject_a.id, slug="t", name="T")
+    tb = Topic(subject_id=subject_b.id, slug="t", name="T")
+    session.add_all([ta, tb])
+    await session.flush()
+    foreign = KC(topic_id=ta.id, slug="vectors", name="Vectors")
+    blocked = KC(topic_id=tb.id, slug="transforms", name="Transforms")
+    session.add_all([foreign, blocked])
+    await session.flush()
+    session.add(KCEdge(prereq_kc_id=foreign.id, kc_id=blocked.id))
+    await session.flush()
+    return learner, subject_a, subject_b, foreign, blocked
+
+
+async def test_an_unmastered_foreign_prerequisite_becomes_an_external_step(
+    db_session: AsyncSession,
+) -> None:
+    learner, _subject_a, subject_b, foreign, _blocked = await _foreign_prereq(db_session)
+    plan = await _plan(db_session, learner, subject_b)
+    ext = _detour_step(plan, foreign)
+    assert (ext["detour_reason"], ext["source_subject_name"]) == ("external", "Linear Algebra")
+
+
+async def test_a_mastered_foreign_prerequisite_is_satisfied(db_session: AsyncSession) -> None:
+    learner, _a, subject_b, foreign, _blocked = await _foreign_prereq(db_session)
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=foreign.id,
+            ability=3.0,
+            uncertainty=0.2,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+    plan = await _plan(db_session, learner, subject_b)
+    assert all(s["kc_id"] != str(foreign.id) for s in plan.steps)
+
+
+async def test_a_foreign_prerequisite_in_a_subject_the_learner_cannot_see_is_dropped(
+    db_session: AsyncSession,
+) -> None:
+    """Review focus 4."""
+    learner, subject_a, subject_b, foreign, _blocked = await _foreign_prereq(db_session)
+    stranger = Learner(handle=f"s-{uuid.uuid4().hex[:8]}")
+    db_session.add(stranger)
+    await db_session.flush()
+    subject_a.owner_learner_id = stranger.id
+    await db_session.flush()
+    plan = await _plan(db_session, learner, subject_b)
+    assert all(s["kc_id"] != str(foreign.id) for s in plan.steps)
+
+
+async def test_a_linked_local_equivalent_orders_the_plan_instead(db_session: AsyncSession) -> None:
+    learner, _a, subject_b, foreign, blocked = await _foreign_prereq(db_session)
+    topic_b = await db_session.scalar(select(Topic).where(Topic.subject_id == subject_b.id))
+    assert topic_b is not None
+    local = KC(topic_id=topic_b.id, slug="zz-vectors", name="Vectors")  # slug sorts last on purpose
+    db_session.add(local)
+    await db_session.flush()
+    a, b = sorted((foreign.id, local.id))
+    link = ConceptLink(
+        kc_a_id=a, kc_b_id=b, scope="curated", verdict="endorsed", endorsed_by="admin"
+    )
+    db_session.add(link)
+    await db_session.flush()
+    db_session.add(ConceptLinkDecision(learner_id=learner.id, link_id=link.id, decision="accepted"))
+    await db_session.flush()
+    plan = await _plan(db_session, learner, subject_b)
+    order = [s["kc_id"] for s in plan.steps]
+    assert str(foreign.id) not in order
+    assert order.index(str(local.id)) < order.index(str(blocked.id))
+
+
+async def test_a_skipped_external_step_is_not_offered_again(db_session: AsyncSession) -> None:
+    learner, _a, subject_b, foreign, _blocked = await _foreign_prereq(db_session)
+    await _plan(db_session, learner, subject_b)
+    await svc.decide_detour(
+        db_session,
+        learner_id=learner.id,
+        subject_id=subject_b.id,
+        prereq_kc_id=foreign.id,
+        decision="skip",
+    )
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject_b.id)
+    assert plan is not None
+    open_ = [
+        s
+        for s in plan.steps
+        if s["kc_id"] == str(foreign.id) and s["status"] not in ("done", "skipped")
+    ]
+    assert open_ == []
+
+
+async def test_an_external_step_closes_mastered_once_the_prerequisite_is(
+    db_session: AsyncSession,
+) -> None:
+    learner, _a, subject_b, foreign, _blocked = await _foreign_prereq(db_session)
+    await _plan(db_session, learner, subject_b)
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=foreign.id,
+            ability=3.0,
+            uncertainty=0.2,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject_b.id)
+    assert plan is not None
+    step = _detour_step(plan, foreign)
+    assert (step["status"], step["detour_outcome"]) == ("done", "mastered")

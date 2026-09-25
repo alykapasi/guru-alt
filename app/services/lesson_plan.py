@@ -12,7 +12,7 @@ reviews, profile shifts) — see ``app.learning.lesson_plan.revise_steps``.
 """
 
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
@@ -26,9 +26,10 @@ from app.learning import lesson_plan as engine
 from app.learning import mastery, prerequisites
 from app.learning.placement_inference import KCCandidate
 from app.llm import LLMClient
-from app.models.knowledge import KC, Subject
+from app.models.knowledge import KC, Subject, Topic
 from app.models.lesson_plan import LessonPlan
 from app.schemas.lesson_plan import GoalStatusRead, LessonPlanRead
+from app.services import concept_links as concept_links_svc
 from app.services import knowledge as knowledge_svc
 from app.services import profile as profile_svc
 from app.services.llm_log import log_llm_call
@@ -48,6 +49,8 @@ class PlanGroundingContext:
     target_difficulty: float | None
     hint_density: str | None
     preferred_item_type: str | None
+    # A provisional component (S24): practice asks before it explains.
+    check_first: bool = False
 
 
 async def _get_plan(
@@ -260,6 +263,88 @@ def _apply_plan_level_hints(plan: LessonPlan, scaffolding: engine.ScaffoldingHin
     plan.example_tags = scaffolding.example_tags
 
 
+async def _external_detours(
+    session: AsyncSession,
+    *,
+    learner_id: uuid.UUID,
+    subject_id: uuid.UUID,
+    steps: Sequence[Mapping[str, Any]],
+) -> list[engine.Detour]:
+    """Prerequisites of this plan's open steps that live in another subject and still need
+    teaching (S24): not linked to a component here, not mastered, visible to the learner, and
+    not already skipped for that step. What is left is planned as an external detour.
+
+    A skip decided *this* revision is read straight off ``steps`` rather than waiting for
+    ``mastery.closed_detour_routes`` to see it: ``decide_detour`` mutates the step to
+    ``"skipped"`` before ``_apply_revision`` ever calls this function, but the matching outcome
+    event is only written afterwards, from the diff between "before" and the very steps this
+    call is helping produce — a DB-only check would still see the route open and hand the
+    learner straight back to what they just declined, in the same call that recorded the
+    decline. ``closed_detour_routes`` still covers every skip from an *earlier* revision, which
+    a freshly generated plan's bare steps (no detour history at all) cannot.
+    """
+    locally_skipped: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for s in steps:
+        if s.get("step_type") != "detour" or s.get("detour_outcome") != "skipped":
+            continue
+        locally_skipped.setdefault(uuid.UUID(str(s.get("detour_for"))), set()).add(
+            uuid.UUID(str(s["kc_id"]))
+        )
+    open_new = {
+        uuid.UUID(s["kc_id"])
+        for s in steps
+        if s["step_type"] == "new" and s["status"] not in ("done", "skipped")
+    }
+    if not open_new:
+        return []
+    local = {kc.id for kc in await knowledge_svc.list_kcs_for_subject(session, subject_id)}
+    foreign = [
+        (e.prereq_kc_id, e.kc_id)
+        for e in await knowledge_svc.list_edges_for_subject(session, subject_id)
+        if e.prereq_kc_id not in local and e.kc_id in open_new
+    ]
+    if not foreign:
+        return []
+    prereq_ids = {prereq for prereq, _ in foreign}
+    linked = await concept_links_svc.links_in_effect(session, learner_id, prereq_ids)
+    mastered = await mastered_kc_ids(session, learner_id, prereq_ids)
+    subjects = {
+        kc.id: subject
+        for kc, subject in (
+            await session.execute(
+                select(KC, Subject)
+                .join(Topic, KC.topic_id == Topic.id)
+                .join(Subject, Topic.subject_id == Subject.id)
+                .where(KC.id.in_(prereq_ids))
+            )
+        ).all()
+    }
+    out: list[engine.Detour] = []
+    closed: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for prereq, blocked in foreign:
+        if linked.get(prereq, set()) & local or prereq in mastered:
+            continue
+        subject = subjects.get(prereq)
+        if subject is None or not knowledge_svc.is_visible_to(subject, learner_id):
+            continue
+        if prereq in locally_skipped.get(blocked, set()):
+            continue
+        if blocked not in closed:
+            closed[blocked] = await mastery.closed_detour_routes(session, learner_id, blocked)
+        if prereq in closed[blocked]:
+            continue
+        out.append(
+            engine.Detour(
+                prereq_kc_id=prereq,
+                blocked_kc_id=blocked,
+                reason=engine.DETOUR_EXTERNAL,
+                source_subject_id=subject.id,
+                source_subject_name=subject.name,
+            )
+        )
+    return out
+
+
 async def generate_lesson_plan(
     session: AsyncSession,
     llm: LLMClient,
@@ -296,14 +381,18 @@ async def generate_lesson_plan(
     # follows is justified by the constraints that remain, rather than being an order
     # topo_sort invented for components it could not place.
     stored_edges = await knowledge_svc.list_edges_for_subject(session, subject_id)
-    # A prerequisite living in another subject cannot be ordered inside this plan — the plan is
-    # a sequence of *this* subject's components, and there is no step that could teach it. It is
-    # dropped here, explicitly, rather than carried into the closure: doing the latter put a KC
-    # with no tiebreak entry into the sort and raised `TypeError`, so a cross-subject edge did
-    # not weaken the ordering, it stopped the plan existing (S24). What is dropped is reported
-    # by `knowledge.cross_subject_prerequisites`, on the same report-don't-repair reasoning S23
-    # settled on for cycles: which subject should absorb the other's component is a curriculum
-    # decision the graph cannot make.
+    # A prerequisite living in another subject cannot be ordered *inside* this plan directly —
+    # the plan is a sequence of this subject's components. Three things can happen to it (S24):
+    # linked to a component here the learner has accepted (`links_in_effect`), it orders the
+    # plan through that local equivalent, exactly like a local edge; otherwise it is planned
+    # separately as an external detour (`_external_detours`, below) rather than dropped
+    # outright; and where even that is not possible (mastered, not visible, already declined)
+    # it is simply absent from the plan. Carrying the bare edge into the closure — the original
+    # bug — put a KC with no tiebreak entry into the sort and raised `TypeError`: a cross-
+    # subject edge did not weaken the ordering, it stopped the plan existing. What is dropped
+    # is reported by `knowledge.cross_subject_prerequisites`, on the same report-don't-repair
+    # reasoning S23 settled on for cycles: which subject should absorb the other's component is
+    # a curriculum decision the graph cannot make.
     foreign = [e for e in stored_edges if e.prereq_kc_id not in all_kc_ids]
     if foreign:
         log.warning(
@@ -311,8 +400,18 @@ async def generate_lesson_plan(
             subject_id=str(subject_id),
             dropped=[(str(e.prereq_kc_id), str(e.kc_id)) for e in foreign],
         )
-    local_edges = [e for e in stored_edges if e.prereq_kc_id in all_kc_ids]
-    kept, dropped = prerequisites.acyclic([(e.prereq_kc_id, e.kc_id) for e in local_edges])
+    linked = await concept_links_svc.links_in_effect(
+        session, learner_id, {e.prereq_kc_id for e in foreign}
+    )
+    # A foreign prerequisite linked to a component of this subject orders the plan through that
+    # component, exactly like a local edge (S24).
+    local_pairs = [(e.prereq_kc_id, e.kc_id) for e in stored_edges if e.prereq_kc_id in all_kc_ids]
+    local_pairs += [
+        (equivalent, e.kc_id)
+        for e in foreign
+        for equivalent in sorted(linked.get(e.prereq_kc_id, set()) & all_kc_ids)
+    ]
+    kept, dropped = prerequisites.acyclic(local_pairs)
     if dropped:
         log.warning(
             "lesson_plan.cyclic_prerequisites_dropped",
@@ -327,6 +426,12 @@ async def generate_lesson_plan(
     kc_order = objective[: get_settings().lesson_plan_max_steps]
     bare_steps = engine.build_initial_steps(kc_order)
 
+    # Read before revising: a regenerate of an *existing* plan keeps its guidance setting
+    # rather than silently resetting a learner's exploration mode back to guided every time
+    # they change their goal (S24) — a brand-new plan has none yet, so it falls back to guided.
+    plan = await _get_plan(session, learner_id, subject_id)
+    guidance = cast("engine.Guidance", plan.guidance) if plan is not None else "guided"
+
     mastered = await mastered_kc_ids(session, learner_id, kc_order)
     due_reviews = await _due_review_kc_ids(session, learner_id, all_kc_ids)
     scaffolding = await _scaffolding(session, learner_id)
@@ -335,9 +440,13 @@ async def generate_lesson_plan(
         mastered_kc_ids=mastered,
         due_review_kc_ids=due_reviews,
         scaffolding=scaffolding,
+        guidance=guidance,
+        external_detours=await _external_detours(
+            session, learner_id=learner_id, subject_id=subject_id, steps=bare_steps
+        ),
+        provisional_kc_ids=await mastery.provisional_kc_ids(session, learner_id, kc_order),
     )
 
-    plan = await _get_plan(session, learner_id, subject_id)
     if plan is None:
         plan = LessonPlan(learner_id=learner_id, subject_id=subject_id)
         session.add(plan)
@@ -357,21 +466,32 @@ async def generate_lesson_plan(
 
 async def _revision_inputs(
     session: AsyncSession, *, learner_id: uuid.UUID, subject_id: uuid.UUID, plan: LessonPlan
-) -> tuple[set[uuid.UUID], list[uuid.UUID], engine.ScaffoldingHints]:
-    """The three reads every revision needs: current mastery of this plan's ``"new"`` step
-    KCs, this subject's due reviews, and the learner's scaffolding hints — gathered once here
-    so :func:`revise_plan` and :func:`decide_detour` do not each read them their own way.
+) -> tuple[set[uuid.UUID], list[uuid.UUID], engine.ScaffoldingHints, set[uuid.UUID]]:
+    """The four reads every revision needs: current mastery of this plan's open ``"new"`` and
+    ``"detour"`` step KCs, this subject's due reviews, the learner's scaffolding hints, and
+    which of those KCs are still provisional — gathered once here so :func:`revise_plan` and
+    :func:`decide_detour` do not each read them their own way.
+
+    Detour KCs are included in the mastery read because an external detour's component (S24)
+    is never a ``"new"`` step in *this* plan — it lives in another subject — so without this an
+    external detour could never close as mastered.
 
     Returns ``mastered`` rather than folding it into :func:`_apply_revision`'s own work,
     because ``revise_plan`` needs it a step earlier than that — to ask
     :func:`_prerequisite_detour` whether a fresh detour trigger applies at all.
     """
+    step_kc_ids = {
+        uuid.UUID(step["kc_id"])
+        for step in plan.steps
+        if step["step_type"] in ("new", "detour") and step["status"] not in ("done", "skipped")
+    }
     new_kc_ids = {uuid.UUID(step["kc_id"]) for step in plan.steps if step["step_type"] == "new"}
     all_kc_ids = {kc.id for kc in await knowledge_svc.list_kcs_for_subject(session, subject_id)}
-    mastered = await mastered_kc_ids(session, learner_id, new_kc_ids)
+    mastered = await mastered_kc_ids(session, learner_id, new_kc_ids | step_kc_ids)
     due_reviews = await _due_review_kc_ids(session, learner_id, all_kc_ids)
     scaffolding = await _scaffolding(session, learner_id)
-    return mastered, due_reviews, scaffolding
+    provisional = await mastery.provisional_kc_ids(session, learner_id, step_kc_ids)
+    return mastered, due_reviews, scaffolding, provisional
 
 
 async def revise_plan(
@@ -391,7 +511,7 @@ async def revise_plan(
     if plan is None:
         return None
 
-    mastered, due_reviews, scaffolding = await _revision_inputs(
+    mastered, due_reviews, scaffolding, provisional = await _revision_inputs(
         session, learner_id=learner_id, subject_id=subject_id, plan=plan
     )
 
@@ -409,6 +529,7 @@ async def revise_plan(
         due_reviews=due_reviews,
         scaffolding=scaffolding,
         detour=detour,
+        provisional=provisional,
     )
 
 
@@ -421,6 +542,7 @@ async def _apply_revision(
     due_reviews: Sequence[uuid.UUID],
     scaffolding: engine.ScaffoldingHints,
     detour: engine.Detour | None,
+    provisional: set[uuid.UUID],
     outcomes_before: dict[tuple[str, str, str], str] | None = None,
 ) -> LessonPlan:
     """The revision core shared by :func:`revise_plan` and :func:`decide_detour`: re-derive
@@ -430,7 +552,10 @@ async def _apply_revision(
     ``detour`` is the *trigger* to insert (or ``None``) — ``decide_detour`` passes ``None``
     since the learner's decision is itself the event driving this revision, not a fresh
     struggle signal to act on. Only that trigger path reads ``plan.steps`` as an "open
-    detours, before" snapshot (for the insertion diff below), so only it needs one.
+    detours, before" snapshot (for the insertion diff below), so only it needs one. Any
+    cross-subject prerequisite still owed (S24) is always re-derived from ``plan.steps`` and
+    passed as ``external_detours`` on the first ``revise_steps`` call below, whichever caller
+    this is — unlike ``detour``, an external is not a fresh signal from one particular turn.
 
     ``outcomes_before`` defaults to a read of ``plan.steps`` as handed in, which is right for
     ``revise_plan``. ``decide_detour`` passes its own snapshot taken *before* applying
@@ -466,8 +591,12 @@ async def _apply_revision(
         due_review_kc_ids=due_reviews,
         scaffolding=scaffolding,
         detour=detour,
+        external_detours=await _external_detours(
+            session, learner_id=learner_id, subject_id=plan.subject_id, steps=plan.steps
+        ),
         guidance=cast("engine.Guidance", plan.guidance),
         disproved_kc_ids=disproved,
+        provisional_kc_ids=provisional,
         now=now,
     )
     # Only now is it known which steps this revision finished, and so how much room the
@@ -486,9 +615,11 @@ async def _apply_revision(
             due_review_kc_ids=due_reviews,
             scaffolding=scaffolding,
             guidance=cast("engine.Guidance", plan.guidance),
+            provisional_kc_ids=provisional,
             now=now,
-            # Not passed again: the first pass already inserted/proposed it, and re-deciding
-            # here would append a second identical step for the same prerequisite.
+            # Neither `detour` nor `external_detours` passed again: the first pass already
+            # inserted/proposed them, and re-deciding here would append a second identical
+            # step for the same prerequisite.
         )
     # Recorded on *insertion*, not on decision: ``revise_steps`` declines a detour whose step
     # is already open or whose KC turned out to be mastered, and counting a decision that
@@ -584,7 +715,7 @@ async def decide_detour(
         ),
     )
 
-    mastered, due_reviews, scaffolding = await _revision_inputs(
+    mastered, due_reviews, scaffolding, provisional = await _revision_inputs(
         session, learner_id=learner_id, subject_id=subject_id, plan=plan
     )
 
@@ -595,6 +726,7 @@ async def decide_detour(
         outcomes_before=outcomes_before,
         mastered=mastered,
         due_reviews=due_reviews,
+        provisional=provisional,
         scaffolding=scaffolding,
         detour=None,
     )
@@ -759,4 +891,5 @@ async def get_active_step_context(
         target_difficulty=active["target_difficulty"],
         hint_density=active["hint_density"],
         preferred_item_type=active["preferred_item_type"],
+        check_first=bool(active.get("check_first")),
     )

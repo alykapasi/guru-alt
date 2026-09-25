@@ -3180,6 +3180,11 @@ export interface components {
         };
         /** LessonStepRead */
         LessonStepRead: {
+            /**
+             * Check First
+             * @default false
+             */
+            check_first: boolean;
             /** Detour For */
             detour_for?: string | null;
             /** Detour Outcome */
@@ -3199,6 +3204,10 @@ export interface components {
             order: number;
             /** Preferred Item Type */
             preferred_item_type: string | null;
+            /** Source Subject Id */
+            source_subject_id?: string | null;
+            /** Source Subject Name */
+            source_subject_name?: string | null;
             /** Status */
             status: string;
             /** Step Type */

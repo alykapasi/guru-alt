@@ -51,6 +51,11 @@ class LessonStepRead(BaseModel):
     # How a detour step closed — mastered, disproved, or skipped (S11). None while it is still
     # open (or proposed), and on every non-detour step.
     detour_outcome: str | None = None
+    # Set only on an external detour (S24): the subject the prerequisite lives in.
+    source_subject_id: uuid.UUID | None = None
+    source_subject_name: str | None = None
+    # A provisional component (S24): practice asks before it explains.
+    check_first: bool = False
 
 
 class GoalStatusRead(BaseModel):

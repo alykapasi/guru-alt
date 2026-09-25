@@ -597,6 +597,36 @@ async def test_a_goal_inside_the_cap_defers_nothing(db_session: AsyncSession) ->
     assert plan.objective_kc_count == 3 and plan.deferred_kc_count == 0
 
 
+async def test_a_cross_subject_prerequisite_is_not_counted_in_the_objective(
+    db_session: AsyncSession,
+) -> None:
+    """B's plan needs A's Vectors as an external step (S24), but the goal is B's own
+    components — an external detour is never an objective KC, whether or not it is planned."""
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    subject_a = Subject(slug=f"a-{uuid.uuid4().hex[:8]}", name="Linear Algebra")
+    subject_b = Subject(slug=f"b-{uuid.uuid4().hex[:8]}", name="Graphics")
+    db_session.add_all([learner, subject_a, subject_b])
+    await db_session.flush()
+    topic_a = Topic(subject_id=subject_a.id, slug="t", name="T")
+    topic_b = Topic(subject_id=subject_b.id, slug="t", name="T")
+    db_session.add_all([topic_a, topic_b])
+    await db_session.flush()
+    foreign = KC(topic_id=topic_a.id, slug="vectors", name="Vectors")
+    blocked = KC(topic_id=topic_b.id, slug="transforms", name="Transforms")
+    db_session.add_all([foreign, blocked])
+    await db_session.flush()
+    db_session.add(KCEdge(prereq_kc_id=foreign.id, kc_id=blocked.id))
+    await db_session.flush()
+
+    plan = await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject_b.id, goal=None
+    )
+
+    assert plan.objective_kc_count == 1  # B's own component only
+    assert str(foreign.id) not in plan.objective_kc_ids
+    assert any(s["kc_id"] == str(foreign.id) for s in plan.steps)  # planned anyway, as a detour
+
+
 async def test_a_placement_seed_alone_is_never_mastered(db_session: AsyncSession) -> None:
     """A background claim is not a demonstration, however strong.
 
