@@ -10,17 +10,22 @@ until they need their answer.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from app.agent.untrusted import as_untrusted
+from app.learning.conversation_evidence import INTENT_OPTIONS, INTENT_TASK, INTENT_TIEBREAK
 from app.llm.decisions import (
     Answer,
+    ChoiceQuestion,
     DecisionClient,
     DecisionFailure,
     DecisionResponse,
     FailureKind,
     Question,
+    YesNoQuestion,
 )
 
 
@@ -31,6 +36,55 @@ class ReadContext:
     learner_id: uuid.UUID | None
     conversation_id: uuid.UUID | None
     item_id: uuid.UUID | None
+
+
+INTENT = "intent"
+FULLY_CORRECT = "fully_correct"
+
+QUESTIONS: dict[str, Question] = {
+    INTENT: ChoiceQuestion(
+        instructions=f"{INTENT_TASK} {INTENT_TIEBREAK}", options=dict(INTENT_OPTIONS)
+    ),
+    FULLY_CORRECT: YesNoQuestion(
+        instructions=(
+            "Does the learner's reply fully and correctly answer the question, meeting every "
+            "rubric criterion given? A partial, vague or partly wrong answer is not fully correct."
+        ),
+        yes="The reply is complete and correct.",
+        no="Something is missing, vague or wrong.",
+    ),
+}
+"""The questions a turn can ask. ``fully_correct`` is only ever used to *skip* grading a correct
+answer — never to fail one — so it is worded to say no to anything short of complete."""
+
+
+def build_state(*, stem: str, message: str, rubric_criteria: dict | None) -> dict[str, str]:
+    """What Jev reads. The reply is fenced exactly as the grader fences it (S31): it is written by
+    the person being judged, and is the one part with a motive to say "answer yes"."""
+    state = {"question": stem, "learner_reply": as_untrusted("LEARNER REPLY", message)}
+    if rubric_criteria:
+        state["rubric_criteria"] = json.dumps(rubric_criteria)
+    return state
+
+
+def start_read(
+    client: DecisionClient,
+    *,
+    questions: Sequence[str],
+    stem: str,
+    message: str,
+    rubric_criteria: dict | None,
+    context: ReadContext,
+    timeout_s: float,
+) -> TurnRead:
+    """Start one request asking ``questions`` about this turn, and return its handle."""
+    return TurnRead(
+        client,
+        {name: QUESTIONS[name] for name in questions},
+        build_state(stem=stem, message=message, rubric_criteria=rubric_criteria),
+        timeout_s=timeout_s,
+        context=context,
+    )
 
 
 class TurnRead:
