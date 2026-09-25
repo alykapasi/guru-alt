@@ -34,7 +34,7 @@ from app.main import app
 from app.models.auth import Invitation
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
-from app.models.learning import LearningEvent
+from app.models.learning import LearnerKCState, LearningEvent
 from app.models.source import Source, SourceKind, SourceStatus
 from app.services import auth, ingestion
 from app.services import knowledge as knowledge_svc
@@ -436,6 +436,68 @@ async def test_a_second_answer_waits_for_the_first_and_builds_on_it(
                     # so `second`'s transaction (opened earlier, by the `estimate_kcs` call
                     # above) would sort *before* `first`'s despite finishing after it. Every
                     # other reader in this module orders by `observed_at` for the same reason.
+                    .order_by(LearningEvent.payload["observed_at"].astext)
+                )
+            ).all()
+        assert len(events) == 3
+        earlier, later = events[1].payload, events[2].payload
+        assert later["prior_ability"] == pytest.approx(earlier["posterior_ability"])
+    finally:
+        await _drop_subject(engine, subject)
+
+
+async def test_a_stale_identity_map_entry_would_lose_a_committed_update(
+    engine: AsyncEngine, live_learner: Learner
+) -> None:
+    """`_get_or_create_state`'s `populate_existing` needs no race to matter (final fix wave,
+    item 5). Session two loads the state row with a plain select and *keeps the reference* —
+    the way the chat check reads the priors before grading — then session one records and
+    commits an observation on its own session, and only then does session two record its own:
+    sequential, no `asyncio.gather`, no lock wait. A `mastery.estimate_kcs` call alone would
+    not reproduce this: its `LearnerKCState` rows never escape the function, so nothing keeps
+    them in the identity map once it returns, and the next query always builds a fresh object.
+    Holding the row directly, as here, is what leaves a stale entry for `populate_existing` to
+    matter against — without it, `_get_or_create_state`'s locked select hands session two back
+    the very (unrefreshed) object it already held, and its update is built on a prior the row
+    no longer has.
+    """
+    subject, kc = await _seed_kc(engine)
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as setup:
+            await mastery.record_observation(
+                setup, Observation(learner_id=live_learner.id, kc_weights={kc.id: 1.0}, score=0.4)
+            )
+            await setup.commit()
+
+        async with (
+            AsyncSession(engine, expire_on_commit=False) as first,
+            AsyncSession(engine, expire_on_commit=False) as second,
+        ):
+            held = await second.scalar(
+                select(LearnerKCState).where(
+                    LearnerKCState.learner_id == live_learner.id, LearnerKCState.kc_id == kc.id
+                )
+            )
+            assert held is not None  # kept alive for the rest of this block, on purpose
+
+            await mastery.record_observation(
+                first, Observation(learner_id=live_learner.id, kc_weights={kc.id: 1.0}, score=1.0)
+            )
+            await first.commit()
+
+            await mastery.record_observation(
+                second, Observation(learner_id=live_learner.id, kc_weights={kc.id: 1.0}, score=1.0)
+            )
+            await second.commit()
+
+        async with AsyncSession(engine) as session:
+            events = (
+                await session.scalars(
+                    select(LearningEvent)
+                    .where(
+                        LearningEvent.kc_id == kc.id,
+                        LearningEvent.event_type == "observation",
+                    )
                     .order_by(LearningEvent.payload["observed_at"].astext)
                 )
             ).all()
