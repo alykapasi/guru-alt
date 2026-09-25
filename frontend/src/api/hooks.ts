@@ -321,6 +321,43 @@ export function useDecideDetour(subjectId: string | undefined) {
   });
 }
 
+/** Prerequisite cycles in a subject the caller owns, and the edge the planner ignores to
+ * break each one (S23). */
+export function usePrerequisiteConflicts(subjectId: string | undefined) {
+  return useQuery({
+    queryKey: ["prerequisite-conflicts", subjectId],
+    enabled: !!subjectId,
+    queryFn: async () => {
+      const { data, error } = await api.GET(
+        "/api/v1/subjects/{subject_id}/prerequisite-conflicts",
+        {
+          params: { path: { subject_id: subjectId! } },
+        },
+      );
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+/** Remove one prerequisite edge — the repair a conflict report offers (S23). The plan is
+ * refetched too: the order it was built from just changed. */
+export function useRemovePrerequisite(subjectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ kcId, prereqKcId }: { kcId: string; prereqKcId: string }) => {
+      const { error } = await api.DELETE("/api/v1/kcs/{kc_id}/prerequisites/{prereq_kc_id}", {
+        params: { path: { kc_id: kcId, prereq_kc_id: prereqKcId } },
+      });
+      if (error) throw error;
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["prerequisite-conflicts", subjectId] });
+      queryClient.invalidateQueries({ queryKey: ["lesson-plan", subjectId] });
+    },
+  });
+}
+
 export function usePlacementPrompt(subjectId: string | undefined) {
   return useQuery({
     queryKey: ["placement-prompt", subjectId],

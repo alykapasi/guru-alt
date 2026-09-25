@@ -4,6 +4,7 @@ import { NotebookText } from "lucide-react";
 import { useSubjects } from "../api/hooks";
 import { PublishPanel } from "../components/PublishPanel";
 import { LessonPlanPanel } from "../components/lessons/LessonPlanPanel";
+import { CurriculumIssuesPanel } from "../components/lessons/CurriculumIssuesPanel";
 import { PlaceholderPage } from "../components/PlaceholderPage";
 import { SubjectPicker } from "../components/SubjectPicker";
 
@@ -43,11 +44,14 @@ export function Lessons() {
           nobody's to publish — offering the action there and letting the API refuse would be
           showing a door that answers 404. */}
       {selected && selected.owner_learner_id !== null && (
-        <PublishPanel
-          key={selected.id}
-          subjectId={selected.id}
-          sourceDerived={selected.private_source_derived}
-        />
+        <>
+          <CurriculumIssuesPanel key={`issues-${selected.id}`} subjectId={selected.id} />
+          <PublishPanel
+            key={selected.id}
+            subjectId={selected.id}
+            sourceDerived={selected.private_source_derived}
+          />
+        </>
       )}
     </div>
   );
