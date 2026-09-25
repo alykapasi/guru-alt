@@ -272,11 +272,16 @@ async def _choose_flow(
     learner_id: uuid.UUID,
     session: AsyncSession,
 ) -> FlowChoice:
-    """Pick the flow this turn belongs to, before anything is generated or persisted.
+    """Pick the flow this turn belongs to, before the turn is opened or anything is generated.
 
     Separate from building the stream because the turn record (S51) has to be opened — and
     committed — between the two: the flow is part of what an interrupted turn should say about
     itself, and opening the turn is what writes the learner's message.
+
+    Not side-effect free. Choosing can call the FAST intent gate (a logged model call) and
+    commit practice state: releasing a stale pause, pausing on a deferral, and — on a
+    withdrawal — performing the skip itself. Those commits land before the turn is opened, so
+    they stand even if opening or streaming the turn later fails.
 
     **While guided practice waits (S52).** A message sent to a paused workflow is no longer
     assumed to be an answer. While the phase is ``PRACTICE_PAUSED`` every message goes to the
@@ -311,6 +316,7 @@ async def _choose_flow(
         # Before anything that resumes the graph: a paused practice still has a live
         # checkpoint, and only the explicit practice control may resume it.
         if conversation.phase == ConversationPhase.PRACTICE_PAUSED:
+            # This includes a request carrying a rating: while paused a rating is not an answer.
             return _paused_tutor(paused_item)
         if data.rating is None:
             intent = await practice_svc.classify_paused_message(

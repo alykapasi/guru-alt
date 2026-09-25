@@ -165,4 +165,6 @@ async def skip(
     conversation.active_item_scaffolds = 0
     conversation.practice_scaffolds = 0
     await session.commit()
-    return PracticeState(phase=ConversationPhase.CHATTING, item=None, prompt=None, ended=True)
+    # Not `ended`: that flag means a resume found the question stale. A skip is the learner's
+    # own choice, and the client already knows it made one.
+    return PracticeState(phase=ConversationPhase.CHATTING, item=None, prompt=None, ended=False)

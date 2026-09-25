@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.agent import checkpointing
 from app.api.deps import get_llm_client
-from app.api.v1.chat import TurnFlow, _phase_after
+from app.api.v1.chat import TurnFlow, _choose_flow, _phase_after
 from app.learning.conversation_evidence import TurnIntent
 from app.llm.providers.fake import FakeTurn
 from app.llm.registry import fake_llm_client
@@ -21,6 +21,7 @@ from app.models.chat import Conversation, ConversationPhase
 from app.models.knowledge import KC
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
+from app.schemas.chat import ChatTurnRequest
 from app.services import practice, turn_lock
 from app.services import workflow as workflow_svc
 from tests.test_workflow import (
@@ -163,6 +164,7 @@ async def test_skip_records_nothing_and_ends_practice(db_session: AsyncSession) 
     before = await _events(db_session, conv.learner_id)
     state = await practice.skip(db_session, llm, learner_id=conv.learner_id, conversation=conv)
     assert state.phase is ConversationPhase.CHATTING
+    assert state.ended is False  # `ended` is reserved for a resume that found the question stale
     assert conv.active_item_id is None and conv.practice_scaffolds == 0
     assert (
         await workflow_svc.paused_item_id(llm, db_session, conv.id, learner_id=conv.learner_id)
@@ -341,6 +343,60 @@ async def test_a_withdrawal_skips_without_evidence(
     assert await _graded_events(db_session, api_learner.id) == []
 
 
+async def test_a_withdrawal_turn_opens_no_declared_check(
+    api_client, db_session, api_learner, restore_llm
+) -> None:
+    # The tutor's reply declares a check anyway. A learner who just declined a question must
+    # not be handed a fresh one in its place: the declaration is neither invited nor opened.
+    declared = "[[CHECK: Photosynthesis :: What does chlorophyll do?]]"
+    _install(
+        [
+            FakeTurn(text=PRESENT),
+            FakeTurn(text='{"intent": "withdrawal"}'),
+            FakeTurn(text=f"No problem, we can leave that one. {declared}"),
+        ]
+    )
+    cid = await _started(api_client, db_session, api_learner)
+    r = await api_client.post(
+        f"{API}/conversations/{cid}/messages", json={"content": "I'd rather not"}
+    )
+    done = next(e for e in _parse_sse(r.text) if e["type"] == "done")
+    assert done["item"] is None
+    row = await _row(api_client, cid)
+    assert (row["phase"], row["active_item_id"]) == ("chatting", None)
+    assert (
+        await db_session.scalar(select(Item).where(Item.stem == "What does chlorophyll do?"))
+    ) is None
+
+
+async def test_a_rating_sent_while_paused_is_not_graded(
+    api_client, db_session, api_learner, restore_llm
+) -> None:
+    # Spec §4.2: while paused every message goes to the tutor, and a rating is no exception.
+    # RIGHT_GRADE follows the paused tutor's turn on purpose: a rating wrongly routed to the
+    # workflow (which skips the gate for ratings) would be graded with it.
+    _install(
+        [
+            FakeTurn(text=PRESENT),
+            FakeTurn(text='{"intent": "deferral"}'),
+            FakeTurn(text=TUTOR_REPLY),
+            FakeTurn(text=RIGHT_GRADE),
+            FakeTurn(text=RESPOND_2),
+        ]
+    )
+    cid = await _started(api_client, db_session, api_learner)
+    await api_client.post(f"{API}/conversations/{cid}/messages", json={"content": "what is ATP?"})
+    paused = await _row(api_client, cid)
+    assert paused["phase"] == "practice_paused"
+
+    await api_client.post(
+        f"{API}/conversations/{cid}/messages", json={"content": "Good", "rating": 3}
+    )
+    row = await _row(api_client, cid)
+    assert (row["phase"], row["active_item_id"]) == ("practice_paused", paused["active_item_id"])
+    assert await _graded_events(db_session, api_learner.id) == []
+
+
 async def test_an_agentic_turn_does_not_end_a_pause(
     api_client, db_session, api_learner, restore_llm
 ) -> None:
@@ -393,8 +449,43 @@ async def test_a_stale_pause_is_released_to_ordinary_chat(
     await api_client.post(f"{API}/conversations/{cid}/messages", json={"content": "what is ATP?"})
     assert (await _row(api_client, cid))["phase"] == "practice_paused"
     await checkpointing.discard_thread(cid)
-    await api_client.post(f"{API}/conversations/{cid}/messages", json={"content": "thanks"})
-    assert (await _row(api_client, cid))["phase"] != "practice_paused"
+    r = await api_client.post(f"{API}/conversations/{cid}/messages", json={"content": "thanks"})
+    row = await _row(api_client, cid)
+    assert row["phase"] != "practice_paused"
+    # Released to ordinary chat — so the turn behaves as ordinary tutor chat does, which is to
+    # pose the plan's check. The only open question is that fresh check, not the held one.
+    done = next(e for e in _parse_sse(r.text) if e["type"] == "done")
+    assert done["item"] is not None
+    assert (row["phase"], row["active_item_id"]) == ("awaiting_answer", done["item"]["id"])
+    conv = await db_session.get(Conversation, uuid.UUID(cid))
+    assert conv is not None
+    await db_session.refresh(conv)
+    assert conv.practice_scaffolds == 0
+
+
+async def test_releasing_a_stale_pause_clears_the_held_question(db_session: AsyncSession) -> None:
+    """The release itself, before any turn runs: the pause's whole state goes, not just its
+    phase — the held item and the help counted against it included."""
+    conv, llm = await _presented(db_session, [])
+    await practice.pause(db_session, llm, learner_id=conv.learner_id, conversation=conv)
+    conv.practice_scaffolds = 2
+    await db_session.commit()
+    await checkpointing.discard_thread(str(conv.id))
+    conv = await _reload(db_session, conv)
+
+    choice = await _choose_flow(
+        llm,
+        conversation=conv,
+        data=ChatTurnRequest(content="thanks"),
+        history=[],
+        learner_id=conv.learner_id,
+        session=db_session,
+    )
+    assert choice.flow is not TurnFlow.WORKFLOW and not choice.practice_paused
+    conv = await _reload(db_session, conv)
+    assert conv.phase == ConversationPhase.CHATTING
+    assert conv.active_item_id is None
+    assert conv.practice_scaffolds == 0
 
 
 async def test_a_flashcard_rating_is_graded_without_asking_the_gate(
@@ -463,6 +554,7 @@ async def test_the_practice_controls_over_http(
 
     r = await api_client.post(url, json={"action": "skip"})
     assert r.status_code == 200 and r.json()["phase"] == "chatting"
+    assert r.json()["ended"] is False
     assert (await api_client.post(url, json={"action": "skip"})).status_code == 409
     assert (await api_client.post(url, json={"action": "hover"})).status_code == 422
 

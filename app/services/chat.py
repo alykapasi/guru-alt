@@ -477,9 +477,10 @@ async def run_tutor_turn(
     question is the only one in play, and it is not this turn's to grade or replace. The reply
     is counted as help (``practice_scaffolds``) against the learner's eventual attempt at it.
 
-    ``pose_check=False`` suppresses only the plan check this turn would otherwise pose — for the
-    turn that answers a learner who has just declined a practice question, where the next plan
-    check is that same question.
+    ``pose_check=False`` suppresses any check this turn would otherwise open — the plan check,
+    and a declared one (neither invited nor materialised) — for the turn that answers a learner
+    who has just declined a practice question, where the next plan check is that same question
+    and a declared one would be a fresh question they did not ask for.
     """
     conversation_id = conversation.id
     subject_id = conversation.subject_id
@@ -524,10 +525,11 @@ async def run_tutor_turn(
         conversation.active_item_scaffolds = 0
     if open_check is not None:
         notes.append(_check_note(open_check))
-    elif subject_id is not None and not practice_paused:
+    elif subject_id is not None and not practice_paused and pose_check:
         # Only where an answer could be attributed: a subject-less conversation has no graph to
         # resolve a component against, so inviting a declaration there is inviting one that is
-        # always dropped.
+        # always dropped. Not on a withdrawal turn either: the learner just declined a
+        # question, and a declared one would hand them a fresh check in its place.
         notes.append(declared_check.INSTRUCTION)
 
     hits = []
@@ -587,6 +589,7 @@ async def run_tutor_turn(
         and open_check is None
         and subject_id is not None
         and not practice_paused
+        and pose_check
     ):
         open_check = await _materialise_declared_check(
             session, learner_id=learner_id, subject_id=subject_id, declared=declared
