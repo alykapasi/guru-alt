@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.learning import mastery
 from app.learning.mastery import Observation
+from app.models.knowledge import Topic
 from app.models.learning import LearnerKCState, LearningEvent
 from app.services import lesson_plan as lesson_plan_svc
 from tests.test_concept_links import _kc, _learner, _subject
@@ -66,6 +67,10 @@ async def test_a_seed_takes_the_source_estimate_with_widened_uncertainty(db_sess
         )
     )
     assert event.payload["source_kc_id"] == str(source.id) and event.payload["link_id"] == str(link)
+    # Spec §5.1: the payload also names the source's subject, so a reader of the event log
+    # doesn't have to re-join KC -> Topic -> Subject to know where the head start came from.
+    source_topic = await db_session.get(Topic, source.topic_id)
+    assert event.payload["source_subject_id"] == str(source_topic.subject_id)
     # The source is untouched.
     assert (await _state(db_session, learner, source)).uncertainty == 0.3
 

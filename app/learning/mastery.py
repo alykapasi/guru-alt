@@ -760,6 +760,11 @@ async def seed_transfer(
     )
     if source is None or source.last_seen_at is None:
         return None
+    # Spec §5.1's payload names the source's subject, so a reader of the event log knows where
+    # a head start came from without re-joining KC -> Topic -> Subject itself.
+    source_subject_id = await session.scalar(
+        select(Topic.subject_id).join(KC, KC.topic_id == Topic.id).where(KC.id == source_kc_id)
+    )
     current = estimator.decay(
         _estimate_of(source), elapsed_days=_elapsed_days(source.last_seen_at, now)
     )
@@ -787,6 +792,9 @@ async def seed_transfer(
             payload={
                 "link_id": str(link_id),
                 "source_kc_id": str(source_kc_id),
+                "source_subject_id": (
+                    str(source_subject_id) if source_subject_id is not None else None
+                ),
                 "ability": seeded.ability,
                 "uncertainty": seeded.uncertainty,
                 "schema_version": EVENT_SCHEMA_VERSION,
