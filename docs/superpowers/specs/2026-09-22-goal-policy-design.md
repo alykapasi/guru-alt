@@ -61,6 +61,12 @@ exists — it just was not being read.
 V0_DECISIONS accepts the conservative estimate. It is a lower confidence bound: the ability we
 are willing to claim given how unsure we are.
 
+> **Amended 2026-09-25:** this section originally set `CONSERVATIVE_K = 1.0`, which departed
+> from V0_DECISIONS V02 (`ability - 2 * current_uncertainty`) without saying so. The code now
+> follows V02: `CONSERVATIVE_K = 2.0`, with `mastery_conservative_bar` left at 0.5. At ability
+> 1.0 that needs uncertainty 0.25 rather than 0.5 — about twelve straight correct answers on a
+> medium item from a cold start instead of six. The code blocks below show the original values.
+
 **New in `app/learning/tracer.py`**, beside `Estimate`:
 
 ```python

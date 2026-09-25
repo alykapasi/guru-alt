@@ -617,34 +617,40 @@ async def test_a_placement_seed_alone_is_never_mastered(db_session: AsyncSession
     assert seeded.conservative >= get_settings().mastery_conservative_bar
 
 
-async def test_a_measured_component_at_the_old_corner_is_still_mastered(
+async def test_ability_one_needs_two_deviations_of_room_to_count_as_mastered(
     db_session: AsyncSession,
 ) -> None:
-    """The bar sits on the old rule's corner, so the two agree where both had an opinion.
+    """Two deviations (V0_DECISIONS V02): at ability 1.0 the bar sits at uncertainty 0.25.
 
-    The corner itself is pinned on the *measurement*, which is where the claim is exact.
-    The planner judges the estimate decayed to now, and decay only ever grows uncertainty,
-    so a component measured exactly at the bar sits a hair under it the instant afterwards
-    — 0.49999999993839706 for a row seeded milliseconds earlier. That is the rule working,
-    not a disagreement about where the corner is, so the service-level assertion uses a row
-    the old rule also called mastered with room for an instant to pass.
+    The old rule's corner (1.0, 0.5) — and the one-deviation rule that sat on it — called a
+    thinly measured component mastered; at two deviations it is not. The corner itself is
+    pinned on the *measurement*, which is where the claim is exact. The planner judges the
+    estimate decayed to now, and decay only ever grows uncertainty, so a component measured
+    exactly at the bar sits a hair under it the instant afterwards; the service-level
+    assertion uses a row with room for an instant to pass.
     """
-    learner, _subject, root, _dependent = await _graph(db_session)
-    assert Estimate(ability=1.0, uncertainty=0.5).conservative == (
+    learner, _subject, root, dependent = await _graph(db_session)
+    assert Estimate(ability=1.0, uncertainty=0.25).conservative == (
         get_settings().mastery_conservative_bar
     )
-    db_session.add(
-        LearnerKCState(
-            learner_id=learner.id,
-            kc_id=root.id,
-            ability=1.0,
-            uncertainty=0.4,
-            last_seen_at=datetime.now(UTC),
-        )
+    now = datetime.now(UTC)
+    db_session.add_all(
+        [
+            LearnerKCState(
+                learner_id=learner.id, kc_id=root.id, ability=1.0, uncertainty=0.2, last_seen_at=now
+            ),
+            LearnerKCState(
+                learner_id=learner.id,
+                kc_id=dependent.id,
+                ability=1.0,
+                uncertainty=0.4,
+                last_seen_at=now,
+            ),
+        ]
     )
     await db_session.flush()
 
-    assert root.id in await svc.mastered_kc_ids(db_session, learner.id, [root.id])
+    assert await svc.mastered_kc_ids(db_session, learner.id, [root.id, dependent.id]) == {root.id}
 
 
 async def test_stale_evidence_is_reported_without_dropping_the_component(
@@ -697,10 +703,10 @@ async def test_current_evidence_is_judged_on_the_estimate_decayed_to_now(
     learner, _subject, root, dependent = await _graph(db_session)
     now = datetime.now(UTC)
     fifty_days_ago = now - timedelta(days=50)
-    drifted = Estimate(ability=0.85, uncertainty=0.3)
+    drifted = Estimate(ability=1.2, uncertainty=0.3)
     bar = get_settings().mastery_conservative_bar
-    # The premise, checked against the live estimator rather than assumed: 0.55 as measured,
-    # ≈0.386 decayed fifty days, and fifty days inside the window.
+    # The premise, checked against the live estimator rather than assumed: 0.6 as measured,
+    # ≈0.273 decayed fifty days, and fifty days inside the window.
     assert drifted.conservative >= bar
     assert mastery.DEFAULT_ESTIMATOR.decay(drifted, elapsed_days=50.0).conservative < bar
     assert 50 <= get_settings().goal_evidence_max_age_days
@@ -867,7 +873,7 @@ async def test_the_plan_routes_report_a_computed_goal_status(
 async def test_a_measured_component_with_room_to_spare_is_mastered(
     db_session: AsyncSession,
 ) -> None:
-    """1.5 - 0.8 = 0.7 clears the bar; measured, so the guard lets it through.
+    """2.2 - 2 * 0.8 = 0.6 clears the bar; measured, so the guard lets it through.
 
     The old rule's `uncertainty <= 0.5` would have refused this row. The conservative bar
     trades the two against each other instead, and this pins that it does.
@@ -877,7 +883,7 @@ async def test_a_measured_component_with_room_to_spare_is_mastered(
         LearnerKCState(
             learner_id=learner.id,
             kc_id=root.id,
-            ability=1.5,
+            ability=2.2,
             uncertainty=0.8,
             last_seen_at=datetime.now(UTC),
         )
@@ -893,12 +899,13 @@ async def test_the_planner_does_not_reopen_a_long_idle_component(
     """Deliberate: stale evidence is reported by `goal_status`, not acted on by the planner.
 
     Decay caps uncertainty at 1.0 and never lowers ability, so a component measured high
-    enough stays planner-mastered however long ago that was. The old `uncertainty <= 0.5`
+    enough — at two deviations, ability 2.5 or more — stays planner-mastered however long ago
+    that was. The old `uncertainty <= 0.5`
     rule reopened it; re-surfacing idle material is now FSRS's due-review job.
     """
     learner, _subject, root, _dependent = await _graph(db_session)
     long_ago = datetime.now(UTC) - timedelta(days=400)
-    measured = Estimate(ability=2.0, uncertainty=0.3)
+    measured = Estimate(ability=3.0, uncertainty=0.3)
     decayed = mastery.DEFAULT_ESTIMATOR.decay(measured, elapsed_days=400.0)
     # The premise: after 400 days the uncertainty is at its cap — well past what the old rule
     # accepted — and the conservative estimate still clears the bar.

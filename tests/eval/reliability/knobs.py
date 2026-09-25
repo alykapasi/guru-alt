@@ -88,7 +88,7 @@ KNOBS: list[Knob] = [
     Knob(
         id="mastery.conservative_k",
         where="app.learning.tracer.CONSERVATIVE_K",
-        value=1.0,
+        value=2.0,
         governs="how far below the point estimate that mastery claim is made, in SDs",
         settled_by="the SD margin that best predicts unaided success at the next delayed check",
     ),

@@ -282,9 +282,9 @@ class Settings(BaseSettings):
 
     # The lower confidence bound a component must clear to count as mastered. v1-arbitrary,
     # the same standing as the two thresholds it replaces and as retention_min_days above:
-    # not calibrated against outcome data. Chosen to sit exactly on the old rule's corner —
-    # ability 1.0 with uncertainty 0.5 scores 0.5 — so this is a change of shape, not of
-    # strictness at the point where both rules agree. A setting rather than a module
+    # not calibrated against outcome data. Compared against ability - 2 * uncertainty
+    # (tracer.CONSERVATIVE_K, per V0_DECISIONS V02), so ability 1.0 needs uncertainty 0.25 —
+    # about twelve straight correct answers on a medium item from a cold start. A setting rather than a module
     # constant in services/lesson_plan.py because mastery.record_observation needs it too,
     # and app/learning/ importing from app/services/ is the wrong direction.
     mastery_conservative_bar: float = 0.5

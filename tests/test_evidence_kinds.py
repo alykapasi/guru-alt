@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.learning import mastery
 from app.learning.grading import auto_grade, grade_flashcard
 from app.learning.mastery import Observation
+from app.learning.tracer import Estimate
 from app.models.assessment import EvidenceKind, ItemType
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
@@ -454,6 +455,14 @@ async def test_a_self_rating_never_records_an_achievement(db_session: AsyncSessi
     assert state is not None and state.achieved_at is None
 
 
+_BUILD_UP = (*(i * 0.001 for i in range(11)), 1.0)
+"""Offsets in days: eleven successes minutes apart, then one a day later (see below)."""
+
+
+def _conservative(state: mastery.LearnerKCState) -> float:
+    return Estimate(ability=state.ability, uncertainty=state.uncertainty).conservative
+
+
 async def test_an_achievement_survives_the_estimate_falling(db_session: AsyncSession) -> None:
     """Current confidence and historical achievement are different claims.
 
@@ -462,16 +471,17 @@ async def test_an_achievement_survives_the_estimate_falling(db_session: AsyncSes
     """
     learner, (kc,) = await _seed(db_session)
     t0 = datetime.now(UTC)
-    # Five unaided successes minutes apart, then a sixth a day later. Two things have to be
-    # true on the same call for this to be a real test of the achievement check's placement:
-    # the conservative estimate must clear `mastery_conservative_bar` (0.5) — four successes
-    # reach only 0.299, confirmed against the live estimator, not assumed, so six is the
-    # smallest count that gets there — and the retention span (first unaided attempt to last)
-    # must first clear `retention_min_days` on that *same* call. Spacing the first five within
-    # fractions of a day keeps the span under a day until the last attempt lands it there, so
-    # the event that completes the span is the very one still pending until this call's own
-    # flush — exactly the ordering the achievement check depends on.
-    for offset in (0.0, 0.001, 0.002, 0.003, 0.004, 1.0):
+    # Eleven unaided successes minutes apart, then a twelfth a day later. Two things have to
+    # be true on the same call for this to be a real test of the achievement check's
+    # placement: the conservative estimate must clear `mastery_conservative_bar` (0.5) — at
+    # two deviations, twelve straight successes on a medium item is the smallest count that
+    # gets there, confirmed against the live estimator, not assumed — and the retention span
+    # (first unaided attempt to last) must first clear `retention_min_days` on that *same*
+    # call. Spacing the first eleven within fractions of a day keeps the span under a day
+    # until the last attempt lands it there, so the event that completes the span is the very
+    # one still pending until this call's own flush — exactly the ordering the achievement
+    # check depends on.
+    for offset in _BUILD_UP:
         await mastery.record_observation(
             db_session,
             Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=1.0),
@@ -503,7 +513,7 @@ async def test_an_achievement_survives_the_estimate_falling(db_session: AsyncSes
 
     await db_session.refresh(state)
     assert state.achieved_at == earned, "an achievement is not revoked by later evidence"
-    assert state.ability - state.uncertainty < get_settings().mastery_conservative_bar
+    assert _conservative(state) < get_settings().mastery_conservative_bar
     after = await lesson_plan_svc.goal_status(
         db_session,
         learner_id=learner.id,
@@ -537,7 +547,7 @@ async def test_a_demonstrated_component_that_never_clears_the_bar_stays_unachiev
         select(mastery.LearnerKCState).where(mastery.LearnerKCState.kc_id == kc.id)
     )
     assert state is not None
-    assert state.ability - state.uncertainty < get_settings().mastery_conservative_bar
+    assert _conservative(state) < get_settings().mastery_conservative_bar
     assert state.achieved_at is None
 
 
@@ -554,7 +564,7 @@ async def test_an_achievement_keeps_its_original_date_through_a_later_recovery(
     """
     learner, (kc,) = await _seed(db_session)
     t0 = datetime.now(UTC)
-    for offset in (0.0, 0.001, 0.002, 0.003, 0.004, 1.0):
+    for offset in _BUILD_UP:
         await mastery.record_observation(
             db_session,
             Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=1.0),
@@ -574,16 +584,16 @@ async def test_an_achievement_keeps_its_original_date_through_a_later_recovery(
             now=t0 + timedelta(days=day),
         )
     await db_session.refresh(state)
-    assert state.ability - state.uncertainty < get_settings().mastery_conservative_bar
+    assert _conservative(state) < get_settings().mastery_conservative_bar
 
-    for day in range(34, 41):
+    for day in range(34, 44):
         await mastery.record_observation(
             db_session,
             Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=1.0),
             now=t0 + timedelta(days=day),
         )
     await db_session.refresh(state)
-    assert state.ability - state.uncertainty >= get_settings().mastery_conservative_bar, (
+    assert _conservative(state) >= get_settings().mastery_conservative_bar, (
         "the scenario must actually re-cross the bar, or the filter is not being exercised"
     )
     assert state.achieved_at == earned, "a second crossing is not a second achievement"
