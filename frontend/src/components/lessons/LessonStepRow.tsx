@@ -17,12 +17,13 @@ type LessonStep = components["schemas"]["LessonStepRead"];
  * `pending`). `onDecide`/`deciding` are only meaningful for a detour row; other rows ignore
  * them.
  *
- * An **external** detour (`detour_reason === "external"`) is a cross-subject prerequisite: the
- * planner reached into another subject for something the learner already showed there (S24).
- * It gets its own label — the subject it came from, not "Detour" — and its own caption, since
- * the usual struggle wording ("proving hard", "clearing the way") is wrong for a step that was
- * never a struggle here at all; the raw `detour_reason` ("external") is suppressed rather than
- * printed as if it were a human-readable reason.
+ * An **external** detour (`detour_reason === "external"`) is a cross-subject prerequisite: a
+ * prerequisite that lives in another subject and that the learner has not mastered yet; it is
+ * planned here so it can be taught before the step that needs it (S24). It gets its own label —
+ * the subject it came from, not "Detour" — and its own caption, since the usual struggle
+ * wording ("proving hard", "clearing the way") is wrong for a step that was never a struggle
+ * here at all; the raw `detour_reason` ("external") is suppressed rather than printed as if it
+ * were a human-readable reason.
  *
  * `check_first` marks a component the planner is giving a head start on rather than teaching
  * from scratch, because a suggestion from another subject was accepted (S24). Any row still in
