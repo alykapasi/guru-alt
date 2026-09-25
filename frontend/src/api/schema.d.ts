@@ -21,6 +21,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/concept-links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Concept Link Queue
+         * @description Curated candidate links, undecided first (S24).
+         */
+        get: operations["concept_link_queue_api_v1_admin_concept_links_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/concept-links/{link_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide Concept Link
+         * @description Endorse or reject one curated link, once, with a reason learners will read.
+         */
+        post: operations["decide_concept_link_api_v1_admin_concept_links__link_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/impersonate": {
         parameters: {
             query?: never;
@@ -506,6 +546,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/concept-links/suggestions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Suggestions */
+        get: operations["list_suggestions_api_v1_concept_links_suggestions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/concept-links/{link_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide Link
+         * @description 404 for a link that is not endorsed or not the caller's to see; 409 for a decision that
+         *     does not follow from the last one (accepting a declined link, revoking an undecided one).
+         */
+        post: operations["decide_link_api_v1_concept_links__link_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/content/blocks/{block_id}/citation-check": {
         parameters: {
             query?: never;
@@ -662,6 +740,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/practice": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Practice Action
+         * @description Pause, resume, or skip guided practice explicitly (S52) — the frontend's own controls,
+         *     as opposed to the intent gate that infers a pause/skip from an ordinary chat message.
+         *
+         *     One turn at a time here too: held under the same conversation-wide claim ``messages`` uses,
+         *     so an explicit control cannot race a turn already in flight for this conversation.
+         */
+        post: operations["practice_action_api_v1_conversations__conversation_id__practice_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/turns": {
         parameters: {
             query?: never;
@@ -734,6 +836,32 @@ export interface paths {
         put?: never;
         /** Answer Item */
         post: operations["answer_item_api_v1_items__item_id__answer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/items/{item_id}/reveal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reveal Item
+         * @description Serve a flashcard's answer at the moment the learner asks to see it (S54).
+         *
+         *     A round trip rather than a field on the item, because ``public_presentation`` withholds the
+         *     back on purpose: shipping it with the question and hiding it behind a button would put the
+         *     answer one devtools panel away and make the reveal theatre. Flashcards only — every other
+         *     item type's answer key stays withheld until the answer is submitted, and a reveal endpoint
+         *     that could reach an MCQ's key would be the hole this module exists to prevent.
+         */
+        post: operations["reveal_item_api_v1_items__item_id__reveal_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1520,6 +1648,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/subjects/{subject_id}/lesson-plan/closure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Set Lesson Plan Closure */
+        patch: operations["set_lesson_plan_closure_api_v1_subjects__subject_id__lesson_plan_closure_patch"];
+        trace?: never;
+    };
+    "/api/v1/subjects/{subject_id}/lesson-plan/detours/{prereq_kc_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide Lesson Plan Detour */
+        post: operations["decide_lesson_plan_detour_api_v1_subjects__subject_id__lesson_plan_detours__prereq_kc_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/subjects/{subject_id}/lesson-plan/guidance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Set Lesson Plan Guidance */
+        patch: operations["set_lesson_plan_guidance_api_v1_subjects__subject_id__lesson_plan_guidance_patch"];
+        trace?: never;
+    };
     "/api/v1/subjects/{subject_id}/mastery": {
         parameters: {
             query?: never;
@@ -1979,6 +2158,8 @@ export interface components {
              * @enum {string}
              */
             mode: "chat" | "agentic" | "workflow";
+            /** Rating */
+            rating?: number | null;
             /**
              * Satisfied
              * @default false
@@ -2071,6 +2252,72 @@ export interface components {
             supported_by: number[];
             /** Verdict */
             verdict: string;
+        };
+        /** ConceptLinkDecisionSubmit */
+        ConceptLinkDecisionSubmit: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "accept" | "decline" | "revoke";
+        };
+        /** ConceptLinkReviewRead */
+        ConceptLinkReviewRead: {
+            /** Decided At */
+            decided_at: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Kc A Id
+             * Format: uuid
+             */
+            kc_a_id: string;
+            /** Kc A Name */
+            kc_a_name: string;
+            /**
+             * Kc B Id
+             * Format: uuid
+             */
+            kc_b_id: string;
+            /** Kc B Name */
+            kc_b_name: string;
+            /** Reason */
+            reason: string | null;
+            /** Subject A Name */
+            subject_a_name: string;
+            /** Subject B Name */
+            subject_b_name: string;
+            /** Verdict */
+            verdict: ("endorsed" | "rejected") | null;
+        };
+        /**
+         * ConceptLinkSuggestionRead
+         * @description An endorsed link the learner can accept (``decision`` null) or revoke (``"accepted"``).
+         */
+        ConceptLinkSuggestionRead: {
+            a: components["schemas"]["LinkSideRead"];
+            b: components["schemas"]["LinkSideRead"];
+            /** Decision */
+            decision: "accepted" | null;
+            /** Endorsed By */
+            endorsed_by: ("admin" | "judge") | null;
+            /**
+             * Link Id
+             * Format: uuid
+             */
+            link_id: string;
+            /** Reason */
+            reason: string | null;
+        };
+        /** ConceptLinkVerdictSubmit */
+        ConceptLinkVerdictSubmit: {
+            /** Endorse */
+            endorse: boolean;
+            /** Reason */
+            reason: string;
         };
         /**
          * ContentBlockRead
@@ -2207,6 +2454,14 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
+        /** DetourDecisionSubmit */
+        DetourDecisionSubmit: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "accept" | "skip";
+        };
         /**
          * DevLoginRequest
          * @description Who the development sign-in should sign in as (S21).
@@ -2331,6 +2586,27 @@ export interface components {
         GoalSessionResponse: {
             /** Session Id */
             session_id: string;
+        };
+        /**
+         * GoalStatusRead
+         * @description What is and is not known about the learner's progress toward this plan's goal.
+         *
+         *     Four separate facts, deliberately not collapsed into one enum: a goal can be achieved and
+         *     stale, or closed and unfinished, and an enum would need a member per combination.
+         */
+        GoalStatusRead: {
+            /** Achieved At */
+            achieved_at: string | null;
+            /** Achieved Kc Count */
+            achieved_kc_count: number;
+            /** Closed At */
+            closed_at: string | null;
+            /** Current Kc Count */
+            current_kc_count: number;
+            /** Objective Kc Count */
+            objective_kc_count: number;
+            /** Stale Kc Count */
+            stale_kc_count: number;
         };
         /** GoalTurnRequest */
         GoalTurnRequest: {
@@ -2701,10 +2977,10 @@ export interface components {
              */
             retention_shown: boolean;
             /**
-             * Transfer Shown
-             * @default false
+             * Self Reported Attempts
+             * @default 0
              */
-            transfer_shown: boolean;
+            self_reported_attempts: number;
             /**
              * Unassisted Items
              * @default 0
@@ -2822,6 +3098,27 @@ export interface components {
             unpriced_calls: number;
         };
         /**
+         * LessonPlanClosureSubmit
+         * @description Whether the learner considers this goal finished. Reopening is the same call with
+         *     ``false``: closing early and changing your mind must not require destroying the plan.
+         */
+        LessonPlanClosureSubmit: {
+            /** Closed */
+            closed: boolean;
+        };
+        /**
+         * LessonPlanGuidanceSubmit
+         * @description How much the planner may decide for the learner (V07). Guided takes detours on its own;
+         *     exploration offers them.
+         */
+        LessonPlanGuidanceSubmit: {
+            /**
+             * Guidance
+             * @enum {string}
+             */
+            guidance: "guided" | "exploration";
+        };
+        /**
          * LessonPlanRead
          * @description A plan, plus how much of its objective is not yet in the plan.
          *
@@ -2840,6 +3137,17 @@ export interface components {
             example_tags: string[];
             /** Goal */
             goal: string | null;
+            /**
+             * @default {
+             *       "achieved_kc_count": 0,
+             *       "current_kc_count": 0,
+             *       "objective_kc_count": 0,
+             *       "stale_kc_count": 0
+             *     }
+             */
+            goal_status: components["schemas"]["GoalStatusRead"];
+            /** Guidance */
+            guidance: string;
             /**
              * Id
              * Format: uuid
@@ -2872,8 +3180,15 @@ export interface components {
         };
         /** LessonStepRead */
         LessonStepRead: {
+            /**
+             * Check First
+             * @default false
+             */
+            check_first: boolean;
             /** Detour For */
             detour_for?: string | null;
+            /** Detour Outcome */
+            detour_outcome?: string | null;
             /** Detour Reason */
             detour_reason?: string | null;
             /** Hint Density */
@@ -2883,10 +3198,16 @@ export interface components {
              * Format: uuid
              */
             kc_id: string;
+            /** Opened At */
+            opened_at?: string | null;
             /** Order */
             order: number;
             /** Preferred Item Type */
             preferred_item_type: string | null;
+            /** Source Subject Id */
+            source_subject_id?: string | null;
+            /** Source Subject Name */
+            source_subject_name?: string | null;
             /** Status */
             status: string;
             /** Step Type */
@@ -2908,6 +3229,23 @@ export interface components {
              * Format: uri
              */
             url: string;
+        };
+        /** LinkSideRead */
+        LinkSideRead: {
+            /**
+             * Kc Id
+             * Format: uuid
+             */
+            kc_id: string;
+            /** Kc Name */
+            kc_name: string;
+            /**
+             * Subject Id
+             * Format: uuid
+             */
+            subject_id: string;
+            /** Subject Name */
+            subject_name: string;
         };
         /**
          * MemoryCorrection
@@ -3097,6 +3435,29 @@ export interface components {
         PlacementSubmit: {
             /** Background */
             background: string;
+        };
+        /** PracticeActionSubmit */
+        PracticeActionSubmit: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "pause" | "resume" | "skip";
+        };
+        /**
+         * PracticeStateRead
+         * @description Where practice stands after a pause/resume/skip (S52). ``ended`` is true when a resume
+         *     found the paused question no longer fits the plan — not an error, the learner did nothing
+         *     wrong.
+         */
+        PracticeStateRead: {
+            /** Ended */
+            ended: boolean;
+            item: components["schemas"]["ItemRead"] | null;
+            /** Phase */
+            phase: string;
+            /** Prompt */
+            prompt: string | null;
         };
         /**
          * PrerequisiteCreate
@@ -3307,6 +3668,14 @@ export interface components {
             subject_id?: string | null;
             /** Topic Id */
             topic_id?: string | null;
+        };
+        /**
+         * RevealRead
+         * @description A flashcard's reverse face, handed over only when the learner asks for it.
+         */
+        RevealRead: {
+            /** Back */
+            back: string;
         };
         /**
          * ReviewItemRead
@@ -3752,6 +4121,61 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ActivityRead"];
+                };
+            };
+        };
+    };
+    concept_link_queue_api_v1_admin_concept_links_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConceptLinkReviewRead"][];
+                };
+            };
+        };
+    };
+    decide_concept_link_api_v1_admin_concept_links__link_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                link_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConceptLinkVerdictSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConceptLinkReviewRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -4406,6 +4830,61 @@ export interface operations {
             };
         };
     };
+    list_suggestions_api_v1_concept_links_suggestions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConceptLinkSuggestionRead"][];
+                };
+            };
+        };
+    };
+    decide_link_api_v1_concept_links__link_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                link_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConceptLinkDecisionSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConceptLinkSuggestionRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     check_block_citations_api_v1_content_blocks__block_id__citation_check_post: {
         parameters: {
             query?: never;
@@ -4720,6 +5199,41 @@ export interface operations {
             };
         };
     };
+    practice_action_api_v1_conversations__conversation_id__practice_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PracticeActionSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PracticeStateRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_turns_api_v1_conversations__conversation_id__turns_get: {
         parameters: {
             query?: {
@@ -4839,6 +5353,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GradeRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reveal_item_api_v1_items__item_id__reveal_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevealRead"];
                 };
             };
             /** @description Validation Error */
@@ -5941,6 +6486,112 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["LessonPlanSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonPlanRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_lesson_plan_closure_api_v1_subjects__subject_id__lesson_plan_closure_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LessonPlanClosureSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonPlanRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_lesson_plan_detour_api_v1_subjects__subject_id__lesson_plan_detours__prereq_kc_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+                prereq_kc_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DetourDecisionSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LessonPlanRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_lesson_plan_guidance_api_v1_subjects__subject_id__lesson_plan_guidance_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LessonPlanGuidanceSubmit"];
             };
         };
         responses: {

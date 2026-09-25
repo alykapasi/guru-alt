@@ -3,13 +3,17 @@ import { useNavigate } from "react-router-dom";
 import { Play } from "lucide-react";
 import {
   useCreateConversation,
+  useDecideDetour,
   useGenerateLessonPlan,
   useKC,
   useLessonPlan,
   usePlacementPrompt,
+  useSetGuidance,
   useSubmitPlacement,
 } from "../../api/hooks";
 import type { components } from "../../api/schema";
+import { GoalStatusBar } from "./GoalStatusBar";
+import { GuidanceToggle } from "./GuidanceToggle";
 import { LessonStepRow } from "./LessonStepRow";
 
 type PlacementResult = components["schemas"]["PlacementResultRead"];
@@ -91,6 +95,8 @@ export function LessonPlanPanel({ subjectId }: { subjectId: string }) {
   const { data: plan, isLoading } = useLessonPlan(subjectId);
   const navigate = useNavigate();
   const createConversation = useCreateConversation();
+  const setGuidance = useSetGuidance(subjectId);
+  const decideDetour = useDecideDetour(subjectId);
   const activeStep = plan?.steps.find((s) => s.status === "active");
   const { data: activeKC } = useKC(activeStep?.kc_id);
 
@@ -135,10 +141,25 @@ export function LessonPlanPanel({ subjectId }: { subjectId: string }) {
           </p>
         )}
       </div>
+      <GuidanceToggle
+        value={plan.guidance as "guided" | "exploration"}
+        onChange={(guidance) => setGuidance.mutate(guidance)}
+        disabled={setGuidance.isPending}
+      />
+      <GoalStatusBar status={plan.goal_status} deferredCount={plan.deferred_kc_count} />
       <div className="flex flex-col gap-1">
-        {plan.steps.map((step) => (
-          <LessonStepRow key={step.order} step={step} />
-        ))}
+        {plan.steps.map((step) =>
+          step.step_type === "detour" ? (
+            <LessonStepRow
+              key={step.order}
+              step={step}
+              onDecide={(decision) => decideDetour.mutate({ prereqKcId: step.kc_id, decision })}
+              deciding={decideDetour.isPending}
+            />
+          ) : (
+            <LessonStepRow key={step.order} step={step} />
+          ),
+        )}
       </div>
     </div>
   );

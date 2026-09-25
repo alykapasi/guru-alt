@@ -108,6 +108,13 @@ async def test_a_cycle_that_leaves_the_subject_is_still_a_cycle(
     assert (await _link(api_client, kc=a, prereq=b)).status_code == 409
 
 
+async def test_the_service_refuses_an_edge_that_closes_a_cycle(db_session: AsyncSession) -> None:
+    _subject, (a, b) = await _graph(db_session, 2)
+    await knowledge_svc.add_prerequisite(db_session, b.id, a.id, 1.0)  # A→B
+    with pytest.raises(knowledge_svc.WouldCreateCycle):
+        await knowledge_svc.add_prerequisite(db_session, a.id, b.id, 1.0)  # B→A
+
+
 async def test_the_check_terminates_on_a_graph_that_is_already_cyclic(
     db_session: AsyncSession,
 ) -> None:

@@ -9,9 +9,10 @@ arrives.
 """
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ForeignKey, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -59,3 +60,16 @@ class LessonPlan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # committed. Mastery is authoritative and must be reported; the plan is derived, so it
     # records the debt instead and the next read pays it (see services.lesson_plan).
     revision_pending: Mapped[bool] = mapped_column(default=False)
+
+    # Set when the learner explicitly finishes or archives this goal. It changes nothing about
+    # what was measured: no estimate, no achievement, no evidence — there is deliberately no
+    # code path from this column to any of them. Cleared when `goal` changes, because a
+    # different goal has not been closed, but not on a plain regenerate of the same goal,
+    # which is a revision rather than a new intention.
+    goal_closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+    # How much say the learner has over a prerequisite detour (S11): "guided" takes one as soon
+    # as it is triggered (today's behaviour); "exploration" only proposes one, and the learner
+    # accepts or skips it (app.learning.lesson_plan.decide_detour). Per-plan, not per-learner —
+    # it is a teaching-style choice about one subject, not an account-wide setting.
+    guidance: Mapped[str] = mapped_column(Text, server_default="guided", default="guided")

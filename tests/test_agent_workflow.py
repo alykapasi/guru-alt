@@ -14,6 +14,7 @@ from sqlalchemy import Float, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.workflow import WorkflowState, build_workflow_graph, workflow_config
+from app.learning import mastery
 from app.llm.providers import FakeProvider
 from app.llm.providers.fake import FakeTurn
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
@@ -46,6 +47,30 @@ async def _learner_and_item(session: AsyncSession) -> tuple[Learner, Item]:
         ItemCreate(
             item_type=ItemType.SHORT,
             stem="Explain photosynthesis in your own words.",
+            kcs=[ItemKCRef(kc_id=kc.id)],
+        ),
+        owner_learner_id=learner.id,
+    )
+    return learner, item
+
+
+async def _learner_and_flashcard(session: AsyncSession) -> tuple[Learner, Item]:
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Bio")
+    session.add_all([learner, subject])
+    await session.flush()
+    topic = Topic(subject_id=subject.id, slug="t", name="T")
+    session.add(topic)
+    await session.flush()
+    kc = KC(topic_id=topic.id, slug="photosynthesis", name="Photosynthesis")
+    session.add(kc)
+    await session.flush()
+    item = await assessment_svc.create_item(
+        session,
+        ItemCreate(
+            item_type=ItemType.FLASHCARD,
+            stem="What does photosynthesis produce?",
+            answer_key={"back": "Sugars and oxygen."},
             kcs=[ItemKCRef(kc_id=kc.id)],
         ),
         owner_learner_id=learner.id,
@@ -264,3 +289,54 @@ async def test_the_graded_report_is_checkpointed_for_the_learner(
     assert report["item_id"] == str(item.id)
     assert report["components"], "the report named no components"
     assert report["components"][0]["kc_name"] == "Photosynthesis"
+
+
+# --- answering a flashcard (S54) ----------------------------------------------------------------
+
+
+async def test_a_flashcard_can_be_answered_with_a_rating(db_session: AsyncSession) -> None:
+    """Regression for the crash this slice exists to make safe.
+
+    Review steps default to a flashcard, and the workflow answered every item with
+    {"text": ...}. grade_flashcard wants a rating, so it raised SelfGradeError — and
+    workflow.py has no exception handling at all. A flashcard was unanswerable in guided
+    practice, which is the real reason the event log holds no self-ratings.
+    """
+    learner, item = await _learner_and_flashcard(db_session)
+    script = [FakeTurn(text=PRESENT), FakeTurn(text=RESPOND_2)]
+    graph = build_workflow_graph(fake_llm_client(script=script), db_session, learner_id=learner.id)
+    config = workflow_config("t-flashcard")
+
+    await graph.ainvoke(_state(item), config)
+    await graph.ainvoke(Command(resume={"response_text": "", "rating": 3}), config)
+
+    events = (
+        await db_session.scalars(
+            select(LearningEvent).where(LearningEvent.learner_id == learner.id)
+        )
+    ).all()
+    assert [e.event_type for e in events] == [mastery.SELF_REPORT_EVENT]
+    assert events[0].payload["detail"]["rating"] == 3
+
+
+async def test_a_flashcard_answered_in_prose_is_re_asked_not_guessed(
+    db_session: AsyncSession,
+) -> None:
+    """Inventing a rating would write self-reported evidence the learner never gave, and a
+    default of "Again" would punish them for typing instead of clicking."""
+    learner, item = await _learner_and_flashcard(db_session)
+    script = [FakeTurn(text=PRESENT), FakeTurn(text=RESPOND_1)]
+    graph = build_workflow_graph(fake_llm_client(script=script), db_session, learner_id=learner.id)
+    config = workflow_config("t-flashcard-prose")
+
+    await graph.ainvoke(_state(item), config)
+    await graph.ainvoke(Command(resume={"response_text": "I think sugars?"}), config)
+
+    events = (
+        await db_session.scalars(
+            select(LearningEvent).where(LearningEvent.learner_id == learner.id)
+        )
+    ).all()
+    assert events == []
+    snapshot = await graph.aget_state(config)
+    assert snapshot.next == ("await_response",)

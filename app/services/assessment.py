@@ -290,7 +290,8 @@ async def find_item_for_kc(
         select(func.max(LearningEvent.created_at))
         .where(
             LearningEvent.learner_id == learner_id,
-            LearningEvent.event_type == "observation",
+            # Both kinds: an item they rated yesterday is not a fresh question today (S56).
+            LearningEvent.event_type.in_(mastery.ATTEMPT_EVENTS),
             LearningEvent.payload["item_id"].astext == cast(Item.id, String),
         )
         .correlate(Item)
@@ -340,6 +341,7 @@ async def answer_item(
     submission: AnswerSubmit,
     *,
     llm: LLMClient,
+    taught_first: bool = False,
 ) -> tuple[GradeResult, Sequence[LearnerKCState]]:
     """Grade an item — deterministically or by rubric — and trace the result atomically.
 
@@ -356,6 +358,10 @@ async def answer_item(
     Evidence is discounted when the attempt was assisted — hints reported by the caller, plus
     earlier attempts at this same item in this sitting, counted here rather than trusted from
     the request. See :mod:`app.learning.assistance`.
+
+    ``taught_first`` marks an answer given straight after a worked example of the problem
+    (guided practice, S11). A keyword here rather than a field on ``AnswerSubmit``: it is a
+    fact about the server's own flow, not something a client may claim.
     """
     if await get_item_for(session, item.id, learner_id=learner_id) is None:
         raise InvalidResponse("item not found")
@@ -399,6 +405,10 @@ async def answer_item(
         attempt_id=submission.attempt_id,
         correct=result.correct,
         detail=result.detail,
+        # From the grader, not the request: `AnswerSubmit` has no such field, so a client
+        # cannot claim its self-rating was a demonstration.
+        evidence_kind=result.evidence_kind,
+        taught_first=taught_first,
     )
     try:
         # Inside the guard, not before it: the tracer *flushes* the observation, so under a
@@ -467,10 +477,18 @@ async def _revise_plans(
     propagate reported a *committed* answer as failed, and the client would then retry an
     assessment it had in fact already passed. Instead the failure is logged, the plan is
     flagged, and the next read of that plan repairs it — no second assessment needed.
+
+    Revises the owning subjects (``knowledge_svc.subjects_for_kcs``) *and* any plan — in any
+    subject — carrying an open detour step on one of these KCs. A cross-subject prerequisite
+    (S24) is planned as an external detour step that lives in the *blocked* subject's plan, not
+    the KC's own subject, so answering it would otherwise never reach the plan whose active
+    step it is.
     """
     subject_ids: list[uuid.UUID] = []
     try:
-        subject_ids = list(await knowledge_svc.subjects_for_kcs(session, kc_weights))
+        owning = await knowledge_svc.subjects_for_kcs(session, kc_weights)
+        detouring = await lesson_plan_svc.plans_with_open_steps_on(session, learner_id, kc_weights)
+        subject_ids = list(owning | detouring)
         for subject_id in subject_ids:
             await lesson_plan_svc.revise_plan(session, learner_id=learner_id, subject_id=subject_id)
         return
@@ -518,8 +536,13 @@ async def _recorded_grade(
             select(LearningEvent).where(
                 LearningEvent.learner_id == learner_id,
                 LearningEvent.attempt_id == attempt_id,
-                LearningEvent.event_type
-                == ("admin_observation" if session.info.get("admin_actor_id") else "observation"),
+                # A retried self-rating replays exactly as a graded attempt does — the
+                # idempotency key is the attempt, not the kind of evidence it produced.
+                LearningEvent.event_type.in_(
+                    ("admin_observation",)
+                    if session.info.get("admin_actor_id")
+                    else mastery.ATTEMPT_EVENTS
+                ),
             )
         )
     ).all()

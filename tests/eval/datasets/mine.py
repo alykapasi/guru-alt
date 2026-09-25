@@ -26,9 +26,11 @@ async def mine_observation_sequences(
     time order and groups are contiguous. A malformed payload (missing/non-numeric score or
     difficulty) is skipped with a warning — never fatal.
 
-    ``placement_seed`` events are read in the same pass. A seeded KC starts from its seed, not
-    from the population prior; ``seed_prior`` refuses to write over existing state, so a seed is
-    by construction the state the first observation updated.
+    ``placement_seed`` and ``transfer_seed`` events are read in the same pass. A seeded KC
+    starts from its seed, not from the population prior; ``seed_prior``/``seed_transfer`` both
+    refuse to write over existing state, so a seed is by construction the state the first
+    observation updated. A ``transfer_revoked`` row that follows means the seed it undid never
+    became evidence, so the miner simply drops it.
 
     Steps are re-sorted within a group by the ``observed_at`` the update itself used, when every
     step in the group carries one. ``created_at`` is the transaction's clock: several
@@ -40,7 +42,9 @@ async def mine_observation_sequences(
     stmt = (
         select(LearningEvent)
         .where(
-            LearningEvent.event_type.in_(("observation", "placement_seed")),
+            LearningEvent.event_type.in_(
+                ("observation", "placement_seed", "transfer_seed", "transfer_revoked")
+            ),
             LearningEvent.kc_id.isnot(None),
         )
         .order_by(LearningEvent.learner_id, LearningEvent.kc_id, LearningEvent.created_at)
@@ -53,10 +57,13 @@ async def mine_observation_sequences(
 
     for event in rows:
         key = (str(event.learner_id), str(event.kc_id))
-        if event.event_type == "placement_seed":
+        if event.event_type in ("placement_seed", "transfer_seed"):
             seed = _seed_of(event)
             if seed is not None:
                 seeds[key] = seed
+            continue
+        if event.event_type == "transfer_revoked":
+            seeds.pop(key, None)
             continue
         step = _step_of(event)
         if step is None:

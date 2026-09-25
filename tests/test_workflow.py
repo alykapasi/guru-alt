@@ -5,6 +5,7 @@ alongside the router wiring (see the mode="workflow" dispatch commit)."""
 import json
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
@@ -20,16 +21,16 @@ from app.llm.providers.fake import FakeTurn
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
 from app.llm.types import ChatChunk, ModelRole
 from app.main import app
-from app.models.assessment import ItemType
+from app.models.assessment import Item, ItemType
 from app.models.chat import Conversation, ConversationPhase, LLMCall, Message
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
-from app.models.learning import LearnerKCState
+from app.models.learning import LearnerKCState, LearningEvent
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
-from app.schemas.assessment import ItemCreate, ItemKCRef
+from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRef
 from app.services import assessment as assessment_svc
 from app.services import lesson_plan as lesson_plan_svc
-from app.services.lesson_plan import MASTERY_ABILITY_THRESHOLD, MASTERY_UNCERTAINTY_THRESHOLD
+from app.services import workflow as workflow_svc
 from app.services.turn_common import TurnEvent
 from app.services.workflow import is_awaiting_reply, run_workflow_turn
 from tests.embedding import FAKE_SPACE
@@ -98,6 +99,23 @@ async def _conversation_without_a_plan(session: AsyncSession) -> Conversation:
     return conversation
 
 
+async def _mark_active_step_check_first(session: AsyncSession, conv: Conversation) -> None:
+    """Flip the stored plan's active step to check_first=True, the way S24's revision would
+    once ``provisional_kc_ids`` covers it — done directly here so these tests don't need a
+    provisional-mastery setup just to reach the flag."""
+    assert conv.subject_id is not None
+    plan = await lesson_plan_svc.get_lesson_plan(
+        session, learner_id=conv.learner_id, subject_id=conv.subject_id
+    )
+    assert plan is not None
+    steps = [dict(step) for step in plan.steps]
+    for step in steps:
+        if step["status"] == "active":
+            step["check_first"] = True
+    plan.steps = steps
+    await session.commit()
+
+
 async def _drain(
     session: AsyncSession,
     llm: LLMClient,
@@ -106,6 +124,7 @@ async def _drain(
     user_content: str,
     resume: bool = False,
     max_rounds: int = 3,
+    attempt_id: uuid.UUID | None = None,
 ) -> list[TurnEvent]:
     return [
         ev
@@ -118,6 +137,7 @@ async def _drain(
             max_tokens=256,
             max_rounds=max_rounds,
             resume=resume,
+            attempt_id=attempt_id,
         )
     ]
 
@@ -231,6 +251,103 @@ async def test_resume_correct_reaches_done_with_mastered_detail(db_session: Asyn
     assert [m.role for m in messages] == ["user", "assistant", "user", "assistant"]
 
 
+async def test_grading_uses_the_turns_attempt_id(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[AnswerSubmit] = []
+    real = assessment_svc.answer_item
+
+    async def capture(session, learner_id, item, submission, **kwargs):
+        seen.append(submission)
+        return await real(session, learner_id, item, submission, **kwargs)
+
+    monkeypatch.setattr(assessment_svc, "answer_item", capture)
+    attempt_id = uuid.uuid4()
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=RIGHT_GRADE), FakeTurn(text=RESPOND_2)]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice")
+
+    await _drain(
+        db_session,
+        llm,
+        conv,
+        user_content="sunlight -> sugars",
+        resume=True,
+        attempt_id=attempt_id,
+    )
+    assert [s.attempt_id for s in seen] == [attempt_id]
+
+
+async def test_a_guided_practice_grade_is_recorded_as_taught_first(
+    db_session: AsyncSession,
+) -> None:
+    # Guided practice always shows a worked example first, so its first-round, hint-free answer
+    # is marked taught-first on the event — the mark that keeps it from disproving a detour (S11).
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=RIGHT_GRADE), FakeTurn(text=RESPOND_2)]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice")
+    await _drain(db_session, llm, conv, user_content="sunlight -> sugars", resume=True)
+
+    events = (
+        await db_session.scalars(
+            select(LearningEvent).where(
+                LearningEvent.learner_id == conv.learner_id,
+                LearningEvent.event_type == "observation",
+            )
+        )
+    ).all()
+    assert len(events) == 1
+    assert events[0].payload["hints_used"] == 0
+    assert events[0].payload["taught_first"] is True
+
+
+async def test_a_check_first_step_poses_the_problem_without_a_worked_example(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conv = await _conversation_with_active_step(db_session)
+    await _mark_active_step_check_first(db_session, conv)
+
+    # Simplest observable: the system prompt the start composes. Patch learner_context.compose
+    # to record its first argument, then start practice.
+    captured: list[str] = []
+    monkeypatch.setattr(
+        workflow_svc.learner_context,
+        "compose",
+        lambda base, *a, **k: captured.append(base) or base,
+    )
+
+    await _drain(db_session, fake_llm_client(PRESENT), conv, user_content="let's practice")
+
+    assert captured == [workflow_svc.CHECK_FIRST_SYSTEM_PROMPT]
+
+
+async def test_an_answer_on_a_check_first_step_is_not_marked_taught(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conv = await _conversation_with_active_step(db_session)
+    await _mark_active_step_check_first(db_session, conv)
+
+    seen: list[bool] = []
+    real = assessment_svc.answer_item
+
+    async def capture(session, learner_id, item, submission, **kwargs):
+        seen.append(kwargs.get("taught_first", False))
+        return await real(session, learner_id, item, submission, **kwargs)
+
+    monkeypatch.setattr(assessment_svc, "answer_item", capture)
+    llm = fake_llm_client(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=RIGHT_GRADE), FakeTurn(text=RESPOND_2)]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice")
+    await _drain(db_session, llm, conv, user_content="sunlight -> sugars", resume=True)
+
+    assert seen == [False]
+
+
 async def test_resume_round_never_cites_even_if_respond_text_has_marker_syntax(
     db_session: AsyncSession,
 ) -> None:
@@ -310,7 +427,12 @@ def fake_llm() -> Iterator[None]:
     # One shared client/FakeProvider instance across both HTTP requests below — a fresh
     # instance per dependency resolution (as in test_refinement.py's fixture, harmless there
     # since it's unscripted) would reset the scripted _call_index each request.
-    script = [FakeTurn(text=PRESENT), FakeTurn(text=RIGHT_GRADE), FakeTurn(text=RESPOND_2)]
+    script = [
+        FakeTurn(text=PRESENT),
+        FakeTurn(text='{"intent": "attempt"}'),
+        FakeTurn(text=RIGHT_GRADE),
+        FakeTurn(text=RESPOND_2),
+    ]
     client = fake_llm_client(script=script)
     app.dependency_overrides[get_llm_client] = lambda: client
     yield
@@ -505,8 +627,11 @@ async def test_a_paused_question_the_learner_has_since_outgrown_is_not_resumed(
         LearnerKCState(
             learner_id=conv.learner_id,
             kc_id=kc.id,
-            ability=MASTERY_ABILITY_THRESHOLD + 0.5,
-            uncertainty=MASTERY_UNCERTAINTY_THRESHOLD - 0.1,
+            ability=1.5,
+            uncertainty=0.4,
+            # Mastery is a conservative bound *plus* ability evidence: a confident row that
+            # nobody ever measured is a placement seed, not a demonstration.
+            last_seen_at=datetime.now(UTC),
         )
     )
     await db_session.flush()
@@ -531,3 +656,68 @@ async def test_a_paused_question_that_is_still_current_resumes_normally(
     assert await is_awaiting_reply(llm, db_session, conv.id, learner_id=conv.learner_id)
     events = await _drain(db_session, llm, conv, user_content="a guess", resume=True)
     assert any(e.type == "awaiting_reply" for e in events)
+
+
+# --- a round that presents nothing (S54) --------------------------------------------------------
+
+
+async def _flashcard_for(session: AsyncSession, conv: Conversation) -> Item:
+    """A flashcard on the conversation's KC, for the workflow to hold instead of a SHORT item."""
+    kc = (
+        await session.scalars(select(KC).join(Topic).where(Topic.subject_id == conv.subject_id))
+    ).one()
+    item = await assessment_svc.create_item(
+        session,
+        ItemCreate(
+            item_type=ItemType.FLASHCARD,
+            stem="What does photosynthesis produce?",
+            answer_key={"back": "Sugars and oxygen."},
+            kcs=[ItemKCRef(kc_id=kc.id)],
+        ),
+        owner_learner_id=conv.learner_id,
+    )
+    await session.commit()
+    return item
+
+
+async def test_a_re_asked_flashcard_adds_nothing_to_the_transcript(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A round that grades nothing also presents nothing, so it records nothing.
+
+    A flashcard answered in prose is handed straight back to be rated. Both ``last_message``
+    and ``check_result`` ride the checkpoint, so an unconditional insert here would copy the
+    previous assistant reply into a brand-new row and re-attach the previous round's report to
+    it — once per re-ask, unbounded, for a model call that never happened.
+    """
+    conv = await _conversation_with_active_step(db_session)
+    card = await _flashcard_for(db_session, conv)
+
+    async def _card(*_args: object, **_kwargs: object) -> Item:
+        return card
+
+    monkeypatch.setattr("app.services.workflow.short_answer_item_for_kc", _card)
+    llm = fake_llm_client(script=[FakeTurn(text=PRESENT)])
+    await _drain(db_session, llm, conv, user_content="let's practice")
+
+    before = (
+        await db_session.scalars(
+            select(Message).where(Message.conversation_id == conv.id).order_by(Message.created_at)
+        )
+    ).all()
+    assert [m.role for m in before] == ["user", "assistant"]
+
+    events = await _drain(db_session, llm, conv, user_content="I think sugars?", resume=True)
+
+    # The card is put back in front of the learner, and nothing about that is a new reply.
+    assert any(e.type == "awaiting_reply" for e in events)
+    after = (
+        await db_session.scalars(
+            select(Message).where(Message.conversation_id == conv.id).order_by(Message.created_at)
+        )
+    ).all()
+    assert [m.role for m in after] == ["user", "assistant", "user"]
+    assert [m.id for m in after[:2]] == [m.id for m in before]
+    # present only: the re-ask called no model, so it is billed for none.
+    calls = (await db_session.scalars(select(LLMCall))).all()
+    assert len(calls) == 1

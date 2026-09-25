@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { PublicationQueue } from "../components/PublicationQueue";
+import { ConceptLinkQueue } from "../components/ConceptLinkQueue";
 import { Gauge } from "lucide-react";
 import {
   useAdminActions,
@@ -602,6 +603,15 @@ export function Admin() {
       <Invitations />
 
       <PublicationQueue />
+
+      <section className="flex flex-col gap-3">
+        <h2 className="text-h2">Concept links</h2>
+        <p className="text-caption text-base-content/60">
+          Curated components that share a concept name. Endorsing does not link them for anyone — it
+          makes the pair available for a learner to accept themselves, with your reason attached.
+        </p>
+        <ConceptLinkQueue />
+      </section>
 
       <section className="flex flex-col gap-2">
         <h2 className="text-h2">Who has looked at an account</h2>

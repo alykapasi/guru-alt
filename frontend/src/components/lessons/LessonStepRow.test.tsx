@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { LessonStepRow } from "./LessonStepRow";
 import type { components } from "../../api/schema";
@@ -44,11 +45,14 @@ function step(overrides: Partial<LessonStep> = {}): LessonStep {
   } as LessonStep;
 }
 
-function renderRow(s: LessonStep) {
+function renderRow(
+  s: LessonStep,
+  props: { onDecide?: (decision: "accept" | "skip") => void; deciding?: boolean } = {},
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <LessonStepRow step={s} />
+      <LessonStepRow step={s} {...props} />
     </QueryClientProvider>,
   );
 }
@@ -109,5 +113,92 @@ describe("a lesson plan row", () => {
       step({ step_type: "detour", detour_for: "kc-least-squares", detour_reason: "Blocked." }),
     );
     expect(screen.getByText(/Clearing the way. Blocked./)).toBeInTheDocument();
+  });
+
+  it("offers a proposed detour with a choice", async () => {
+    stubKcLookup();
+    const onDecide = vi.fn();
+    renderRow(
+      step({
+        kc_id: "kc-projection",
+        step_type: "detour",
+        status: "proposed",
+        detour_for: "kc-least-squares",
+      }),
+      { onDecide },
+    );
+    expect(await screen.findByText(/proving hard/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Take detour" }));
+    await userEvent.click(screen.getByRole("button", { name: "Skip" }));
+    expect(onDecide.mock.calls).toEqual([["accept"], ["skip"]]);
+  });
+
+  it("lets an active detour be skipped", async () => {
+    stubKcLookup();
+    const onDecide = vi.fn();
+    renderRow(
+      step({
+        kc_id: "kc-projection",
+        step_type: "detour",
+        status: "active",
+        detour_for: "kc-least-squares",
+      }),
+      { onDecide },
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Skip" }));
+    expect(onDecide).toHaveBeenCalledWith("skip");
+    expect(screen.queryByRole("button", { name: "Take detour" })).toBeNull();
+  });
+
+  it("says when a detour turned out not to be the gap", async () => {
+    stubKcLookup();
+    renderRow(
+      step({
+        kc_id: "kc-projection",
+        step_type: "detour",
+        status: "done",
+        detour_outcome: "disproved",
+        detour_for: "kc-least-squares",
+      }),
+    );
+    expect(
+      await screen.findByText("Turned out not to be the gap — back to Least squares."),
+    ).toBeInTheDocument();
+  });
+
+  it("labels a skipped detour", async () => {
+    stubKcLookup();
+    renderRow(
+      step({
+        kc_id: "kc-projection",
+        step_type: "detour",
+        status: "skipped",
+        detour_outcome: "skipped",
+      }),
+    );
+    expect(await screen.findByText("Skipped")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("labels an external prerequisite with the subject it comes from", async () => {
+    stubKcLookup();
+    renderRow(
+      step({
+        kc_id: "kc-projection",
+        step_type: "detour",
+        status: "pending",
+        detour_for: "kc-least-squares",
+        detour_reason: "external",
+        source_subject_name: "Linear Algebra",
+      } as Partial<LessonStep>),
+    );
+    expect(await screen.findByText("From Linear Algebra")).toBeInTheDocument();
+    expect(await screen.findByText(/Needed for Least squares/)).toBeInTheDocument();
+  });
+
+  it("marks a component being confirmed", async () => {
+    stubKcLookup();
+    renderRow(step({ check_first: true } as Partial<LessonStep>));
+    expect(await screen.findByText("Confirming what you already know")).toBeInTheDocument();
   });
 });

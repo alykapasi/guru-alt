@@ -17,7 +17,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.learning import note_distill
+from app.learning import mastery, note_distill
 from app.learning.note_distill import FALLBACK_FORMAT, FORMATS, NOTES_ROLE
 from app.llm import LLMClient
 from app.models.assessment import Item
@@ -144,7 +144,8 @@ async def _has_new_activity(
             LearningEvent.learner_id == learner_id,
             LearningEvent.kc_id.in_(kc_ids),
             LearningEvent.created_at > events_watermark,
-            LearningEvent.event_type == "observation",
+            # Both kinds: reviewing flashcards is new activity worth distilling from.
+            LearningEvent.event_type.in_(mastery.ATTEMPT_EVENTS),
         )
         .limit(1)
     )
@@ -290,6 +291,12 @@ async def _gather(
     kcs = (await session.scalars(select(KC).where(KC.topic_id == topic.id))).all()
     kc_names = {kc.id: kc.name for kc in kcs}
 
+    # Paged over both attempt kinds, then narrowed to observations. The page and the sample are
+    # deliberately different sets: the cursor has to consume everything the staleness probe
+    # counts (``_has_new_activity`` reads ``ATTEMPT_EVENTS``), or a topic whose only new activity
+    # is a flashcard review stays stale forever and re-distills — emptily, and at a model's
+    # price — on every visit to its note page. What the model is *shown* is still graded
+    # observations alone: a self-rating may ask for help, but it may not make a claim (S56).
     events = (
         await session.scalars(
             select(LearningEvent)
@@ -297,7 +304,7 @@ async def _gather(
                 LearningEvent.learner_id == learner_id,
                 LearningEvent.kc_id.in_(list(kc_names)),
                 LearningEvent.created_at > events_watermark,
-                LearningEvent.event_type == "observation",
+                LearningEvent.event_type.in_(mastery.ATTEMPT_EVENTS),
             )
             .order_by(LearningEvent.created_at)
             .limit(settings.note_distill_max_outcome_events + 1)
@@ -306,6 +313,7 @@ async def _gather(
     events, new_events_watermark = _advance(
         events, settings.note_distill_max_outcome_events, events_watermark
     )
+    events = [e for e in events if e.event_type == "observation"]
 
     item_ids = {uuid.UUID(e.payload["item_id"]) for e in events if e.payload.get("item_id")}
     items: dict[uuid.UUID, Item] = {}
@@ -738,7 +746,8 @@ async def notes_index(
                 .where(
                     KC.topic_id.in_(topic_ids),
                     LearningEvent.learner_id == learner_id,
-                    LearningEvent.event_type == "observation",
+                    # Both kinds: this is "when did anything last happen in this topic".
+                    LearningEvent.event_type.in_(mastery.ATTEMPT_EVENTS),
                 )
                 .group_by(KC.topic_id)
             )

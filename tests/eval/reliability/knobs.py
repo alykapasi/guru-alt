@@ -79,18 +79,18 @@ KNOBS: list[Knob] = [
         settled_by="the delayed-unassisted-probe design S59 defers, which is what defines it",
     ),
     Knob(
-        id="mastery.ability_threshold",
-        where="app.services.lesson_plan.MASTERY_ABILITY_THRESHOLD",
-        value=1.0,
-        governs="the ability at which a component is treated as well mastered and dropped",
-        settled_by="the ability above which unassisted transfer tasks are actually passed",
+        id="mastery.conservative_bar",
+        where="app.core.config.Settings.mastery_conservative_bar",
+        value=0.5,
+        governs="the lower confidence bound at which a component is treated as mastered",
+        settled_by="the bound above which unassisted transfer tasks are actually passed",
     ),
     Knob(
-        id="mastery.uncertainty_threshold",
-        where="app.services.lesson_plan.MASTERY_UNCERTAINTY_THRESHOLD",
-        value=0.5,
-        governs="how sure the estimate must be before that mastery claim is acted on",
-        settled_by="the uncertainty at which the estimate stops predicting the next outcome",
+        id="mastery.conservative_k",
+        where="app.learning.tracer.CONSERVATIVE_K",
+        value=2.0,
+        governs="how far below the point estimate that mastery claim is made, in SDs",
+        settled_by="the SD margin that best predicts unaided success at the next delayed check",
     ),
     Knob(
         id="profile.help_seeking_low",
@@ -156,6 +156,20 @@ KNOBS: list[Knob] = [
         settled_by="the observed ability of learners who described themselves that way",
     ),
     Knob(
+        id="transfer.uncertainty_floor",
+        where="app.core.config.Settings.transfer_uncertainty_floor",
+        value=0.6,
+        governs="how certain a head start carried over a concept link may start out",
+        settled_by="the floor at which confirmed transfers predict unaided success at the next delayed check",
+    ),
+    Knob(
+        id="transfer.confirm_passes",
+        where="app.core.config.Settings.transfer_confirm_passes",
+        value=2.0,
+        governs="how many unassisted passes confirm a head start rather than leaving it provisional",
+        settled_by="the run length at which confirmed transfers predict unaided success at the next delayed check",
+    ),
+    Knob(
         id="ingest.ocr_min_text_chars",
         where="app.rag.adapters.pdf._MIN_TEXT_CHARS",
         value=16.0,
@@ -177,10 +191,9 @@ def live() -> dict[str, float]:
     want to know what numbers are in force.
     """
     from app.core.config import get_settings
-    from app.learning import activity
+    from app.learning import activity, tracer
     from app.learning import lesson_plan as learning_plan
     from app.rag.adapters import pdf
-    from app.services import lesson_plan as service_plan
     from app.services import placement
 
     s = get_settings()
@@ -191,8 +204,8 @@ def live() -> dict[str, float]:
         "review.diagnose_min_failures": float(s.review_diagnose_min_failures),
         "practice.target_success_rate": float(s.practice_target_success_rate),
         "retention.min_days": float(s.retention_min_days),
-        "mastery.ability_threshold": float(service_plan.MASTERY_ABILITY_THRESHOLD),
-        "mastery.uncertainty_threshold": float(service_plan.MASTERY_UNCERTAINTY_THRESHOLD),
+        "mastery.conservative_bar": float(s.mastery_conservative_bar),
+        "mastery.conservative_k": float(tracer.CONSERVATIVE_K),
         "profile.help_seeking_low": float(learning_plan.HELP_SEEKING_LOW),
         "profile.help_seeking_high": float(learning_plan.HELP_SEEKING_HIGH),
         "profile.persistence_high": float(learning_plan.PERSISTENCE_HIGH),
@@ -202,6 +215,8 @@ def live() -> dict[str, float]:
         "activity.momentum_down_ratio": float(activity.MOMENTUM_DOWN_RATIO),
         "placement.some.ability": float(placement._ESTIMATE_BY_LEVEL["some"].ability),
         "placement.strong.ability": float(placement._ESTIMATE_BY_LEVEL["strong"].ability),
+        "transfer.uncertainty_floor": float(s.transfer_uncertainty_floor),
+        "transfer.confirm_passes": float(s.transfer_confirm_passes),
         "ingest.ocr_min_text_chars": float(pdf._MIN_TEXT_CHARS),
     }
 

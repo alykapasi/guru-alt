@@ -194,6 +194,14 @@ async def test_a_live_turn_is_not_reaped_out_from_under_itself(
 # --- retry ---------------------------------------------------------------------------------
 
 
+def test_a_turn_id_maps_to_one_stable_attempt_id() -> None:
+    turn_id = uuid.uuid4()
+    assert turn_svc.attempt_id_for_turn(turn_id) == turn_svc.attempt_id_for_turn(turn_id)
+    assert turn_svc.attempt_id_for_turn(turn_id) != turn_svc.attempt_id_for_turn(uuid.uuid4())
+    assert turn_svc.attempt_id_for_turn(turn_id) != turn_id
+    assert turn_svc.attempt_id_for_turn(None) is None
+
+
 async def test_retrying_a_failed_turn_does_not_ask_the_question_twice(
     api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, monkeypatch
 ) -> None:

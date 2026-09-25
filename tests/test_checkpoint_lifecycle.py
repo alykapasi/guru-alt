@@ -22,7 +22,6 @@ from app.models.learning import LearnerKCState
 from app.schemas.assessment import ItemCreate, ItemKCRef
 from app.services import assessment as assessment_svc
 from app.services import checkpoints as svc
-from app.services.lesson_plan import MASTERY_ABILITY_THRESHOLD, MASTERY_UNCERTAINTY_THRESHOLD
 
 
 def _naive(age: timedelta) -> datetime:
@@ -189,8 +188,11 @@ async def test_a_component_mastered_in_the_meantime_closes_the_question(
         LearnerKCState(
             learner_id=learner.id,
             kc_id=kc.id,
-            ability=MASTERY_ABILITY_THRESHOLD + 0.5,
-            uncertainty=MASTERY_UNCERTAINTY_THRESHOLD - 0.1,
+            ability=1.5,
+            uncertainty=0.4,
+            # Mastery is a conservative bound *plus* ability evidence: a confident row that
+            # nobody ever measured is a placement seed, not a demonstration.
+            last_seen_at=datetime.now(UTC),
         )
     )
     await db_session.flush()
@@ -202,7 +204,12 @@ async def test_a_component_mastered_in_the_meantime_closes_the_question(
 
 async def test_a_component_merely_going_well_does_not_close_it(db_session: AsyncSession) -> None:
     """The bar is the planner's own definition of mastered, not "doing all right" — otherwise
-    a learner mid-exercise would have it taken away for answering the first part correctly."""
+    a learner mid-exercise would have it taken away for answering the first part correctly.
+
+    The component *is* measured, so the evidence guard is not what excludes it: an ability at
+    the old rule's bar, known only to within 0.8, supports a conservative 0.2 and the claim is
+    not made. Both rules refuse this row — what changed is how the refusal is expressed.
+    """
     learner = await _learner(db_session)
     kc = await _kc(db_session)
     item = await _item_for(db_session, kc)
@@ -210,8 +217,9 @@ async def test_a_component_merely_going_well_does_not_close_it(db_session: Async
         LearnerKCState(
             learner_id=learner.id,
             kc_id=kc.id,
-            ability=MASTERY_ABILITY_THRESHOLD + 0.5,
-            uncertainty=MASTERY_UNCERTAINTY_THRESHOLD + 0.3,
+            ability=1.0,
+            uncertainty=0.8,
+            last_seen_at=datetime.now(UTC),
         )
     )
     await db_session.flush()

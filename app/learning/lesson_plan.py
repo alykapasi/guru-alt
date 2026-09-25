@@ -11,6 +11,7 @@ import uuid
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Literal, NotRequired, TypedDict
 
 from app.learning import prerequisites as prereq_index
@@ -34,13 +35,31 @@ say why an answer failed cannot test a claim about why an answer failed.
 It deliberately overrides ``score_by_format``. That dimension is about which formats a learner
 does well on, which is the wrong question to ask of a step whose purpose is to find something
 out."""
-StepStatus = Literal["pending", "active", "done"]
+StepStatus = Literal["pending", "active", "done", "proposed", "skipped"]
+Guidance = Literal["guided", "exploration"]
+DetourOutcome = Literal["mastered", "disproved", "skipped"]
+
+OPEN_DETOUR_STATUSES: frozenset[str] = frozenset({"pending", "active", "proposed"})
+"""A detour step still in play. `proposed` counts: offering the same prerequisite twice while
+the learner is still deciding on the first offer would be the planner not listening."""
+
+
+class DetourNotOpen(Exception):
+    """A decision named a detour that is not open, or accepted one that was never offered."""
+
 
 DETOUR_DIAGNOSED = "diagnosed"
 DETOUR_REPEATED_FAILURE = "repeated_failure"
 """Why a detour was taken. The first is the grader saying so outright (S09); the second is the
 learner failing the same component repeatedly with a prerequisite still unmastered — no
 diagnosis needed, which is what keeps detours reachable from objective items."""
+
+DETOUR_EXTERNAL = "external"
+"""A prerequisite written into the graph that lives in another subject (S24). Planned as a
+detour so it shares the detour lifecycle — offered or taken per guidance, skippable, closed
+with an outcome — but it is not a hypothesis about a struggle, so it is never disproved, sorts
+just before the step that needs it rather than ahead of everything, and is practised in the
+learner's preferred format rather than the diagnostic one."""
 
 
 class StepDict(TypedDict):
@@ -58,6 +77,24 @@ class StepDict(TypedDict):
     # revision must not have to migrate a plan to read it.
     detour_for: NotRequired[str | None]
     detour_reason: NotRequired[str | None]
+    # When the learner actually started the detour (guided: on insertion; exploration: on
+    # acceptance). Disproval only counts evidence from after it, so an old pass cannot close
+    # a new detour. Absent on detours written before this existed — those are never disproved.
+    opened_at: NotRequired[str | None]
+    # When this detour step first entered the plan — stamped on insertion, in *both* guidance
+    # modes, unlike `opened_at` (S11 fix round 2). This is what tells two steps on the same
+    # route apart once a route has legitimately reopened: the route alone cannot, since a
+    # route closed `"mastered"` is never barred from a later detour. Absent on detours written
+    # before this existed.
+    offered_at: NotRequired[str | None]
+    detour_outcome: NotRequired[DetourOutcome | None]
+    # Set only on an external detour (S24): the subject the prerequisite lives in, so the
+    # step can say where it is from. Absent everywhere else.
+    source_subject_id: NotRequired[str | None]
+    source_subject_name: NotRequired[str | None]
+    # A provisional component (S24) — a head start carried over a concept link, unconfirmed
+    # here. Practice asks before it explains. Recomputed on every revision.
+    check_first: NotRequired[bool]
 
 
 @dataclass(frozen=True)
@@ -72,6 +109,10 @@ class Detour:
     # "detoured after two misses" and "detoured after six" are different situations and a
     # later look at whether detours help needs to be able to tell them apart.
     consecutive_failures: int = 0
+    # Set only when `reason` is `DETOUR_EXTERNAL` (S24): which subject the prerequisite lives
+    # in, so the inserted step can say where it is from.
+    source_subject_id: uuid.UUID | None = None
+    source_subject_name: str | None = None
 
 
 def prerequisite_detour(
@@ -467,6 +508,11 @@ def revise_steps(
     due_review_kc_ids: Sequence[uuid.UUID],
     scaffolding: ScaffoldingHints,
     detour: Detour | None = None,
+    external_detours: Sequence[Detour] = (),
+    guidance: Guidance = "guided",
+    disproved_kc_ids: Iterable[uuid.UUID] = (),
+    provisional_kc_ids: Iterable[uuid.UUID] = (),
+    now: datetime | None = None,
 ) -> list[StepDict]:
     """Re-derive status/order/hints over an existing step list. Pure, no DB, no LLM — this is
     what makes revision cheap enough to run on every graded answer and profile refresh.
@@ -475,68 +521,161 @@ def revise_steps(
     ``mastery.due_reviews`` returns them) — that order becomes the review-step ordering.
 
     0. A ``detour`` (S11) is inserted ahead of everything as its own step, unless one for that
-       prerequisite is already open. It sorts *before* due reviews: a detour is the direct
-       response to the failure that just happened, and putting a queue of flashcards between
-       the two breaks that connection — while FSRS intervals are measured in days and tolerate
-       a few minutes. When its KC is mastered it flips to ``"done"`` like anything else, and
-       the step it was blocking becomes active again with no separate "return" mechanism.
-
-    1. A ``"new"`` or ``"detour"`` step whose KC is now mastered flips to ``"done"`` (one-way
-       ratchet — a KC that later needs review again gets a fresh review step, not an un-done
-       "new" step).
-    2. An existing non-done ``"review"`` step whose KC is no longer due flips to ``"done"``
-       (it was reviewed, or the retention window passed). A due KC with no existing non-done
+       prerequisite is already open (``OPEN_DETOUR_STATUSES``). Every insertion stamps
+       ``offered_at`` now, in *either* mode — the moment this step, as opposed to some earlier
+       one on the same route, entered the plan (S11 fix round 2: a route can legitimately
+       reopen after closing ``"mastered"``, and ``offered_at`` is what a caller keys a
+       per-step outcome record on instead of the route alone). Under guided guidance it is
+       also inserted taken — ``status="pending"``, ``opened_at`` stamped the same moment — and
+       sorts before due reviews: a detour is the direct response to the failure that just
+       happened, and putting a queue of flashcards between the two breaks that connection,
+       while FSRS intervals are measured in days and tolerate a few minutes. Under exploration
+       guidance it is only *proposed* (V07): ``status="proposed"``, no ``opened_at`` yet, and
+       it sorts immediately before the step it was proposed for rather than ahead of
+       everything — the learner has not agreed to go yet, so nothing else in the plan moves
+       for it. Every ``external_detours`` entry (S24) is inserted the same way, one at a time,
+       through the same guidance/already-open/already-mastered rules ``detour`` gets — a
+       cross-subject prerequisite has no other lifecycle to reuse — plus one rule of its own
+       (review fix round 1): it is refused outright if its blocked step is already ``"done"``
+       or ``"skipped"`` *in this revision*, checked fresh against the mastery flip above rather
+       than against whatever the caller saw before calling — a caller computes its candidates
+       from the plan as it stood before this revision, which cannot know a blocked step this
+       revision's own mastery flip just finished.
+    1. A ``"new"`` step whose KC is now mastered flips to ``"done"``. A ``"detour"`` step whose
+       KC is now mastered flips to ``"done"`` with ``detour_outcome="mastered"`` — a proposal
+       included, since a proposal is dropped once there is nothing left for it to test, and a
+       proposal is never activated by mastery either (one-way ratchet — a KC that later needs
+       review again gets a fresh review step, not an un-done "new" step).
+    2. A taken (non-proposed) detour whose KC is in ``disproved_kc_ids`` *and* has a truthy
+       ``opened_at`` flips to ``"done"`` with ``detour_outcome="disproved"`` — the grader's
+       hypothesis looks wrong, and the learner goes back to the step it was blocking. A detour
+       with no ``opened_at`` (written before this existed) is never disproved, since there is
+       no trustworthy start for "after" to mean anything, and a proposal is never disproved at
+       all — it was never acted on, so there is nothing to disprove. An external detour (S24)
+       is never disproved either, whatever ``opened_at`` says: it is not a hypothesis about a
+       struggle, so there is nothing for a passing answer to disprove.
+    3. A ``"proposed"`` detour whose blocked step (``detour_for``) is now ``"done"``, or is no
+       longer in the plan at all, is dropped outright — no ``detour_outcome``, since an offer
+       nobody answered is not a decision. A ``pending``/``active`` (guided) detour is untouched
+       by this: it was already taken, not merely offered, so it runs its own course. An
+       external detour (S24) of *any* open status (``pending``/``active``/``proposed``) is
+       dropped the same way once its blocked step is done or gone — unlike an ordinary detour,
+       accepting an external one is not itself evidence the prerequisite was needed, so there
+       is no course of its own for it to run once the step it was for no longer needs it.
+    4. An existing non-closed ``"review"`` step whose KC is no longer due flips to ``"done"``
+       (it was reviewed, or the retention window passed). A due KC with no existing non-closed
        review step gets a new ``"pending"`` one.
-    3. ``order`` is recomputed: non-done reviews (soonest-due first), then non-done new steps
-       (their prior relative order, i.e. topo order), then done steps last.
-    4. ``active`` is recomputed: the first non-done step in that order (none if the plan is
-       fully done).
-    5. Scaffolding hints refresh on every non-done step; done steps keep the hints they were
-       actually taught under.
+    5. ``order`` is recomputed: an accepted (non-proposed, non-external) open detour first,
+       then reviews (soonest-due first), then new steps, proposals and external detours (a
+       proposal or an external immediately before the step it targets), then closed
+       (``"done"``/``"skipped"``) steps last.
+    6. ``active`` is recomputed: the first step whose status is not ``"done"``, ``"skipped"``
+       or ``"proposed"`` — a proposal is never made active by revision; it only becomes active
+       once the learner accepts it via ``decide_detour``.
+    7. Scaffolding hints refresh on every step not ``"done"`` or ``"skipped"``, and so does
+       ``check_first`` — whether the step's KC is in ``provisional_kc_ids``, a head start
+       carried over a concept link that practice has not yet confirmed (S24). Closed steps
+       keep the hints they were actually taught under. An external detour (S24) is practised
+       in the learner's preferred format rather than ``DETOUR_ITEM_TYPE``: it is not a
+       diagnostic question about a hypothesis, it is the prerequisite itself.
     """
     result: list[StepDict] = [StepDict(**step) for step in steps]  # shallow per-step copy
 
+    def _is_external(step: StepDict) -> bool:
+        return step["step_type"] == "detour" and step.get("detour_reason") == DETOUR_EXTERNAL
+
+    CLOSED = ("done", "skipped")
+
     mastered = {str(kc_id) for kc_id in mastered_kc_ids}
+    disproved = {str(kc_id) for kc_id in disproved_kc_ids}
     due_order = [str(kc_id) for kc_id in due_review_kc_ids]
     due_set = set(due_order)
 
     for step in result:
-        if (
-            step["step_type"] in ("new", "detour")
-            and step["status"] != "done"
-            and step["kc_id"] in mastered
-        ):
-            step["status"] = "done"
+        if step["status"] in ("done", "skipped"):
+            continue
+        if step["step_type"] == "new":
+            if step["kc_id"] in mastered:
+                step["status"] = "done"
+        elif step["step_type"] == "detour":
+            if step["kc_id"] in mastered:
+                step["status"], step["detour_outcome"] = "done", "mastered"
+            elif (
+                step["status"] != "proposed"
+                and step["kc_id"] in disproved
+                and step.get("opened_at")
+                and not _is_external(step)
+            ):
+                step["status"], step["detour_outcome"] = "done", "disproved"
 
-    if detour is not None:
-        prereq_id = str(detour.prereq_kc_id)
+    blocked_status = {
+        step["kc_id"]: step["status"] for step in result if step["step_type"] == "new"
+    }
+    result = [
+        step
+        for step in result
+        if not (
+            step["step_type"] == "detour"
+            and (
+                step["status"] == "proposed"
+                or (_is_external(step) and step["status"] not in CLOSED)
+            )
+            and blocked_status.get(step.get("detour_for") or "", "done") == "done"
+        )
+    ]
+
+    def _insert(trigger: Detour) -> None:
+        prereq_id = str(trigger.prereq_kc_id)
+        # An external trigger (S24 review fix round 1) is computed by the caller from the plan
+        # as it stood *before* this revision — `_external_detours` reads pre-revision steps, so
+        # it cannot see a blocked step this very revision's mastery flip (above) just finished.
+        # Refusing it here, against `blocked_status` as revised, is what stops a step already
+        # done from getting a needless external step inserted ahead of it — and, worse, that
+        # step becoming active instead of the one actually next. An ordinary `detour` never
+        # needs this: its blocked step is the caller's own active step, which mastery flipping
+        # it to done would make ineligible to be a *trigger* in the first place, not merely a
+        # target of one already in flight.
+        if (
+            trigger.reason == DETOUR_EXTERNAL
+            and blocked_status.get(str(trigger.blocked_kc_id), "done") in CLOSED
+        ):
+            return
         already_open = any(
             step["step_type"] == "detour"
-            and step["status"] != "done"
+            and step["status"] in OPEN_DETOUR_STATUSES
             and step["kc_id"] == prereq_id
             for step in result
         )
         # A detour to a component the learner has already mastered would send them to work
         # they have demonstrated; the decision is made against mastery, but the plan may have
         # moved on since.
-        if not already_open and prereq_id not in mastered:
-            result.append(
-                StepDict(
-                    kc_id=prereq_id,
-                    order=0,
-                    step_type="detour",
-                    status="pending",
-                    target_difficulty=None,
-                    hint_density=None,
-                    preferred_item_type=None,
-                    detour_for=str(detour.blocked_kc_id),
-                    detour_reason=detour.reason,
-                )
-            )
+        if already_open or prereq_id in mastered:
+            return
+        offered_at = (now or datetime.now(UTC)).isoformat()
+        step = StepDict(
+            kc_id=prereq_id,
+            order=0,
+            step_type="detour",
+            status="proposed" if guidance == "exploration" else "pending",
+            target_difficulty=None,
+            hint_density=None,
+            preferred_item_type=None,
+            detour_for=str(trigger.blocked_kc_id),
+            detour_reason=trigger.reason,
+            offered_at=offered_at,
+            opened_at=None if guidance == "exploration" else offered_at,
+        )
+        if trigger.source_subject_id is not None:
+            step["source_subject_id"] = str(trigger.source_subject_id)
+            step["source_subject_name"] = trigger.source_subject_name
+        result.append(step)
+
+    for trigger in (*([detour] if detour is not None else []), *external_detours):
+        _insert(trigger)
 
     covered: set[str] = set()
     for step in result:
-        if step["step_type"] != "review" or step["status"] == "done":
+        if step["step_type"] != "review" or step["status"] in ("done", "skipped"):
             continue
         if step["kc_id"] not in due_set:
             step["status"] = "done"
@@ -561,16 +700,26 @@ def revise_steps(
 
     review_rank = {kc_id: i for i, kc_id in enumerate(due_order)}
 
+    blocked_order = {step["kc_id"]: step["order"] for step in result if step["step_type"] == "new"}
+
     def _bucket(step: StepDict) -> int:
-        if step["status"] == "done":
+        if step["status"] in CLOSED:
             return 3
-        if step["step_type"] == "detour":
+        if (
+            step["step_type"] == "detour"
+            and step["status"] != "proposed"
+            and not _is_external(step)
+        ):
             return 0
         return 1 if step["step_type"] == "review" else 2
 
     def _within_bucket(step: StepDict) -> Any:
-        if step["status"] != "done" and step["step_type"] == "review":
+        if step["status"] not in CLOSED and step["step_type"] == "review":
             return review_rank.get(step["kc_id"], len(due_order))
+        if step["status"] == "proposed" or (_is_external(step) and step["status"] not in CLOSED):
+            return (blocked_order.get(step.get("detour_for") or "", step["order"]), 0)
+        if _bucket(step) == 2:
+            return (step["order"], 1)
         return step["order"]
 
     result.sort(key=lambda s: (_bucket(s), _within_bucket(s)))
@@ -581,17 +730,53 @@ def revise_steps(
         if step["status"] == "active":
             step["status"] = "pending"
     for step in result:
-        if step["status"] != "done":
+        if step["status"] not in ("done", "skipped", "proposed"):
             step["status"] = "active"
             break
 
+    provisional = {str(kc_id) for kc_id in provisional_kc_ids}
     for step in result:
-        if step["status"] == "done":
+        if step["status"] in CLOSED:
             continue
         step["target_difficulty"] = scaffolding.target_difficulty
         step["hint_density"] = scaffolding.hint_density
         step["preferred_item_type"] = (
-            DETOUR_ITEM_TYPE if step["step_type"] == "detour" else scaffolding.preferred_item_type
+            DETOUR_ITEM_TYPE
+            if step["step_type"] == "detour" and not _is_external(step)
+            else scaffolding.preferred_item_type
         )
+        step["check_first"] = step["kc_id"] in provisional
 
+    return result
+
+
+def decide_detour(
+    steps: Sequence[StepDict],
+    *,
+    prereq_kc_id: uuid.UUID,
+    decision: Literal["accept", "skip"],
+    now: datetime,
+) -> list[StepDict]:
+    """Apply the learner's answer to a detour (S11). Pure; the caller re-runs ``revise_steps``.
+
+    Accept is only for an offer; skip works on an offer or on a detour already under way, in
+    either guidance mode (V07: both allow skipping).
+    """
+    result: list[StepDict] = [StepDict(**step) for step in steps]
+    target = next(
+        (
+            step
+            for step in result
+            if step["step_type"] == "detour"
+            and step["status"] in OPEN_DETOUR_STATUSES
+            and step["kc_id"] == str(prereq_kc_id)
+        ),
+        None,
+    )
+    if target is None or (decision == "accept" and target["status"] != "proposed"):
+        raise DetourNotOpen(str(prereq_kc_id))
+    if decision == "accept":
+        target["status"], target["opened_at"] = "pending", now.isoformat()
+    else:
+        target["status"], target["detour_outcome"] = "skipped", "skipped"
     return result

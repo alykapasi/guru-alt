@@ -47,6 +47,12 @@ class FakeProvider:
         self._reply = reply
         self._script = list(script) if script is not None else None
         self._call_index = 0
+        # Test-only affordance: lets a test assert what a caller actually sent (e.g. that a
+        # privacy boundary held) without a real provider to inspect. Populated by `complete`
+        # only — nothing here is exercised outside tests, and `stream` has no test that needs
+        # it. Named unlike the `calls`/`complete_calls` counters several subclasses in tests/
+        # already define, so subclassing doesn't collide with this one's type.
+        self.prompts_sent: list[tuple[str | None, Sequence[ChatMessage]]] = []
 
     def _next_turn(self) -> FakeTurn:
         turn = (
@@ -72,6 +78,7 @@ class FakeProvider:
         max_tokens: int = 1024,
         tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
+        self.prompts_sent.append((system, messages))
         turn = self._next_turn()
         return ChatResponse(
             content=turn.text,

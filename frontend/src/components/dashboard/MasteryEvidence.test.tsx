@@ -19,7 +19,6 @@ function kc(overrides: Partial<KCMastery> = {}): KCMastery {
     assessed: true,
     distinct_items: 1,
     unassisted_items: 1,
-    transfer_shown: false,
     retention_shown: false,
     ...overrides,
   } as KCMastery;
@@ -42,20 +41,13 @@ describe("the evidence behind a mastery estimate", () => {
     expect(screen.queryByText(/1 problems/)).not.toBeInTheDocument();
   });
 
-  it("states the absence of transfer rather than omitting it", () => {
-    // "No different problem yet" and silence look identical on screen, and only one is true.
-    render(<MasteryEvidence kc={kc({ transfer_shown: false })} />);
-    expect(screen.getByText("no different problem yet")).toBeInTheDocument();
-  });
-
   it("states the absence of a delayed check rather than omitting it", () => {
     render(<MasteryEvidence kc={kc({ retention_shown: false })} />);
     expect(screen.getByText("no delayed check yet")).toBeInTheDocument();
   });
 
-  it("says when transfer and retention have actually been shown", () => {
-    render(<MasteryEvidence kc={kc({ transfer_shown: true, retention_shown: true })} />);
-    expect(screen.getByText("solved a different one")).toBeInTheDocument();
+  it("says when retention has actually been shown", () => {
+    render(<MasteryEvidence kc={kc({ retention_shown: true })} />);
     expect(screen.getByText("held up later")).toBeInTheDocument();
     expect(screen.queryByText(/no delayed check/)).not.toBeInTheDocument();
   });
@@ -63,10 +55,7 @@ describe("the evidence behind a mastery estimate", () => {
   it("still shows the thin evidence behind a component marked mastered", () => {
     // This is the case the counts exist for: "mastered" is doing the most work exactly where
     // the evidence is weakest, so it must not be the only thing on the row.
-    render(
-      <MasteryEvidence kc={kc({ mastered: true, distinct_items: 1, transfer_shown: false })} />,
-    );
+    render(<MasteryEvidence kc={kc({ mastered: true, distinct_items: 1 })} />);
     expect(screen.getByText(/1 problem,/)).toBeInTheDocument();
-    expect(screen.getByText("no different problem yet")).toBeInTheDocument();
   });
 });

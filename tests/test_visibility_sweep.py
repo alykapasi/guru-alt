@@ -25,12 +25,19 @@ from httpx import AsyncClient, Response
 from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_blob_store, get_ingestion_enqueuer, get_llm_client, get_retag_enqueuer
+from app.api.deps import (
+    get_blob_store,
+    get_concept_link_judge_enqueuer,
+    get_ingestion_enqueuer,
+    get_llm_client,
+    get_retag_enqueuer,
+)
 from app.core.db import Base
 from app.llm.registry import fake_llm_client
 from app.main import app
 from app.models.assessment import Item, ItemKC, ItemOrigin, ItemType
-from app.models.knowledge import KC, KCEdge, Subject, Topic
+from app.models.chat import Conversation
+from app.models.knowledge import KC, ConceptLink, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.publication import CurriculumProposal, Publication, PublicationStatus
 from app.storage import InMemoryBlobStore
@@ -48,6 +55,8 @@ class Ids:
     item: uuid.UUID
     proposal: uuid.UUID  # a curriculum-generation record (S25b); `/subjects/commit` needs one
     publication: uuid.UUID  # a pending publication request on `subject` (S25b)
+    conversation: uuid.UUID  # a chat conversation on `subject`, owned by the same learner (S52)
+    link: uuid.UUID  # an endorsed private concept link between kc and kc2 (S24)
 
 
 @dataclass(frozen=True)
@@ -78,7 +87,7 @@ class Case:
 
 
 def _random_ids() -> Ids:
-    return Ids(*(uuid.uuid4() for _ in range(7)))
+    return Ids(*(uuid.uuid4() for _ in range(9)))
 
 
 async def _private_graph(session: AsyncSession, owner: Learner) -> Ids:
@@ -94,6 +103,17 @@ async def _private_graph(session: AsyncSession, owner: Learner) -> Ids:
     session.add_all([kc, kc2])
     await session.flush()
     session.add(KCEdge(prereq_kc_id=kc2.id, kc_id=kc.id))
+    a_kc, b_kc = sorted((kc.id, kc2.id))
+    link = ConceptLink(
+        kc_a_id=a_kc,
+        kc_b_id=b_kc,
+        scope="private",
+        owner_learner_id=owner.id,
+        verdict="endorsed",
+        endorsed_by="judge",
+        reason="Same idea.",
+    )
+    session.add(link)
     item = Item(
         item_type=ItemType.MCQ,
         stem="Private question",
@@ -117,6 +137,10 @@ async def _private_graph(session: AsyncSession, owner: Learner) -> Ids:
         snapshot={},
     )
     session.add(publication)
+    # `/conversations/{conversation_id}/practice` needs a conversation to target (S52); the
+    # subject scoping matches every other row in this private graph.
+    conversation = Conversation(learner_id=owner.id, subject_id=subject.id)
+    session.add(conversation)
     await session.flush()
     return Ids(
         subject=subject.id,
@@ -126,6 +150,8 @@ async def _private_graph(session: AsyncSession, owner: Learner) -> Ids:
         item=item.id,
         proposal=proposal.id,
         publication=publication.id,
+        conversation=conversation.id,
+        link=link.id,
     )
 
 
@@ -146,13 +172,14 @@ class Enqueued:
 
     ingestion: list[uuid.UUID]
     retag: list[uuid.UUID]
+    concept_link_judge: list[uuid.UUID]
 
 
 @pytest.fixture(autouse=True)
 def _fakes() -> Iterator[Enqueued]:
     """Deterministic stand-ins for every paid or external dependency an owner call can reach."""
     store = InMemoryBlobStore()
-    enqueued = Enqueued(ingestion=[], retag=[])
+    enqueued = Enqueued(ingestion=[], retag=[], concept_link_judge=[])
 
     async def _record_ingestion(id_: uuid.UUID) -> None:
         enqueued.ingestion.append(id_)
@@ -160,13 +187,23 @@ def _fakes() -> Iterator[Enqueued]:
     async def _record_retag(id_: uuid.UUID) -> None:
         enqueued.retag.append(id_)
 
+    async def _record_concept_link_judge(learner_id: uuid.UUID) -> None:
+        enqueued.concept_link_judge.append(learner_id)
+
     reply = json.dumps({"body": "A private explanation.", "citations": []})
     app.dependency_overrides[get_llm_client] = lambda: fake_llm_client(reply=reply)
     app.dependency_overrides[get_blob_store] = lambda: store
     app.dependency_overrides[get_ingestion_enqueuer] = lambda: _record_ingestion
     app.dependency_overrides[get_retag_enqueuer] = lambda: _record_retag
+    app.dependency_overrides[get_concept_link_judge_enqueuer] = lambda: _record_concept_link_judge
     yield enqueued
-    for dep in (get_llm_client, get_blob_store, get_ingestion_enqueuer, get_retag_enqueuer):
+    for dep in (
+        get_llm_client,
+        get_blob_store,
+        get_ingestion_enqueuer,
+        get_retag_enqueuer,
+        get_concept_link_judge_enqueuer,
+    ):
         app.dependency_overrides.pop(dep, None)
 
 
@@ -429,6 +466,17 @@ CASES: list[Case] = [
         ("item",),
         lambda c, t, o: c.post(f"{API}/items/{t.item}/answer", json={"response": {"choice": 0}}),
     ),
+    Case(
+        "POST",
+        "/api/v1/items/{item_id}/reveal",
+        "item_id",
+        ("item",),
+        # The fixture item is an MCQ, so even the owner gets refused here (422: nothing to
+        # reveal) — but that is still a *different* refusal than the reference's 404, which is
+        # all this sweep checks. The flashcard-only rule itself is `test_assessment_privacy.py`'s
+        # job; this table only guards that `get_item_for` ran before anything else did.
+        lambda c, t, o: c.post(f"{API}/items/{t.item}/reveal"),
+    ),
     # --- placement and conversations -----------------------------------------------------
     Case(
         "GET",
@@ -452,6 +500,15 @@ CASES: list[Case] = [
         "subject_id",
         ("subject",),
         lambda c, t, o: c.post(f"{API}/conversations", json={"subject_id": str(t.subject)}),
+    ),
+    Case(
+        "POST",
+        "/api/v1/conversations/{conversation_id}/practice",
+        "conversation_id",
+        ("conversation",),
+        lambda c, t, o: c.post(
+            f"{API}/conversations/{t.conversation}/practice", json={"action": "pause"}
+        ),
     ),
     # --- notes ---------------------------------------------------------------------------
     Case(
@@ -527,6 +584,47 @@ CASES: list[Case] = [
         "subject_id",
         ("subject",),
         lambda c, t, o: c.get(f"{API}/subjects/{t.subject}/lesson-plan"),
+    ),
+    Case(
+        "PATCH",
+        "/api/v1/subjects/{subject_id}/lesson-plan/closure",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.patch(
+            f"{API}/subjects/{t.subject}/lesson-plan/closure", json={"closed": True}
+        ),
+    ),
+    Case(
+        "PATCH",
+        "/api/v1/subjects/{subject_id}/lesson-plan/guidance",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.patch(
+            f"{API}/subjects/{t.subject}/lesson-plan/guidance", json={"guidance": "exploration"}
+        ),
+    ),
+    Case(
+        "POST",
+        "/api/v1/subjects/{subject_id}/lesson-plan/detours/{prereq_kc_id}",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.post(
+            f"{API}/subjects/{t.subject}/lesson-plan/detours/{o.kc2}", json={"decision": "skip"}
+        ),
+    ),
+    Case(
+        "POST",
+        "/api/v1/subjects/{subject_id}/lesson-plan/detours/{prereq_kc_id}",
+        "prereq_kc_id",
+        ("kc2",),
+        lambda c, t, o: c.post(
+            f"{API}/subjects/{o.subject}/lesson-plan/detours/{t.kc2}", json={"decision": "skip"}
+        ),
+        owner_exempt=(
+            "prereq_kc_id is never ownership-checked on its own — decide_detour only matches it "
+            "against the caller's own plan's own steps, which subject_id (the case above) "
+            "already scopes, so a foreign or random id here gets the identical answer"
+        ),
     ),
     Case(
         "GET",
@@ -622,6 +720,27 @@ CASES: list[Case] = [
         lambda c, t, o: c.post(
             f"{API}/retrieve", json={"query": "anything", "topic_id": str(t.topic)}
         ),
+    ),
+    # --- concept links ---------------------------------------------------------------------
+    Case(
+        "POST",
+        "/api/v1/concept-links/{link_id}/decision",
+        "link_id",
+        ("link",),
+        lambda c, t, o: c.post(
+            f"{API}/concept-links/{t.link}/decision", json={"decision": "decline"}
+        ),
+    ),
+    Case(
+        "POST",
+        "/api/v1/admin/concept-links/{link_id}",
+        "link_id",
+        ("link",),
+        lambda c, t, o: c.post(
+            f"{API}/admin/concept-links/{t.link}", json={"endorse": True, "reason": "x"}
+        ),
+        owner_exempt="every caller without the admin tier gets the same 403, whether the link exists or not — these are review routes, not learner routes",
+        refusal=403,
     ),
 ]
 

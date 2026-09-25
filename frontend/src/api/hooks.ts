@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "./client";
+import { api, apiFetch } from "./client";
 
 /** Newest-first, per the backend's ordering (app/services/chat.py::list_conversations). */
 export function useConversations() {
@@ -27,6 +27,21 @@ export function useItem(itemId: string | null | undefined) {
       return data;
     },
   });
+}
+
+/** A flashcard's reverse face, fetched only when the learner asks to see it (S54) — see
+ * `app/api/v1/assessment.py`'s `reveal_item`. A plain function rather than a `useMutation`
+ * hook: `FlashcardPanel` calls it directly from a click handler and there is no cached query
+ * for a successful reveal to invalidate. Goes through `apiFetch` rather than the typed client
+ * because it is invoked outside a component, as the default for `FlashcardPanel`'s injectable
+ * `reveal` prop. */
+export async function defaultReveal(itemId: string): Promise<string> {
+  const res = await apiFetch(`/api/v1/items/${itemId}/reveal`, { method: "POST" });
+  if (!res.ok) {
+    throw new Error(`reveal failed: ${res.status} ${res.statusText}`);
+  }
+  const data = (await res.json()) as { back: string };
+  return data.back;
 }
 
 export function useCreateConversation() {
@@ -249,6 +264,100 @@ export function useGenerateLessonPlan(subjectId: string | undefined) {
   });
 }
 
+/** Switches how much the planner may decide for the learner on its own (V07/S11): guided takes
+ * detours on its own, exploration only offers them. Same cache-write as useGenerateLessonPlan —
+ * the response is a full plan, so there is nothing to invalidate. */
+export function useSetGuidance(subjectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (guidance: "guided" | "exploration") => {
+      const { data, error } = await api.PATCH(
+        "/api/v1/subjects/{subject_id}/lesson-plan/guidance",
+        {
+          params: { path: { subject_id: subjectId! } },
+          body: { guidance },
+        },
+      );
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(["lesson-plan", subjectId], data);
+    },
+  });
+}
+
+/** A learner's answer to an offered detour — take it or skip it (S11). A 409 means the detour
+ * closed before the decision landed (the blocker resolved itself, say); there is nothing to
+ * patch onto a plan that no longer has that offer. React Query does not refetch after a failed
+ * mutation, so the plan is invalidated on error — otherwise the stale offer stays on screen
+ * with buttons that can only fail again. */
+export function useDecideDetour(subjectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      prereqKcId,
+      decision,
+    }: {
+      prereqKcId: string;
+      decision: "accept" | "skip";
+    }) => {
+      const { data, error } = await api.POST(
+        "/api/v1/subjects/{subject_id}/lesson-plan/detours/{prereq_kc_id}",
+        {
+          params: { path: { subject_id: subjectId!, prereq_kc_id: prereqKcId } },
+          body: { decision },
+        },
+      );
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(["lesson-plan", subjectId], data);
+    },
+    onError: () => {
+      queryClient.invalidateQueries({ queryKey: ["lesson-plan", subjectId] });
+    },
+  });
+}
+
+/** Prerequisite cycles in a subject the caller owns, and the edge the planner ignores to
+ * break each one (S23). */
+export function usePrerequisiteConflicts(subjectId: string | undefined) {
+  return useQuery({
+    queryKey: ["prerequisite-conflicts", subjectId],
+    enabled: !!subjectId,
+    queryFn: async () => {
+      const { data, error } = await api.GET(
+        "/api/v1/subjects/{subject_id}/prerequisite-conflicts",
+        {
+          params: { path: { subject_id: subjectId! } },
+        },
+      );
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+/** Remove one prerequisite edge — the repair a conflict report offers (S23). The plan is
+ * refetched too: the order it was built from just changed. */
+export function useRemovePrerequisite(subjectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ kcId, prereqKcId }: { kcId: string; prereqKcId: string }) => {
+      const { error } = await api.DELETE("/api/v1/kcs/{kc_id}/prerequisites/{prereq_kc_id}", {
+        params: { path: { kc_id: kcId, prereq_kc_id: prereqKcId } },
+      });
+      if (error) throw error;
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["prerequisite-conflicts", subjectId] });
+      queryClient.invalidateQueries({ queryKey: ["lesson-plan", subjectId] });
+    },
+  });
+}
+
 export function usePlacementPrompt(subjectId: string | undefined) {
   return useQuery({
     queryKey: ["placement-prompt", subjectId],
@@ -272,6 +381,31 @@ export function useSubmitPlacement(subjectId: string | undefined) {
       });
       if (error) throw error;
       return data;
+    },
+  });
+}
+
+/** Pause, resume, or skip guided practice explicitly (S52) — the frontend's own controls, as
+ * opposed to the intent gate that infers a pause/skip from an ordinary chat message. A 409
+ * means the control no longer fits the conversation's current state (e.g. a turn started
+ * streaming since the button was drawn); there is nothing local to patch onto in that case.
+ * React Query does not refetch after a failed mutation, so the conversation and its transcript
+ * are invalidated either way (onSettled) — the controls redraw from the server's actual state
+ * instead of staying stale. Same reasoning as useDecideDetour's 409. */
+export function usePracticeAction(conversationId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (action: "pause" | "resume" | "skip") => {
+      const { data, error } = await api.POST("/api/v1/conversations/{conversation_id}/practice", {
+        params: { path: { conversation_id: conversationId! } },
+        body: { action },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
     },
   });
 }
@@ -430,6 +564,47 @@ export function useForgetMemory() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["memories"] });
+    },
+  });
+}
+
+// --- Concept links: cross-subject connections (S24) -------------------------
+
+/** Endorsed concept links this learner can act on (S24): undecided ones to accept or decline,
+ * accepted ones to revoke. Learner-wide; a subject page filters to the ones touching it. */
+export function useConceptLinkSuggestions() {
+  return useQuery({
+    queryKey: ["concept-link-suggestions"],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/concept-links/suggestions");
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+/** Accept, decline or revoke a link. Either side's plan may change (a head start given or
+ * withdrawn), so every plan is refetched, as are the suggestions. */
+export function useDecideConceptLink() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      linkId,
+      decision,
+    }: {
+      linkId: string;
+      decision: "accept" | "decline" | "revoke";
+    }) => {
+      const { data, error } = await api.POST("/api/v1/concept-links/{link_id}/decision", {
+        params: { path: { link_id: linkId } },
+        body: { decision },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["concept-link-suggestions"] });
+      queryClient.invalidateQueries({ queryKey: ["lesson-plan"] });
     },
   });
 }

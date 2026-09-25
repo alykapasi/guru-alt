@@ -26,6 +26,7 @@ from app.rag.transcription import build_transcriber
 from app.services import alert_history, ingestion
 from app.services import auth as auth_svc
 from app.services import checkpoints as checkpoints_svc
+from app.services import concept_links as concept_links_svc
 from app.services import memory as memory_svc
 from app.services.ingestion import backlog
 from app.services.spend import window as spend_window
@@ -59,6 +60,13 @@ async def _memory_write_back_task(conversation_id: str) -> None:
     llm = build_llm_client(settings)
     async with SessionFactory() as session:
         await memory_svc.write_back(session, llm, conversation_id=uuid.UUID(conversation_id))
+
+
+async def _judge_concept_links_task(learner_id: str) -> None:
+    """Judge a learner's new concept-link candidates (enqueued when they commit a subject)."""
+    llm = build_llm_client(get_settings())
+    async with SessionFactory() as session:
+        await concept_links_svc.judge_pending(session, llm, uuid.UUID(learner_id))
 
 
 async def _enqueue_ingestion(source_id: uuid.UUID) -> None:
@@ -256,6 +264,7 @@ async def _cancel(task: asyncio.Task | None) -> None:
 ingest_source_task = broker.task(_ingest_source_task)
 retag_source_task = broker.task(_retag_source_task)
 memory_write_back_task = broker.task(_memory_write_back_task)
+judge_concept_links_task = broker.task(_judge_concept_links_task)
 
 
 # Same reasoning as above for the event handlers: registered by plain call rather than the

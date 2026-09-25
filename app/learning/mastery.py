@@ -12,12 +12,24 @@ tracer update + event together so an interaction is recorded atomically.
 """
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import DateTime, Float, Integer, and_, case, distinct, func, select
+from sqlalchemy import (
+    ColumnElement,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    and_,
+    case,
+    distinct,
+    func,
+    or_,
+    select,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,21 +37,59 @@ from app.core.config import get_settings
 from app.learning import scheduler
 from app.learning.assistance import evidence_credit
 from app.learning.diagnosis import ACTIONABLE, FailureKind
-from app.learning.tracer import Estimate, GlickoEstimator, MasteryEstimator, aggregate
+from app.learning.tracer import (
+    DEFAULT_ABILITY,
+    DEFAULT_UNCERTAINTY,
+    Estimate,
+    GlickoEstimator,
+    MasteryEstimator,
+    aggregate,
+)
+from app.models.assessment import EvidenceKind
 from app.models.knowledge import KC, Topic
 from app.models.learning import LearnerKCState, LearningEvent
 
 _SECONDS_PER_DAY = 86_400.0
 
-EVENT_SCHEMA_VERSION = 3
-"""Payload shape of an ``observation`` event.
+EVENT_SCHEMA_VERSION = 4
+"""Payload shape of an ``observation`` or ``self_report`` event.
 
 1 — score/difficulty/weight/credit and the grader's verdict.
 2 — adds what an exact replay needs: the estimator's configuration, the timestamp the update
     actually used, the decay gap applied, the prediction made before the answer was seen, and
     the prior and posterior either side of the update. A version-1 row can still be scored, but
     it cannot be replayed exactly — it does not say what it was computed from.
+3 — adds the per-component score and the ``component_scored`` flag that says whether the
+    grader distinguished the components or the item's aggregate simply landed on each (S10).
+4 — splits self-rated evidence out under its own ``event_type`` (S56). A ``self_report`` row
+    carries the rating and its FSRS outcome but no prior/posterior pair, because nothing about
+    the ability estimate moved. Rows at versions 1-3 are all ``observation`` and are read as
+    demonstrated, which is what they were recorded as.
 """
+
+SELF_REPORT_EVENT = "self_report"
+"""``LearningEvent.event_type`` for a self-rated attempt (S56).
+
+Its own type rather than a payload flag, because every reader of this log already filters
+``event_type == "observation"`` by name. That makes exclusion what a site inherits when nobody
+remembers to revisit it — so forgetting one under-counts activity instead of feeding
+self-report into a measurement. The sites that should keep seeing these name this constant.
+"""
+
+ATTEMPT_EVENTS: tuple[str, str] = ("observation", SELF_REPORT_EVENT)
+"""Both kinds of learner attempt, for the sites that ask a question both answer.
+
+Used where the question is about the learner's *action* — did they just see this item, are
+they stuck, did they show up — rather than about what their ability estimate rests on. The
+sites that do ask the latter filter on ``"observation"`` alone, deliberately.
+"""
+
+TRANSFER_SEED_EVENT = "transfer_seed"
+"""A head start carried over an accepted concept link (S24). A seed, like ``placement_seed``:
+outside ``ATTEMPT_EVENTS`` and never ``"observation"``, so no evidence reader counts it."""
+
+TRANSFER_REVOKED_EVENT = "transfer_revoked"
+"""A head start withdrawn because its link was revoked before any answer here (S24)."""
 
 DEFAULT_ESTIMATOR: MasteryEstimator = GlickoEstimator()
 """The estimator the engine runs today. Swapping it (→ DKT) touches only this binding."""
@@ -87,6 +137,18 @@ class Observation(BaseModel):
     reason an answer failed survives alongside the number, where the planner and any later
     analysis can reach it — a rationale that only ever reached the response body is a
     sentence nobody can query."""
+
+    evidence_kind: EvidenceKind = EvidenceKind.DEMONSTRATED
+    """Whether this attempt was judged or self-reported (S56). Set from the grader's own
+    ``GradeResult``, which is the only thing that knows. Self-reported evidence advances the
+    review schedule and nothing else — see ``record_observation``."""
+
+    taught_first: bool = False
+    """Whether the learner was walked through a worked example of this problem just before
+    answering it (S11). Guided practice always teaches before it asks, so its answers still
+    count as evidence exactly as before — but an answer given straight after being shown how
+    is not the unaided demonstration that proves a prerequisite was never the gap. Only
+    ``passed_since`` reads it; it is recorded in the payload only when true."""
 
     @field_validator("kc_weights")
     @classmethod
@@ -138,19 +200,29 @@ def _elapsed_days(last_seen: datetime | None, now: datetime) -> float:
 async def _get_or_create_state(
     session: AsyncSession, learner_id: uuid.UUID, kc_id: uuid.UUID
 ) -> LearnerKCState:
-    """The learner's state row for this KC, creating a default one on first sighting.
+    """The learner's state row for this KC, locked for this transaction, created on first
+    sighting.
+
+    Locked because every caller reads the row, updates it in Python and writes it back: two
+    *different* answers on one component in flight together otherwise both read the same
+    prior, and the second write erases the first (S34). ``FOR UPDATE`` makes the second wait
+    for the first to commit. ``populate_existing`` makes it then see the committed values: a
+    session that already loaded this row — the chat check reads the priors before grading —
+    would otherwise be handed its stale identity-map object, lock or no lock.
 
     Creation goes through ``ON CONFLICT DO NOTHING`` against the (learner, KC) unique
     constraint: two answers arriving together on a KC the learner has never been assessed
     on would both read "no state" and both insert, and one would fail the whole
     transaction. Losing the race here is not an error — it just means someone else created
-    the row, so re-read it.
+    the row, so re-read it (locked, like the first read).
     """
-    state = await session.scalar(
-        select(LearnerKCState).where(
-            LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id == kc_id
-        )
+    locked = (
+        select(LearnerKCState)
+        .where(LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id == kc_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
+    state = await session.scalar(locked)
     if state is not None:
         return state
     await session.execute(
@@ -158,11 +230,7 @@ async def _get_or_create_state(
         .values(learner_id=learner_id, kc_id=kc_id)
         .on_conflict_do_nothing(index_elements=["learner_id", "kc_id"])
     )
-    created = await session.scalar(
-        select(LearnerKCState).where(
-            LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id == kc_id
-        )
-    )
+    created = await session.scalar(locked)
     assert created is not None  # the row exists now: we inserted it, or the other writer did
     return created
 
@@ -222,6 +290,131 @@ async def estimate_kcs(
         for state in states
     }
     return {kc_id: by_kc.get(kc_id, Estimate()) for kc_id in kc_ids}
+
+
+def is_provisional(state: LearnerKCState) -> bool:
+    """A head start not yet confirmed here (S24). Never mastered, whatever the estimate says:
+    a strong source seeds above the bar, and without this one answer — even a wrong one —
+    would count."""
+    return state.transferred_at is not None and state.transfer_confirmed_at is None
+
+
+class KCStanding(BaseModel):
+    """Everything the mastery *state row* knows about one component.
+
+    Both estimates are carried because they answer different questions, and the difference is
+    load-bearing: ``current`` has uncertainty decayed to now and is what "can they do this
+    today" means, while ``at_measurement`` is what we actually saw and is what "we measured
+    them at the bar, and it was a long time ago" means. Deriving one from the other at each
+    call site is how two callers come to disagree about staleness.
+    """
+
+    kc_id: uuid.UUID
+    # None when the component has no *ability* evidence — the meaning S56 pinned. A placement
+    # seed writes a state row and leaves this unset, which is what keeps a background claim
+    # from reading as mastery.
+    measured_at: datetime | None
+    at_measurement: Estimate
+    current: Estimate
+    achieved_at: datetime | None
+    # A head start not yet confirmed by a run of passes here (S24) — see ``is_provisional``.
+    # Every caller of "mastered" must refuse this regardless of what the estimate says.
+    provisional: bool = False
+
+
+async def kc_standings(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    kc_ids: Sequence[uuid.UUID],
+    *,
+    now: datetime | None = None,
+    estimator: MasteryEstimator = DEFAULT_ESTIMATOR,
+) -> dict[uuid.UUID, KCStanding]:
+    """State-row facts for many components in one query.
+
+    Like ``estimate_kcs``, a component with no row still appears, at the unknown prior with
+    ``measured_at=None``: absent from the table is a fact about the learner, not a reason to
+    leave it out of the answer.
+    """
+    now = now or datetime.now(UTC)
+    if not kc_ids:
+        return {}
+    states = (
+        await session.scalars(
+            select(LearnerKCState).where(
+                LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id.in_(kc_ids)
+            )
+        )
+    ).all()
+    by_kc = {
+        state.kc_id: KCStanding(
+            kc_id=state.kc_id,
+            measured_at=state.last_seen_at,
+            at_measurement=_estimate_of(state),
+            current=estimator.decay(
+                _estimate_of(state), elapsed_days=_elapsed_days(state.last_seen_at, now)
+            ),
+            achieved_at=state.achieved_at,
+            provisional=is_provisional(state),
+        )
+        for state in states
+    }
+    return {
+        kc_id: by_kc.get(
+            kc_id,
+            KCStanding(
+                kc_id=kc_id,
+                measured_at=None,
+                at_measurement=Estimate(),
+                current=Estimate(),
+                achieved_at=None,
+            ),
+        )
+        for kc_id in kc_ids
+    }
+
+
+async def _record_achievements(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    states: Sequence[LearnerKCState],
+    *,
+    now: datetime,
+) -> None:
+    """Stamp ``achieved_at`` on components that have just earned it, once and for good.
+
+    Called after ``record_observation``'s flush rather than inside its loop: retention comes
+    from ``kc_evidence``, which queries the event log, and the event that earns the
+    achievement is still pending in the session until that flush. Placed here explicitly
+    rather than left to the session's own ``autoflush`` to paper over the ordering —
+    ``autoflush`` is on by default in both ``app.core.db`` and the test suite's sessions, so
+    it would currently save a call made from inside the loop too, and quietly stop doing so
+    the day someone disables it. The explicit flush is what makes the ordering true by
+    construction instead of by whatever the session happens to be configured with.
+
+    The bar is checked first because it is free — the state is already in memory — and most
+    observations do not clear it, so the event-log query runs only for the components that
+    could actually be achieved, and not at all when none can.
+    """
+    settings = get_settings()
+    # The state was written moments ago, so `last_seen_at` is `now` and decay is the
+    # identity — the stored estimate *is* the current one here. Said explicitly so a later
+    # reader neither adds a redundant `kc_standings` call nor reaches for the decayed
+    # estimate in a context where that distinction does not yet exist.
+    candidates = [
+        state
+        for state in states
+        if state.achieved_at is None
+        and _estimate_of(state).conservative >= settings.mastery_conservative_bar
+        and not is_provisional(state)
+    ]
+    if not candidates:
+        return
+    evidence = await kc_evidence(session, learner_id, [state.kc_id for state in candidates])
+    for state in candidates:
+        found = evidence.get(state.kc_id)
+        if found is not None and found.retention_shown(min_days=settings.retention_min_days):
+            state.achieved_at = now
 
 
 async def record_observation(
@@ -296,13 +489,56 @@ async def record_observation(
     # A caller-supplied id doubles as an idempotency key, enforced by a unique index.
     attempt_id = obs.attempt_id or uuid.uuid4()
     updated: list[LearnerKCState] = []
-    for kc_id, raw_w in obs.kc_weights.items():
+    # Only the ability path appends here. The self-report branch appends to `updated` and
+    # returns before the ability assignment, so a rating is structurally unable to reach the
+    # achievement check — the same way it cannot reach `last_seen_at`.
+    demonstrated_states: list[LearnerKCState] = []
+    # Ascending id, so two multi-component answers take their row locks in the same order and
+    # neither can hold a row the other is waiting on (S34).
+    for kc_id, raw_w in sorted(obs.kc_weights.items()):
         weight = raw_w / total_w
         # The score for *this* component where the grader could tell them apart, the item's
         # aggregate where it could not. Both are recorded below; this is the one the estimate
         # and the review schedule are built from, because both are per-KC facts.
         kc_score = obs.score if obs.kc_scores is None else obs.kc_scores.get(kc_id, obs.score)
         state = await _get_or_create_state(session, obs.learner_id, kc_id)
+        if obs.evidence_kind is EvidenceKind.SELF_REPORTED:
+            # Retention only (S56). The learner is reporting whether the memory came back,
+            # which is precisely the signal FSRS was built on and precisely not a measurement
+            # of what they can do unaided. `last_seen_at` is untouched on purpose: it is read
+            # only by decay, so refreshing it here would let self-report suppress the
+            # uncertainty growth that makes a stale estimate look stale.
+            state.fsrs_card, state.due_at = scheduler.review(
+                state.fsrs_card, score=kc_score, now=now
+            )
+            session.add(
+                LearningEvent(
+                    learner_id=obs.learner_id,
+                    kc_id=kc_id,
+                    event_type=SELF_REPORT_EVENT,
+                    attempt_id=attempt_id,
+                    payload={
+                        "score": kc_score,
+                        "item_score": obs.score,
+                        "component_scored": obs.kc_scores is not None,
+                        "difficulty": obs.difficulty,
+                        "weight": weight,
+                        "item_id": str(obs.item_id) if obs.item_id is not None else None,
+                        "response": obs.response,
+                        "latency_ms": obs.latency_ms,
+                        "hints_used": obs.hints_used,
+                        "prior_attempts": obs.prior_attempts,
+                        "correct": obs.correct,
+                        "detail": obs.detail,
+                        "schema_version": EVENT_SCHEMA_VERSION,
+                        "observed_at": now.isoformat(),
+                        "due_at": state.due_at.isoformat() if state.due_at else None,
+                        **_taught_first_payload(obs),
+                    },
+                )
+            )
+            updated.append(state)
+            continue
         elapsed_days = _elapsed_days(state.last_seen_at, now)
         decayed = estimator.decay(_estimate_of(state), elapsed_days=elapsed_days)
         # The model's belief *before* seeing this answer. Recorded rather than recomputed
@@ -362,12 +598,45 @@ async def record_observation(
                     "prior_uncertainty": decayed.uncertainty,
                     "posterior_ability": post.ability,
                     "posterior_uncertainty": post.uncertainty,
+                    **_taught_first_payload(obs),
                 },
             )
         )
+        demonstrated_states.append(state)
         updated.append(state)
     await session.flush()
+    await _confirm_transfers(session, obs.learner_id, demonstrated_states, now=now)
+    await _record_achievements(session, obs.learner_id, demonstrated_states, now=now)
+    await session.flush()
     return updated
+
+
+async def _confirm_transfers(
+    session: AsyncSession, learner_id: uuid.UUID, states: Sequence[LearnerKCState], *, now: datetime
+) -> None:
+    """Confirm head starts that a run of passes here has now earned (S24). After the flush, so
+    the answer that completes the run is visible to ``passed_since``; before the achievement
+    check, so that same answer can also earn the achievement."""
+    pending = {state.kc_id: state.transferred_at for state in states if is_provisional(state)}
+    if not pending:
+        return
+    settings = get_settings()
+    confirmed = await passed_since(
+        session,
+        learner_id,
+        {kc_id: at for kc_id, at in pending.items() if at is not None},
+        threshold=settings.detour_failure_threshold,
+        passes=settings.transfer_confirm_passes,
+    )
+    for state in states:
+        if state.kc_id in confirmed:
+            state.transfer_confirmed_at = now
+
+
+def _taught_first_payload(obs: Observation) -> dict[str, bool]:
+    """The ``taught_first`` key, present only on the rows that have it: every other attempt
+    reads it as absent, which ``passed_since`` coalesces to false."""
+    return {"taught_first": True} if obs.taught_first else {}
 
 
 async def recent_attempts_at_item(
@@ -404,7 +673,8 @@ async def recent_attempts_at_item(
             .select_from(LearningEvent)
             .where(
                 LearningEvent.learner_id == learner_id,
-                LearningEvent.event_type == "observation",
+                # Both kinds: "have they just seen this question" is true whoever marked it.
+                LearningEvent.event_type.in_(ATTEMPT_EVENTS),
                 LearningEvent.created_at >= since,
                 LearningEvent.payload["item_id"].astext == str(item_id),
             )
@@ -462,6 +732,125 @@ async def seed_prior(
     )
     await session.flush()
     return state
+
+
+async def seed_transfer(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    *,
+    target_kc_id: uuid.UUID,
+    source_kc_id: uuid.UUID,
+    link_id: uuid.UUID,
+    now: datetime | None = None,
+    estimator: MasteryEstimator = DEFAULT_ESTIMATOR,
+) -> LearnerKCState | None:
+    """Give ``target_kc_id`` a provisional head start from ``source_kc_id`` (S24).
+
+    Only when the source has ability evidence and the target has none — a placement guess on
+    the target may be replaced, an answer never. The estimate is the source's, decayed to now,
+    with uncertainty raised to ``transfer_uncertainty_floor``. With several sources, the one
+    giving the higher conservative estimate wins, so a later, weaker link changes nothing.
+    Returns the target's state when it was seeded, ``None`` when nothing changed.
+    """
+    now = now or datetime.now(UTC)
+    source = await session.scalar(
+        select(LearnerKCState).where(
+            LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id == source_kc_id
+        )
+    )
+    if source is None or source.last_seen_at is None:
+        return None
+    # Spec §5.1's payload names the source's subject, so a reader of the event log knows where
+    # a head start came from without re-joining KC -> Topic -> Subject itself.
+    source_subject_id = await session.scalar(
+        select(Topic.subject_id).join(KC, KC.topic_id == Topic.id).where(KC.id == source_kc_id)
+    )
+    current = estimator.decay(
+        _estimate_of(source), elapsed_days=_elapsed_days(source.last_seen_at, now)
+    )
+    seeded = Estimate(
+        ability=current.ability,
+        uncertainty=max(current.uncertainty, get_settings().transfer_uncertainty_floor),
+    )
+    target = await _get_or_create_state(session, learner_id, target_kc_id)
+    if target.last_seen_at is not None:
+        return None
+    if (
+        target.transferred_at is not None
+        and _estimate_of(target).conservative >= seeded.conservative
+    ):
+        return None
+    target.ability, target.uncertainty = seeded.ability, seeded.uncertainty
+    target.transferred_from_kc_id = source_kc_id
+    target.transferred_at = now
+    target.transfer_confirmed_at = None
+    session.add(
+        LearningEvent(
+            learner_id=learner_id,
+            kc_id=target_kc_id,
+            event_type=TRANSFER_SEED_EVENT,
+            payload={
+                "link_id": str(link_id),
+                "source_kc_id": str(source_kc_id),
+                "source_subject_id": (
+                    str(source_subject_id) if source_subject_id is not None else None
+                ),
+                "ability": seeded.ability,
+                "uncertainty": seeded.uncertainty,
+                "schema_version": EVENT_SCHEMA_VERSION,
+            },
+        )
+    )
+    await session.flush()
+    return target
+
+
+async def revoke_transfer(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    *,
+    target_kc_id: uuid.UUID,
+    source_kc_id: uuid.UUID,
+    link_id: uuid.UUID,
+) -> bool:
+    """Withdraw the head start ``source_kc_id`` gave ``target_kc_id`` — only if no answer here
+    has built on it yet (S24). Once there are answers the estimate rests on them and stands,
+    still provisional until confirmed. Returns whether anything was withdrawn."""
+    target = await _get_or_create_state(session, learner_id, target_kc_id)
+    if target.transferred_from_kc_id != source_kc_id or target.last_seen_at is not None:
+        return False
+    target.ability, target.uncertainty = DEFAULT_ABILITY, DEFAULT_UNCERTAINTY
+    target.transferred_from_kc_id = None
+    target.transferred_at = None
+    target.transfer_confirmed_at = None
+    session.add(
+        LearningEvent(
+            learner_id=learner_id,
+            kc_id=target_kc_id,
+            event_type=TRANSFER_REVOKED_EVENT,
+            payload={"link_id": str(link_id), "source_kc_id": str(source_kc_id)},
+        )
+    )
+    await session.flush()
+    return True
+
+
+async def provisional_kc_ids(
+    session: AsyncSession, learner_id: uuid.UUID, kc_ids: Iterable[uuid.UUID]
+) -> set[uuid.UUID]:
+    ids = list(kc_ids)
+    if not ids:
+        return set()
+    return set(
+        await session.scalars(
+            select(LearnerKCState.kc_id).where(
+                LearnerKCState.learner_id == learner_id,
+                LearnerKCState.kc_id.in_(ids),
+                LearnerKCState.transferred_at.is_not(None),
+                LearnerKCState.transfer_confirmed_at.is_(None),
+            )
+        )
+    )
 
 
 async def due_reviews(
@@ -535,7 +924,8 @@ async def recent_struggle(
             .where(
                 LearningEvent.learner_id == learner_id,
                 LearningEvent.kc_id == kc_id,
-                LearningEvent.event_type == "observation",
+                # Both kinds: a run of "Again" is a learner asking for help, which is not a claim.
+                LearningEvent.event_type.in_(ATTEMPT_EVENTS),
             )
             .order_by(when.desc(), LearningEvent.id.desc())
             .limit(limit)
@@ -634,6 +1024,7 @@ def record_detour(
     prereq_kc_id: uuid.UUID,
     reason: str,
     consecutive_failures: int,
+    proposed: bool = False,
 ) -> None:
     """Record that a learner was sent to ``prereq_kc_id`` before ``blocked_kc_id``.
 
@@ -643,6 +1034,11 @@ def record_detour(
     data. Added to the session, not committed: it belongs to the same transaction as the plan
     revision that caused it, so a rolled-back revision does not leave a detour on the record
     that never happened.
+
+    ``proposed`` (S11): whether this trip was only *offered* (exploration guidance) rather than
+    taken outright (guided). An offer is still worth recording — it is still a route the
+    learner was sent, and the cap on repeat trips (``detour_attempts``) does not care whether
+    the learner had a say in taking it.
     """
     session.add(
         LearningEvent(
@@ -655,6 +1051,7 @@ def record_detour(
                 "prereq_kc_id": str(prereq_kc_id),
                 "reason": reason,
                 "consecutive_failures": consecutive_failures,
+                "proposed": proposed,
             },
         )
     )
@@ -687,6 +1084,152 @@ async def detour_attempts(
             continue  # a payload written by hand or by a future shape; not a reason to fail
         counts[kc_id] = counts.get(kc_id, 0) + 1
     return counts
+
+
+DETOUR_OUTCOME_EVENT = "detour_outcome"
+"""``LearningEvent.event_type`` for how a detour ended (S11): the gap was real
+(``"mastered"``), it wasn't (``"disproved"``), or the learner declined the trip
+(``"skipped"``).
+
+A decision about the plan, not evidence about the learner — it never touches the tracer or
+FSRS. Tagged to the **blocked** component, like ``DETOUR_EVENT``, for the same reason: the
+record is about whether that route helped *it*.
+"""
+
+
+def record_detour_outcome(
+    session: AsyncSession,
+    *,
+    learner_id: uuid.UUID,
+    blocked_kc_id: uuid.UUID,
+    prereq_kc_id: uuid.UUID,
+    outcome: str,
+) -> None:
+    """Record how a detour to ``prereq_kc_id`` (for ``blocked_kc_id``) ended.
+
+    Added to the session, not committed — like ``record_detour``, it belongs to the same
+    transaction as the plan revision that closed the detour, so a rolled-back revision does
+    not leave an outcome on the record that never happened.
+    """
+    session.add(
+        LearningEvent(
+            learner_id=learner_id,
+            kc_id=blocked_kc_id,
+            event_type=(
+                "admin_detour_outcome"
+                if session.info.get("admin_actor_id")
+                else DETOUR_OUTCOME_EVENT
+            ),
+            payload={
+                "admin_actor_id": session.info.get("admin_actor_id"),
+                "admin_action_id": session.info.get("admin_action_id"),
+                "prereq_kc_id": str(prereq_kc_id),
+                "outcome": outcome,
+            },
+        )
+    )
+
+
+CLOSED_DETOUR_OUTCOMES = frozenset({"skipped"})
+"""Outcomes that bar a route from being offered again for this blocked component (S11).
+
+Only the learner's own "no". Not ``"mastered"``: mastering the prerequisite is success, not a
+reason to bar the route should it ever legitimately reopen. Not ``"disproved"`` either: that
+is an inference from a handful of answers and can be wrong, and a permanent bar would make a
+wrong one unrecoverable — ``detour_max_repeats`` already stops a route being tried forever."""
+
+
+async def closed_detour_routes(
+    session: AsyncSession, learner_id: uuid.UUID, blocked_kc_id: uuid.UUID
+) -> set[uuid.UUID]:
+    """Prerequisites whose detour route for ``blocked_kc_id`` is closed for good.
+
+    A route closes the moment any outcome event for it lands on ``"skipped"`` — the learner
+    already declined it, and offering it again would ask a question they have answered.
+    """
+    rows = (
+        await session.execute(
+            select(
+                LearningEvent.payload["prereq_kc_id"].astext,
+                LearningEvent.payload["outcome"].astext,
+            ).where(
+                LearningEvent.learner_id == learner_id,
+                LearningEvent.kc_id == blocked_kc_id,
+                LearningEvent.event_type == DETOUR_OUTCOME_EVENT,
+            )
+        )
+    ).all()
+    closed: set[uuid.UUID] = set()
+    for raw_prereq, outcome in rows:
+        if outcome not in CLOSED_DETOUR_OUTCOMES:
+            continue
+        try:
+            closed.add(uuid.UUID(str(raw_prereq)))
+        except (TypeError, ValueError):
+            continue  # a payload written by hand or by a future shape; not a reason to fail
+    return closed
+
+
+async def passed_since(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    opened: Mapping[uuid.UUID, datetime],
+    *,
+    threshold: float,
+    passes: int,
+) -> set[uuid.UUID]:
+    """Which of these KCs the learner has answered well, alone, ``passes`` times running since
+    each one's detour began.
+
+    What disproves a detour (S11). One answer is too small a sample to conclude anything — a
+    guess or an easy item gets there — so this looks for a run: counting back from the latest
+    demonstrated attempt, ``passes`` unassisted, untaught passes on different questions before
+    any failure. A failure ends the run; a pass that was helped or taught is neither, so it
+    neither counts nor breaks it. A self-rating is not an answer, help turns an answer into a
+    joint one, and an answer given straight after a worked example (guided practice) shows the
+    teaching landed — the detour working, not the detour being unnecessary. Questions are told
+    apart by ``item_id``; an attempt with none is its own question.
+    """
+    if not opened:
+        return set()
+    when = _observed_when()
+    # `when` reads as a naive UTC timestamp — `LearningEvent.created_at` is written naive by
+    # Postgres's `now()` (UTC in this deployment), and `observed_at`'s offset is dropped on
+    # cast to `DateTime`. Every `at` compared against it must be naive UTC too, or asyncpg
+    # refuses to bind an offset-aware value against a `timestamp without time zone` column.
+    naive_opened = {
+        kc: at.astimezone(UTC).replace(tzinfo=None) if at.tzinfo is not None else at
+        for kc, at in opened.items()
+    }
+    score = LearningEvent.payload["score"].astext.cast(Float)
+    counts = and_(
+        _unassisted_clause(),
+        func.coalesce(LearningEvent.payload["taught_first"].astext, "false") != "true",
+    )
+    rows = await session.execute(
+        select(
+            LearningEvent.kc_id,
+            score >= threshold,
+            counts,
+            func.coalesce(LearningEvent.payload["item_id"].astext, LearningEvent.id.cast(String)),
+        )
+        .where(
+            LearningEvent.learner_id == learner_id,
+            _demonstrated_clause(),
+            or_(*(and_(LearningEvent.kc_id == kc, when >= at) for kc, at in naive_opened.items())),
+        )
+        .order_by(LearningEvent.kc_id, when.desc(), LearningEvent.created_at.desc())
+    )
+    items: dict[uuid.UUID, set[str]] = {}
+    broken: set[uuid.UUID] = set()
+    for kc_id, passed, counted, item in rows:
+        if kc_id in broken:
+            continue
+        if not passed:
+            broken.add(kc_id)  # the run, counted back from the latest, ends at a failure
+        elif counted:
+            items.setdefault(kc_id, set()).add(item)
+    return {kc_id for kc_id, seen in items.items() if len(seen) >= passes}
 
 
 async def rollup_topic(
@@ -807,18 +1350,52 @@ class KCEvidence(BaseModel):
     # same question in the sitting — the assistance signal S13 already records.
     distinct_items: int
     unassisted_items: int
-    # Days between the first attempt at this KC and the most recent *unassisted* one. None
-    # when nothing here was ever answered unaided.
-    span_days: float | None
-
-    @property
-    def transfer_shown(self) -> bool:
-        """Solved more than one different problem for this KC, unaided."""
-        return self.unassisted_items >= 2
+    # Distinct unassisted attempts, and the days between the first and the last of them.
+    # Both endpoints are unassisted on purpose: a span measured from the first attempt of
+    # *any* kind reported a hinted January and an unaided March as sixty days of retention,
+    # on one demonstration. The span is None below two attempts, because one demonstration
+    # has no span to measure and a 0.0 would read as "measured, and it was zero".
+    unassisted_attempts: int
+    unassisted_span_days: float | None
+    # Self-rated attempts at this component (S56). Counted separately rather than folded in:
+    # a rating is not backing for the estimate, but it is not nothing either, and an
+    # interaction that vanished from the summary would make the history a lie of omission.
+    self_reported_attempts: int
 
     def retention_shown(self, *, min_days: float) -> bool:
-        """Demonstrated unaided at least ``min_days`` after first meeting the component."""
-        return self.span_days is not None and self.span_days >= min_days
+        """Demonstrated unaided at least twice, at least ``min_days`` apart.
+
+        Both conditions are stated although a positive ``min_days`` implies the count: a
+        configured 0 would otherwise silently collapse this back to "was ever answered
+        unaided", which is the bug this rule replaced.
+        """
+        return (
+            self.unassisted_attempts >= 2
+            and self.unassisted_span_days is not None
+            and self.unassisted_span_days >= min_days
+        )
+
+
+def _demonstrated_clause() -> ColumnElement[bool]:
+    """An attempt the learner was judged on, as opposed to one they rated themselves (S56)."""
+    return LearningEvent.event_type == "observation"
+
+
+def _unassisted_clause() -> ColumnElement[bool]:
+    """An attempt made with no hints and not a re-look at the same question (S14)."""
+    return and_(
+        func.coalesce(LearningEvent.payload["hints_used"].astext.cast(Integer), 0) == 0,
+        func.coalesce(LearningEvent.payload["prior_attempts"].astext.cast(Integer), 0) == 0,
+    )
+
+
+def _observed_when() -> ColumnElement[datetime]:
+    """`observed_at` and not `created_at`, for the reason S56 records: `created_at` is the
+    transaction's clock, so a batch written together ties and an event recorded with an
+    explicit time does not match it at all. Older rows have no `observed_at` and fall back."""
+    return func.coalesce(
+        LearningEvent.payload["observed_at"].astext.cast(DateTime), LearningEvent.created_at
+    )
 
 
 async def kc_evidence(
@@ -828,52 +1405,69 @@ async def kc_evidence(
 
     One query for the whole set, like ``estimate_kcs``: this is read alongside a subject's
     mastery roll-up, and a per-KC call there would put the page back where S62 found it.
-    KCs with no observations are absent from the result rather than present and empty — the
-    caller already knows which it asked for, and "no evidence" is not a row.
+    A KC with no attempts at all (demonstrated or self-reported) is absent from the result
+    rather than present and empty — the caller already knows which it asked for, and "no
+    evidence" is not a row. A KC whose only history is self-reports *is* present, with every
+    demonstrated count at zero: the self-reports are why it has a row, and
+    ``self_reported_attempts`` says so (S56).
     """
     if not kc_ids:
         return {}
     # An attempt is unassisted when it used no hints and was not a re-look at the same
     # question in the same sitting. Both are recorded per event by ``record_observation``.
-    unassisted = and_(
-        func.coalesce(LearningEvent.payload["hints_used"].astext.cast(Integer), 0) == 0,
-        func.coalesce(LearningEvent.payload["prior_attempts"].astext.cast(Integer), 0) == 0,
-    )
+    unassisted = _unassisted_clause()
     item = LearningEvent.payload["item_id"].astext
-    # `observed_at` and not `created_at`, for the reason S56 records: `created_at` is the
-    # transaction's clock, so a batch written together ties and an event recorded with an
-    # explicit time does not match it at all. Older rows have no `observed_at` and fall back.
-    when = func.coalesce(
-        LearningEvent.payload["observed_at"].astext.cast(DateTime), LearningEvent.created_at
-    )
+    when = _observed_when()
+    attempt_key = func.coalesce(LearningEvent.attempt_id, LearningEvent.id)
+    # The row set now includes self-reports (S56), so every aggregate that used to describe
+    # "the evidence" must say which rows demonstrated something and which merely claimed it.
+    # A self-rating gets its own count instead of vanishing, so the history stays honest.
+    demonstrated = _demonstrated_clause()
+    self_rated = LearningEvent.event_type == SELF_REPORT_EVENT
+    # Every retention endpoint is an unassisted demonstration; see KCEvidence.
+    unassisted_when = case((and_(demonstrated, unassisted), when))
     rows = await session.execute(
         select(
             LearningEvent.kc_id,
-            func.count(distinct(func.coalesce(LearningEvent.attempt_id, LearningEvent.id))),
-            func.count(distinct(item)),
-            func.count(distinct(case((unassisted, item)))),
-            func.min(when),
-            func.max(case((unassisted, when))),
+            func.count(distinct(case((demonstrated, attempt_key)))),
+            func.count(distinct(case((demonstrated, item)))),
+            func.count(distinct(case((and_(demonstrated, unassisted), item)))),
+            func.count(distinct(case((and_(demonstrated, unassisted), attempt_key)))),
+            func.min(unassisted_when),
+            func.max(unassisted_when),
+            func.count(distinct(case((self_rated, attempt_key)))),
         )
         .where(
             LearningEvent.learner_id == learner_id,
-            LearningEvent.event_type == "observation",
+            LearningEvent.event_type.in_(ATTEMPT_EVENTS),
             LearningEvent.kc_id.in_(kc_ids),
         )
         .group_by(LearningEvent.kc_id)
     )
     out: dict[uuid.UUID, KCEvidence] = {}
-    for kc_id, attempts, items, unassisted_items, first_at, last_unassisted_at in rows:
+    for (
+        kc_id,
+        attempts,
+        items,
+        unassisted_items,
+        unassisted_attempts,
+        first_unassisted_at,
+        last_unassisted_at,
+        self_reported,
+    ) in rows:
         if kc_id is None:
             continue
+        unassisted_attempts = int(unassisted_attempts or 0)
         span = None
-        if first_at is not None and last_unassisted_at is not None:
-            span = (last_unassisted_at - first_at).total_seconds() / _SECONDS_PER_DAY
+        if unassisted_attempts >= 2:
+            span = (last_unassisted_at - first_unassisted_at).total_seconds() / _SECONDS_PER_DAY
         out[kc_id] = KCEvidence(
             kc_id=kc_id,
             attempts=int(attempts or 0),
             distinct_items=int(items or 0),
             unassisted_items=int(unassisted_items or 0),
-            span_days=span,
+            unassisted_attempts=unassisted_attempts,
+            unassisted_span_days=span,
+            self_reported_attempts=int(self_reported or 0),
         )
     return out

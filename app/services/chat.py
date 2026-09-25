@@ -271,6 +271,7 @@ async def _resolve_check(
     learner_id: uuid.UUID,
     conversation: Conversation,
     user_content: str,
+    attempt_id: uuid.UUID | None = None,
 ) -> tuple[Item | None, CheckOutcome | None]:
     """What this message does about the check that is open: returns (still open, graded).
 
@@ -341,6 +342,7 @@ async def _resolve_check(
                 # Server-counted, like every other assistance signal: it is the conversation's
                 # own history that decides whether this was an independent demonstration.
                 hints_used=conversation.active_item_scaffolds,
+                attempt_id=attempt_id,
             ),
             llm=llm,
         )
@@ -421,6 +423,13 @@ async def _materialise_declared_check(
     )
 
 
+PAUSED_PRACTICE_NOTE = (
+    "The learner has paused a practice question to ask about something else. Answer what "
+    "they asked. Do not pose a new question, and do not give away the answer to the paused "
+    "one; they will return to it."
+)
+
+
 async def run_tutor_turn(
     session: AsyncSession,
     llm: LLMClient,
@@ -432,6 +441,9 @@ async def run_tutor_turn(
     max_tokens: int,
     source_ids: Sequence[uuid.UUID] = (),
     persist_user: bool = True,
+    practice_paused: bool = False,
+    pose_check: bool = True,
+    attempt_id: uuid.UUID | None = None,
 ) -> AsyncIterator[TurnEvent]:
     """Persist the user turn, stream the tutor's reply through the graph, then persist it.
 
@@ -462,6 +474,20 @@ async def run_tutor_turn(
     ``persist_user`` is False when the caller has already written the learner's message
     and linked it to a durable turn record (S51); the content is still carried into this
     turn's model context, it is simply not appended to the transcript a second time.
+
+    ``practice_paused`` (S52) is a side question asked while guided practice holds a question.
+    The turn neither resolves nor poses a check and invites no declared one — the paused
+    question is the only one in play, and it is not this turn's to grade or replace. The reply
+    is counted as help (``practice_scaffolds``) against the learner's eventual attempt at it.
+
+    ``pose_check=False`` suppresses any check this turn would otherwise open — the plan check,
+    and a declared one (neither invited nor materialised) — for the turn that answers a learner
+    who has just declined a practice question, where the next plan check is that same question
+    and a declared one would be a fresh question they did not ask for.
+
+    ``attempt_id`` (S34) is this turn's idempotency key for the answer it grades, if any — see
+    ``turn_svc.attempt_id_for_turn``. A retried turn derives the same id, so a check this turn
+    resolves is graded once even if the first try recorded the grade but failed afterwards.
     """
     conversation_id = conversation.id
     subject_id = conversation.subject_id
@@ -475,16 +501,26 @@ async def run_tutor_turn(
         session, llm, learner_id=learner_id, conversation=conversation, query=user_content
     )
 
-    open_check, outcome = await _resolve_check(
-        session, llm, learner_id=learner_id, conversation=conversation, user_content=user_content
-    )
+    open_check: Item | None = None
+    outcome: CheckOutcome | None = None
+    if not practice_paused:
+        open_check, outcome = await _resolve_check(
+            session,
+            llm,
+            learner_id=learner_id,
+            conversation=conversation,
+            user_content=user_content,
+            attempt_id=attempt_id,
+        )
     notes: list[str] = []
     check_result: CheckResultRead | None = None
     if outcome is not None:
         kcs = await knowledge_svc.get_kcs(session, [link.kc_id for link in outcome.item.kc_links])
         notes.append(_feedback_note(outcome, {kc.id: kc.name for kc in kcs}))
         check_result = _check_result(outcome, kcs)
-    elif open_check is None and context.plan is not None and subject_id is not None:
+    elif practice_paused:
+        notes.append(PAUSED_PRACTICE_NOTE)
+    elif pose_check and open_check is None and context.plan is not None and subject_id is not None:
         # Subject-scoped only, and the asymmetry with plan *grounding* is deliberate. A
         # subject-less conversation still gets grounding from whichever plan the learner was
         # last on, because a soft hint aimed at the wrong subject costs a slightly odd
@@ -497,10 +533,11 @@ async def run_tutor_turn(
         conversation.active_item_scaffolds = 0
     if open_check is not None:
         notes.append(_check_note(open_check))
-    elif subject_id is not None:
+    elif subject_id is not None and not practice_paused and pose_check:
         # Only where an answer could be attributed: a subject-less conversation has no graph to
         # resolve a component against, so inviting a declaration there is inviting one that is
-        # always dropped.
+        # always dropped. Not on a withdrawal turn either: the learner just declined a
+        # question, and a declared one would hand them a fresh check in its place.
         notes.append(declared_check.INSTRUCTION)
 
     hits = []
@@ -555,7 +592,13 @@ async def run_tutor_turn(
     # Stripped before anything else sees it: it is addressed to the system, and a learner
     # reading their own transcript should not find machinery in it.
     reply, declared = declared_check.extract(reply)
-    if declared is not None and open_check is None and subject_id is not None:
+    if (
+        declared is not None
+        and open_check is None
+        and subject_id is not None
+        and not practice_paused
+        and pose_check
+    ):
         open_check = await _materialise_declared_check(
             session, learner_id=learner_id, subject_id=subject_id, declared=declared
         )
@@ -579,6 +622,8 @@ async def run_tutor_turn(
         spec=spec,
         usage=usage,
     )
+    if practice_paused:
+        conversation.practice_scaffolds += 1
     await session.commit()
     yield TurnEvent(
         type="done",

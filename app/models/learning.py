@@ -29,12 +29,34 @@ class LearnerKCState(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     ability: Mapped[float] = mapped_column(default=0.0)
     uncertainty: Mapped[float] = mapped_column(default=1.0)
     # Real UTC instants — the tracer does elapsed-time math (decay, FSRS) on these.
+    # ``last_seen_at`` means "when we last had *ability* evidence", which since S56 is no
+    # longer the same as "when this KC was last practised": a self-rated flashcard review
+    # advances ``due_at`` and ``fsrs_card`` and deliberately leaves this alone, so a learner
+    # who reviewed yesterday can still carry a month-old ``last_seen_at``. That is what makes
+    # it the honest input to the decay math and to analytics' ``assessed`` flag, and the
+    # wrong column to ask "did they show up" — the event log answers that.
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     due_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None, index=True
     )
     # Opaque serialized FSRS card (stability/difficulty/state) — see app.learning.scheduler.
     fsrs_card: Mapped[dict | None] = mapped_column(JSONB, default=None)
+    # When this component first met the achievement bar: a conservative estimate at or above
+    # the bar, with retention demonstrated. Set once by `record_observation` and never
+    # cleared — later evidence can lower the current estimate, and that is what the estimate
+    # is for, but it cannot unmake a demonstration that happened. NULL on every row predating
+    # this column; see migration 0058 for why that is not backfilled.
+    achieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # A head start carried over an accepted concept link (S24): the component it came from,
+    # when, and when a run of unaided passes here confirmed it. A state with `transferred_at`
+    # set and `transfer_confirmed_at` NULL is *provisional* — see `mastery.is_provisional`.
+    transferred_from_kc_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("kcs.id", ondelete="SET NULL"), default=None
+    )
+    transferred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    transfer_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
 
 
 class LearningEvent(UUIDPrimaryKeyMixin, Base):
@@ -63,11 +85,12 @@ class LearningEvent(UUIDPrimaryKeyMixin, Base):
         # than a column, so without an expression index the lookup is a scan of every
         # observation the learner has ever produced. Partial, because only observations
         # carry an item.
+        # Both event types, because a self-rated attempt answers the same question (S56).
         Index(
             "ix_learning_events_learner_item",
             "learner_id",
             text("(payload ->> 'item_id')"),
-            postgresql_where=text("event_type = 'observation'"),
+            postgresql_where=text("event_type IN ('observation', 'self_report')"),
         ),
     )
 

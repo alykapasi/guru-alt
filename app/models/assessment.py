@@ -38,6 +38,22 @@ SELF_GRADABLE: frozenset[ItemType] = frozenset({ItemType.FLASHCARD})
 """Flashcards: the learner self-rates recall, which drives FSRS scheduling (slice 5)."""
 
 
+class EvidenceKind(StrEnum):
+    """Whether an attempt's score was *judged* or *reported* (S56).
+
+    A rubric grade, an MCQ key and a cloze match are all judgements: something other than the
+    learner decided how the answer went. A flashcard self-rating is the learner's own account
+    of their recall. Both are real evidence and neither is noise — but they are evidence about
+    different things, and the tracer must not fold them into the same number.
+
+    Derived on the server from the grading path (see ``app.learning.grading``), never accepted
+    from a request body. A bit the client can set is a bit the client can drop.
+    """
+
+    DEMONSTRATED = "demonstrated"
+    SELF_REPORTED = "self_reported"
+
+
 class ItemOrigin(StrEnum):
     """Authorship provenance; visibility separately defines sharing authority."""
 

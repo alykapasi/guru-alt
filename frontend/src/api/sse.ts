@@ -94,6 +94,10 @@ export interface SendMessageBody {
    * the backend regenerates from the learner message it already stored instead of appending
    * the question again, and refuses outright if the turn already produced a reply. */
   client_turn_id?: string;
+  /** The learner's self-rating for a flashcard they have just revealed (1=Again … 4=Easy),
+   * mirroring `ChatTurnRequest.rating` (S54). Ignored server-side unless a paused workflow is
+   * actually holding a flashcard. */
+  rating?: number;
 }
 
 /** The SSE frames that mean the turn reached an end the backend recorded. A stream that stops

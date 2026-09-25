@@ -158,6 +158,16 @@ RETENTION: tuple[StoreRetention, ...] = (
         "shared graph is unaffected by deleting a learner.",
     ),
     StoreRetention(
+        "concept_links/concept_link_decisions",
+        "partly deleted",
+        "Candidate links between presentations in different subjects, and a learner's decision "
+        "on one (S24). A private link spans a subject the learner owns, so it — and any "
+        "learner's decision recorded against it — cascades away with the account. A curated "
+        "link belongs to no learner and is retained regardless of who is deleted; deleting the "
+        "administrator who ruled on one only clears `decided_by_admin_id` (SET NULL), not the "
+        "ruling.",
+    ),
+    StoreRetention(
         "invitations",
         "partly deleted",
         "Permission to enroll (S21). The invitation this learner accepted goes with the "

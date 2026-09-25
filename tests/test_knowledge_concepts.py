@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.learning.lesson_plan import Edge, prerequisite_closure, topo_sort
+from app.learning.lesson_plan import DETOUR_EXTERNAL, Edge, prerequisite_closure, topo_sort
 from app.llm.registry import fake_llm_client
 from app.models.knowledge import KC, Concept, KCEdge, Subject, Topic
 from app.models.learner import Learner
@@ -279,8 +279,10 @@ async def test_plan_generation_survives_a_prerequisite_that_leaves_the_subject(
     is the recurring defect in this repository, and it is what this test exists against: the
     unit test above passes on a planner that never reaches the fixed code.
 
-    The foreign prerequisite is dropped from the ordering because no step in this plan could
-    teach it, and the plan is produced rather than the whole request raising."""
+    The foreign prerequisite cannot be ordered *inside* this plan's local closure/topo-sort,
+    and the plan is produced rather than the whole request raising — but it is not simply
+    absent (S24): with nothing linking it to a component here, it is planned separately as an
+    external detour ahead of the local step it blocks."""
     calculus = await _subject(db_session, "Calculus")
     physics = await _subject(db_session, "Physics")
     limits = await _kc(db_session, calculus, "Limits")
@@ -298,9 +300,10 @@ async def test_plan_generation_survives_a_prerequisite_that_leaves_the_subject(
         goal=None,
     )
 
-    step_ids = [step["kc_id"] for step in plan.steps]
-    assert str(limits.id) not in step_ids, "another subject's component is not a step in this plan"
-    assert step_ids == [str(velocity.id), str(momentum.id)], "the local ordering still holds"
+    new_step_ids = [step["kc_id"] for step in plan.steps if step["step_type"] == "new"]
+    assert new_step_ids == [str(velocity.id), str(momentum.id)], "the local ordering still holds"
+    limits_step = next(s for s in plan.steps if s["kc_id"] == str(limits.id))
+    assert limits_step["step_type"] == "detour" and limits_step["detour_reason"] == DETOUR_EXTERNAL
 
 
 async def test_only_the_prerequisite_that_leaves_the_subject_is_reported(

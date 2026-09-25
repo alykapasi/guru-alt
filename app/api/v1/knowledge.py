@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
-from app.api.deps import CurrentLearner, RetagEnqueuerDep, SessionDep
+from app.api.deps import ConceptLinkJudgeEnqueuerDep, CurrentLearner, RetagEnqueuerDep, SessionDep
 from app.models.knowledge import Subject
 from app.models.publication import CurriculumProposal
 from app.schemas.knowledge import (
@@ -26,6 +26,7 @@ from app.schemas.knowledge import (
     TopicCreate,
     TopicRead,
 )
+from app.services import concept_links as concept_links_svc
 from app.services import ingestion as ingestion_svc
 from app.services import knowledge as svc
 
@@ -122,6 +123,7 @@ async def commit_subject(
     session: SessionDep,
     learner: CurrentLearner,
     retag: RetagEnqueuerDep,
+    judge: ConceptLinkJudgeEnqueuerDep,
 ):
     """Commit a subject with its full topic/KC graph in one atomic transaction.
 
@@ -158,6 +160,11 @@ async def commit_subject(
     # no tags, which is the honest state, not a wrong one.
     for source_id in result.reassigned_source_ids:
         await ingestion_svc.dispatch(retag, source_id)
+    # A new subject can share concepts with the learner's others and the library. Judging a
+    # pair is a model call each, so it runs in the background — best-effort, like the retag
+    # dispatch above: the subject is already committed, so a queue failure here must not fail
+    # the caller. A lost enqueue only delays suggestions until the learner's next commit (S24).
+    await concept_links_svc.dispatch_judge(judge, learner.id)
     return result.subject
 
 
@@ -357,14 +364,14 @@ async def add_prerequisite(
     )
     # 409 rather than the 400 a self-prerequisite gets, and the difference is real: a
     # self-loop is wrong in isolation, while this edge is only wrong against the graph that
-    # happens to be stored. Until this check existed a client could build any longer cycle
-    # one valid-looking edge at a time, and nothing downstream would report it — plan
-    # ordering just silently stopped being justified by the graph (S23).
-    if await svc.would_create_cycle(session, kc_id=kc_id, prereq_kc_id=data.prereq_kc_id):
+    # happens to be stored. The check lives in the service, under the edge lock, so two
+    # requests cannot each pass it against a graph missing the other's edge (S23).
+    try:
+        async with _conflict_409(session):
+            return await svc.add_prerequisite(session, kc_id, data.prereq_kc_id, data.weight)
+    except svc.WouldCreateCycle as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "that prerequisite would create a cycle: the proposed prerequisite already "
             "depends on this knowledge component",
-        )
-    async with _conflict_409(session):
-        return await svc.add_prerequisite(session, kc_id, data.prereq_kc_id, data.weight)
+        ) from exc

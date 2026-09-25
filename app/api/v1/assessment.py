@@ -3,6 +3,7 @@
 import uuid
 
 from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
@@ -86,6 +87,40 @@ async def answer_item(
         component_scores=result.component_scores,
         diagnoses=result.diagnoses,
     )
+
+
+class RevealRead(BaseModel):
+    """A flashcard's reverse face, handed over only when the learner asks for it."""
+
+    back: str
+
+
+@router.post("/items/{item_id}/reveal", response_model=RevealRead)
+async def reveal_item(item_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+    """Serve a flashcard's answer at the moment the learner asks to see it (S54).
+
+    A round trip rather than a field on the item, because ``public_presentation`` withholds the
+    back on purpose: shipping it with the question and hiding it behind a button would put the
+    answer one devtools panel away and make the reveal theatre. Flashcards only — every other
+    item type's answer key stays withheld until the answer is submitted, and a reveal endpoint
+    that could reach an MCQ's key would be the hole this module exists to prevent.
+    """
+    # Scoped like the read and the answer: another learner's item must 404, not reveal (S33).
+    item = await svc.get_item_for(session, item_id, learner_id=learner.id)
+    if item is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "item not found")
+    # A whitelist, not a denylist: SELF_GRADABLE names only the flashcard today, so an
+    # unrecognised or future item type is refused rather than let through by default.
+    if ItemType(item.item_type) not in SELF_GRADABLE:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "only a flashcard has an answer to reveal"
+        )
+    back = (item.answer_key or {}).get("back")
+    if not isinstance(back, str) or not back:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "this flashcard has no stored answer"
+        )
+    return RevealRead(back=back)
 
 
 @router.get("/reviews/due", response_model=list[ReviewItemRead])
