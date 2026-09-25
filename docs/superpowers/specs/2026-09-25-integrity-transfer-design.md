@@ -64,13 +64,15 @@ A turn without `client_turn_id` behaves as today.
 
 ### 3.1 Serialized edge writes
 
-`add_prerequisite` (service) takes `pg_advisory_xact_lock` on each subject the edge touches — the
-dependent's subject and the prerequisite's, deduplicated, **in id order** — before running
-`would_create_cycle` and inserting. The API's cycle check moves inside the service so the check
-and the insert run under the same lock. Deletion takes no lock: removing a constraint cannot
-create a cycle. The lock key is derived from the subject id (`hashtext('kc_edges:' || id)` or the
-id's high 64 bits; either, as long as it is one helper used by every edge writer, including
-curriculum commit's `_add_prerequisite_edges`).
+`add_prerequisite` (service) takes one transaction-scoped `pg_advisory_xact_lock` before running
+`would_create_cycle` and inserting — one lock for every prerequisite-edge insert, not one per
+subject. A cycle can run through three or more subjects, and two concurrent inserts touching
+disjoint subject sets would each hold "their" locks and could still close a ring between them.
+Edge edits are rare, so a single lock is both correct and uncontended. The API's cycle check
+moves inside the service so the check and the insert run under the same lock. Curriculum commit
+and publication need no lock: they only connect components created in the same transaction, which
+no stored edge can reach. Deletion takes no lock either: removing a constraint cannot create a
+cycle.
 
 ### 3.2 Showing conflicts to the learner
 

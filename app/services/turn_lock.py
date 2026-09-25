@@ -39,7 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
 log = structlog.get_logger(__name__)
 
-_LOCK_NAMESPACE = 0x47555255
+LOCK_NAMESPACE = 0x47555255
 """The high half of every advisory-lock key ("GURU"), so these cannot collide with an advisory
 lock taken by anything else against the same database."""
 
@@ -97,7 +97,7 @@ class TurnClaim:
             await self.connection.execute(
                 text("SELECT pg_advisory_unlock(:classid, :objid)"),
                 {
-                    "classid": _as_int4(_LOCK_NAMESPACE),
+                    "classid": _as_int4(LOCK_NAMESPACE),
                     "objid": _as_int4(lock_key(self.conversation_id)),
                 },
             )
@@ -128,7 +128,7 @@ async def claim(engine: AsyncEngine, conversation_id: uuid.UUID) -> TurnClaim | 
     try:
         taken = await connection.scalar(
             text("SELECT pg_try_advisory_lock(:classid, :objid)"),
-            {"classid": _as_int4(_LOCK_NAMESPACE), "objid": _as_int4(lock_key(conversation_id))},
+            {"classid": _as_int4(LOCK_NAMESPACE), "objid": _as_int4(lock_key(conversation_id))},
         )
     except Exception as exc:
         await connection.close()
@@ -158,7 +158,7 @@ async def is_active(session: AsyncSession, conversation_id: uuid.UUID) -> bool:
                 "AND classid = :classid AND objid = :objid AND granted"
             ),
             # Unsigned here: pg_locks exposes the key as an oid. See _as_int4.
-            {"classid": _LOCK_NAMESPACE, "objid": lock_key(conversation_id)},
+            {"classid": LOCK_NAMESPACE, "objid": lock_key(conversation_id)},
         )
     except Exception as exc:
         # Unknown, so say "active": reaping marks a turn CANCELLED, and reporting a running

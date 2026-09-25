@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import structlog
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import prerequisites
@@ -21,6 +21,7 @@ from app.models.learning import LearnerKCState
 from app.models.lesson_plan import LessonPlan
 from app.models.source import Chunk, ChunkKC, Source
 from app.schemas.knowledge import KCCreate, SubjectCreate, TopicCreate
+from app.services import turn_lock
 
 log = structlog.get_logger(__name__)
 
@@ -683,9 +684,44 @@ async def would_create_cycle(
     return hit is not None
 
 
+_EDGE_LOCK = 0x45444745
+"""The advisory-lock object id for prerequisite-edge writes ("EDGE"), under the shared
+``turn_lock.LOCK_NAMESPACE``."""
+
+
+class WouldCreateCycle(Exception):
+    """The requested prerequisite would close a cycle in the stored graph (S23)."""
+
+
+async def lock_edges(session: AsyncSession) -> None:
+    """Serialize prerequisite-edge inserts until this transaction ends (S23).
+
+    One lock for every edge write rather than one per subject. The cycle check walks the whole
+    graph, and a ring can pass through any number of subjects: two inserts each locking only
+    their own endpoints' subjects could touch disjoint sets and still close one ring between
+    them. Edge edits are rare enough that a single lock costs nothing.
+
+    Transaction-scoped: released by the commit or rollback that ends the insert. Curriculum
+    commit and publication do not take it — they only connect components created in the same
+    transaction, which no stored edge can reach.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:namespace, :key)"),
+        {"namespace": turn_lock.LOCK_NAMESPACE, "key": _EDGE_LOCK},
+    )
+
+
 async def add_prerequisite(
     session: AsyncSession, kc_id: uuid.UUID, prereq_kc_id: uuid.UUID, weight: float
 ) -> KCEdge:
+    """Declare ``prereq_kc_id`` a prerequisite of ``kc_id``, refusing one that closes a cycle.
+
+    The check runs under :func:`lock_edges`, so no other insert can land between the check
+    and this one's commit — which is what let A→B and B→A, submitted together, both pass.
+    """
+    await lock_edges(session)
+    if await would_create_cycle(session, kc_id=kc_id, prereq_kc_id=prereq_kc_id):
+        raise WouldCreateCycle(f"{prereq_kc_id} already depends on {kc_id}")
     edge = KCEdge(kc_id=kc_id, prereq_kc_id=prereq_kc_id, weight=weight)
     session.add(edge)
     await session.commit()

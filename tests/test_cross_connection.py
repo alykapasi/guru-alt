@@ -37,6 +37,7 @@ from app.models.learner import Learner
 from app.models.learning import LearningEvent
 from app.models.source import Source, SourceKind, SourceStatus
 from app.services import auth, ingestion
+from app.services import knowledge as knowledge_svc
 from tests.conftest import sign_in
 
 API = "/api/v1"
@@ -441,5 +442,43 @@ async def test_a_second_answer_waits_for_the_first_and_builds_on_it(
         assert len(events) == 3
         earlier, later = events[1].payload, events[2].payload
         assert later["prior_ability"] == pytest.approx(earlier["posterior_ability"])
+    finally:
+        await _drop_subject(engine, subject)
+
+
+# --- two prerequisite edits that together close a cycle (S23) -----------------------------------
+
+
+async def test_an_edge_closing_a_cycle_waits_and_is_refused(engine: AsyncEngine) -> None:
+    """The cycle check and the insert must not be separable.
+
+    Session one is mid-flight: it has checked and inserted A→B but not committed. Session two
+    then asks for B→A. Unlocked, it checked a graph without A→B, found no cycle, and saved —
+    two commits, one ring. Locked, it waits, sees A→B once session one commits, and refuses.
+    """
+    subject, a = await _seed_kc(engine)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        b = KC(topic_id=a.topic_id, slug=f"k-{uuid.uuid4().hex[:8]}", name="Other")
+        session.add(b)
+        await session.commit()
+    try:
+        async with (
+            AsyncSession(engine, expire_on_commit=False) as first,
+            AsyncSession(engine, expire_on_commit=False) as second,
+        ):
+            await knowledge_svc.lock_edges(first)
+            first.add(KCEdge(prereq_kc_id=a.id, kc_id=b.id))
+            await first.flush()
+            pending = asyncio.create_task(knowledge_svc.add_prerequisite(second, a.id, b.id, 1.0))
+            await asyncio.sleep(0.3)
+            assert not pending.done(), "the second edit did not wait for the edge lock"
+            await first.commit()
+            with pytest.raises(knowledge_svc.WouldCreateCycle):
+                await asyncio.wait_for(pending, timeout=5)
+        async with AsyncSession(engine) as session:
+            edges = await session.scalar(
+                select(func.count()).select_from(KCEdge).where(KCEdge.kc_id.in_([a.id, b.id]))
+            )
+        assert edges == 1
     finally:
         await _drop_subject(engine, subject)
