@@ -7,7 +7,10 @@ classifier) and the rubric grader (:func:`decide_grade`, in front of the SMART g
 - **shadow** — Jev is asked, today's path decides, and both are recorded side by side. The
   record is written in the background: nobody waits on it and it never touches the turn's
   transaction.
-- **live** — see Task 6 / :func:`decide_intent`'s live branch.
+- **live** — a confident answer decides and today's model call is skipped. "Confident" is the
+  question's threshold (Choice confidence for ``intent``, P(yes) for ``fully_correct``);
+  anything less, a failure, or no answer by the live deadline, and today's path runs as in
+  shadow mode. Jev never fails an answer: only a confident *pass* skips the grader.
 
 Every question switches on its own, so a question that disagrees too often can be turned off
 without touching the other. Operating it: ``docs/RUNBOOK.md`` §14.
@@ -29,7 +32,14 @@ from app.learning.conversation_evidence import TurnIntent
 from app.learning.grading import GradeResult
 from app.learning.turn_read import FULLY_CORRECT, INTENT, ReadContext, TurnRead
 from app.llm import LLMClient
-from app.llm.decisions import Answer, DecisionClient, DecisionFailure, build_decision_client
+from app.llm.decisions import (
+    Answer,
+    ChoiceAnswer,
+    DecisionClient,
+    DecisionFailure,
+    YesNoAnswer,
+    build_decision_client,
+)
 from app.services.decision_log import record_decision
 from app.services.llm_log import log_llm_call
 
@@ -209,7 +219,8 @@ async def decide_intent(
     ``read`` is a turn read already asking ``intent`` (the conversational check shares one with
     grading); without one, a read is started here if the question is on.
     """
-    mode = get_runtime().policy.mode(INTENT)
+    policy = get_runtime().policy
+    mode = policy.mode(INTENT)
     if read is None or not read.asks(INTENT):
         read = start_turn_read(
             questions=[INTENT],
@@ -218,9 +229,17 @@ async def decide_intent(
             rubric_criteria=None,
             context=context,
         )
+    answer: Answer | DecisionFailure | None = None
+    if mode == "live" and read is not None:
+        answer = await read.answer(INTENT, deadline_s=policy.live_deadline_s)
+        if isinstance(answer, ChoiceAnswer) and answer.confidence >= policy.intent_threshold:
+            await _settle(read, INTENT, mode=mode, used=True, answer=answer)
+            return TurnIntent(answer.label)
     intent = await _fast_intent(llm, question=question, message=message, context=context)
     if read is not None:
-        await _settle(read, INTENT, mode=mode, used=False, baseline_intent=intent.value)
+        await _settle(
+            read, INTENT, mode=mode, used=False, answer=answer, baseline_intent=intent.value
+        )
     return intent
 
 
@@ -240,7 +259,8 @@ async def decide_grade(
     mode). It never produces a failing grade — a wrong answer needs the grader's rationale and
     diagnosis, which Jev cannot write.
     """
-    mode = get_runtime().policy.mode(FULLY_CORRECT)
+    policy = get_runtime().policy
+    mode = policy.mode(FULLY_CORRECT)
     if not answer.strip():
         return await smart()
     if read is None or not read.asks(FULLY_CORRECT):
@@ -251,6 +271,19 @@ async def decide_grade(
             rubric_criteria=rubric_criteria,
             context=context,
         )
+    verdict: Answer | DecisionFailure | None = None
+    if mode == "live" and read is not None:
+        verdict = await read.answer(FULLY_CORRECT, deadline_s=policy.live_deadline_s)
+        if (
+            isinstance(verdict, YesNoAnswer)
+            and verdict.probability >= policy.fully_correct_threshold
+        ):
+            await _settle(
+                read, FULLY_CORRECT, mode=mode, used=True, answer=verdict, attempt_id=attempt_id
+            )
+            # No rationale, no diagnosis and no per-component scores: a correct answer has no
+            # failure to diagnose, and every component takes the aggregate.
+            return GradeResult(score=1.0, correct=True, detail={"method": "decision"})
     result = await smart()
     if read is not None:
         await _settle(
@@ -258,6 +291,7 @@ async def decide_grade(
             FULLY_CORRECT,
             mode=mode,
             used=False,
+            answer=verdict,
             baseline_score=result.score,
             attempt_id=attempt_id,
         )

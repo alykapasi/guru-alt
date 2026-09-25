@@ -302,3 +302,169 @@ async def test_drain_waits_for_every_pending_shadow_write() -> None:
 
     assert decisions._pending == set()
     await asyncio.sleep(0)  # nothing left scheduled to run
+
+
+# --- live (S83) ------------------------------------------------------------------------------
+
+
+async def test_a_confident_live_intent_decides_and_skips_the_fast_call(
+    db_session: AsyncSession,
+) -> None:
+    llm, fast = _fast("deferral")
+
+    with using(runtime(FakeDecisionClient({INTENT: _intent("attempt", 0.95)}), intent="live")):
+        intent = await decisions.decide_intent(llm, question="q", message="m", context=NOBODY)
+
+    assert intent is TurnIntent.ATTEMPT
+    assert fast.calls == 0
+    row = (await db_session.scalars(select(DecisionCall))).one()
+    assert (row.mode, row.used, row.baseline_intent) == ("live", True, None)
+
+
+async def test_an_unsure_live_intent_falls_back_to_the_fast_gate(db_session: AsyncSession) -> None:
+    llm, fast = _fast("deferral")
+
+    with using(runtime(FakeDecisionClient({INTENT: _intent("attempt", 0.6)}), intent="live")):
+        intent = await decisions.decide_intent(llm, question="q", message="m", context=NOBODY)
+
+    assert intent is TurnIntent.DEFERRAL
+    assert fast.calls == 1
+    row = (await db_session.scalars(select(DecisionCall))).one()
+    assert (row.used, row.baseline_intent, row.answer) == (False, "deferral", "attempt")
+
+
+@pytest.mark.parametrize(
+    "fake",
+    [
+        FakeDecisionClient(failure=DecisionFailure(FailureKind.SERVER)),
+        FakeDecisionClient(failure=DecisionFailure(FailureKind.INVALID)),
+    ],
+    ids=["fails", "invalid"],
+)
+async def test_a_failed_live_intent_falls_back(fake: FakeDecisionClient) -> None:
+    llm, fast = _fast("withdrawal")
+
+    with using(runtime(fake, intent="live")):
+        intent = await decisions.decide_intent(llm, question="q", message="m", context=NOBODY)
+
+    assert intent is TurnIntent.WITHDRAWAL
+    assert fast.calls == 1
+
+
+async def test_a_live_answer_after_the_deadline_is_a_timeout_not_a_late_success(
+    db_session: AsyncSession,
+) -> None:
+    """Review focus 5: the turn falls back at the deadline, and the row says so."""
+    fake = FakeDecisionClient({INTENT: _intent("attempt", 0.99)}, delay_s=0.3)
+    llm, fast = _fast("deferral")
+
+    with using(runtime(fake, intent="live", live_deadline_s=0.02)):
+        started = time.perf_counter()
+        intent = await decisions.decide_intent(llm, question="q", message="m", context=NOBODY)
+        elapsed = time.perf_counter() - started
+
+    assert intent is TurnIntent.DEFERRAL
+    assert fast.calls == 1
+    assert elapsed < 0.2
+    row = (await db_session.scalars(select(DecisionCall))).one()
+    assert (row.status, row.used, row.answer) == ("timeout", False, None)
+    await asyncio.sleep(0.35)  # let the abandoned request finish before the loop closes
+
+
+async def test_a_confident_live_pass_skips_the_smart_grader(db_session: AsyncSession) -> None:
+    smart = _Smart()
+    fake = FakeDecisionClient({FULLY_CORRECT: YesNoAnswer(probability=0.97)})
+
+    with using(runtime(fake, fully_correct="live")):
+        result = await decisions.decide_grade(
+            smart=smart,
+            stem="q",
+            answer="a",
+            rubric_criteria=None,
+            context=NOBODY,
+            attempt_id=None,
+        )
+
+    assert smart.calls == 0
+    assert (result.score, result.correct) == (1.0, True)
+    assert result.detail == {"method": "decision"}
+    assert result.diagnoses == {} and result.component_scores == {}
+    row = (await db_session.scalars(select(DecisionCall))).one()
+    assert (row.used, row.baseline_score) == (True, None)
+
+
+@pytest.mark.parametrize(
+    "fake",
+    [
+        FakeDecisionClient({FULLY_CORRECT: YesNoAnswer(probability=0.01)}),
+        FakeDecisionClient({FULLY_CORRECT: YesNoAnswer(probability=0.89)}),
+        FakeDecisionClient(failure=DecisionFailure(FailureKind.TIMEOUT)),
+    ],
+    ids=["confident no", "just under threshold", "times out"],
+)
+async def test_jev_never_fails_an_answer(fake: FakeDecisionClient) -> None:
+    """Anything short of a confident pass is graded by SMART — including a confident *no*."""
+    smart = _Smart()
+
+    with using(runtime(fake, fully_correct="live")):
+        result = await decisions.decide_grade(
+            smart=smart,
+            stem="q",
+            answer="a",
+            rubric_criteria=None,
+            context=NOBODY,
+            attempt_id=None,
+        )
+
+    assert result == SMART_GRADE
+    assert smart.calls == 1
+
+
+async def test_a_live_fallback_records_the_smart_score(db_session: AsyncSession) -> None:
+    fake = FakeDecisionClient({FULLY_CORRECT: YesNoAnswer(probability=0.5)})
+
+    with using(runtime(fake, fully_correct="live")):
+        await decisions.decide_grade(
+            smart=_Smart(),
+            stem="q",
+            answer="a",
+            rubric_criteria=None,
+            context=NOBODY,
+            attempt_id=None,
+        )
+
+    row = (await db_session.scalars(select(DecisionCall))).one()
+    assert (row.mode, row.used, row.baseline_score) == ("live", False, pytest.approx(0.4))
+
+
+async def test_one_question_live_and_the_other_shadow_share_one_request() -> None:
+    fake = FakeDecisionClient(
+        {INTENT: _intent("attempt", 0.99), FULLY_CORRECT: YesNoAnswer(probability=0.2)}
+    )
+    llm, fast = _fast("deferral")
+    smart = _Smart()
+
+    with using(runtime(fake, intent="live", fully_correct="shadow")):
+        read = decisions.start_turn_read(
+            questions=[INTENT, FULLY_CORRECT],
+            stem="q",
+            message="m",
+            rubric_criteria=None,
+            context=NOBODY,
+        )
+        intent = await decisions.decide_intent(
+            llm, question="q", message="m", context=NOBODY, read=read
+        )
+        result = await decisions.decide_grade(
+            smart=smart,
+            stem="q",
+            answer="m",
+            rubric_criteria=None,
+            context=NOBODY,
+            attempt_id=None,
+            read=read,
+        )
+
+    assert intent is TurnIntent.ATTEMPT and fast.calls == 0  # live: Jev decided
+    assert result == SMART_GRADE and smart.calls == 1  # shadow: SMART decided
+    assert len(fake.requests) == 1
