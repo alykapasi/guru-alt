@@ -255,7 +255,7 @@ Both uncalibrated (S18) and added to the reliability knob inventory.
 
 **S23**
 4. A→B and B→A from two connections: exactly one commits, the other gets 409.
-5. A cross-subject edge locks both subjects (race across the two subjects is also serialized).
+5. A cross-subject race is serialized by the same global edge lock.
 6. Conflict panel: renders cycles for the owner only; Remove calls delete and refetches.
 
 **S24 — agreement**
