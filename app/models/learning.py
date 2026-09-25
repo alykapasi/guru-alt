@@ -47,6 +47,16 @@ class LearnerKCState(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # is for, but it cannot unmake a demonstration that happened. NULL on every row predating
     # this column; see migration 0058 for why that is not backfilled.
     achieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # A head start carried over an accepted concept link (S24): the component it came from,
+    # when, and when a run of unaided passes here confirmed it. A state with `transferred_at`
+    # set and `transfer_confirmed_at` NULL is *provisional* — see `mastery.is_provisional`.
+    transferred_from_kc_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("kcs.id", ondelete="SET NULL"), default=None
+    )
+    transferred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    transfer_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
 
 
 class LearningEvent(UUIDPrimaryKeyMixin, Base):
