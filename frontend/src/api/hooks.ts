@@ -568,6 +568,47 @@ export function useForgetMemory() {
   });
 }
 
+// --- Concept links: cross-subject connections (S24) -------------------------
+
+/** Endorsed concept links this learner can act on (S24): undecided ones to accept or decline,
+ * accepted ones to revoke. Learner-wide; a subject page filters to the ones touching it. */
+export function useConceptLinkSuggestions() {
+  return useQuery({
+    queryKey: ["concept-link-suggestions"],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/concept-links/suggestions");
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+/** Accept, decline or revoke a link. Either side's plan may change (a head start given or
+ * withdrawn), so every plan is refetched, as are the suggestions. */
+export function useDecideConceptLink() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      linkId,
+      decision,
+    }: {
+      linkId: string;
+      decision: "accept" | "decline" | "revoke";
+    }) => {
+      const { data, error } = await api.POST("/api/v1/concept-links/{link_id}/decision", {
+        params: { path: { link_id: linkId } },
+        body: { decision },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["concept-link-suggestions"] });
+      queryClient.invalidateQueries({ queryKey: ["lesson-plan"] });
+    },
+  });
+}
+
 export function useForgetAllMemory() {
   const queryClient = useQueryClient();
   return useMutation({

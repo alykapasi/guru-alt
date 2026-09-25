@@ -179,4 +179,26 @@ describe("a lesson plan row", () => {
     expect(await screen.findByText("Skipped")).toBeInTheDocument();
     expect(screen.queryByRole("button")).toBeNull();
   });
+
+  it("labels an external prerequisite with the subject it comes from", async () => {
+    stubKcLookup();
+    renderRow(
+      step({
+        kc_id: "kc-projection",
+        step_type: "detour",
+        status: "pending",
+        detour_for: "kc-least-squares",
+        detour_reason: "external",
+        source_subject_name: "Linear Algebra",
+      } as Partial<LessonStep>),
+    );
+    expect(await screen.findByText("From Linear Algebra")).toBeInTheDocument();
+    expect(await screen.findByText(/Needed for Least squares/)).toBeInTheDocument();
+  });
+
+  it("marks a component being confirmed", async () => {
+    stubKcLookup();
+    renderRow(step({ check_first: true } as Partial<LessonStep>));
+    expect(await screen.findByText("Confirming what you already know")).toBeInTheDocument();
+  });
 });
