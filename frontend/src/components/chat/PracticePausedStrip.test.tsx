@@ -28,6 +28,18 @@ describe("PracticePausedStrip", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows an ended notice on its own, not as a pause", () => {
+    render(
+      <PracticePausedStrip
+        onResume={() => {}}
+        onSkip={() => {}}
+        notice="That question no longer fits your plan, so practice ended."
+      />,
+    );
+    expect(screen.queryByText("Practice paused")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
   it("goes quiet while busy", () => {
     render(<PracticePausedStrip onResume={() => {}} onSkip={() => {}} disabled />);
     expect(screen.getByRole("button", { name: "Back to the question" })).toBeDisabled();

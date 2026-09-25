@@ -132,12 +132,7 @@ export function Session() {
           </div>
         )}
         {endedNotice ? (
-          <PracticePausedStrip
-            onResume={handleResume}
-            onSkip={handleSkip}
-            disabled
-            notice={endedNotice}
-          />
+          <PracticePausedStrip onResume={handleResume} onSkip={handleSkip} notice={endedNotice} />
         ) : practicePaused ? (
           <PracticePausedStrip
             onResume={handleResume}
@@ -166,7 +161,9 @@ export function Session() {
           item={item}
           detail={sessionDetail}
           onRate={handleRate}
-          ratingDisabled={!!pending}
+          // While paused a rating would go to the tutor, not the grader (spec §4.2), so the
+          // learner must go back to the question before rating it.
+          ratingDisabled={!!pending || practicePaused}
         />
       </aside>
     </div>

@@ -351,9 +351,10 @@ export function useSubmitPlacement(subjectId: string | undefined) {
 /** Pause, resume, or skip guided practice explicitly (S52) — the frontend's own controls, as
  * opposed to the intent gate that infers a pause/skip from an ordinary chat message. A 409
  * means the control no longer fits the conversation's current state (e.g. a turn started
- * streaming since the button was drawn); there is nothing local to patch onto in that case, so
- * the error is left to the query's own default refetch rather than handled here — same
- * reasoning as useDecideDetour's 409. */
+ * streaming since the button was drawn); there is nothing local to patch onto in that case.
+ * React Query does not refetch after a failed mutation, so the conversation and its transcript
+ * are invalidated either way (onSettled) — the controls redraw from the server's actual state
+ * instead of staying stale. Same reasoning as useDecideDetour's 409. */
 export function usePracticeAction(conversationId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -365,7 +366,7 @@ export function usePracticeAction(conversationId: string | undefined) {
       if (error) throw error;
       return data;
     },
-    onSuccess: () => {
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
       queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
     },

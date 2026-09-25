@@ -4,7 +4,8 @@
  * paused question went stale (the plan moved on, or the learner mastered it elsewhere) while it
  * waited, so there is nothing left to go back to. It renders in the same spot the strip always
  * has, rather than vanishing, so the learner sees why nothing came back rather than just having
- * the controls disappear. */
+ * the controls disappear — but on its own: practice is over, not paused, so neither the
+ * "Practice paused" label nor controls that could only fail belong beside it. */
 export function PracticePausedStrip({
   onResume,
   onSkip,
@@ -16,6 +17,13 @@ export function PracticePausedStrip({
   disabled?: boolean;
   notice?: string | null;
 }) {
+  if (notice) {
+    return (
+      <div className="border-base-300 mx-auto flex w-full max-w-3xl flex-col gap-1 border-t px-6 pt-3 pb-2">
+        <p className="text-caption text-base-content/60">{notice}</p>
+      </div>
+    );
+  }
   return (
     <div className="border-base-300 mx-auto flex w-full max-w-3xl flex-col gap-1 border-t px-6 pt-3 pb-2">
       <div className="flex items-center justify-between gap-3">
@@ -39,7 +47,6 @@ export function PracticePausedStrip({
           </button>
         </div>
       </div>
-      {notice && <p className="text-caption text-base-content/60">{notice}</p>}
     </div>
   );
 }

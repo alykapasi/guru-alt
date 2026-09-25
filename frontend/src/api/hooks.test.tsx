@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useDecideDetour } from "./hooks";
+import { useDecideDetour, usePracticeAction } from "./hooks";
 
 /** A mutation that fails is not followed by a refetch in React Query. Where a 409 means "the
  * thing you clicked on is gone", the hook has to invalidate what it drew from itself, or the
@@ -43,5 +43,18 @@ describe("a detour decision the server refuses", () => {
 
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["lesson-plan", "subj-1"] });
+  });
+});
+
+describe("a practice control the server refuses", () => {
+  it("refetches the conversation and transcript so the controls redraw", async () => {
+    const { invalidate, wrapper } = setup();
+    const { result } = renderHook(() => usePracticeAction("conv-1"), { wrapper });
+
+    result.current.mutate("resume");
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["conversations"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["messages", "conv-1"] });
   });
 });
