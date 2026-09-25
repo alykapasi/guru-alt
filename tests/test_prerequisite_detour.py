@@ -33,11 +33,13 @@ from app.learning.lesson_plan import (
 )
 from app.learning.mastery import Observation
 from app.llm.registry import fake_llm_client
-from app.models.assessment import RUBRIC_GRADABLE, EvidenceKind
+from app.models.assessment import RUBRIC_GRADABLE, EvidenceKind, Item, ItemKC, ItemType
 from app.models.knowledge import KC, ConceptLink, ConceptLinkDecision, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
 from app.models.profile import ProfileDimension
+from app.schemas.assessment import AnswerSubmit
+from app.services import assessment as assessment_svc
 from app.services import knowledge as knowledge_svc
 from app.services import lesson_plan as svc
 
@@ -1509,3 +1511,60 @@ async def test_an_external_step_closes_mastered_once_the_prerequisite_is(
     assert plan is not None
     step = _detour_step(plan, foreign)
     assert (step["status"], step["detour_outcome"]) == ("done", "mastered")
+
+
+async def _mcq_item(session: AsyncSession, kc_id: uuid.UUID) -> Item:
+    item = Item(
+        visibility="curated",
+        item_type=ItemType.MCQ,
+        stem="Q",
+        answer_key={"choices": ["a", "b"], "correct": 0},
+        kc_links=[ItemKC(kc_id=kc_id, weight=1.0)],
+    )
+    session.add(item)
+    await session.flush()
+    return item
+
+
+async def test_answering_an_external_step_revises_the_plan_that_holds_it(
+    db_session: AsyncSession,
+) -> None:
+    """``_revise_plans`` (``app/services/assessment.py``) used to revise only the plans of
+    ``knowledge_svc.subjects_for_kcs`` — the subject that OWNS the answered KC (A). Subject B's
+    plan holds `foreign` only as an *external* detour step, so answering it never reached B and
+    B's active step stayed `foreign` forever, even once it was mastered."""
+    learner, _subject_a, subject_b, foreign, blocked = await _foreign_prereq(db_session)
+    plan_b = await _plan(db_session, learner, subject_b)
+    ext = _detour_step(plan_b, foreign)
+    assert ext["status"] == "active"  # sanity: the external step is what B's plan is on
+
+    # Close enough to the bar that one more correct, unaided answer clears it (0.48 -> 0.54;
+    # see the final-fix-report for the derivation) — without seeding mastery outright, so the
+    # answer itself is what has to do the work this fix is about.
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=foreign.id,
+            ability=1.48,
+            uncertainty=0.5,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+    assert foreign.id not in await svc.mastered_kc_ids(db_session, learner.id, [foreign.id])
+
+    item = await _mcq_item(db_session, foreign.id)
+    await assessment_svc.answer_item(
+        db_session, learner.id, item, AnswerSubmit(response={"choice": 0}), llm=fake_llm_client()
+    )
+    assert foreign.id in await svc.mastered_kc_ids(db_session, learner.id, [foreign.id])
+
+    plan_b_after = await svc.get_lesson_plan(
+        db_session, learner_id=learner.id, subject_id=subject_b.id
+    )
+    assert plan_b_after is not None
+    ext_after = _detour_step(plan_b_after, foreign)
+    assert (ext_after["status"], ext_after["detour_outcome"]) == ("done", "mastered")
+    assert next(s for s in plan_b_after.steps if s["status"] == "active")["kc_id"] == str(
+        blocked.id
+    )

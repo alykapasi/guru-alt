@@ -63,6 +63,35 @@ async def _get_plan(
     )
 
 
+async def plans_with_open_steps_on(
+    session: AsyncSession, learner_id: uuid.UUID, kc_ids: Iterable[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Subject ids of this learner's plans carrying an OPEN detour step on any of ``kc_ids``.
+
+    An external detour step for a foreign prerequisite (S24) lives in the plan of the subject
+    it *blocks*, not the subject that owns the prerequisite KC — so
+    ``knowledge.subjects_for_kcs`` (which resolves a KC to the subject that owns it) never
+    reaches that plan. Without this, answering the prerequisite mastered it but never revised
+    the plan whose active step it was, and that plan's active step stayed the prerequisite
+    forever. A learner has few plans, so a scan of them all is simplest — and plenty fast —
+    next to a JSONB containment query on ``LessonPlan.steps``.
+    """
+    ids = {str(kc_id) for kc_id in kc_ids}
+    if not ids:
+        return set()
+    plans = await session.scalars(select(LessonPlan).where(LessonPlan.learner_id == learner_id))
+    return {
+        plan.subject_id
+        for plan in plans
+        if any(
+            step.get("step_type") == "detour"
+            and step.get("status") in engine.OPEN_DETOUR_STATUSES
+            and step.get("kc_id") in ids
+            for step in plan.steps
+        )
+    }
+
+
 async def mastered_kc_ids(
     session: AsyncSession, learner_id: uuid.UUID, kc_ids: Iterable[uuid.UUID]
 ) -> set[uuid.UUID]:
