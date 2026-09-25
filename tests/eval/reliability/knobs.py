@@ -156,6 +156,20 @@ KNOBS: list[Knob] = [
         settled_by="the observed ability of learners who described themselves that way",
     ),
     Knob(
+        id="transfer.uncertainty_floor",
+        where="app.core.config.Settings.transfer_uncertainty_floor",
+        value=0.6,
+        governs="how certain a head start carried over a concept link may start out",
+        settled_by="the floor at which confirmed transfers predict unaided success at the next delayed check",
+    ),
+    Knob(
+        id="transfer.confirm_passes",
+        where="app.core.config.Settings.transfer_confirm_passes",
+        value=2.0,
+        governs="how many unassisted passes confirm a head start rather than leaving it provisional",
+        settled_by="the run length at which confirmed transfers predict unaided success at the next delayed check",
+    ),
+    Knob(
         id="ingest.ocr_min_text_chars",
         where="app.rag.adapters.pdf._MIN_TEXT_CHARS",
         value=16.0,
@@ -201,6 +215,8 @@ def live() -> dict[str, float]:
         "activity.momentum_down_ratio": float(activity.MOMENTUM_DOWN_RATIO),
         "placement.some.ability": float(placement._ESTIMATE_BY_LEVEL["some"].ability),
         "placement.strong.ability": float(placement._ESTIMATE_BY_LEVEL["strong"].ability),
+        "transfer.uncertainty_floor": float(s.transfer_uncertainty_floor),
+        "transfer.confirm_passes": float(s.transfer_confirm_passes),
         "ingest.ocr_min_text_chars": float(pdf._MIN_TEXT_CHARS),
     }
 

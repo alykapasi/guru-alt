@@ -66,27 +66,28 @@ async def subject_mastery(
             .order_by(Topic.name, KC.name)
         )
     ).all()
-    # One query for "which components has this learner ever been observed on". An unseen
-    # component estimates to the prior (ability 0), which renders as 50% — indistinguishable
-    # from a measured average unless the coverage is reported alongside it.
-    assessed = set(
-        (
-            await session.scalars(
-                select(LearnerKCState.kc_id)
-                .join(KC, KC.id == LearnerKCState.kc_id)
-                .join(Topic, Topic.id == KC.topic_id)
-                .where(
-                    LearnerKCState.learner_id == learner_id,
-                    Topic.subject_id == subject_id,
-                    # Ability evidence, not merely a row. A flashcard-only component has a
-                    # state row so its FSRS card has somewhere to live, and `last_seen_at` is
-                    # now exactly "when we last had ability evidence" (S56) — so it is the
-                    # honest test for a flag that decides whether to show a number at all.
-                    LearnerKCState.last_seen_at.is_not(None),
-                )
-            )
-        ).all()
-    )
+    # One query for "which components has this learner ever been observed on" and which of
+    # those carry a head start not yet confirmed by a run of passes here (S24) — same table,
+    # same join, so folding the second flag in here costs nothing over the four-query budget
+    # a separate call to ``mastery.provisional_kc_ids`` would add.
+    state_rows = (
+        await session.scalars(
+            select(LearnerKCState)
+            .join(KC, KC.id == LearnerKCState.kc_id)
+            .join(Topic, Topic.id == KC.topic_id)
+            .where(LearnerKCState.learner_id == learner_id, Topic.subject_id == subject_id)
+        )
+    ).all()
+    # Ability evidence, not merely a row. A flashcard-only component has a state row so its
+    # FSRS card has somewhere to live, and `last_seen_at` is now exactly "when we last had
+    # ability evidence" (S56) — so it is the honest test for a flag that decides whether to
+    # show a number at all. An unseen component estimates to the prior (ability 0), which
+    # renders as 50% — indistinguishable from a measured average unless the coverage is
+    # reported alongside it.
+    assessed = {state.kc_id for state in state_rows if state.last_seen_at is not None}
+    # Never mastered, whatever the estimate says, at any level of the drill-down — a strong
+    # source can seed one above the bar.
+    provisional = {state.kc_id for state in state_rows if mastery.is_provisional(state)}
     kc_ids = [kc.id for _, kc in rows]
     estimates = await mastery.estimate_kcs(session, learner_id, kc_ids, now=now)
     # The fourth query, and grouped for the whole subject rather than per KC for the same
@@ -112,7 +113,9 @@ async def subject_mastery(
                 kc_name=kc.name,
                 ability=estimates[kc.id].ability,
                 uncertainty=estimates[kc.id].uncertainty,
-                mastered=kc.id in assessed and _is_mastered(estimates[kc.id], bar=conservative_bar),
+                mastered=kc.id in assessed
+                and kc.id not in provisional
+                and _is_mastered(estimates[kc.id], bar=conservative_bar),
                 assessed=kc.id in assessed,
                 distinct_items=_ev(evidence, kc.id).distinct_items,
                 unassisted_items=_ev(evidence, kc.id).unassisted_items,
@@ -135,8 +138,11 @@ async def subject_mastery(
                 uncertainty=topic_estimate.uncertainty,
                 # A topic is not mastered on the strength of components nobody measured: the
                 # aggregate averages an unseen KC in at the prior, which is a real number
-                # standing in for no evidence.
+                # standing in for no evidence. Nor on the strength of one still provisional
+                # (S24) — the aggregate would read the same whether that component's head
+                # start had been confirmed or not.
                 mastered=topic_assessed == len(kc_reads)
+                and not any(kc.id in provisional for kc in kcs)
                 and _is_mastered(topic_estimate, bar=conservative_bar),
                 assessed_kcs=topic_assessed,
                 total_kcs=len(kc_reads),
@@ -152,6 +158,7 @@ async def subject_mastery(
         ability=subject_estimate.ability,
         uncertainty=subject_estimate.uncertainty,
         mastered=subject_assessed == subject_total
+        and not provisional
         and _is_mastered(subject_estimate, bar=conservative_bar),
         assessed_kcs=subject_assessed,
         total_kcs=subject_total,

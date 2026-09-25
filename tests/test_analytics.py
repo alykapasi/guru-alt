@@ -137,6 +137,33 @@ async def test_subject_mastery_flags_mastered_at_every_level(db_session: AsyncSe
     assert result.mastered is True
 
 
+async def test_subject_mastery_a_provisional_transfer_is_never_mastered(
+    db_session: AsyncSession,
+) -> None:
+    """A head start seeded above the bar, with an answer on it (so `assessed`), still must
+    not read as mastered until confirmed (S24)."""
+    learner, subject, _topic, kc = await _subject_with_kc(db_session)
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=kc.id,
+            ability=2.0,
+            uncertainty=0.3,
+            last_seen_at=datetime.now(UTC),
+            transferred_from_kc_id=None,
+            transferred_at=datetime.now(UTC),
+            transfer_confirmed_at=None,
+        )
+    )
+    await db_session.flush()
+
+    result = await svc.subject_mastery(db_session, learner.id, subject.id)
+    assert result.topics[0].kcs[0].assessed is True
+    assert result.topics[0].kcs[0].mastered is False
+    assert result.topics[0].mastered is False
+    assert result.mastered is False
+
+
 async def test_subject_mastery_skips_topics_with_no_kcs(db_session: AsyncSession) -> None:
     learner, subject, _topic, _kc = await _subject_with_kc(db_session)
     empty_topic = Topic(subject_id=subject.id, slug="empty", name="Empty Topic")

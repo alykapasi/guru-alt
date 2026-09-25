@@ -12,7 +12,7 @@ tracer update + event together so an interaction is recorded atomically.
 """
 
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, runtime_checkable
 
@@ -37,7 +37,14 @@ from app.core.config import get_settings
 from app.learning import scheduler
 from app.learning.assistance import evidence_credit
 from app.learning.diagnosis import ACTIONABLE, FailureKind
-from app.learning.tracer import Estimate, GlickoEstimator, MasteryEstimator, aggregate
+from app.learning.tracer import (
+    DEFAULT_ABILITY,
+    DEFAULT_UNCERTAINTY,
+    Estimate,
+    GlickoEstimator,
+    MasteryEstimator,
+    aggregate,
+)
 from app.models.assessment import EvidenceKind
 from app.models.knowledge import KC, Topic
 from app.models.learning import LearnerKCState, LearningEvent
@@ -76,6 +83,13 @@ Used where the question is about the learner's *action* — did they just see th
 they stuck, did they show up — rather than about what their ability estimate rests on. The
 sites that do ask the latter filter on ``"observation"`` alone, deliberately.
 """
+
+TRANSFER_SEED_EVENT = "transfer_seed"
+"""A head start carried over an accepted concept link (S24). A seed, like ``placement_seed``:
+outside ``ATTEMPT_EVENTS`` and never ``"observation"``, so no evidence reader counts it."""
+
+TRANSFER_REVOKED_EVENT = "transfer_revoked"
+"""A head start withdrawn because its link was revoked before any answer here (S24)."""
 
 DEFAULT_ESTIMATOR: MasteryEstimator = GlickoEstimator()
 """The estimator the engine runs today. Swapping it (→ DKT) touches only this binding."""
@@ -278,6 +292,13 @@ async def estimate_kcs(
     return {kc_id: by_kc.get(kc_id, Estimate()) for kc_id in kc_ids}
 
 
+def is_provisional(state: LearnerKCState) -> bool:
+    """A head start not yet confirmed here (S24). Never mastered, whatever the estimate says:
+    a strong source seeds above the bar, and without this one answer — even a wrong one —
+    would count."""
+    return state.transferred_at is not None and state.transfer_confirmed_at is None
+
+
 class KCStanding(BaseModel):
     """Everything the mastery *state row* knows about one component.
 
@@ -296,6 +317,9 @@ class KCStanding(BaseModel):
     at_measurement: Estimate
     current: Estimate
     achieved_at: datetime | None
+    # A head start not yet confirmed by a run of passes here (S24) — see ``is_provisional``.
+    # Every caller of "mastered" must refuse this regardless of what the estimate says.
+    provisional: bool = False
 
 
 async def kc_standings(
@@ -331,6 +355,7 @@ async def kc_standings(
                 _estimate_of(state), elapsed_days=_elapsed_days(state.last_seen_at, now)
             ),
             achieved_at=state.achieved_at,
+            provisional=is_provisional(state),
         )
         for state in states
     }
@@ -381,6 +406,7 @@ async def _record_achievements(
         for state in states
         if state.achieved_at is None
         and _estimate_of(state).conservative >= settings.mastery_conservative_bar
+        and not is_provisional(state)
     ]
     if not candidates:
         return
@@ -579,9 +605,32 @@ async def record_observation(
         demonstrated_states.append(state)
         updated.append(state)
     await session.flush()
+    await _confirm_transfers(session, obs.learner_id, demonstrated_states, now=now)
     await _record_achievements(session, obs.learner_id, demonstrated_states, now=now)
     await session.flush()
     return updated
+
+
+async def _confirm_transfers(
+    session: AsyncSession, learner_id: uuid.UUID, states: Sequence[LearnerKCState], *, now: datetime
+) -> None:
+    """Confirm head starts that a run of passes here has now earned (S24). After the flush, so
+    the answer that completes the run is visible to ``passed_since``; before the achievement
+    check, so that same answer can also earn the achievement."""
+    pending = {state.kc_id: state.transferred_at for state in states if is_provisional(state)}
+    if not pending:
+        return
+    settings = get_settings()
+    confirmed = await passed_since(
+        session,
+        learner_id,
+        {kc_id: at for kc_id, at in pending.items() if at is not None},
+        threshold=settings.detour_failure_threshold,
+        passes=settings.transfer_confirm_passes,
+    )
+    for state in states:
+        if state.kc_id in confirmed:
+            state.transfer_confirmed_at = now
 
 
 def _taught_first_payload(obs: Observation) -> dict[str, bool]:
@@ -683,6 +732,117 @@ async def seed_prior(
     )
     await session.flush()
     return state
+
+
+async def seed_transfer(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    *,
+    target_kc_id: uuid.UUID,
+    source_kc_id: uuid.UUID,
+    link_id: uuid.UUID,
+    now: datetime | None = None,
+    estimator: MasteryEstimator = DEFAULT_ESTIMATOR,
+) -> LearnerKCState | None:
+    """Give ``target_kc_id`` a provisional head start from ``source_kc_id`` (S24).
+
+    Only when the source has ability evidence and the target has none — a placement guess on
+    the target may be replaced, an answer never. The estimate is the source's, decayed to now,
+    with uncertainty raised to ``transfer_uncertainty_floor``. With several sources, the one
+    giving the higher conservative estimate wins, so a later, weaker link changes nothing.
+    Returns the target's state when it was seeded, ``None`` when nothing changed.
+    """
+    now = now or datetime.now(UTC)
+    source = await session.scalar(
+        select(LearnerKCState).where(
+            LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id == source_kc_id
+        )
+    )
+    if source is None or source.last_seen_at is None:
+        return None
+    current = estimator.decay(
+        _estimate_of(source), elapsed_days=_elapsed_days(source.last_seen_at, now)
+    )
+    seeded = Estimate(
+        ability=current.ability,
+        uncertainty=max(current.uncertainty, get_settings().transfer_uncertainty_floor),
+    )
+    target = await _get_or_create_state(session, learner_id, target_kc_id)
+    if target.last_seen_at is not None:
+        return None
+    if (
+        target.transferred_at is not None
+        and _estimate_of(target).conservative >= seeded.conservative
+    ):
+        return None
+    target.ability, target.uncertainty = seeded.ability, seeded.uncertainty
+    target.transferred_from_kc_id = source_kc_id
+    target.transferred_at = now
+    target.transfer_confirmed_at = None
+    session.add(
+        LearningEvent(
+            learner_id=learner_id,
+            kc_id=target_kc_id,
+            event_type=TRANSFER_SEED_EVENT,
+            payload={
+                "link_id": str(link_id),
+                "source_kc_id": str(source_kc_id),
+                "ability": seeded.ability,
+                "uncertainty": seeded.uncertainty,
+                "schema_version": EVENT_SCHEMA_VERSION,
+            },
+        )
+    )
+    await session.flush()
+    return target
+
+
+async def revoke_transfer(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    *,
+    target_kc_id: uuid.UUID,
+    source_kc_id: uuid.UUID,
+    link_id: uuid.UUID,
+) -> bool:
+    """Withdraw the head start ``source_kc_id`` gave ``target_kc_id`` — only if no answer here
+    has built on it yet (S24). Once there are answers the estimate rests on them and stands,
+    still provisional until confirmed. Returns whether anything was withdrawn."""
+    target = await _get_or_create_state(session, learner_id, target_kc_id)
+    if target.transferred_from_kc_id != source_kc_id or target.last_seen_at is not None:
+        return False
+    target.ability, target.uncertainty = DEFAULT_ABILITY, DEFAULT_UNCERTAINTY
+    target.transferred_from_kc_id = None
+    target.transferred_at = None
+    target.transfer_confirmed_at = None
+    session.add(
+        LearningEvent(
+            learner_id=learner_id,
+            kc_id=target_kc_id,
+            event_type=TRANSFER_REVOKED_EVENT,
+            payload={"link_id": str(link_id), "source_kc_id": str(source_kc_id)},
+        )
+    )
+    await session.flush()
+    return True
+
+
+async def provisional_kc_ids(
+    session: AsyncSession, learner_id: uuid.UUID, kc_ids: Iterable[uuid.UUID]
+) -> set[uuid.UUID]:
+    ids = list(kc_ids)
+    if not ids:
+        return set()
+    return set(
+        await session.scalars(
+            select(LearnerKCState.kc_id).where(
+                LearnerKCState.learner_id == learner_id,
+                LearnerKCState.kc_id.in_(ids),
+                LearnerKCState.transferred_at.is_not(None),
+                LearnerKCState.transfer_confirmed_at.is_(None),
+            )
+        )
+    )
 
 
 async def due_reviews(

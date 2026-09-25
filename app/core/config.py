@@ -328,6 +328,18 @@ class Settings(BaseSettings):
     # Every one of those answers still feeds mastery as usual. Uncalibrated (S18).
     detour_disprove_passes: int = 3
 
+    # A head start carried over an accepted concept link (S24) starts from the source's current
+    # estimate, but never more certain than this: the idea was shown elsewhere, in another
+    # context, and that is weaker evidence than showing it here. Uncalibrated (S18).
+    transfer_uncertainty_floor: float = 0.6
+
+    # How many passes in a row confirm a head start (S24): unassisted, untaught, on different
+    # questions since the link was accepted, counted back from the latest attempt. Two rather
+    # than detour disproval's three: this confirms an estimate already resting on measured
+    # evidence elsewhere, where disproval starts from nothing. Until then the component is
+    # provisional and never counts as mastered. Uncalibrated (S18).
+    transfer_confirm_passes: int = 2
+
     # When a due review stops being worth self-rating (S09/S10). A flashcard is graded by the
     # learner's own rating, so a component failed repeatedly on review produces a falling
     # ability and no account of *why* — the one situation where the cheap format is the wrong

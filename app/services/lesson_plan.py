@@ -81,6 +81,9 @@ async def mastered_kc_ids(
     and never lowers ability, so a component measured well above the bar stays mastered here
     however long ago that was. That is deliberate: staleness is reported, by ``goal_status``,
     not acted on, and re-surfacing idle material is FSRS's due-review scheduling.
+
+    A provisional component (a head start carried over a concept link, not yet confirmed here
+    — S24) is never mastered.
     """
     ids = list(kc_ids)
     if not ids:
@@ -90,7 +93,9 @@ async def mastered_kc_ids(
     return {
         kc_id
         for kc_id, standing in standings.items()
-        if standing.measured_at is not None and standing.current.conservative >= bar
+        if standing.measured_at is not None
+        and not standing.provisional
+        and standing.current.conservative >= bar
     }
 
 
@@ -130,7 +135,7 @@ async def goal_status(
     current = 0
     stale = 0
     for standing in standings.values():
-        if standing.measured_at is None:
+        if standing.measured_at is None or standing.provisional:
             continue
         if now - standing.measured_at <= max_age:
             # Decayed to now: "can they do this today".
