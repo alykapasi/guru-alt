@@ -36,6 +36,7 @@ from app.learning.grading import (
 from app.learning.item_presentation import public_presentation
 from app.learning.mastery import Observation
 from app.learning.rubric_grading import GRADING_ROLE
+from app.learning.turn_read import ReadContext, TurnRead
 from app.llm import LLMClient
 from app.models.assessment import (
     AUTO_GRADABLE,
@@ -51,6 +52,7 @@ from app.models.assessment import (
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learning import LearnerKCState, LearningEvent
 from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRead, ItemRead
+from app.services import decisions as decisions_svc
 from app.services import knowledge as knowledge_svc
 from app.services import lesson_plan as lesson_plan_svc
 from app.services.llm_log import log_llm_call
@@ -342,6 +344,7 @@ async def answer_item(
     *,
     llm: LLMClient,
     taught_first: bool = False,
+    read: TurnRead | None = None,
 ) -> tuple[GradeResult, Sequence[LearnerKCState]]:
     """Grade an item — deterministically or by rubric — and trace the result atomically.
 
@@ -362,6 +365,9 @@ async def answer_item(
     ``taught_first`` marks an answer given straight after a worked example of the problem
     (guided practice, S11). A keyword here rather than a field on ``AnswerSubmit``: it is a
     fact about the server's own flow, not something a client may claim.
+
+    ``read`` is a Jev turn read the caller already started (the conversational check shares one
+    with its intent gate, S81). Without one, grading starts its own if the question is on.
     """
     if await get_item_for(session, item.id, learner_id=learner_id) is None:
         raise InvalidResponse("item not found")
@@ -385,7 +391,7 @@ async def answer_item(
             is not None
         ):
             raise InvalidResponse("attempt id belongs to another actor; submit a new attempt id")
-    result = await _grade(session, learner_id, item, submission, llm=llm)
+    result = await _grade(session, learner_id, item, submission, llm=llm, read=read)
     observation = Observation(
         learner_id=learner_id,
         kc_weights=kc_weights,
@@ -616,6 +622,7 @@ async def _grade(
     submission: AnswerSubmit,
     *,
     llm: LLMClient,
+    read: TurnRead | None = None,
 ) -> GradeResult:
     """Route to deterministic or LLM rubric grading. Logs the call on the rubric path."""
     item_type = ItemType(item.item_type)
@@ -624,19 +631,35 @@ async def _grade(
     if item_type in SELF_GRADABLE:
         return grade_flashcard(submission.response)
     if item_type in RUBRIC_GRADABLE:
-        result, usage = await rubric_grading.grade_open(
-            llm,
-            stem=item.stem,
-            response=submission.response,
-            rubric=item.rubric,
-            components=await _components_of(session, item),
-        )
-        if usage.total_tokens:  # an empty response short-circuits with no model call
-            await log_llm_call(
-                learner_id=learner_id,
-                role=GRADING_ROLE.value,
-                spec=llm.spec(GRADING_ROLE),
-                usage=usage,
+
+        async def smart() -> GradeResult:
+            result, usage = await rubric_grading.grade_open(
+                llm,
+                stem=item.stem,
+                response=submission.response,
+                rubric=item.rubric,
+                components=await _components_of(session, item),
             )
-        return result
+            if usage.total_tokens:  # an empty response short-circuits with no model call
+                await log_llm_call(
+                    learner_id=learner_id,
+                    role=GRADING_ROLE.value,
+                    spec=llm.spec(GRADING_ROLE),
+                    usage=usage,
+                )
+            return result
+
+        return await decisions_svc.decide_grade(
+            smart=smart,
+            stem=item.stem,
+            answer=str(submission.response.get("text", "")),
+            rubric_criteria=item.rubric.criteria if item.rubric is not None else None,
+            context=(
+                read.context
+                if read is not None
+                else ReadContext(learner_id=learner_id, conversation_id=None, item_id=item.id)
+            ),
+            attempt_id=submission.attempt_id,
+            read=read,
+        )
     raise NotAutoGradable(f"{item_type} items have no grading path")
