@@ -105,7 +105,7 @@ Key seams (each swappable without touching callers):
 | `app/learning/` **`KnowledgeTracer`** | The mastery estimator. Continuous Elo/IRT today; the KC-tagged event log earns a DKT upgrade later without a rewrite. |
 | `app/prompts/` **`RoleLM`** | The *only* bridge from DSPy to the role registry — DSPy never reaches a provider or litellm. |
 | `app/rag/` **`Transcriber` / `Demuxer`** | ASR and video demux, so CI runs offline against fakes. |
-| `app/storage/` **blob store** | S3-compatible object storage (MinIO in dev). |
+| `app/storage/` **blob store** | S3-compatible object storage (RustFS in dev). |
 | `app/workers/` **taskiq broker** | Redis queue in dev/prod, in-memory for tests. |
 | `app/core/identity.py` **identity provider** | The only module that imports the Clerk SDK. A proven identity is exchanged once for Guru's own session, so no router, service or graph knows who proved it; tests run against a fake. |
 | `get_current_learner` | Resolves a real session token to its learner; refuses unauthenticated requests. |
@@ -118,7 +118,7 @@ Key seams (each swappable without touching callers):
 - **Database:** PostgreSQL 17 + pgvector (HNSW) + pg_trgm/GIN, via Alembic migrations
 - **AI / LLM:** provider-agnostic layer addressed **by role** (Ollama dev · OpenRouter/Anthropic
   prod) · LangGraph orchestration · DSPy prompt optimization · FSRS scheduling · MLflow eval tracking
-- **Storage:** S3-compatible object storage (MinIO in dev) · faster-whisper ASR (optional extra) ·
+- **Storage:** S3-compatible object storage (RustFS in dev) · faster-whisper ASR (optional extra) ·
   PyMuPDF / python-docx / python-pptx / trafilatura for ingestion
 - **Tooling:** [uv](https://docs.astral.sh/uv/) (packaging) · ruff (lint/format) · ty (types) ·
   beartype (runtime types) · pytest · poethepoet (task runner) · pre-commit
@@ -130,7 +130,7 @@ Key seams (each swappable without touching callers):
 
 - **Python 3.13+**
 - **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- **Docker + Docker Compose** — Postgres, Redis, MinIO
+- **Docker + Docker Compose** — Postgres, Redis, RustFS
 - **[Ollama](https://ollama.com/)** — the dev default for every model role (chat works offline)
 - *Optional:* **ffmpeg/ffprobe** on `PATH` for video ingestion · the `asr` extra for audio
   transcription (`uv sync --extra asr`)
@@ -146,7 +146,7 @@ uv sync
 # 2. Create your local env file
 cp .env.example .env
 
-# 3. Start Postgres (pgvector) + Redis + MinIO
+# 3. Start Postgres (pgvector) + Redis + RustFS
 docker compose up -d
 
 # 4. Apply database migrations (enables vector + pg_trgm, etc.)
@@ -282,7 +282,7 @@ that mode.
 > Changing the EMBED model's output dimension is a **schema migration** (the pgvector column is
 > fixed-width) — see the runbook.
 
-**Object storage** (`GURU_BLOB_*`) defaults to the MinIO compose service on `localhost:9000`.
+**Object storage** (`GURU_BLOB_*`) defaults to the RustFS compose service on `localhost:9000`.
 Ingestion, ASR, and tuning knobs (concurrency, batch sizes, confidence floors, round caps) are all
 in `app/core/config.py` with inline rationale.
 
@@ -351,7 +351,7 @@ guru-alt/
 ├── tests/
 │   └── eval/              # harness · sweep runner · real-data datasets · DSPy compile/report
 ├── docs/                  # MASTERPLAN · ROADMAP · TECHNICAL_DESIGN · RUNBOOK
-├── docker-compose.yml     # Postgres (pgvector) + Redis + MinIO
+├── docker-compose.yml     # Postgres (pgvector) + Redis + RustFS
 ├── pyproject.toml         # deps + poe tasks + tool config
 ├── .pre-commit-config.yaml
 └── CLAUDE.md              # guidance for Claude Code

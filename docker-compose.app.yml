@@ -3,7 +3,7 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.app.yml up -d --build
 #
-# docker-compose.yml alone gives you Postgres, Redis and MinIO for `poe dev` on the host. This
+# docker-compose.yml alone gives you Postgres, Redis and RustFS for `poe dev` on the host. This
 # file is what proves the *application* can be built and run somewhere that is not a laptop —
 # without it "deployment" was a set of commands nobody had executed together.
 services:
@@ -14,7 +14,7 @@ services:
       GURU_ENV: dev
       GURU_DATABASE_URL: postgresql+asyncpg://guru:guru@postgres:5432/guru
       GURU_REDIS_URL: redis://redis:6379/0
-      GURU_BLOB_ENDPOINT_URL: http://minio:9000
+      GURU_BLOB_ENDPOINT_URL: http://rustfs:9000
       GURU_CORS_ORIGINS: '["http://localhost:5173"]'
     depends_on:
       postgres: { condition: service_healthy }
