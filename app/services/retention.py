@@ -149,6 +149,15 @@ RETENTION: tuple[StoreRetention, ...] = (
         "learner content — role, model, token counts, cost.",
     ),
     StoreRetention(
+        "decision_calls",
+        "anonymised",
+        "Same accounting reasoning as llm_calls, and the same shape (S82): the learner id is "
+        "dropped (SET NULL) and the row kept, because it is evidence for whether Jev can "
+        "replace a model call and that evidence must still add up after an account is closed. "
+        "It carries no learner content — the question, the answer label or probability, and "
+        "the baseline the model would have given.",
+    ),
+    StoreRetention(
         "subjects/topics/kcs/kc_edges",
         "partly deleted",
         "Split by ownership since S25. A subject the learner created is theirs and goes with "

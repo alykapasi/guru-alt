@@ -26,6 +26,9 @@ _PRICES: dict[str, tuple[float, float]] = {
     "claude-haiku-4-5": (1.0, 5.0),
     "text-embedding-3-small": (0.02, 0.0),
     "text-embedding-3-large": (0.13, 0.0),
+    # Jev (TypeSafe's System One decision model, S82): input only — it returns typed answers,
+    # not text, and output is not billed.
+    "jev-1": (0.042, 0.0),
 }
 
 _warned: set[str] = set()
