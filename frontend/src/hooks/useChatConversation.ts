@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useConversations, useItem, useMessages } from "../api/hooks";
 import { isTerminal, streamTurn, type ItemEvent, type SendMessageBody } from "../api/sse";
+import type { components } from "../api/schema";
+
+type PracticeStateRead = components["schemas"]["PracticeStateRead"];
 
 export interface PendingTurn {
   userContent: string;
@@ -69,6 +72,12 @@ export function useChatConversation(conversationId: string | undefined) {
   // it ends the persisted phase is authoritative.
   const awaitingGoalAccept = !pending && conversation?.phase === "goal_proposed";
   const awaitingReply = pending ? liveAwaitingReply : conversation?.phase === "awaiting_answer";
+  // Practice paused for a side discussion (S52) — set explicitly by the learner's own Pause
+  // control, or by the backend itself when a side question arrives mid-practice (see
+  // app/api/v1/chat.py::_choose_flow). Either way it is `conversation.phase`, never a flag this
+  // hook invents, and it goes false the moment a turn is streaming — the same "SSE events are
+  // ahead of the server read" reasoning `awaitingReply` already applies.
+  const practicePaused = !pending && conversation?.phase === "practice_paused";
 
   // On reload there is no live item, only the id the phase points at — fetch it so a paused
   // session comes back showing the question it was actually on rather than an empty panel.
@@ -163,6 +172,19 @@ export function useChatConversation(conversationId: string | undefined) {
     await run(failed);
   }, [failed, pending, run]);
 
+  /** Folds a resume or skip result into the same live-item slot a turn's own events use
+   * (S52). A resume hands back the exact question the learner left — never a freshly
+   * regenerated one — or `null` once it has found that question no longer fits the plan; a
+   * skip's `item` is always `null`. Either way `sessionDetail` clears with it: a stale
+   * "mastered"/"capped"/"check" outcome from before the pause must not linger over a question
+   * that has since changed or gone. A pause's own response (`item: null`) is deliberately never
+   * passed here — the item stays on screen while paused, since nothing about the paused
+   * question changed, only the phase waiting on it. */
+  const applyPracticeState = useCallback((state: PracticeStateRead) => {
+    setLiveItem(state.item as ItemEvent | null);
+    setSessionDetail(null);
+  }, []);
+
   return {
     conversation,
     messages,
@@ -179,6 +201,8 @@ export function useChatConversation(conversationId: string | undefined) {
     item,
     sessionDetail,
     awaitingReply,
+    practicePaused,
+    applyPracticeState,
     send,
   };
 }

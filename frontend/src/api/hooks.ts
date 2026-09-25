@@ -344,6 +344,30 @@ export function useSubmitPlacement(subjectId: string | undefined) {
   });
 }
 
+/** Pause, resume, or skip guided practice explicitly (S52) — the frontend's own controls, as
+ * opposed to the intent gate that infers a pause/skip from an ordinary chat message. A 409
+ * means the control no longer fits the conversation's current state (e.g. a turn started
+ * streaming since the button was drawn); there is nothing local to patch onto in that case, so
+ * the error is left to the query's own default refetch rather than handled here — same
+ * reasoning as useDecideDetour's 409. */
+export function usePracticeAction(conversationId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (action: "pause" | "resume" | "skip") => {
+      const { data, error } = await api.POST("/api/v1/conversations/{conversation_id}/practice", {
+        params: { path: { conversation_id: conversationId! } },
+        body: { action },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
+    },
+  });
+}
+
 /** Chronological, per the backend's ordering (app/services/chat.py::list_messages). */
 /** One conversation's transcript, newest page first, paging backwards on demand (S62).
  *
