@@ -186,19 +186,29 @@ def _elapsed_days(last_seen: datetime | None, now: datetime) -> float:
 async def _get_or_create_state(
     session: AsyncSession, learner_id: uuid.UUID, kc_id: uuid.UUID
 ) -> LearnerKCState:
-    """The learner's state row for this KC, creating a default one on first sighting.
+    """The learner's state row for this KC, locked for this transaction, created on first
+    sighting.
+
+    Locked because every caller reads the row, updates it in Python and writes it back: two
+    *different* answers on one component in flight together otherwise both read the same
+    prior, and the second write erases the first (S34). ``FOR UPDATE`` makes the second wait
+    for the first to commit. ``populate_existing`` makes it then see the committed values: a
+    session that already loaded this row — the chat check reads the priors before grading —
+    would otherwise be handed its stale identity-map object, lock or no lock.
 
     Creation goes through ``ON CONFLICT DO NOTHING`` against the (learner, KC) unique
     constraint: two answers arriving together on a KC the learner has never been assessed
     on would both read "no state" and both insert, and one would fail the whole
     transaction. Losing the race here is not an error — it just means someone else created
-    the row, so re-read it.
+    the row, so re-read it (locked, like the first read).
     """
-    state = await session.scalar(
-        select(LearnerKCState).where(
-            LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id == kc_id
-        )
+    locked = (
+        select(LearnerKCState)
+        .where(LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id == kc_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
+    state = await session.scalar(locked)
     if state is not None:
         return state
     await session.execute(
@@ -206,11 +216,7 @@ async def _get_or_create_state(
         .values(learner_id=learner_id, kc_id=kc_id)
         .on_conflict_do_nothing(index_elements=["learner_id", "kc_id"])
     )
-    created = await session.scalar(
-        select(LearnerKCState).where(
-            LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id == kc_id
-        )
-    )
+    created = await session.scalar(locked)
     assert created is not None  # the row exists now: we inserted it, or the other writer did
     return created
 
@@ -461,7 +467,9 @@ async def record_observation(
     # returns before the ability assignment, so a rating is structurally unable to reach the
     # achievement check — the same way it cannot reach `last_seen_at`.
     demonstrated_states: list[LearnerKCState] = []
-    for kc_id, raw_w in obs.kc_weights.items():
+    # Ascending id, so two multi-component answers take their row locks in the same order and
+    # neither can hold a row the other is waiting on (S34).
+    for kc_id, raw_w in sorted(obs.kc_weights.items()):
         weight = raw_w / total_w
         # The score for *this* component where the grader could tell them apart, the item's
         # aggregate where it could not. Both are recorded below; this is the one the estimate

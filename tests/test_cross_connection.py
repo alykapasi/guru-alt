@@ -17,6 +17,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, func, select
@@ -26,6 +27,8 @@ from app.api.deps import get_engine, get_identity_provider, get_llm_client
 from app.core import db as core_db
 from app.core.config import Settings
 from app.core.identity import FakeIdentityProvider
+from app.learning import mastery
+from app.learning.mastery import Observation
 from app.llm.registry import fake_llm_client
 from app.main import app
 from app.models.auth import Invitation
@@ -374,5 +377,69 @@ async def test_removing_a_prerequisite_survives_the_request_that_removed_it(
                 select(func.count()).select_from(KCEdge).where(KCEdge.kc_id == dependent.id)
             )
         assert left == 0, "the edge came back after the request that deleted it"
+    finally:
+        await _drop_subject(engine, subject)
+
+
+# --- two different answers on one component at once (S34) --------------------------------------
+
+
+async def test_a_second_answer_waits_for_the_first_and_builds_on_it(
+    engine: AsyncEngine, live_learner: Learner
+) -> None:
+    """Distinct attempts on one component must serialize on its state row.
+
+    Unlocked, the second writer read the same prior as the first and its write erased the
+    first's update. The second session also reads the state *before* answering — as the chat
+    check does (`estimate_kcs` for the priors) — so this fails without `populate_existing`
+    too: the identity map would hand back the stale object even under `FOR UPDATE`.
+    """
+    subject, kc = await _seed_kc(engine)
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as setup:
+            await mastery.record_observation(
+                setup, Observation(learner_id=live_learner.id, kc_weights={kc.id: 1.0}, score=0.4)
+            )
+            await setup.commit()
+
+        async with (
+            AsyncSession(engine, expire_on_commit=False) as first,
+            AsyncSession(engine, expire_on_commit=False) as second,
+        ):
+            await mastery.estimate_kcs(second, live_learner.id, [kc.id])
+            await mastery.record_observation(
+                first, Observation(learner_id=live_learner.id, kc_weights={kc.id: 1.0}, score=1.0)
+            )
+            pending = asyncio.create_task(
+                mastery.record_observation(
+                    second,
+                    Observation(learner_id=live_learner.id, kc_weights={kc.id: 1.0}, score=1.0),
+                )
+            )
+            await asyncio.sleep(0.3)
+            assert not pending.done(), "the second answer did not wait for the first's row lock"
+            await first.commit()
+            await asyncio.wait_for(pending, timeout=5)
+            await second.commit()
+
+        async with AsyncSession(engine) as session:
+            events = (
+                await session.scalars(
+                    select(LearningEvent)
+                    .where(
+                        LearningEvent.kc_id == kc.id,
+                        LearningEvent.event_type == "observation",
+                    )
+                    # `observed_at`, not `created_at`: `created_at` is stamped from each
+                    # transaction's own `now()`, which is fixed at that transaction's start —
+                    # so `second`'s transaction (opened earlier, by the `estimate_kcs` call
+                    # above) would sort *before* `first`'s despite finishing after it. Every
+                    # other reader in this module orders by `observed_at` for the same reason.
+                    .order_by(LearningEvent.payload["observed_at"].astext)
+                )
+            ).all()
+        assert len(events) == 3
+        earlier, later = events[1].payload, events[2].payload
+        assert later["prior_ability"] == pytest.approx(earlier["posterior_ability"])
     finally:
         await _drop_subject(engine, subject)
