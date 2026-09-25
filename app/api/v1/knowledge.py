@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
-from app.api.deps import CurrentLearner, RetagEnqueuerDep, SessionDep
+from app.api.deps import ConceptLinkJudgeEnqueuerDep, CurrentLearner, RetagEnqueuerDep, SessionDep
 from app.models.knowledge import Subject
 from app.models.publication import CurriculumProposal
 from app.schemas.knowledge import (
@@ -122,6 +122,7 @@ async def commit_subject(
     session: SessionDep,
     learner: CurrentLearner,
     retag: RetagEnqueuerDep,
+    judge: ConceptLinkJudgeEnqueuerDep,
 ):
     """Commit a subject with its full topic/KC graph in one atomic transaction.
 
@@ -158,6 +159,10 @@ async def commit_subject(
     # no tags, which is the honest state, not a wrong one.
     for source_id in result.reassigned_source_ids:
         await ingestion_svc.dispatch(retag, source_id)
+    # A new subject can share concepts with the learner's others and the library. Judging a
+    # pair is a model call each, so it runs in the background; until it lands there are simply
+    # no suggestions yet (S24).
+    await judge(learner.id)
     return result.subject
 
 

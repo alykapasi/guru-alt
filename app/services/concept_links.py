@@ -13,11 +13,17 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from itertools import combinations
 
+import structlog
 from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.knowledge import KC, ConceptLink, ConceptLinkDecision, Subject, Topic
+from app.learning import link_judge
+from app.llm import LLMClient
+from app.models.knowledge import KC, ConceptLink, ConceptLinkDecision, KCEdge, Subject, Topic
+from app.services.llm_log import log_llm_call
+
+log = structlog.get_logger(__name__)
 
 CURATED, PRIVATE = "curated", "private"
 ENDORSED, REJECTED = "endorsed", "rejected"
@@ -158,3 +164,90 @@ async def set_admin_verdict(
     link.decided_at = datetime.now(UTC)
     await session.flush()
     return link
+
+
+async def _side(
+    session: AsyncSession, kc_id: uuid.UUID, visible_subjects: set[uuid.UUID]
+) -> link_judge.Side | None:
+    """What the judge is told about one side — its own subject's facts only, and neighbours
+    only from subjects the learner can see."""
+    row = (
+        await session.execute(
+            select(KC, Topic, Subject)
+            .join(Topic, KC.topic_id == Topic.id)
+            .join(Subject, Topic.subject_id == Subject.id)
+            .where(KC.id == kc_id)
+        )
+    ).first()
+    if row is None:
+        return None
+    kc, topic, subject = row
+
+    async def neighbours(near, far) -> list[str]:
+        names = await session.scalars(
+            select(KC.name)
+            .join(KCEdge, far == KC.id)
+            .join(Topic, KC.topic_id == Topic.id)
+            .where(near == kc_id, Topic.subject_id.in_(visible_subjects))
+            .order_by(KC.name)
+        )
+        return list(names)
+
+    return link_judge.Side(
+        kc_name=kc.name,
+        description=kc.description,
+        topic_name=topic.name,
+        subject_name=subject.name,
+        prerequisites=await neighbours(KCEdge.kc_id, KCEdge.prereq_kc_id),
+        dependents=await neighbours(KCEdge.prereq_kc_id, KCEdge.kc_id),
+    )
+
+
+async def judge_pending(session: AsyncSession, llm: LLMClient, learner_id: uuid.UUID) -> int:
+    """Judge this learner's unjudged private candidates; return how many got a verdict.
+
+    Commits after each verdict, so a run that dies halfway keeps what it decided. A pair the
+    judge could not decide stays unjudged for the next run — never recorded as a rejection.
+    """
+    await sync_candidates(session, learner_id)
+    await session.commit()
+    visible_subjects = set(
+        await session.scalars(
+            select(Subject.id).where(
+                or_(Subject.owner_learner_id.is_(None), Subject.owner_learner_id == learner_id)
+            )
+        )
+    )
+    pending = list(
+        await session.scalars(
+            select(ConceptLink).where(
+                ConceptLink.scope == PRIVATE,
+                ConceptLink.owner_learner_id == learner_id,
+                ConceptLink.verdict.is_(None),
+            )
+        )
+    )
+    decided = 0
+    for link in pending:
+        a = await _side(session, link.kc_a_id, visible_subjects)
+        b = await _side(session, link.kc_b_id, visible_subjects)
+        if a is None or b is None:
+            continue
+        verdict, usage = await link_judge.judge_pair(llm, a, b)
+        if usage.input_tokens or usage.output_tokens:
+            await log_llm_call(
+                learner_id=learner_id,
+                role=link_judge.JUDGE_ROLE.value,
+                spec=llm.spec(link_judge.JUDGE_ROLE),
+                usage=usage,
+            )
+        if verdict is None:
+            log.warning("concept_links.judge_undecided", link_id=str(link.id))
+            continue
+        link.verdict = ENDORSED if verdict.endorse else REJECTED
+        link.endorsed_by = "judge"
+        link.reason = verdict.reason
+        link.decided_at = datetime.now(UTC)
+        await session.commit()
+        decided += 1
+    return decided

@@ -25,7 +25,13 @@ from httpx import AsyncClient, Response
 from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_blob_store, get_ingestion_enqueuer, get_llm_client, get_retag_enqueuer
+from app.api.deps import (
+    get_blob_store,
+    get_concept_link_judge_enqueuer,
+    get_ingestion_enqueuer,
+    get_llm_client,
+    get_retag_enqueuer,
+)
 from app.core.db import Base
 from app.llm.registry import fake_llm_client
 from app.main import app
@@ -153,13 +159,14 @@ class Enqueued:
 
     ingestion: list[uuid.UUID]
     retag: list[uuid.UUID]
+    concept_link_judge: list[uuid.UUID]
 
 
 @pytest.fixture(autouse=True)
 def _fakes() -> Iterator[Enqueued]:
     """Deterministic stand-ins for every paid or external dependency an owner call can reach."""
     store = InMemoryBlobStore()
-    enqueued = Enqueued(ingestion=[], retag=[])
+    enqueued = Enqueued(ingestion=[], retag=[], concept_link_judge=[])
 
     async def _record_ingestion(id_: uuid.UUID) -> None:
         enqueued.ingestion.append(id_)
@@ -167,13 +174,23 @@ def _fakes() -> Iterator[Enqueued]:
     async def _record_retag(id_: uuid.UUID) -> None:
         enqueued.retag.append(id_)
 
+    async def _record_concept_link_judge(learner_id: uuid.UUID) -> None:
+        enqueued.concept_link_judge.append(learner_id)
+
     reply = json.dumps({"body": "A private explanation.", "citations": []})
     app.dependency_overrides[get_llm_client] = lambda: fake_llm_client(reply=reply)
     app.dependency_overrides[get_blob_store] = lambda: store
     app.dependency_overrides[get_ingestion_enqueuer] = lambda: _record_ingestion
     app.dependency_overrides[get_retag_enqueuer] = lambda: _record_retag
+    app.dependency_overrides[get_concept_link_judge_enqueuer] = lambda: _record_concept_link_judge
     yield enqueued
-    for dep in (get_llm_client, get_blob_store, get_ingestion_enqueuer, get_retag_enqueuer):
+    for dep in (
+        get_llm_client,
+        get_blob_store,
+        get_ingestion_enqueuer,
+        get_retag_enqueuer,
+        get_concept_link_judge_enqueuer,
+    ):
         app.dependency_overrides.pop(dep, None)
 
 
