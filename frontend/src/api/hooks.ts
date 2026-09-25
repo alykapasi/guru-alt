@@ -289,8 +289,9 @@ export function useSetGuidance(subjectId: string | undefined) {
 
 /** A learner's answer to an offered detour — take it or skip it (S11). A 409 means the detour
  * closed before the decision landed (the blocker resolved itself, say); there is nothing to
- * patch onto a plan that no longer has that offer, so the error is left to the query's own
- * default refetch rather than handled here. */
+ * patch onto a plan that no longer has that offer. React Query does not refetch after a failed
+ * mutation, so the plan is invalidated on error — otherwise the stale offer stays on screen
+ * with buttons that can only fail again. */
 export function useDecideDetour(subjectId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -313,6 +314,9 @@ export function useDecideDetour(subjectId: string | undefined) {
     },
     onSuccess: (data) => {
       queryClient.setQueryData(["lesson-plan", subjectId], data);
+    },
+    onError: () => {
+      queryClient.invalidateQueries({ queryKey: ["lesson-plan", subjectId] });
     },
   });
 }
