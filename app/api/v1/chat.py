@@ -379,6 +379,10 @@ def _build_stream(
     the turn was opened, so writing it again here would duplicate it on a retry.
     """
     settings = get_settings()
+    # Computed once and threaded into both flows that can grade an answer this turn, so a
+    # retried turn (same client_turn_id) replays that grade instead of recording it twice
+    # (S34) — see turn_svc.attempt_id_for_turn.
+    attempt_id = turn_svc.attempt_id_for_turn(data.client_turn_id)
     if choice.flow is TurnFlow.AGENTIC:
         return agentic_svc.run_agentic_turn(
             session,
@@ -404,6 +408,7 @@ def _build_stream(
             resume=choice.resume,
             source_ids=conversation.source_ids,
             persist_user=False,
+            attempt_id=attempt_id,
         )
     if choice.flow is TurnFlow.REFINEMENT:
         return refinement_svc.run_refinement_turn(
@@ -430,6 +435,7 @@ def _build_stream(
         persist_user=False,
         practice_paused=choice.practice_paused,
         pose_check=choice.pose_check,
+        attempt_id=attempt_id,
     )
 
 

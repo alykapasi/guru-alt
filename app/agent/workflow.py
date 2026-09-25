@@ -87,6 +87,8 @@ def build_workflow_graph(
             # A fresh reply supersedes any pending re-ask, so `grade` decides this round on its
             # own merits rather than inheriting the last one's verdict.
             "awaiting_rating": False,
+            # This turn's answer id (S34), carried on the resume payload — see `grade` below.
+            "attempt_id": reply.get("attempt_id"),
         }
 
     async def grade(state: WorkflowState) -> dict[str, Any]:
@@ -127,6 +129,10 @@ def build_workflow_graph(
                 # A paused side discussion (S52) is the same kind of help as another round on
                 # the same problem — both are given before this attempt, so both discount it.
                 hints_used=state["rounds"] + state.get("scaffolds", 0),
+                # This round's idempotency key (S34), carried in from the resume payload: a
+                # retried turn resumes with the same one, so this replays the first grade
+                # instead of recording the answer twice.
+                attempt_id=uuid.UUID(raw) if (raw := state.get("attempt_id")) else None,
             ),
             llm=llm,
             # Guided practice always shows a worked example before posing the problem, so even

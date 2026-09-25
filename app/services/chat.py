@@ -271,6 +271,7 @@ async def _resolve_check(
     learner_id: uuid.UUID,
     conversation: Conversation,
     user_content: str,
+    attempt_id: uuid.UUID | None = None,
 ) -> tuple[Item | None, CheckOutcome | None]:
     """What this message does about the check that is open: returns (still open, graded).
 
@@ -341,6 +342,7 @@ async def _resolve_check(
                 # Server-counted, like every other assistance signal: it is the conversation's
                 # own history that decides whether this was an independent demonstration.
                 hints_used=conversation.active_item_scaffolds,
+                attempt_id=attempt_id,
             ),
             llm=llm,
         )
@@ -441,6 +443,7 @@ async def run_tutor_turn(
     persist_user: bool = True,
     practice_paused: bool = False,
     pose_check: bool = True,
+    attempt_id: uuid.UUID | None = None,
 ) -> AsyncIterator[TurnEvent]:
     """Persist the user turn, stream the tutor's reply through the graph, then persist it.
 
@@ -481,6 +484,10 @@ async def run_tutor_turn(
     and a declared one (neither invited nor materialised) — for the turn that answers a learner
     who has just declined a practice question, where the next plan check is that same question
     and a declared one would be a fresh question they did not ask for.
+
+    ``attempt_id`` (S34) is this turn's idempotency key for the answer it grades, if any — see
+    ``turn_svc.attempt_id_for_turn``. A retried turn derives the same id, so a check this turn
+    resolves is graded once even if the first try recorded the grade but failed afterwards.
     """
     conversation_id = conversation.id
     subject_id = conversation.subject_id
@@ -503,6 +510,7 @@ async def run_tutor_turn(
             learner_id=learner_id,
             conversation=conversation,
             user_content=user_content,
+            attempt_id=attempt_id,
         )
     notes: list[str] = []
     check_result: CheckResultRead | None = None

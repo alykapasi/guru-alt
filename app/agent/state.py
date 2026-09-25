@@ -87,6 +87,9 @@ class WorkflowState(TypedDict):
     # field existed. ``grade`` adds it to ``rounds`` — help given before an attempt discounts it
     # the same way regardless of which of the two counts it as.
     scaffolds: NotRequired[int]
+    # The idempotency key for the answer this round grades (S34), carried in on the resume
+    # payload. NotRequired: absent on the opening round and on older checkpoints.
+    attempt_id: NotRequired[str | None]
     usage: Usage  # this call's LLM usage (present's or respond's — grade's own call self-logs)
     rounds: int  # graded attempts completed so far
     max_rounds: int

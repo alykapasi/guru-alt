@@ -49,6 +49,17 @@ def history_without(history: Sequence[Message], turn: Turn | None) -> Sequence[M
     return [m for m in history if m.id != turn.user_message_id]
 
 
+def attempt_id_for_turn(client_turn_id: uuid.UUID | None) -> uuid.UUID | None:
+    """The attempt id for an answer graded during this turn (S34).
+
+    Derived, not stored: a retried turn carries the same ``client_turn_id`` (S51), so it
+    derives the same attempt id and ``answer_item``'s idempotency key replays the first grade
+    instead of recording the answer twice. A turn has at most one graded answer, so one id per
+    turn is enough. ``None`` when the client sent no turn id — exactly today's behaviour.
+    """
+    return None if client_turn_id is None else uuid.uuid5(client_turn_id, "attempt")
+
+
 async def reap_stale(session: AsyncSession, conversation_id: uuid.UUID) -> int:
     """Mark this conversation's abandoned ``PENDING`` turns ``CANCELLED``; return how many.
 

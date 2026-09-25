@@ -27,7 +27,7 @@ from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
-from app.schemas.assessment import ItemCreate, ItemKCRef
+from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRef
 from app.services import assessment as assessment_svc
 from app.services import lesson_plan as lesson_plan_svc
 from app.services.turn_common import TurnEvent
@@ -106,6 +106,7 @@ async def _drain(
     user_content: str,
     resume: bool = False,
     max_rounds: int = 3,
+    attempt_id: uuid.UUID | None = None,
 ) -> list[TurnEvent]:
     return [
         ev
@@ -118,6 +119,7 @@ async def _drain(
             max_tokens=256,
             max_rounds=max_rounds,
             resume=resume,
+            attempt_id=attempt_id,
         )
     ]
 
@@ -229,6 +231,35 @@ async def test_resume_correct_reaches_done_with_mastered_detail(db_session: Asyn
         await db_session.scalars(select(Message).where(Message.conversation_id == conv.id))
     ).all()
     assert [m.role for m in messages] == ["user", "assistant", "user", "assistant"]
+
+
+async def test_grading_uses_the_turns_attempt_id(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[AnswerSubmit] = []
+    real = assessment_svc.answer_item
+
+    async def capture(session, learner_id, item, submission, **kwargs):
+        seen.append(submission)
+        return await real(session, learner_id, item, submission, **kwargs)
+
+    monkeypatch.setattr(assessment_svc, "answer_item", capture)
+    attempt_id = uuid.uuid4()
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=RIGHT_GRADE), FakeTurn(text=RESPOND_2)]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice")
+
+    await _drain(
+        db_session,
+        llm,
+        conv,
+        user_content="sunlight -> sugars",
+        resume=True,
+        attempt_id=attempt_id,
+    )
+    assert [s.attempt_id for s in seen] == [attempt_id]
 
 
 async def test_a_guided_practice_grade_is_recorded_as_taught_first(

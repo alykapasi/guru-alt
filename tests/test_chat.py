@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.api.deps import get_llm_client
@@ -17,10 +17,11 @@ from app.llm.providers.fake import FakeProvider, FakeTurn
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
 from app.llm.types import ChatChunk, ChatMessage, ModelRole, ToolCall, ToolDef
 from app.main import app
-from app.models.chat import Conversation, LLMCall, Message
+from app.models.assessment import Item
+from app.models.chat import Conversation, ConversationPhase, LLMCall, Message
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
-from app.models.learning import LearnerKCState
+from app.models.learning import LearnerKCState, LearningEvent
 from app.models.memory import Memory, MemoryKind
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.services import chat as chat_svc
@@ -35,6 +36,7 @@ MCQ_REPLY = json.dumps({"stem": "What is X?", "choices": ["A", "B", "C", "D"], "
 SHORT_REPLY = json.dumps(
     {"stem": "What is velocity?", "criteria": ["names speed", "names direction"]}
 )
+_GRADE_JSON = '{"score": 0.9, "rationale": "Both parts named."}'
 
 
 @pytest.fixture
@@ -1007,3 +1009,66 @@ async def test_private_subject_cannot_create_or_drive_foreign_conversation(
     )
     assert response.status_code == 404
     assert recording_llm == []
+
+
+# --- attempt id (S34): a retried turn's check answer is graded once --------------------------
+
+
+async def _conversation_with_open_check(
+    db_session: AsyncSession,
+) -> tuple[Learner, Conversation, Item]:
+    """A conversation with a posed, unanswered check — same shape as
+    test_conversation_evidence.py's ``_open_check``, inlined here since this is the only test
+    in this file that needs a conversational check to answer directly."""
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+    subject, kc = await _seeded_subject(db_session, learner.id, "Physics", "Velocity")
+    item, _ = await item_generation.generate_short_item(
+        db_session, fake_llm_client(SHORT_REPLY), kc, owner_learner_id=learner.id
+    )
+    assert item is not None
+    conversation = Conversation(
+        learner_id=learner.id,
+        subject_id=subject.id,
+        phase=ConversationPhase.AWAITING_ANSWER,
+        active_item_id=item.id,
+    )
+    db_session.add(conversation)
+    await db_session.commit()
+    return learner, conversation, item
+
+
+async def test_a_retried_check_answer_is_recorded_once(db_session: AsyncSession) -> None:
+    learner, conversation, item = await _conversation_with_open_check(db_session)
+    attempt_id = uuid.uuid4()
+    llm = fake_llm_client(
+        script=[FakeTurn(text='{"intent": "attempt"}'), FakeTurn(text=_GRADE_JSON)]
+    )
+    await chat_svc._resolve_check(
+        db_session,
+        llm,
+        learner_id=learner.id,
+        conversation=conversation,
+        user_content="my answer",
+        attempt_id=attempt_id,
+    )
+    # The turn failed after grading committed; the retry reaches the same check again.
+    conversation.phase, conversation.active_item_id = ConversationPhase.AWAITING_ANSWER, item.id
+    llm = fake_llm_client(
+        script=[FakeTurn(text='{"intent": "attempt"}'), FakeTurn(text=_GRADE_JSON)]
+    )
+    await chat_svc._resolve_check(
+        db_session,
+        llm,
+        learner_id=learner.id,
+        conversation=conversation,
+        user_content="my answer",
+        attempt_id=attempt_id,
+    )
+    count = await db_session.scalar(
+        select(func.count())
+        .select_from(LearningEvent)
+        .where(LearningEvent.attempt_id == attempt_id)
+    )
+    assert count == len(item.kc_links)

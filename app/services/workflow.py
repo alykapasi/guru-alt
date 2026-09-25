@@ -139,6 +139,7 @@ async def run_workflow_turn(
     resume: bool,
     source_ids: Sequence[uuid.UUID] = (),
     persist_user: bool = True,
+    attempt_id: uuid.UUID | None = None,
 ) -> AsyncIterator[TurnEvent]:
     """Start or resume the guided-practice workflow, stream it, then persist the outcome.
 
@@ -154,6 +155,10 @@ async def run_workflow_turn(
     ``persist_user`` is False when the caller has already written the learner's message
     and linked it to a durable turn record (S51); the content is still carried into this
     turn's model context, it is simply not appended to the transcript a second time.
+
+    ``attempt_id`` (S34) is this turn's idempotency key for the answer ``grade`` records, if
+    any — see ``turn_svc.attempt_id_for_turn``. It rides the resume payload rather than state
+    built on a fresh start, since only a resumed round can grade anything.
 
     The system prompt is assembled once, on the fresh start, through
     ``app.services.learner_context`` (S16) — so guided practice now carries the conversation's
@@ -186,6 +191,9 @@ async def run_workflow_turn(
                 # question until something that ends the question (skip, or a fresh start)
                 # clears it.
                 "scaffolds": conversation.practice_scaffolds,
+                # This turn's answer id (S34): a retried turn resumes with the same one, so the
+                # grade replays instead of recording the answer twice.
+                "attempt_id": str(attempt_id) if attempt_id is not None else None,
             }
         )
     else:
