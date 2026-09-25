@@ -35,6 +35,11 @@ export function CurriculumIssuesPanel({ subjectId }: { subjectId: string }) {
           </button>
         </div>
       ))}
+      {remove.error && (
+        <p className="text-caption text-error" role="alert">
+          {remove.error.message}
+        </p>
+      )}
     </section>
   );
 }

@@ -13,14 +13,19 @@ const conflict = {
   kc_name: "Dot product",
 };
 
-function stub(conflicts: unknown[]) {
+function stub(conflicts: unknown[], deleteStatusCode: number = 204) {
   const calls: { method: string; url: string }[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = input instanceof Request ? input : new Request(String(input), init);
       calls.push({ method: req.method, url: req.url });
-      if (req.method === "DELETE") return new Response(null, { status: 204 });
+      if (req.method === "DELETE") {
+        return new Response(JSON.stringify({ message: "Failed to remove prerequisite" }), {
+          status: deleteStatusCode,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       return new Response(JSON.stringify(conflicts), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -64,5 +69,14 @@ describe("curriculum issues", () => {
         1,
       ),
     );
+  });
+
+  it("shows an error message if removal fails", async () => {
+    stub([conflict], 500);
+    renderPanel();
+    expect(await screen.findByText(/Dot product requires Vectors/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Remove this prerequisite" }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.getByText(/Failed to remove prerequisite/)).toBeInTheDocument();
   });
 });
