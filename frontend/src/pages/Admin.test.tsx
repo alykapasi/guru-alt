@@ -91,6 +91,9 @@ function serve(
       typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
     if (url.includes("/admin/impersonations")) return Promise.resolve(jsonResponse(log));
     if (url.includes("/admin/invitations")) return Promise.resolve(jsonResponse(invitations));
+    // Unrelated to this file's own assertions, but a non-array answer here crashes
+    // ConceptLinkQueue's render rather than failing softly, same as an unstubbed route would.
+    if (url.includes("/admin/concept-links")) return Promise.resolve(jsonResponse([]));
     return Promise.resolve(jsonResponse(url.includes("/admin/learners") ? roster : spend));
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -256,6 +259,7 @@ function serveWithRefusal(match: string, status: number, body: unknown) {
     }
     if (url.includes("/admin/impersonations")) return Promise.resolve(jsonResponse([]));
     if (url.includes("/admin/invitations")) return Promise.resolve(jsonResponse(INVITATIONS));
+    if (url.includes("/admin/concept-links")) return Promise.resolve(jsonResponse([]));
     return Promise.resolve(jsonResponse(url.includes("/admin/learners") ? ROSTER : SPEND));
   });
   vi.stubGlobal("fetch", fetchMock);

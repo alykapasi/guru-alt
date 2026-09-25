@@ -199,3 +199,38 @@ export function useReinstate() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", "learners"] }),
   });
 }
+
+/** Curated concept-link candidates, undecided first (S24). */
+export function useConceptLinkQueue() {
+  return useQuery({
+    queryKey: ["admin", "concept-links"],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/admin/concept-links");
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+export function useConceptLinkVerdict() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      linkId,
+      endorse,
+      reason,
+    }: {
+      linkId: string;
+      endorse: boolean;
+      reason: string;
+    }) => {
+      const { data, error } = await api.POST("/api/v1/admin/concept-links/{link_id}", {
+        params: { path: { link_id: linkId } },
+        body: { endorse, reason },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["admin", "concept-links"] }),
+  });
+}
