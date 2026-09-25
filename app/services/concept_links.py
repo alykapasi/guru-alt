@@ -308,6 +308,56 @@ async def _decidable(
     return link
 
 
+async def _sides_for(session: AsyncSession, kc_ids: set[uuid.UUID]) -> dict[uuid.UUID, LinkSide]:
+    """Each of ``kc_ids``, with its own KC and subject names, in one query. Shared by every
+    reader that turns a link's raw ``kc_a_id``/``kc_b_id`` into a ``LinkSide`` — ``suggestions``,
+    ``describe`` — so there is exactly one join to keep in sync with the schema."""
+    if not kc_ids:
+        return {}
+    return {
+        kc.id: LinkSide(
+            kc_id=kc.id, kc_name=kc.name, subject_id=subject.id, subject_name=subject.name
+        )
+        for kc, subject in (
+            await session.execute(
+                select(KC, Subject)
+                .join(Topic, KC.topic_id == Topic.id)
+                .join(Subject, Topic.subject_id == Subject.id)
+                .where(KC.id.in_(kc_ids))
+            )
+        ).all()
+    }
+
+
+async def describe(session: AsyncSession, learner_id: uuid.UUID, link_id: uuid.UUID) -> Suggestion:
+    """One decidable link exactly as ``decide`` sees it — endorsed and visible to this learner —
+    whatever they have already decided about it (S24).
+
+    Unlike ``suggestions``, which is a *menu* and drops a link the learner declined (it is not
+    offered again), this is a *lookup*: the decision route uses it as both its existence probe
+    and its response for every decision, including a repeat decline or an attempt that a
+    ``LinkConflict`` refuses. Using ``suggestions`` for that turned every decision after a
+    decline into a 404, because the very thing a decline does is remove the link from it.
+    """
+    link = await _decidable(session, learner_id, link_id)
+    row = await session.scalar(
+        select(ConceptLinkDecision).where(
+            ConceptLinkDecision.learner_id == learner_id, ConceptLinkDecision.link_id == link_id
+        )
+    )
+    sides = await _sides_for(session, {link.kc_a_id, link.kc_b_id})
+    if link.kc_a_id not in sides or link.kc_b_id not in sides:
+        raise LinkNotFound(str(link_id))
+    return Suggestion(
+        link_id=link.id,
+        reason=link.reason,
+        endorsed_by=link.endorsed_by,
+        decision=ACCEPTED if row is not None and row.decision == ACCEPTED else None,
+        a=sides[link.kc_a_id],
+        b=sides[link.kc_b_id],
+    )
+
+
 async def _reseed_from_remaining_links(
     session: AsyncSession, learner_id: uuid.UUID, target_kc_id: uuid.UUID
 ) -> None:
@@ -414,23 +464,7 @@ async def suggestions(session: AsyncSession, learner_id: uuid.UUID) -> list[Sugg
         if decided.get(link.id) != DECLINED
     ]
     kc_ids = {kc for link in links for kc in (link.kc_a_id, link.kc_b_id)}
-    sides = (
-        {
-            kc.id: LinkSide(
-                kc_id=kc.id, kc_name=kc.name, subject_id=subject.id, subject_name=subject.name
-            )
-            for kc, subject in (
-                await session.execute(
-                    select(KC, Subject)
-                    .join(Topic, KC.topic_id == Topic.id)
-                    .join(Subject, Topic.subject_id == Subject.id)
-                    .where(KC.id.in_(kc_ids))
-                )
-            ).all()
-        }
-        if kc_ids
-        else {}
-    )
+    sides = await _sides_for(session, kc_ids)
     return [
         Suggestion(
             link_id=link.id,

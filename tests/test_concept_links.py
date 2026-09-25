@@ -225,6 +225,17 @@ async def test_suggestions_list_endorsed_undecided_and_accepted_links_only(db_se
     assert [x.decision for x in await svc.suggestions(db_session, learner.id)] == [None]
 
 
+async def test_describe_sees_a_link_suggestions_has_already_dropped(db_session):
+    """The bug ``describe`` exists to fix: ``suggestions`` drops a declined link for good, so
+    using it as an existence probe made every later decision on that link 404 (S24 fix review)."""
+    learner = await _learner(db_session)
+    link, _a, _b = await _endorsed_curated(db_session)
+    await svc.decide(db_session, learner.id, link.id, "decline")
+    assert await svc.suggestions(db_session, learner.id) == []
+    described = await svc.describe(db_session, learner.id, link.id)
+    assert (described.link_id, described.decision) == (link.id, None)
+
+
 async def test_revoking_one_link_reseeds_the_target_from_another_still_in_effect(db_session):
     """Controller ruling (S24): revoking one head start hands the target to any other link
     still in effect, rather than leaving it at the unknown prior when a second source exists."""

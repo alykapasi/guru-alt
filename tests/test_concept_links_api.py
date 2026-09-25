@@ -2,6 +2,7 @@
 
 import uuid
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -72,6 +73,73 @@ async def test_a_non_admin_cannot_reach_the_review_route(
     )
 
     assert r.status_code == 403
+
+
+async def test_declining_twice_is_idempotent_at_the_api(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """Regression for the review bug: `decide_link` used to probe existence via `suggestions`,
+    which drops a declined link for good — so a repeat decline 404'd instead of returning it."""
+    link, _a, _b = await _endorsed_curated(db_session)
+    first = await api_client.post(
+        f"{API}/concept-links/{link.id}/decision", json={"decision": "decline"}
+    )
+
+    second = await api_client.post(
+        f"{API}/concept-links/{link.id}/decision", json={"decision": "decline"}
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["link_id"] == str(link.id)
+
+
+async def test_accepting_a_declined_link_is_409_not_404(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    link, _a, _b = await _endorsed_curated(db_session)
+    await api_client.post(f"{API}/concept-links/{link.id}/decision", json={"decision": "decline"})
+
+    r = await api_client.post(
+        f"{API}/concept-links/{link.id}/decision", json={"decision": "accept"}
+    )
+
+    assert r.status_code == 409
+
+
+async def test_revoking_an_undecided_link_is_409_not_404(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    link, _a, _b = await _endorsed_curated(db_session)
+
+    r = await api_client.post(
+        f"{API}/concept-links/{link.id}/decision", json={"decision": "revoke"}
+    )
+
+    assert r.status_code == 409
+
+
+async def test_a_plan_revision_failure_does_not_fail_the_decision(
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    api_learner: Learner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The decision is already committed by the time plans are revised; a revision failure must
+    flag the plans for repair (see `mark_revision_pending`), not turn a 200 into a 500."""
+    link, _a, _b = await _endorsed_curated(db_session)
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("app.services.lesson_plan.revise_plan", _boom)
+
+    r = await api_client.post(
+        f"{API}/concept-links/{link.id}/decision", json={"decision": "accept"}
+    )
+
+    assert r.status_code == 200
+    assert r.json()["decision"] == "accepted"
 
 
 async def test_admin_can_list_and_decide_the_curated_queue(
