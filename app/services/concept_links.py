@@ -9,7 +9,7 @@ one reading of that rule; nothing else re-derives it.
 
 import uuid
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
 from itertools import combinations
 
@@ -251,3 +251,24 @@ async def judge_pending(session: AsyncSession, llm: LLMClient, learner_id: uuid.
         await session.commit()
         decided += 1
     return decided
+
+
+async def dispatch_judge(
+    enqueue: Callable[[uuid.UUID], Awaitable[None]], learner_id: uuid.UUID
+) -> bool:
+    """Best-effort enqueue of concept-link judging for an already-committed subject.
+
+    Mirrors ``ingestion.dispatch``: by the time this is called the subject is already durable,
+    so a queue failure here must not fail the caller — there is no lie to avoid telling and
+    nothing to retry. Unlike ingestion there is no reconciliation sweep; instead, a lost enqueue
+    only delays suggestions until the learner's next commit, when ``judge_pending`` re-syncs
+    candidates from scratch and picks up whatever this run missed.
+    """
+    try:
+        await enqueue(learner_id)
+        return True
+    except Exception as exc:
+        log.warning(
+            "concept_links.judge_enqueue_failed", learner_id=str(learner_id), error=str(exc)
+        )
+        return False

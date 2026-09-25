@@ -406,6 +406,38 @@ async def test_commit_subject_enqueues_concept_link_judging(
     assert fake_judge_enqueue == [api_learner.id]
 
 
+async def test_commit_subject_survives_a_judge_enqueue_that_raises(
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    api_learner: Learner,
+) -> None:
+    """A queue outage at judge-enqueue time must not undo an already-committed subject (S24).
+
+    The subject row is durable before the enqueue is even attempted, so failing the request
+    here would report a 500 for a commit that in fact succeeded — and a client that retried
+    would then hit the 409 duplicate-name check for a subject that is already theirs.
+    """
+
+    async def _raising_enqueue(_learner_id: uuid.UUID) -> None:
+        raise RuntimeError("broker unreachable")
+
+    app.dependency_overrides[get_concept_link_judge_enqueuer] = lambda: _raising_enqueue
+    try:
+        payload = {
+            "proposal_id": await _proposal_id(db_session, api_learner),
+            "subject_name": "Topology",
+            "subject_description": None,
+            "topics": [{"name": "Basics", "description": None, "kcs": []}],
+            "source_ids": None,
+        }
+        r = await api_client.post(f"{API}/subjects/commit", json=payload)
+    finally:
+        app.dependency_overrides.pop(get_concept_link_judge_enqueuer, None)
+
+    assert r.status_code == 201, r.text
+    assert await svc.subject_name_exists(db_session, "Topology", owner_learner_id=api_learner.id)
+
+
 async def test_create_subject_with_graph_reassigns_only_owned_sources(
     db_session: AsyncSession,
 ) -> None:

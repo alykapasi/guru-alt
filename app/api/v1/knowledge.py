@@ -26,6 +26,7 @@ from app.schemas.knowledge import (
     TopicCreate,
     TopicRead,
 )
+from app.services import concept_links as concept_links_svc
 from app.services import ingestion as ingestion_svc
 from app.services import knowledge as svc
 
@@ -160,9 +161,10 @@ async def commit_subject(
     for source_id in result.reassigned_source_ids:
         await ingestion_svc.dispatch(retag, source_id)
     # A new subject can share concepts with the learner's others and the library. Judging a
-    # pair is a model call each, so it runs in the background; until it lands there are simply
-    # no suggestions yet (S24).
-    await judge(learner.id)
+    # pair is a model call each, so it runs in the background — best-effort, like the retag
+    # dispatch above: the subject is already committed, so a queue failure here must not fail
+    # the caller. A lost enqueue only delays suggestions until the learner's next commit (S24).
+    await concept_links_svc.dispatch_judge(judge, learner.id)
     return result.subject
 
 
