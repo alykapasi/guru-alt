@@ -341,6 +341,7 @@ async def answer_item(
     submission: AnswerSubmit,
     *,
     llm: LLMClient,
+    taught_first: bool = False,
 ) -> tuple[GradeResult, Sequence[LearnerKCState]]:
     """Grade an item — deterministically or by rubric — and trace the result atomically.
 
@@ -357,6 +358,10 @@ async def answer_item(
     Evidence is discounted when the attempt was assisted — hints reported by the caller, plus
     earlier attempts at this same item in this sitting, counted here rather than trusted from
     the request. See :mod:`app.learning.assistance`.
+
+    ``taught_first`` marks an answer given straight after a worked example of the problem
+    (guided practice, S11). A keyword here rather than a field on ``AnswerSubmit``: it is a
+    fact about the server's own flow, not something a client may claim.
     """
     if await get_item_for(session, item.id, learner_id=learner_id) is None:
         raise InvalidResponse("item not found")
@@ -403,6 +408,7 @@ async def answer_item(
         # From the grader, not the request: `AnswerSubmit` has no such field, so a client
         # cannot claim its self-rating was a demonstration.
         evidence_kind=result.evidence_kind,
+        taught_first=taught_first,
     )
     try:
         # Inside the guard, not before it: the tracer *flushes* the observation, so under a

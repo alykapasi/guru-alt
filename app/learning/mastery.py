@@ -128,6 +128,13 @@ class Observation(BaseModel):
     ``GradeResult``, which is the only thing that knows. Self-reported evidence advances the
     review schedule and nothing else — see ``record_observation``."""
 
+    taught_first: bool = False
+    """Whether the learner was walked through a worked example of this problem just before
+    answering it (S11). Guided practice always teaches before it asks, so its answers still
+    count as evidence exactly as before — but an answer given straight after being shown how
+    is not the unaided demonstration that proves a prerequisite was never the gap. Only
+    ``passed_since`` reads it; it is recorded in the payload only when true."""
+
     @field_validator("kc_weights")
     @classmethod
     def _weights_positive(cls, v: dict[uuid.UUID, float]) -> dict[uuid.UUID, float]:
@@ -491,6 +498,7 @@ async def record_observation(
                         "schema_version": EVENT_SCHEMA_VERSION,
                         "observed_at": now.isoformat(),
                         "due_at": state.due_at.isoformat() if state.due_at else None,
+                        **_taught_first_payload(obs),
                     },
                 )
             )
@@ -555,6 +563,7 @@ async def record_observation(
                     "prior_uncertainty": decayed.uncertainty,
                     "posterior_ability": post.ability,
                     "posterior_uncertainty": post.uncertainty,
+                    **_taught_first_payload(obs),
                 },
             )
         )
@@ -564,6 +573,12 @@ async def record_observation(
     await _record_achievements(session, obs.learner_id, demonstrated_states, now=now)
     await session.flush()
     return updated
+
+
+def _taught_first_payload(obs: Observation) -> dict[str, bool]:
+    """The ``taught_first`` key, present only on the rows that have it: every other attempt
+    reads it as absent, which ``passed_since`` coalesces to false."""
+    return {"taught_first": True} if obs.taught_first else {}
 
 
 async def recent_attempts_at_item(
@@ -987,7 +1002,10 @@ async def passed_since(
     """Which of these KCs the learner has answered well, alone, since each one's detour began.
 
     What disproves a detour (S11): one demonstrated, unassisted attempt at or above the
-    threshold. A self-rating is not an answer, and help turns an answer into a joint one.
+    threshold. A self-rating is not an answer, and help turns an answer into a joint one. An
+    answer given straight after a worked example of the same problem (guided practice) is not
+    one either: it shows the teaching landed, which is the detour working, not the detour
+    being unnecessary.
     """
     if not opened:
         return set()
@@ -1003,8 +1021,9 @@ async def passed_since(
     rows = await session.execute(
         select(distinct(LearningEvent.kc_id)).where(
             LearningEvent.learner_id == learner_id,
-            LearningEvent.event_type == "observation",
+            _demonstrated_clause(),
             _unassisted_clause(),
+            func.coalesce(LearningEvent.payload["taught_first"].astext, "false") != "true",
             LearningEvent.payload["score"].astext.cast(Float) >= threshold,
             or_(*(and_(LearningEvent.kc_id == kc, when >= at) for kc, at in naive_opened.items())),
         )
@@ -1156,6 +1175,11 @@ class KCEvidence(BaseModel):
         )
 
 
+def _demonstrated_clause() -> ColumnElement[bool]:
+    """An attempt the learner was judged on, as opposed to one they rated themselves (S56)."""
+    return LearningEvent.event_type == "observation"
+
+
 def _unassisted_clause() -> ColumnElement[bool]:
     """An attempt made with no hints and not a re-look at the same question (S14)."""
     return and_(
@@ -1197,7 +1221,7 @@ async def kc_evidence(
     # The row set now includes self-reports (S56), so every aggregate that used to describe
     # "the evidence" must say which rows demonstrated something and which merely claimed it.
     # A self-rating gets its own count instead of vanishing, so the history stays honest.
-    demonstrated = LearningEvent.event_type == "observation"
+    demonstrated = _demonstrated_clause()
     self_rated = LearningEvent.event_type == SELF_REPORT_EVENT
     # Every retention endpoint is an unassisted demonstration; see KCEvidence.
     unassisted_when = case((and_(demonstrated, unassisted), when))

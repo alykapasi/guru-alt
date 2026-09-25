@@ -25,7 +25,7 @@ from app.models.assessment import Item, ItemType
 from app.models.chat import Conversation, ConversationPhase, LLMCall, Message
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
-from app.models.learning import LearnerKCState
+from app.models.learning import LearnerKCState, LearningEvent
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.schemas.assessment import ItemCreate, ItemKCRef
 from app.services import assessment as assessment_svc
@@ -229,6 +229,31 @@ async def test_resume_correct_reaches_done_with_mastered_detail(db_session: Asyn
         await db_session.scalars(select(Message).where(Message.conversation_id == conv.id))
     ).all()
     assert [m.role for m in messages] == ["user", "assistant", "user", "assistant"]
+
+
+async def test_a_guided_practice_grade_is_recorded_as_taught_first(
+    db_session: AsyncSession,
+) -> None:
+    # Guided practice always shows a worked example first, so its first-round, hint-free answer
+    # is marked taught-first on the event — the mark that keeps it from disproving a detour (S11).
+    conv = await _conversation_with_active_step(db_session)
+    llm = fake_llm_client(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=RIGHT_GRADE), FakeTurn(text=RESPOND_2)]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice")
+    await _drain(db_session, llm, conv, user_content="sunlight -> sugars", resume=True)
+
+    events = (
+        await db_session.scalars(
+            select(LearningEvent).where(
+                LearningEvent.learner_id == conv.learner_id,
+                LearningEvent.event_type == "observation",
+            )
+        )
+    ).all()
+    assert len(events) == 1
+    assert events[0].payload["hints_used"] == 0
+    assert events[0].payload["taught_first"] is True
 
 
 async def test_resume_round_never_cites_even_if_respond_text_has_marker_syntax(

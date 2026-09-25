@@ -129,6 +129,10 @@ def build_workflow_graph(
                 hints_used=state["rounds"] + state.get("scaffolds", 0),
             ),
             llm=llm,
+            # Guided practice always shows a worked example before posing the problem, so even
+            # a first-round answer came straight after being taught. It counts as evidence as
+            # before; it just cannot disprove a prerequisite detour (S11).
+            taught_first=True,
         )
         kcs = await knowledge_svc.get_kcs(session, kc_ids)
         return {

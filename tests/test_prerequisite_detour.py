@@ -961,6 +961,52 @@ async def test_a_self_rating_does_not_disprove_it(db_session: AsyncSession) -> N
     assert _detour_step(plan, prereq)["status"] == "active"
 
 
+async def test_a_pass_straight_after_a_worked_example_does_not_disprove_it(
+    db_session: AsyncSession,
+) -> None:
+    # Guided practice shows a worked example before every problem, so its correct, hint-free
+    # first answer is the detour working — not evidence the prerequisite was never the gap.
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    await mastery.record_observation(
+        db_session,
+        Observation(
+            learner_id=learner.id,
+            kc_weights={prereq.id: 1.0},
+            score=0.95,
+            hints_used=0,
+            taught_first=True,
+        ),
+    )
+    await db_session.flush()
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    assert _detour_step(plan, prereq).get("detour_outcome") != "disproved"
+    assert "disproved" not in [
+        e.payload["outcome"] for e in await _outcome_events(db_session, learner)
+    ]
+
+
+async def test_the_same_pass_without_a_worked_example_still_disproves_it(
+    db_session: AsyncSession,
+) -> None:
+    # The control for the test above: the same correct, hint-free answer from a check or a
+    # review (not taught first) is still an unaided demonstration and still disproves.
+    learner, subject, prereq, blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    await mastery.record_observation(
+        db_session,
+        Observation(learner_id=learner.id, kc_weights={prereq.id: 1.0}, score=0.95, hints_used=0),
+    )
+    await db_session.flush()
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    step = _detour_step(plan, prereq)
+    assert (step["status"], step["detour_outcome"]) == ("done", "disproved")
+    outcomes = await _outcome_events(db_session, learner)
+    assert [(e.kc_id, e.payload["outcome"]) for e in outcomes] == [(blocked.id, "disproved")]
+
+
 async def test_skipping_returns_to_the_blocked_step_and_is_remembered(
     db_session: AsyncSession,
 ) -> None:
