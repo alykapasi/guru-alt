@@ -4,6 +4,8 @@ import { NotebookText } from "lucide-react";
 import { useSubjects } from "../api/hooks";
 import { PublishPanel } from "../components/PublishPanel";
 import { LessonPlanPanel } from "../components/lessons/LessonPlanPanel";
+import { CurriculumIssuesPanel } from "../components/lessons/CurriculumIssuesPanel";
+import { ConnectionsPanel } from "../components/lessons/ConnectionsPanel";
 import { PlaceholderPage } from "../components/PlaceholderPage";
 import { SubjectPicker } from "../components/SubjectPicker";
 
@@ -39,15 +41,20 @@ export function Lessons() {
       <h1 className="text-h1">Lessons</h1>
       <SubjectPicker subjects={subjects} selectedId={selectedId} onSelect={setPickedId} />
       {selectedId && <LessonPlanPanel key={selectedId} subjectId={selectedId} />}
+      {/* Every selected subject, not only owned ones — a curated subject can be linked too. */}
+      {selectedId && <ConnectionsPanel key={`links-${selectedId}`} subjectId={selectedId} />}
       {/* Only on a subject that is theirs. A curated one is the shared library, which is
           nobody's to publish — offering the action there and letting the API refuse would be
           showing a door that answers 404. */}
       {selected && selected.owner_learner_id !== null && (
-        <PublishPanel
-          key={selected.id}
-          subjectId={selected.id}
-          sourceDerived={selected.private_source_derived}
-        />
+        <>
+          <CurriculumIssuesPanel key={`issues-${selected.id}`} subjectId={selected.id} />
+          <PublishPanel
+            key={selected.id}
+            subjectId={selected.id}
+            sourceDerived={selected.private_source_derived}
+          />
+        </>
       )}
     </div>
   );

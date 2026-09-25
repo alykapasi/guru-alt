@@ -33,7 +33,8 @@ test("a signed-out browser is sent to sign in rather than a shell of failed call
 }) => {
   await page.goto("/app/chat");
   await expect(page).toHaveURL(/\/signin/);
-  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  // The sign-in page's own heading (S21), so this fails if the redirect lands on a blank shell.
+  await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
 });
 
 test("signing in, asking, and finding the answer still there after a reload", async ({ page }) => {

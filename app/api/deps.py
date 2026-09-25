@@ -139,6 +139,24 @@ MemoryWriteBackEnqueuerDep = Annotated[
     MemoryWriteBackEnqueuer, Depends(get_memory_write_back_enqueuer)
 ]
 
+ConceptLinkJudgeEnqueuer = Callable[[uuid.UUID], Awaitable[None]]
+
+
+async def _enqueue_concept_link_judge(learner_id: uuid.UUID) -> None:
+    from app.workers.tasks import judge_concept_links_task  # lazy: avoids an import cycle
+
+    await judge_concept_links_task.kiq(str(learner_id))
+
+
+def get_concept_link_judge_enqueuer() -> ConceptLinkJudgeEnqueuer:
+    """Returns the callable that queues concept-link judging for a learner. Overridden in tests."""
+    return _enqueue_concept_link_judge
+
+
+ConceptLinkJudgeEnqueuerDep = Annotated[
+    ConceptLinkJudgeEnqueuer, Depends(get_concept_link_judge_enqueuer)
+]
+
 
 _BEARER_PREFIX = "bearer "
 

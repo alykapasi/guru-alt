@@ -17,6 +17,8 @@ import json
 
 import pytest
 
+from app.learning.conversation_evidence import _SYSTEM_PROMPT as _INTENT_SYSTEM_PROMPT
+from app.learning.conversation_evidence import TurnIntent, parse_intent
 from app.learning.curriculum import CURRICULUM_SYSTEM_PROMPT, generate_curriculum
 from app.learning.item_generation import (
     _FILL_BLANK_SYSTEM_PROMPT,
@@ -41,6 +43,7 @@ REAL_PROMPTS = [
     ("flashcard item", _FLASHCARD_SYSTEM_PROMPT),
     ("grade", _GRADE_SYSTEM_PROMPT),
     ("per-component grade", _COMPONENT_SYSTEM_PROMPT),
+    ("intent", _INTENT_SYSTEM_PROMPT),
 ]
 
 
@@ -235,6 +238,21 @@ async def test_the_fill_in_the_blank_stem_has_exactly_one_blank() -> None:
     data = json.loads(await _reply(_FILL_BLANK_SYSTEM_PROMPT, "Knowledge component: Eigenvalues"))
 
     assert data["stem"].count("___") == 1
+
+
+# --- the intent gate --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("message", ["no", "An eigenvalue is the scaling factor."])
+async def test_every_reply_to_an_open_question_is_an_attempt(message: str) -> None:
+    """Short or long, so a journey's brief answer reaches the grader and fails there, rather
+    than being read as a deferral and pausing practice before anything is graded (S52)."""
+    reply = await _reply(
+        _INTENT_SYSTEM_PROMPT,
+        f"Question the tutor asked:\nWhat is an eigenvalue?\n\nLearner's reply:\n{message}",
+    )
+
+    assert parse_intent(reply) is TurnIntent.ATTEMPT
 
 
 # --- grading ----------------------------------------------------------------------------------

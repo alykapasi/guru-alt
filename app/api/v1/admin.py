@@ -35,6 +35,7 @@ from app.schemas.admin import (
     ReinstateRequest,
     SuspendRequest,
 )
+from app.schemas.concept_links import ConceptLinkReviewRead, ConceptLinkVerdictSubmit
 from app.schemas.knowledge import SubjectRead
 from app.schemas.publication import (
     ApproveRequest,
@@ -44,6 +45,7 @@ from app.schemas.publication import (
     WithdrawRequest,
 )
 from app.services import accounts, impersonation
+from app.services import concept_links as concept_links_svc
 from app.services import publication as publication_svc
 from app.services.admin import LearnerRoster, learner_usage
 
@@ -363,3 +365,28 @@ async def withdraw_subject(
         return await publication_svc.withdraw(session, subject, body.reason)
     except publication_svc.CannotPublish as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+
+@router.get("/concept-links", response_model=list[ConceptLinkReviewRead])
+async def concept_link_queue(_: CurrentAdmin, session: SessionDep):
+    """Curated candidate links, undecided first (S24)."""
+    await concept_links_svc.sync_candidates(session, None)
+    await session.commit()
+    return await concept_links_svc.review_rows(session)
+
+
+@router.post("/concept-links/{link_id}", response_model=ConceptLinkReviewRead)
+async def decide_concept_link(
+    link_id: uuid.UUID, body: ConceptLinkVerdictSubmit, admin: CurrentAdmin, session: SessionDep
+):
+    """Endorse or reject one curated link, once, with a reason learners will read."""
+    try:
+        await concept_links_svc.set_admin_verdict(
+            session, link_id, admin.id, endorse=body.endorse, reason=body.reason
+        )
+    except concept_links_svc.LinkNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such curated link") from exc
+    except concept_links_svc.LinkAlreadyDecided as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, "this link has already been decided") from exc
+    await session.commit()
+    return next(r for r in await concept_links_svc.review_rows(session) if r.id == link_id)

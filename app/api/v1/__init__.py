@@ -8,6 +8,7 @@ from app.api.v1 import (
     assessment,
     auth,
     chat,
+    concept_links,
     content,
     knowledge,
     lesson_plan,
@@ -40,3 +41,4 @@ api_router.include_router(analytics.router)
 api_router.include_router(onboarding.router)
 api_router.include_router(publications.router)
 api_router.include_router(retention.router)
+api_router.include_router(concept_links.router)

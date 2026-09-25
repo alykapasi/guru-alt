@@ -280,6 +280,23 @@ class Settings(BaseSettings):
     # study S59 covers.
     retention_min_days: float = 1.0
 
+    # The lower confidence bound a component must clear to count as mastered. v1-arbitrary,
+    # the same standing as the two thresholds it replaces and as retention_min_days above:
+    # not calibrated against outcome data. Compared against ability - 2 * uncertainty
+    # (tracer.CONSERVATIVE_K, per V0_DECISIONS V02), so ability 1.0 needs uncertainty 0.25 —
+    # about twelve straight correct answers on a medium item from a cold start. A setting rather than a module
+    # constant in services/lesson_plan.py because mastery.record_observation needs it too,
+    # and app/learning/ importing from app/services/ is the wrong direction.
+    mastery_conservative_bar: float = 0.5
+
+    # When ability evidence stops counting as current. Uncalibrated, like the two settings
+    # above it: the estimate cannot express this at all — decay caps uncertainty and never
+    # lowers ability, so an arbitrarily high past score never lapses on its own — which
+    # leaves a flat window as the honest stand-in until S59's delayed-outcome study supplies
+    # a real one. Generous on purpose: staleness is reported and never acted on, so erring
+    # long costs little.
+    goal_evidence_max_age_days: float = 60.0
+
     # How often practice should aim for the learner to succeed. Practice and assessment want
     # opposite things from a question (see app.learning.difficulty): this is the teaching side,
     # and it is a taste parameter, not a derivation — 0.75 is the middle of the range the
@@ -303,6 +320,25 @@ class Settings(BaseSettings):
     # Two trips is enough to have tested the hypothesis; a third is the planner insisting.
     # Uncalibrated, like its neighbours (S18).
     detour_max_repeats: int = 2
+
+    # How many passes in a row it takes to conclude a detour's prerequisite was never the gap
+    # (S11). One correct answer is too small a sample to call a learner solid — a guess or an
+    # easy item gets there — so a detour ends early only on this many consecutive unassisted,
+    # untaught passes on different questions since it opened; a failure starts the count over.
+    # Every one of those answers still feeds mastery as usual. Uncalibrated (S18).
+    detour_disprove_passes: int = 3
+
+    # A head start carried over an accepted concept link (S24) starts from the source's current
+    # estimate, but never more certain than this: the idea was shown elsewhere, in another
+    # context, and that is weaker evidence than showing it here. Uncalibrated (S18).
+    transfer_uncertainty_floor: float = 0.6
+
+    # How many passes in a row confirm a head start (S24): unassisted, untaught, on different
+    # questions since the link was accepted, counted back from the latest attempt. Two rather
+    # than detour disproval's three: this confirms an estimate already resting on measured
+    # evidence elsewhere, where disproval starts from nothing. Until then the component is
+    # provisional and never counts as mastered. Uncalibrated (S18).
+    transfer_confirm_passes: int = 2
 
     # When a due review stops being worth self-rating (S09/S10). A flashcard is graded by the
     # learner's own rating, so a component failed repeatedly on review produces a falling

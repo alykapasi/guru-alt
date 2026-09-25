@@ -428,3 +428,20 @@ async def test_admin_attempt_creates_no_state_and_replays_its_actual_grade(
     assert grade.component_scores == {kc.id: 0.6}
     db_session.info.clear()
     assert await _recorded_grade(db_session, learner.id, attempt_id) is None
+
+
+# --- S34: components are locked and updated in a fixed order ---
+
+
+async def test_components_are_updated_in_id_order(db_session: AsyncSession) -> None:
+    """Two multi-component answers must take their row locks in the same order, or each can
+    hold one row the other needs. Sorting by id is that order."""
+    learner, _subject, _topic, kcs = await _seed(db_session, kc_slugs=("a", "b", "c"))
+    ids = sorted(kc.id for kc in kcs)
+    states = await mastery.record_observation(
+        db_session,
+        Observation(
+            learner_id=learner.id, kc_weights={kc_id: 1.0 for kc_id in reversed(ids)}, score=1.0
+        ),
+    )
+    assert [s.kc_id for s in states] == ids

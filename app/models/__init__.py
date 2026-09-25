@@ -8,7 +8,7 @@ from app.models.assessment import Item, ItemKC, ItemOrigin, Rubric
 from app.models.auth import LearnerSession
 from app.models.chat import Conversation, LLMCall, Message
 from app.models.content import ContentBlock, ContentType
-from app.models.knowledge import KC, KCEdge, Subject, Topic
+from app.models.knowledge import KC, ConceptLink, ConceptLinkDecision, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
 from app.models.lesson_plan import LessonPlan
@@ -24,6 +24,8 @@ __all__ = [
     "AlertTransition",
     "Chunk",
     "ChunkKC",
+    "ConceptLink",
+    "ConceptLinkDecision",
     "ContentBlock",
     "ContentType",
     "Conversation",

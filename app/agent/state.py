@@ -73,6 +73,27 @@ class WorkflowState(TypedDict):
     # failure kind calls for (``app.learning.feedback``). Absent on a checkpoint written
     # before this field existed, which is why ``respond`` reads it with ``.get``.
     diagnosis_note: NotRequired[str]
+    # The learner's flashcard self-rating for this round, when they gave one (1-4). NotRequired
+    # because it is genuinely absent on every non-flashcard round and on checkpoints written
+    # before this field existed.
+    rating: NotRequired[int | None]
+    # Set by ``grade`` when a flashcard round arrived without a rating: it graded nothing and
+    # the graph must ask again rather than invent one. Read only by the router that runs
+    # immediately after, and cleared by ``await_response`` when the next reply supersedes it.
+    awaiting_rating: NotRequired[bool]
+    # Tutor replies given while this question was paused for a side discussion (S52), carried
+    # in on the resume payload from ``Conversation.practice_scaffolds``. NotRequired: absent on
+    # the opening round, which has never been paused, and on checkpoints written before this
+    # field existed. ``grade`` adds it to ``rounds`` — help given before an attempt discounts it
+    # the same way regardless of which of the two counts it as.
+    scaffolds: NotRequired[int]
+    # The idempotency key for the answer this round grades (S34), carried in on the resume
+    # payload. NotRequired: absent on the opening round and on older checkpoints.
+    attempt_id: NotRequired[str | None]
+    # Whether this question opened with a worked example (S11/S24). False only on a
+    # check-first step, which poses the problem cold. NotRequired: absent on checkpoints
+    # written before this existed, which all opened with one.
+    taught_first: NotRequired[bool]
     usage: Usage  # this call's LLM usage (present's or respond's — grade's own call self-logs)
     rounds: int  # graded attempts completed so far
     max_rounds: int

@@ -18,18 +18,27 @@ from app.learning.tracer import Estimate, aggregate
 from app.models.knowledge import KC, Topic
 from app.models.learning import LearnerKCState, LearningEvent
 from app.schemas.analytics import ActivityRead, KCMasteryRead, SubjectMasteryRead, TopicMasteryRead
-from app.services.lesson_plan import MASTERY_ABILITY_THRESHOLD, MASTERY_UNCERTAINTY_THRESHOLD
 
 
-def _is_mastered(estimate: Estimate) -> bool:
-    return (
-        estimate.ability >= MASTERY_ABILITY_THRESHOLD
-        and estimate.uncertainty <= MASTERY_UNCERTAINTY_THRESHOLD
-    )
+def _is_mastered(estimate: Estimate, *, bar: float) -> bool:
+    """The planner's rule, minus the coverage guard each caller supplies.
+
+    The guard is the caller's because what counts as "measured" differs by level: one KC has
+    a `last_seen_at`, a topic has a count of assessed components. Both are already in hand at
+    each call site, so agreeing with the planner costs no extra query — and disagreeing with
+    it is precisely what ``mastered_kc_ids`` exists to prevent.
+    """
+    return estimate.conservative >= bar
 
 
 _NO_EVIDENCE = mastery.KCEvidence(
-    kc_id=uuid.UUID(int=0), attempts=0, distinct_items=0, unassisted_items=0, span_days=None
+    kc_id=uuid.UUID(int=0),
+    attempts=0,
+    distinct_items=0,
+    unassisted_items=0,
+    unassisted_attempts=0,
+    unassisted_span_days=None,
+    self_reported_attempts=0,
 )
 
 
@@ -57,19 +66,28 @@ async def subject_mastery(
             .order_by(Topic.name, KC.name)
         )
     ).all()
-    # One query for "which components has this learner ever been observed on". An unseen
-    # component estimates to the prior (ability 0), which renders as 50% — indistinguishable
-    # from a measured average unless the coverage is reported alongside it.
-    assessed = set(
-        (
-            await session.scalars(
-                select(LearnerKCState.kc_id)
-                .join(KC, KC.id == LearnerKCState.kc_id)
-                .join(Topic, Topic.id == KC.topic_id)
-                .where(LearnerKCState.learner_id == learner_id, Topic.subject_id == subject_id)
-            )
-        ).all()
-    )
+    # One query for "which components has this learner ever been observed on" and which of
+    # those carry a head start not yet confirmed by a run of passes here (S24) — same table,
+    # same join, so folding the second flag in here costs nothing over the four-query budget
+    # a separate call to ``mastery.provisional_kc_ids`` would add.
+    state_rows = (
+        await session.scalars(
+            select(LearnerKCState)
+            .join(KC, KC.id == LearnerKCState.kc_id)
+            .join(Topic, Topic.id == KC.topic_id)
+            .where(LearnerKCState.learner_id == learner_id, Topic.subject_id == subject_id)
+        )
+    ).all()
+    # Ability evidence, not merely a row. A flashcard-only component has a state row so its
+    # FSRS card has somewhere to live, and `last_seen_at` is now exactly "when we last had
+    # ability evidence" (S56) — so it is the honest test for a flag that decides whether to
+    # show a number at all. An unseen component estimates to the prior (ability 0), which
+    # renders as 50% — indistinguishable from a measured average unless the coverage is
+    # reported alongside it.
+    assessed = {state.kc_id for state in state_rows if state.last_seen_at is not None}
+    # Never mastered, whatever the estimate says, at any level of the drill-down — a strong
+    # source can seed one above the bar.
+    provisional = {state.kc_id for state in state_rows if mastery.is_provisional(state)}
     kc_ids = [kc.id for _, kc in rows]
     estimates = await mastery.estimate_kcs(session, learner_id, kc_ids, now=now)
     # The fourth query, and grouped for the whole subject rather than per KC for the same
@@ -77,6 +95,7 @@ async def subject_mastery(
     # shows the estimate.
     evidence = await mastery.kc_evidence(session, learner_id, kc_ids)
     retention_min_days = get_settings().retention_min_days
+    conservative_bar = get_settings().mastery_conservative_bar
 
     by_topic: dict[uuid.UUID, tuple[Topic, list[KC]]] = {}
     for topic, kc in rows:
@@ -94,11 +113,13 @@ async def subject_mastery(
                 kc_name=kc.name,
                 ability=estimates[kc.id].ability,
                 uncertainty=estimates[kc.id].uncertainty,
-                mastered=_is_mastered(estimates[kc.id]),
+                mastered=kc.id in assessed
+                and kc.id not in provisional
+                and _is_mastered(estimates[kc.id], bar=conservative_bar),
                 assessed=kc.id in assessed,
                 distinct_items=_ev(evidence, kc.id).distinct_items,
                 unassisted_items=_ev(evidence, kc.id).unassisted_items,
-                transfer_shown=_ev(evidence, kc.id).transfer_shown,
+                self_reported_attempts=_ev(evidence, kc.id).self_reported_attempts,
                 retention_shown=_ev(evidence, kc.id).retention_shown(min_days=retention_min_days),
             )
             for kc in kcs
@@ -115,7 +136,14 @@ async def subject_mastery(
                 topic_name=topic.name,
                 ability=topic_estimate.ability,
                 uncertainty=topic_estimate.uncertainty,
-                mastered=_is_mastered(topic_estimate),
+                # A topic is not mastered on the strength of components nobody measured: the
+                # aggregate averages an unseen KC in at the prior, which is a real number
+                # standing in for no evidence. Nor on the strength of one still provisional
+                # (S24) — the aggregate would read the same whether that component's head
+                # start had been confirmed or not.
+                mastered=topic_assessed == len(kc_reads)
+                and not any(kc.id in provisional for kc in kcs)
+                and _is_mastered(topic_estimate, bar=conservative_bar),
                 assessed_kcs=topic_assessed,
                 total_kcs=len(kc_reads),
                 kcs=kc_reads,
@@ -129,7 +157,9 @@ async def subject_mastery(
         subject_id=subject_id,
         ability=subject_estimate.ability,
         uncertainty=subject_estimate.uncertainty,
-        mastered=_is_mastered(subject_estimate),
+        mastered=subject_assessed == subject_total
+        and not provisional
+        and _is_mastered(subject_estimate, bar=conservative_bar),
         assessed_kcs=subject_assessed,
         total_kcs=subject_total,
         topics=topic_reads,
@@ -152,7 +182,8 @@ async def get_activity(session: AsyncSession, learner_id: uuid.UUID) -> Activity
         await session.execute(
             select(LearningEvent.created_at, LearningEvent.attempt_id, LearningEvent.id).where(
                 LearningEvent.learner_id == learner_id,
-                LearningEvent.event_type == "observation",
+                # Both kinds: streak and momentum measure effort, not evidence.
+                LearningEvent.event_type.in_(mastery.ATTEMPT_EVENTS),
                 LearningEvent.created_at >= lookback_start,
             )
         )

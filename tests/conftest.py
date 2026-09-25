@@ -33,7 +33,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import NullPool
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, create_async_engine
 
-from app.api.deps import get_engine
+from app.api.deps import get_concept_link_judge_enqueuer, get_engine
 from app.core.config import get_settings
 from app.core.db import get_session
 from app.main import app
@@ -176,6 +176,15 @@ async def _app_client(db_session: AsyncSession, engine: AsyncEngine) -> AsyncIte
     # test's engine: a lock taken on the process-wide engine is a lock on a different
     # backend, and its connections are bound to whichever event loop first used them.
     app.dependency_overrides[get_engine] = lambda: engine
+
+    async def _no_judge(_learner_id: uuid.UUID) -> None:
+        return None
+
+    # Default no-op: committing a subject enqueues concept-link judging (S24), and the
+    # in-memory test broker actually runs a kicked task rather than just queuing it — so
+    # without this, an ordinary commit test would reach a real LLM client and its own DB
+    # session. A test that cares overrides this dependency itself, same as retag/ingestion.
+    app.dependency_overrides[get_concept_link_judge_enqueuer] = lambda: _no_judge
     transport = ASGITransport(app=app)
     try:
         async with AsyncClient(transport=transport, base_url="http://test") as client:

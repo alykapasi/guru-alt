@@ -108,9 +108,19 @@ async def latest_evidence_at(session: AsyncSession, learner_id: uuid.UUID) -> da
     Two cheap MAX() reads standing in for loading the whole history to discover it has not
     changed — which is what a refresh over unchanged evidence was doing, several model calls
     at a time.
+
+    Graded observations only, because that is the evidence the estimators actually read:
+    ``profile_estimators._observations`` drops every self-rated row, and no estimator reads
+    the raw stream. A cursor that moved on a ``self_report`` would therefore claim new
+    evidence for a recompute that provably cannot produce a different answer — a full pass
+    over DIMENSION_SPECS, model-backed classifier included, plus ``_revise_lesson_plans``,
+    per review batch (S56). Self-rating asks for a review, not for a re-read of the learner.
     """
     newest_event = await session.scalar(
-        select(func.max(LearningEvent.created_at)).where(LearningEvent.learner_id == learner_id)
+        select(func.max(LearningEvent.created_at)).where(
+            LearningEvent.learner_id == learner_id,
+            LearningEvent.event_type == "observation",
+        )
     )
     newest_message = await session.scalar(
         select(func.max(Message.created_at))

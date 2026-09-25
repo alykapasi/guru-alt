@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.learning import note_distill
+from app.learning import mastery, note_distill
 from app.llm import LLMClient
 from app.llm.providers.fake import FakeProvider, FakeTurn
 from app.llm.registry import ModelSpec, fake_llm_client
@@ -90,6 +90,19 @@ async def _add_placement_seed(db_session: AsyncSession, learner: Learner, kc: KC
     await db_session.flush()
 
 
+async def _add_self_report(db_session: AsyncSession, learner: Learner, kc: KC) -> None:
+    db_session.add(
+        LearningEvent(
+            learner_id=learner.id,
+            kc_id=kc.id,
+            event_type=mastery.SELF_REPORT_EVENT,
+            attempt_id=uuid.uuid4(),
+            payload={"score": 1.0},
+        )
+    )
+    await db_session.flush()
+
+
 async def _add_message(db_session: AsyncSession, learner: Learner, topic: Topic) -> None:
     conv = Conversation(learner_id=learner.id, subject_id=topic.subject_id)
     db_session.add(conv)
@@ -141,6 +154,122 @@ async def test_placement_seed_alone_is_not_stale_and_refresh_is_noop(
     await _add_observation(db_session, learner, kc)
     view = await notes_svc.note_view(db_session, learner.id, topic)
     assert view.stale is True
+
+
+async def test_a_flashcard_review_makes_a_topic_worth_redistilling(
+    db_session: AsyncSession,
+) -> None:
+    """The probe that decides *whether* to distill counts a review, even though the sample
+    the model is later shown does not (see the exclusion test)."""
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="S")
+    db_session.add_all([learner, subject])
+    await db_session.flush()
+    topic = Topic(subject_id=subject.id, slug="t", name="T")
+    db_session.add(topic)
+    await db_session.flush()
+    kc = KC(topic_id=topic.id, slug="kc", name="KC")
+    db_session.add(kc)
+    await db_session.flush()
+    watermark = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1)
+    db_session.add(
+        LearningEvent(
+            learner_id=learner.id,
+            kc_id=kc.id,
+            event_type=mastery.SELF_REPORT_EVENT,
+            payload={"score": 1.0},
+        )
+    )
+    await db_session.flush()
+
+    assert await notes_svc._has_new_activity(db_session, learner.id, topic, watermark, watermark)
+
+
+async def test_the_distilled_note_does_not_source_outcomes_from_self_ratings(
+    db_session: AsyncSession,
+) -> None:
+    """A note telling a learner "you struggled with photosynthesis" on the strength of their
+    own rating misrepresents them to themselves. The probe that decides *whether* to distill
+    still counts the review (see test_a_flashcard_review_makes_a_topic_worth_redistilling);
+    the sample the model is shown does not.
+
+    `_Gathered` carries no `events` field — the row-level objects never leave `_gather`. What
+    does leave is `refs`: the label -> durable-row map behind the outcome lines the model is
+    handed (see test_evidence_is_labelled_so_atoms_can_cite_it), keyed by attempt id. Checking
+    which attempt ids appear there is checking exactly what the model gets to see.
+    """
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="S")
+    db_session.add_all([learner, subject])
+    await db_session.flush()
+    topic = Topic(subject_id=subject.id, slug="t", name="T")
+    db_session.add(topic)
+    await db_session.flush()
+    kc = KC(topic_id=topic.id, slug="kc", name="KC")
+    db_session.add(kc)
+    await db_session.flush()
+    watermark = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1)
+    attempt_ids = {}
+    for event_type in ("observation", mastery.SELF_REPORT_EVENT):
+        attempt_id = uuid.uuid4()
+        attempt_ids[event_type] = attempt_id
+        db_session.add(
+            LearningEvent(
+                learner_id=learner.id,
+                kc_id=kc.id,
+                event_type=event_type,
+                attempt_id=attempt_id,
+                payload={"score": 0.2},
+            )
+        )
+    await db_session.flush()
+
+    gathered = await notes_svc._gather(db_session, learner.id, topic, watermark, watermark)
+    attempt_refs = [v["id"] for v in gathered.refs.values() if v["kind"] == "attempt"]
+    assert attempt_refs == [str(attempt_ids["observation"])]
+
+
+class _CountingProvider(FakeProvider):
+    """A canned reply that also counts the model calls made through it."""
+
+    def __init__(self, reply: str) -> None:
+        super().__init__(reply=reply)
+        self.calls = 0
+
+    async def complete(self, **kwargs) -> ChatResponse:
+        self.calls += 1
+        return await super().complete(**kwargs)
+
+
+async def test_a_lone_flashcard_review_distills_once_and_then_clears(
+    db_session: AsyncSession,
+) -> None:
+    """The cursor has to consume everything the staleness probe counts.
+
+    The probe reads both attempt kinds; the sample the model is shown reads observations
+    alone. Advance the cursor from only what the sample consumed and a topic whose one piece
+    of new activity is a flashcard review never clears: ``_has_new_activity`` keeps saying
+    yes, ``_gather`` keeps handing the model nothing, and ``NoteView`` auto-refreshes a stale
+    note on read — one paid, empty distillation per visit to that note page, forever. Which is
+    exactly the flow S54 ships, so it would be the common case, not the edge one.
+
+    The same shape as test_placement_seed_alone_is_not_stale_and_refresh_is_noop, one step
+    later: that one keeps an unconsumable event from starting the work, this one makes sure a
+    consumable-as-*activity*-only event finishes it.
+    """
+    learner, topic, kc = await _seed(db_session)
+    await _add_self_report(db_session, learner, kc)
+    assert (await notes_svc.note_view(db_session, learner.id, topic)).stale is True
+
+    first = _CountingProvider('{"no_change": true}')
+    await notes_svc.refresh_note(db_session, _client(first), learner.id, topic)
+    assert first.calls == 1  # reviewing is activity: worth one look at the topic
+
+    second = _CountingProvider('{"no_change": true}')
+    view = await notes_svc.refresh_note(db_session, _client(second), learner.id, topic)
+
+    assert second.calls == 0  # ...and that look consumed the review, so there is nothing left
+    assert view.stale is False
 
 
 async def test_no_change_advances_watermark_without_revision(db_session: AsyncSession) -> None:

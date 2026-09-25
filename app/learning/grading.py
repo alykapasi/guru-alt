@@ -11,7 +11,7 @@ import uuid
 from pydantic import BaseModel, Field
 
 from app.learning.diagnosis import Diagnosis
-from app.models.assessment import AUTO_GRADABLE, ItemType
+from app.models.assessment import AUTO_GRADABLE, EvidenceKind, ItemType
 
 
 class NotAutoGradable(ValueError):
@@ -53,6 +53,11 @@ class GradeResult(BaseModel):
     """Why each component fell short, where the grader could say (S09). Empty for every
     deterministic path: an MCQ knows the answer was wrong and nothing about why."""
 
+    evidence_kind: EvidenceKind = EvidenceKind.DEMONSTRATED
+    """Judged, or reported by the learner (S56). Defaults to judged because every grading
+    path here except ``grade_flashcard`` is one — and because the safe default for a caller
+    that forgets is "this was real evidence", not "discard it"."""
+
 
 def auto_grade(item_type: ItemType, answer_key: dict, response: dict) -> GradeResult:
     """Grade ``response`` against ``answer_key`` for an objective ``item_type``."""
@@ -80,7 +85,10 @@ def grade_flashcard(response: dict) -> GradeResult:
     if score is None:
         raise SelfGradeError("flashcard response needs 'rating' (1-4) or 'recalled' (bool)")
     return GradeResult(
-        score=score, correct=score >= 0.75, detail={"rating": rating, "method": "self"}
+        score=score,
+        correct=score >= 0.75,
+        detail={"rating": rating, "method": "self"},
+        evidence_kind=EvidenceKind.SELF_REPORTED,
     )
 
 

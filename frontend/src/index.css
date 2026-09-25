@@ -5,6 +5,8 @@
 @import "@fontsource/inter/600.css";
 
 @import "./theme/theme.css";
+/* After the theme, so it can read its tokens. */
+@import "./auth/clerk.css";
 
 * {
   box-sizing: border-box;

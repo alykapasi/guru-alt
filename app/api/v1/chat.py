@@ -3,7 +3,9 @@
 ``send_message`` dispatches each turn to one of four LangGraph flows: a one-off agentic
 tool-using action (``mode="agentic"``, checked first — it bypasses goal negotiation
 entirely), the guided-practice workflow (``mode="workflow"``, or whenever one is already
-paused mid-practice for this conversation — checked next, also bypassing goal negotiation),
+paused mid-practice for this conversation — checked next, also bypassing goal negotiation;
+a message to paused practice passes an intent gate first, and a side question is answered by
+the tutor while practice is held — see ``_choose_flow``),
 the interactive refinement gate (while the conversation has no committed ``goal`` yet), or
 the plain tutor turn (once a goal is committed, or the gate was never entered). See
 ``app/services/refinement.py`` for the gate's persistence orchestration and its dispatch edge
@@ -28,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentLearner, EngineDep, LLMClientDep, SessionDep, SettingsDep
 from app.core.config import get_settings
+from app.learning.conversation_evidence import TurnIntent
 from app.llm import LLMClient
 from app.models.chat import Conversation, ConversationPhase, Message, TurnStatus
 from app.models.source import Source
@@ -37,15 +40,19 @@ from app.schemas.chat import (
     ConversationRead,
     ConversationUpdate,
     MessageRead,
+    PracticeActionSubmit,
+    PracticeStateRead,
     TurnRead,
 )
 from app.services import agentic as agentic_svc
 from app.services import budget, turn_lock
 from app.services import chat as svc
 from app.services import knowledge as knowledge_svc
+from app.services import practice as practice_svc
 from app.services import refinement as refinement_svc
 from app.services import turn as turn_svc
 from app.services import workflow as workflow_svc
+from app.services.assessment import item_to_read
 from app.services.turn_common import TurnEvent
 
 log = structlog.get_logger(__name__)
@@ -176,6 +183,23 @@ class FlowChoice:
     flow: TurnFlow
     workflow_paused: bool
     resume: bool  # only meaningful for the workflow and refinement graphs
+    # A tutor turn answering a side question while guided practice is paused (S52): the
+    # workflow's question stays open but untouched, and this is the item it is holding.
+    practice_paused: bool = False
+    paused_item_id: uuid.UUID | None = None
+    # False on the turn right after the learner declined a practice question: posing a plan
+    # check there would put the question they just declined straight back in front of them.
+    pose_check: bool = True
+
+
+def _paused_tutor(item_id: uuid.UUID) -> FlowChoice:
+    return FlowChoice(
+        TurnFlow.TUTOR,
+        workflow_paused=True,
+        resume=False,
+        practice_paused=True,
+        paused_item_id=item_id,
+    )
 
 
 def _open_check_id(event: TurnEvent) -> uuid.UUID | None:
@@ -193,7 +217,12 @@ def _open_check_id(event: TurnEvent) -> uuid.UUID | None:
 
 
 def _phase_after(
-    flow: TurnFlow, *, awaiting_reply: bool, workflow_paused: bool, check_open: bool
+    flow: TurnFlow,
+    *,
+    awaiting_reply: bool,
+    workflow_paused: bool,
+    check_open: bool,
+    practice_paused: bool = False,
 ) -> ConversationPhase:
     """What the conversation is waiting for now the turn has ended.
 
@@ -215,7 +244,13 @@ def _phase_after(
     steps *around* a practice item without answering it. The item is still in play afterwards,
     and the next message resumes it — so reporting CHATTING would be a phase that disagrees
     with what the very next turn does.
+
+    ``practice_paused`` outranks all of them (S52): a tutor turn that answered a side question
+    during a pause leaves the pause standing, so the learner's next message is conversation too
+    until they explicitly go back to the question.
     """
+    if practice_paused:
+        return ConversationPhase.PRACTICE_PAUSED
     if awaiting_reply:
         if flow is TurnFlow.WORKFLOW:
             return ConversationPhase.AWAITING_ANSWER
@@ -237,33 +272,95 @@ async def _choose_flow(
     learner_id: uuid.UUID,
     session: AsyncSession,
 ) -> FlowChoice:
-    """Pick the flow this turn belongs to, before anything is generated or persisted.
+    """Pick the flow this turn belongs to, before the turn is opened or anything is generated.
 
     Separate from building the stream because the turn record (S51) has to be opened — and
     committed — between the two: the flow is part of what an interrupted turn should say about
     itself, and opening the turn is what writes the learner's message.
+
+    Not side-effect free. Choosing can call the FAST intent gate (a logged model call) and
+    commit practice state: releasing a stale pause, pausing on a deferral, and — on a
+    withdrawal — performing the skip itself. Those commits land before the turn is opened, so
+    they stand even if opening or streaming the turn later fails.
+
+    **While guided practice waits (S52).** A message sent to a paused workflow is no longer
+    assumed to be an answer. While the phase is ``PRACTICE_PAUSED`` every message goes to the
+    tutor, ungated and ungraded — the question is held, not resumed. Otherwise the message
+    passes the intent gate first: a deferral pauses practice and is answered by the tutor, a
+    withdrawal skips the question (no evidence), and only an attempt resumes the graph to be
+    graded. A flashcard rating skips the gate: it can only be an answer. A pause whose
+    checkpoint has gone (stale or lost) is released, and the turn is ordinary chat.
     """
-    workflow_awaiting = await workflow_svc.is_awaiting_reply(
+    paused_item = await workflow_svc.paused_item_id(
         llm, session, conversation.id, learner_id=learner_id
     )
+    workflow_awaiting = paused_item is not None
+    if conversation.phase == ConversationPhase.PRACTICE_PAUSED and not workflow_awaiting:
+        # The pause outlived the practice it was holding (it went stale or was lost).
+        conversation.phase = ConversationPhase.CHATTING
+        conversation.active_item_id = None
+        conversation.practice_scaffolds = 0
+        await session.commit()
     if data.mode == "agentic":
-        return FlowChoice(TurnFlow.AGENTIC, workflow_paused=workflow_awaiting, resume=False)
-    if data.mode == "workflow" or workflow_awaiting:
+        # An interjection steps around practice, paused or not: a pause stays a pause (only the
+        # explicit control resumes), and an open question stays open.
+        held = paused_item is not None and conversation.phase == ConversationPhase.PRACTICE_PAUSED
         return FlowChoice(
-            TurnFlow.WORKFLOW, workflow_paused=workflow_awaiting, resume=workflow_awaiting
+            TurnFlow.AGENTIC,
+            workflow_paused=workflow_awaiting,
+            resume=False,
+            practice_paused=held,
+            paused_item_id=paused_item if held else None,
         )
+    if paused_item is not None:
+        # Before anything that resumes the graph: a paused practice still has a live
+        # checkpoint, and only the explicit practice control may resume it.
+        if conversation.phase == ConversationPhase.PRACTICE_PAUSED:
+            # This includes a request carrying a rating: while paused a rating is not an answer.
+            return _paused_tutor(paused_item)
+        if data.rating is None:
+            intent = await practice_svc.classify_paused_message(
+                session,
+                llm,
+                learner_id=learner_id,
+                conversation=conversation,
+                item_id=paused_item,
+                content=data.content,
+            )
+            if intent is TurnIntent.DEFERRAL:
+                conversation.phase = ConversationPhase.PRACTICE_PAUSED
+                conversation.active_item_id = paused_item
+                await session.commit()
+                return _paused_tutor(paused_item)
+            if intent is TurnIntent.WITHDRAWAL:
+                if conversation.phase not in (
+                    ConversationPhase.AWAITING_ANSWER,
+                    ConversationPhase.PRACTICE_PAUSED,
+                ):
+                    # The live checkpoint is the truth; a phase that disagrees with it (e.g. a
+                    # failed best-effort phase write) must not turn a decline into a conflict.
+                    conversation.phase = ConversationPhase.AWAITING_ANSWER
+                await practice_svc.skip(
+                    session, llm, learner_id=learner_id, conversation=conversation
+                )
+                return FlowChoice(
+                    TurnFlow.TUTOR, workflow_paused=False, resume=False, pose_check=False
+                )
+        return FlowChoice(TurnFlow.WORKFLOW, workflow_paused=True, resume=True)
+    if data.mode == "workflow":
+        return FlowChoice(TurnFlow.WORKFLOW, workflow_paused=False, resume=False)
     if conversation.goal is not None:
-        return FlowChoice(TurnFlow.TUTOR, workflow_paused=workflow_awaiting, resume=False)
+        return FlowChoice(TurnFlow.TUTOR, workflow_paused=False, resume=False)
     if await refinement_svc.is_awaiting_reply(llm, conversation.id):
-        return FlowChoice(TurnFlow.REFINEMENT, workflow_paused=workflow_awaiting, resume=True)
+        return FlowChoice(TurnFlow.REFINEMENT, workflow_paused=False, resume=True)
     if not history:
-        return FlowChoice(TurnFlow.REFINEMENT, workflow_paused=workflow_awaiting, resume=False)
+        return FlowChoice(TurnFlow.REFINEMENT, workflow_paused=False, resume=False)
     # Goal never committed, gate not mid-flight, but the conversation already has history —
     # the gate's in-memory checkpoint was lost (e.g. a restart) or this conversation predates
     # the gate. Degrade to plain chat rather than re-asking "what do you want to learn?"
     # mid-conversation.
     log.warning("refinement.gate_state_lost", conversation_id=str(conversation.id))
-    return FlowChoice(TurnFlow.TUTOR, workflow_paused=workflow_awaiting, resume=False)
+    return FlowChoice(TurnFlow.TUTOR, workflow_paused=False, resume=False)
 
 
 def _build_stream(
@@ -282,6 +379,10 @@ def _build_stream(
     the turn was opened, so writing it again here would duplicate it on a retry.
     """
     settings = get_settings()
+    # Computed once and threaded into both flows that can grade an answer this turn, so a
+    # retried turn (same client_turn_id) replays that grade instead of recording it twice
+    # (S34) — see turn_svc.attempt_id_for_turn.
+    attempt_id = turn_svc.attempt_id_for_turn(data.client_turn_id)
     if choice.flow is TurnFlow.AGENTIC:
         return agentic_svc.run_agentic_turn(
             session,
@@ -301,11 +402,13 @@ def _build_stream(
             learner_id=learner_id,
             conversation=conversation,
             user_content=data.content,
+            rating=data.rating,
             max_tokens=settings.chat_max_tokens,
             max_rounds=settings.workflow_max_rounds,
             resume=choice.resume,
             source_ids=conversation.source_ids,
             persist_user=False,
+            attempt_id=attempt_id,
         )
     if choice.flow is TurnFlow.REFINEMENT:
         return refinement_svc.run_refinement_turn(
@@ -330,6 +433,9 @@ def _build_stream(
         max_tokens=settings.chat_max_tokens,
         source_ids=conversation.source_ids,
         persist_user=False,
+        practice_paused=choice.practice_paused,
+        pose_check=choice.pose_check,
+        attempt_id=attempt_id,
     )
 
 
@@ -346,6 +452,50 @@ async def list_turns(
     if conversation is None or conversation.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
     return await turn_svc.recent_turns(session, conversation_id, limit=max(1, min(limit, 50)))
+
+
+@router.post("/conversations/{conversation_id}/practice", response_model=PracticeStateRead)
+async def practice_action(
+    conversation_id: uuid.UUID,
+    data: PracticeActionSubmit,
+    session: SessionDep,
+    learner: CurrentLearner,
+    llm: LLMClientDep,
+    db_engine: EngineDep,
+):
+    """Pause, resume, or skip guided practice explicitly (S52) — the frontend's own controls,
+    as opposed to the intent gate that infers a pause/skip from an ordinary chat message.
+
+    One turn at a time here too: held under the same conversation-wide claim ``messages`` uses,
+    so an explicit control cannot race a turn already in flight for this conversation.
+    """
+    conversation = await svc.get_conversation(session, conversation_id, learner_id=learner.id)
+    if conversation is None or conversation.learner_id != learner.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    claim = await turn_lock.claim(db_engine, conversation_id)
+    if claim is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "a turn is already in progress for this conversation"
+        )
+    try:
+        action = {
+            "pause": practice_svc.pause,
+            "resume": practice_svc.resume,
+            "skip": practice_svc.skip,
+        }
+        state = await action[data.action](
+            session, llm, learner_id=learner.id, conversation=conversation
+        )
+    except practice_svc.PracticeConflict as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    finally:
+        await claim.release()
+    return PracticeStateRead(
+        phase=state.phase.value,
+        item=item_to_read(state.item) if state.item is not None else None,
+        prompt=state.prompt,
+        ended=state.ended,
+    )
 
 
 @router.post("/conversations/{conversation_id}/messages")
@@ -507,8 +657,9 @@ async def send_message(
                 awaiting_reply=awaiting_reply,
                 workflow_paused=choice.workflow_paused,
                 check_open=check_open,
+                practice_paused=choice.practice_paused,
             ),
-            active_item_id=active_item,
+            active_item_id=choice.paused_item_id if choice.practice_paused else active_item,
         )
         await turn_svc.close_turn(
             session,

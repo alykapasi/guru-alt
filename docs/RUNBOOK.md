@@ -17,11 +17,11 @@ Operational procedures for running, exercising, and debugging Guru.
 
 ## 1. Start and stop the stack
 
-Guru needs four things running for full functionality: **infrastructure** (Postgres/Redis/MinIO),
+Guru needs four things running for full functionality: **infrastructure** (Postgres/Redis/RustFS),
 the **API**, a **worker**, and optionally the **frontend**.
 
 ```bash
-# Infrastructure — Postgres (5433), Redis (6379), MinIO (9000/9001)
+# Infrastructure — Postgres (5433), Redis (6379), RustFS (9000/9001)
 docker compose up -d
 docker compose ps                      # all services should be "running"/healthy
 
@@ -41,7 +41,7 @@ cd frontend && npm run dev             # http://localhost:5173
 curl -s localhost:8000/health                      # API  → {"status":"ok"}
 docker compose exec postgres pg_isready -U guru    # DB   → accepting connections
 docker compose exec redis redis-cli ping           # Redis→ PONG
-curl -s localhost:9000/minio/health/live -o /dev/null -w '%{http_code}\n'   # MinIO → 200
+curl -s localhost:9000/health -o /dev/null -w '%{http_code}\n'   # RustFS → 200
 curl -s localhost:11434/api/tags | head -c 200     # Ollama → JSON list of pulled models
 ```
 
@@ -49,7 +49,7 @@ curl -s localhost:11434/api/tags | head -c 200     # Ollama → JSON list of pul
 
 ```bash
 docker compose down          # stop services, keep data volumes
-docker compose down -v       # stop AND DELETE all data (Postgres, Redis, MinIO)
+docker compose down -v       # stop AND DELETE all data (Postgres, Redis, RustFS)
 ```
 
 ---
@@ -413,7 +413,7 @@ DELETE FROM learners WHERE handle = 'dev';
 | `db-upgrade` fails creating extensions | Not the pgvector image | Use the compose Postgres (`pgvector/pgvector:pg17`) |
 | Uploaded source never leaves pending | **No worker running** | Start `uv run poe worker` |
 | Upload returns 413 | Exceeds `max_upload_bytes` (1 GiB default) | Raise `GURU_MAX_UPLOAD_BYTES` or split the file |
-| Upload fails writing the blob | MinIO down / bucket missing | `docker compose up -d minio`; the `minio-bootstrap` service creates the bucket |
+| Upload fails writing the blob | RustFS down / bucket missing | `docker compose up -d rustfs`; the `rustfs-bootstrap` service creates the bucket |
 | Any LLM call hangs or errors in dev | Ollama not running, or model not pulled | `ollama serve`; `ollama pull <model>` |
 | Scanned PDF ingests with empty text | `VISION` role is not multimodal | Point `GURU_MODEL_VISION` at a vision model |
 | Audio ingestion fails | `asr` extra not installed | `uv sync --extra asr` |

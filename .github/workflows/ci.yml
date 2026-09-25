@@ -288,13 +288,13 @@ jobs:
       # Where the uploaded bytes actually go. Brought up from the project's own compose file
       # rather than restated here, so the journey environment is the one a developer runs and
       # there is no second definition to keep in step. It cannot be a `services:` container:
-      # MinIO needs a command (`server /data`) and a service container can only be given an
-      # image and its environment. `run --rm` on the bootstrap blocks until the bucket exists,
+      # its bucket is created by a one-shot bootstrap, and a service container can only be given
+      # an image and its environment. `run --rm` on the bootstrap blocks until the bucket exists,
       # so the first upload cannot race the bucket being created.
       - name: Object store for uploads
         run: |
-          docker compose up -d minio
-          docker compose run --rm minio-bootstrap
+          docker compose up -d rustfs
+          docker compose run --rm rustfs-bootstrap
 
       # Chromium only, and `--with-deps` because the runner image has none of the shared
       # libraries a browser needs. One engine is a deliberate limit: these journeys are here

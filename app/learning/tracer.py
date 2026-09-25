@@ -30,6 +30,13 @@ DEFAULT_UNCERTAINTY = 1.0
 MIN_UNCERTAINTY = 0.05
 """We never claim perfect certainty — keeps the estimator responsive to new evidence."""
 
+CONSERVATIVE_K = 2.0
+"""How many standard deviations below the point estimate we are willing to claim.
+
+Two, per V0_DECISIONS (V02): ``ability - 2 * current_uncertainty``. One deviation let a
+thinly measured component count as mastered — ability 1.0 cleared the bar with uncertainty
+0.5; at two it needs 0.25, which takes sustained evidence rather than a good start."""
+
 
 class Estimate(BaseModel):
     """A continuous mastery estimate on the logit scale: ability ``θ`` + its uncertainty.
@@ -41,6 +48,17 @@ class Estimate(BaseModel):
 
     ability: float = DEFAULT_ABILITY
     uncertainty: float = Field(default=DEFAULT_UNCERTAINTY, gt=0.0)
+
+    @property
+    def conservative(self) -> float:
+        """The ability this estimate supports even if we are wrong by ``CONSERVATIVE_K``
+        standard deviations.
+
+        A lower confidence bound. This is the number to compare against a bar, because the
+        point estimate alone says the same thing about a learner measured once and one
+        measured thirty times.
+        """
+        return self.ability - CONSERVATIVE_K * self.uncertainty
 
 
 @runtime_checkable

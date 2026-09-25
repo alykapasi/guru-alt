@@ -2,12 +2,31 @@
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
 
 class LessonPlanSubmit(BaseModel):
     goal: str | None = None
+
+
+class LessonPlanClosureSubmit(BaseModel):
+    """Whether the learner considers this goal finished. Reopening is the same call with
+    ``false``: closing early and changing your mind must not require destroying the plan."""
+
+    closed: bool
+
+
+class LessonPlanGuidanceSubmit(BaseModel):
+    """How much the planner may decide for the learner (V07). Guided takes detours on its own;
+    exploration offers them."""
+
+    guidance: Literal["guided", "exploration"]
+
+
+class DetourDecisionSubmit(BaseModel):
+    decision: Literal["accept", "skip"]
 
 
 class LessonStepRead(BaseModel):
@@ -26,6 +45,46 @@ class LessonStepRead(BaseModel):
     # mind about the order, which is the thing a learner would reasonably lose trust over.
     detour_for: uuid.UUID | None = None
     detour_reason: str | None = None
+    # When the detour actually started (S11): guided stamps it on insertion, exploration on
+    # acceptance. None while merely proposed and unanswered, and on every non-detour step.
+    opened_at: datetime | None = None
+    # How a detour step closed — mastered, disproved, or skipped (S11). None while it is still
+    # open (or proposed), and on every non-detour step.
+    detour_outcome: str | None = None
+    # Set only on an external detour (S24): the subject the prerequisite lives in.
+    source_subject_id: uuid.UUID | None = None
+    source_subject_name: str | None = None
+    # A provisional component (S24): practice asks before it explains.
+    check_first: bool = False
+
+
+class GoalStatusRead(BaseModel):
+    """What is and is not known about the learner's progress toward this plan's goal.
+
+    Four separate facts, deliberately not collapsed into one enum: a goal can be achieved and
+    stale, or closed and unfinished, and an enum would need a member per combination.
+    """
+
+    # Every component the goal needs. 0 on plans generated before objectives were recorded,
+    # which is why a consumer must read 0 as "unknown" and not as "nothing left to do".
+    objective_kc_count: int
+    # Components with a recorded achievement. Historical: never decreases. Overlaps both
+    # counts below — an achieved component is also current or stale — so these three must
+    # never be summed.
+    achieved_kc_count: int
+    # Measured, evidence still within the window, and the estimate *decayed to now* meets
+    # the bar: "they can do this today".
+    current_kc_count: int
+    # Measured, evidence older than the window, and the estimate *as of that measurement*
+    # met the bar: "we saw them do this, and it was a long time ago". Disjoint from
+    # `current_kc_count` by the freshness test; the other estimate is used on purpose, or a
+    # component that drifted would fail the bar *because* it is old and fall out of both.
+    stale_kc_count: int
+    # Set when every objective component has been achieved; the latest of their dates.
+    achieved_at: datetime | None
+    # The learner's own closure. Independent of everything above, and with no path to any
+    # estimate: closing a goal does not fabricate assessment evidence.
+    closed_at: datetime | None
 
 
 class LessonPlanRead(BaseModel):
@@ -43,8 +102,22 @@ class LessonPlanRead(BaseModel):
     subject_id: uuid.UUID
     goal: str | None
     pacing: str
+    # How much say the learner has over a prerequisite detour (S11): "guided" (default) takes
+    # one on their behalf, "exploration" offers it first.
+    guidance: str
     example_tags: list[str]
     steps: list[LessonStepRead]
     objective_kc_count: int = 0
     deferred_kc_count: int = 0
+    # Computed, never stored. The default exists so `model_validate(plan)` stays total
+    # against an ORM row that has no such attribute; `plan_read` always overwrites it, and
+    # an all-zero status renders as nothing at all (objective_kc_count 0 means "unknown").
+    goal_status: GoalStatusRead = GoalStatusRead(
+        objective_kc_count=0,
+        achieved_kc_count=0,
+        current_kc_count=0,
+        stale_kc_count=0,
+        achieved_at=None,
+        closed_at=None,
+    )
     updated_at: datetime

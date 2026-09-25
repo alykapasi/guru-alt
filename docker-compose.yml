@@ -31,35 +31,40 @@ services:
 
   # S3-compatible object store for raw uploads (Phase 4). Console on :9001.
   #
-  # From MinIO's own registry rather than Docker Hub, which is where their documentation points
-  # and, more practically, the reason the browser-journeys job could not start one: an
-  # anonymous pull of `minio/minio` from a GitHub runner is refused, and the refusal reads as
-  # "repository does not exist or may require 'docker login'" rather than as a rate limit.
-  minio:
-    image: quay.io/minio/minio
-    command: server /data --console-address ":9001"
+  # RustFS rather than MinIO: MinIO stopped publishing public images (`minio/minio` is gone from
+  # Docker Hub and quay.io answers an anonymous pull with 401), which is what broke the
+  # browser-journeys job. Pinned so a moved `latest` cannot break CI the same way. The dev
+  # credentials stay `minioadmin` so the app's defaults and the release guard are unchanged.
+  rustfs:
+    image: rustfs/rustfs:1.0.0
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      RUSTFS_ACCESS_KEY: minioadmin
+      RUSTFS_SECRET_KEY: minioadmin
+      RUSTFS_CONSOLE_ENABLE: "true"
     ports:
       - "9000:9000"
       - "9001:9001"
     volumes:
-      - miniodata:/data
+      - rustfsdata:/data
 
-  # One-shot: create the uploads bucket, retrying until MinIO is reachable.
-  minio-bootstrap:
-    image: quay.io/minio/mc
+  # One-shot: create the uploads bucket, retrying until the store is reachable.
+  rustfs-bootstrap:
+    image: amazon/aws-cli:2.37.4
     depends_on:
-      - minio
+      - rustfs
+    environment:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
     entrypoint: >
       /bin/sh -c "
-      until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 1; done &&
-      mc mb --ignore-existing local/guru-uploads &&
-      echo 'minio bucket ready'
+      until aws --endpoint-url http://rustfs:9000 s3api list-buckets > /dev/null 2>&1; do sleep 1; done &&
+      (aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket guru-uploads 2> /dev/null ||
+       aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket guru-uploads) &&
+      echo 'bucket ready'
       "
 
 volumes:
   pgdata:
   redisdata:
-  miniodata:
+  rustfsdata:

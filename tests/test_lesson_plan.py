@@ -4,6 +4,7 @@ import itertools
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 import pytest
 from httpx import AsyncClient
@@ -11,6 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.learning import mastery
+from app.learning.tracer import Estimate
 from app.llm.registry import fake_llm_client
 from app.models.assessment import Item, ItemKC, ItemType
 from app.models.knowledge import KC, KCEdge, Subject, Topic
@@ -44,7 +47,17 @@ async def _graph(session: AsyncSession) -> tuple[Learner, Subject, KC, KC]:
 
 
 async def _mastered_state(session: AsyncSession, learner_id: uuid.UUID, kc_id: uuid.UUID) -> None:
-    session.add(LearnerKCState(learner_id=learner_id, kc_id=kc_id, ability=1.5, uncertainty=0.3))
+    session.add(
+        LearnerKCState(
+            learner_id=learner_id,
+            kc_id=kc_id,
+            ability=1.5,
+            uncertainty=0.3,
+            # Mastery now requires ability evidence, not just a confident row — a placement
+            # seed writes a row too. A fixture for "mastered" has to have been measured.
+            last_seen_at=datetime.now(UTC),
+        )
+    )
     await session.flush()
 
 
@@ -410,6 +423,31 @@ async def test_lesson_plan_endpoints_round_trip(
     assert r.status_code == 404
 
 
+async def test_a_closed_goal_can_be_reopened(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Reopening is the same call with ``false``: closing early and changing your mind must
+    not require destroying the plan."""
+    r = await api_client.post(f"{API}/subjects", json={"slug": "phys", "name": "Physics"})
+    subject_id = r.json()["id"]
+    r = await api_client.post(
+        f"{API}/subjects/{subject_id}/topics", json={"slug": "t", "name": "T"}
+    )
+    topic_id = r.json()["id"]
+    await api_client.post(f"{API}/topics/{topic_id}/kcs", json={"slug": "a", "name": "A"})
+    r = await api_client.post(f"{API}/subjects/{subject_id}/lesson-plan", json={})
+    assert r.status_code == 200, r.text
+
+    closure = f"{API}/subjects/{subject_id}/lesson-plan/closure"
+    r = await api_client.patch(closure, json={"closed": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["goal_status"]["closed_at"] is not None
+
+    r = await api_client.patch(closure, json={"closed": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["goal_status"]["closed_at"] is None
+
+
 # --- a failed revision must not lose a committed grade (S35) ------------------
 
 
@@ -557,3 +595,560 @@ async def test_a_goal_inside_the_cap_defers_nothing(db_session: AsyncSession) ->
         db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
     )
     assert plan.objective_kc_count == 3 and plan.deferred_kc_count == 0
+
+
+async def test_a_cross_subject_prerequisite_is_not_counted_in_the_objective(
+    db_session: AsyncSession,
+) -> None:
+    """B's plan needs A's Vectors as an external step (S24), but the goal is B's own
+    components — an external detour is never an objective KC, whether or not it is planned."""
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    subject_a = Subject(slug=f"a-{uuid.uuid4().hex[:8]}", name="Linear Algebra")
+    subject_b = Subject(slug=f"b-{uuid.uuid4().hex[:8]}", name="Graphics")
+    db_session.add_all([learner, subject_a, subject_b])
+    await db_session.flush()
+    topic_a = Topic(subject_id=subject_a.id, slug="t", name="T")
+    topic_b = Topic(subject_id=subject_b.id, slug="t", name="T")
+    db_session.add_all([topic_a, topic_b])
+    await db_session.flush()
+    foreign = KC(topic_id=topic_a.id, slug="vectors", name="Vectors")
+    blocked = KC(topic_id=topic_b.id, slug="transforms", name="Transforms")
+    db_session.add_all([foreign, blocked])
+    await db_session.flush()
+    db_session.add(KCEdge(prereq_kc_id=foreign.id, kc_id=blocked.id))
+    await db_session.flush()
+
+    plan = await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject_b.id, goal=None
+    )
+
+    assert plan.objective_kc_count == 1  # B's own component only
+    assert str(foreign.id) not in plan.objective_kc_ids
+    assert any(s["kc_id"] == str(foreign.id) for s in plan.steps)  # planned anyway, as a detour
+
+
+async def test_a_placement_seed_alone_is_never_mastered(db_session: AsyncSession) -> None:
+    """A background claim is not a demonstration, however strong.
+
+    The old rule excluded a "strong" seed only because that seed's uncertainty happened to
+    sit above the uncertainty threshold — tuned to 0.45 it would have counted. The
+    conservative estimate on its own is *more* permissive here, so the rule is paired with a
+    requirement that the estimate rests on ability evidence at all.
+    """
+    learner, _subject, root, _dependent = await _graph(db_session)
+    seeded = Estimate(ability=1.75, uncertainty=0.6)
+    await mastery.seed_prior(db_session, learner.id, root.id, seeded)
+
+    mastered = await svc.mastered_kc_ids(db_session, learner.id, [root.id])
+
+    assert root.id not in mastered
+    # The guard is what excluded it, not the arithmetic: assert the estimate would have
+    # passed the bar on its own, so a later loosening of the guard fails this test.
+    assert seeded.conservative >= get_settings().mastery_conservative_bar
+
+
+async def test_ability_one_needs_two_deviations_of_room_to_count_as_mastered(
+    db_session: AsyncSession,
+) -> None:
+    """Two deviations (V0_DECISIONS V02): at ability 1.0 the bar sits at uncertainty 0.25.
+
+    The old rule's corner (1.0, 0.5) — and the one-deviation rule that sat on it — called a
+    thinly measured component mastered; at two deviations it is not. The corner itself is
+    pinned on the *measurement*, which is where the claim is exact. The planner judges the
+    estimate decayed to now, and decay only ever grows uncertainty, so a component measured
+    exactly at the bar sits a hair under it the instant afterwards; the service-level
+    assertion uses a row with room for an instant to pass.
+    """
+    learner, _subject, root, dependent = await _graph(db_session)
+    assert Estimate(ability=1.0, uncertainty=0.25).conservative == (
+        get_settings().mastery_conservative_bar
+    )
+    now = datetime.now(UTC)
+    db_session.add_all(
+        [
+            LearnerKCState(
+                learner_id=learner.id, kc_id=root.id, ability=1.0, uncertainty=0.2, last_seen_at=now
+            ),
+            LearnerKCState(
+                learner_id=learner.id,
+                kc_id=dependent.id,
+                ability=1.0,
+                uncertainty=0.4,
+                last_seen_at=now,
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    assert await svc.mastered_kc_ids(db_session, learner.id, [root.id, dependent.id]) == {root.id}
+
+
+async def test_stale_evidence_is_reported_without_dropping_the_component(
+    db_session: AsyncSession,
+) -> None:
+    """A component measured at the bar long ago is stale, not unlearned.
+
+    Staleness is judged on the estimate *as of the measurement*. Judged on the decayed one, a
+    component the learner clearly had and drifted away from would fail the bar because it is
+    old and fall out of both counts — rendering as though they had never learned it.
+    """
+    learner, _subject, root, _dependent = await _graph(db_session)
+    long_ago = datetime.now(UTC) - timedelta(days=400)
+    # Chosen so the two estimates disagree: as measured, 1.2 - 0.3 = 0.9 clears the 0.5 bar;
+    # decayed 400 days, uncertainty regrows to its 1.0 cap and 1.2 - 1.0 = 0.2 does not. A
+    # higher ability would clear the bar either way and could not tell the estimates apart.
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=root.id,
+            ability=1.2,
+            uncertainty=0.3,
+            last_seen_at=long_ago,
+            achieved_at=long_ago,
+        )
+    )
+    await db_session.flush()
+
+    status = await svc.goal_status(
+        db_session, learner_id=learner.id, objective_kc_ids=[str(root.id)], closed_at=None
+    )
+
+    assert status.stale_kc_count == 1
+    assert status.current_kc_count == 0
+    assert status.achieved_kc_count == 1
+    assert status.achieved_at == long_ago
+
+
+async def test_current_evidence_is_judged_on_the_estimate_decayed_to_now(
+    db_session: AsyncSession,
+) -> None:
+    """Inside the freshness window, "current" means "can they do this today".
+
+    Two components, both measured within the window. One was measured just now, well above
+    the bar, and counts. The other cleared the bar *when measured* fifty days ago but no longer
+    does once its uncertainty has regrown — it is fresh enough not to be stale and too
+    uncertain to be current, so it is in neither count. Judged on the estimate as of the
+    measurement it would wrongly count as current.
+    """
+    learner, _subject, root, dependent = await _graph(db_session)
+    now = datetime.now(UTC)
+    fifty_days_ago = now - timedelta(days=50)
+    drifted = Estimate(ability=1.2, uncertainty=0.3)
+    bar = get_settings().mastery_conservative_bar
+    # The premise, checked against the live estimator rather than assumed: 0.6 as measured,
+    # ≈0.273 decayed fifty days, and fifty days inside the window.
+    assert drifted.conservative >= bar
+    assert mastery.DEFAULT_ESTIMATOR.decay(drifted, elapsed_days=50.0).conservative < bar
+    assert 50 <= get_settings().goal_evidence_max_age_days
+    db_session.add_all(
+        [
+            LearnerKCState(
+                learner_id=learner.id, kc_id=root.id, ability=1.5, uncertainty=0.3, last_seen_at=now
+            ),
+            LearnerKCState(
+                learner_id=learner.id,
+                kc_id=dependent.id,
+                ability=drifted.ability,
+                uncertainty=drifted.uncertainty,
+                last_seen_at=fifty_days_ago,
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    status = await svc.goal_status(
+        db_session,
+        learner_id=learner.id,
+        objective_kc_ids=[str(root.id), str(dependent.id)],
+        closed_at=None,
+        now=now,
+    )
+
+    assert status.current_kc_count == 1
+    assert status.stale_kc_count == 0
+
+
+async def test_an_unmeasured_component_is_neither_current_nor_stale(
+    db_session: AsyncSession,
+) -> None:
+    """A placement seed is a claim, not a measurement, so it is in neither count.
+
+    The seed is strong enough to clear the bar on its own arithmetic, so only the
+    measured-evidence guard can be what keeps it out.
+    """
+    learner, _subject, root, _dependent = await _graph(db_session)
+    seeded = Estimate(ability=1.75, uncertainty=0.6)
+    assert seeded.conservative >= get_settings().mastery_conservative_bar
+    await mastery.seed_prior(db_session, learner.id, root.id, seeded)
+
+    status = await svc.goal_status(
+        db_session,
+        learner_id=learner.id,
+        objective_kc_ids=[str(root.id)],
+        closed_at=None,
+        now=datetime.now(UTC),
+    )
+
+    assert (status.current_kc_count, status.stale_kc_count) == (0, 0)
+    assert status.achieved_kc_count == 0
+
+
+async def test_a_partly_achieved_objective_is_not_an_achieved_goal(
+    db_session: AsyncSession,
+) -> None:
+    """The goal is achieved only when every component is; one of two is a count, not a date."""
+    learner, _subject, root, dependent = await _graph(db_session)
+    now = datetime.now(UTC)
+    db_session.add_all(
+        [
+            LearnerKCState(
+                learner_id=learner.id,
+                kc_id=root.id,
+                ability=1.5,
+                uncertainty=0.3,
+                last_seen_at=now,
+                achieved_at=now,
+            ),
+            LearnerKCState(
+                learner_id=learner.id,
+                kc_id=dependent.id,
+                ability=1.5,
+                uncertainty=0.3,
+                last_seen_at=now,
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    status = await svc.goal_status(
+        db_session,
+        learner_id=learner.id,
+        objective_kc_ids=[str(root.id), str(dependent.id)],
+        closed_at=None,
+        now=now,
+    )
+
+    assert status.achieved_kc_count == 1
+    assert status.achieved_at is None
+
+
+async def test_an_empty_objective_reports_nothing_and_keeps_the_closure(
+    db_session: AsyncSession,
+) -> None:
+    """Plans from before objectives were recorded have none; the status is all zeros (read
+    as "unknown"), but a closure the learner recorded is still theirs to see."""
+    learner, _subject, root, _dependent = await _graph(db_session)
+    closed = datetime.now(UTC)
+    # Evidence exists for the learner, so a zero below is the empty objective, not an empty
+    # database.
+    await _mastered_state(db_session, learner.id, root.id)
+
+    status = await svc.goal_status(
+        db_session, learner_id=learner.id, objective_kc_ids=[], closed_at=closed, now=closed
+    )
+
+    assert (
+        status.objective_kc_count,
+        status.achieved_kc_count,
+        status.current_kc_count,
+        status.stale_kc_count,
+    ) == (0, 0, 0, 0)
+    assert status.achieved_at is None
+    assert status.closed_at == closed
+
+
+async def test_the_plan_routes_report_a_computed_goal_status(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """The routes return the plan *with* its status, not the bare row.
+
+    `LessonPlanRead` defaults the status to all zeros so it can validate an ORM row, which
+    means a route returning the plan directly would still serialize — and would report no
+    progress at all. Only a seeded measurement tells the two apart.
+    """
+    r = await api_client.post(f"{API}/subjects", json={"slug": "phys", "name": "Physics"})
+    subject_id = r.json()["id"]
+    r = await api_client.post(
+        f"{API}/subjects/{subject_id}/topics", json={"slug": "t", "name": "T"}
+    )
+    topic_id = r.json()["id"]
+    r = await api_client.post(
+        f"{API}/topics/{topic_id}/kcs", json={"slug": "a-root", "name": "A Root"}
+    )
+    root_id = uuid.UUID(r.json()["id"])
+    r = await api_client.post(f"{API}/subjects/{subject_id}/lesson-plan", json={})
+    assert r.status_code == 200, r.text
+
+    now = datetime.now(UTC)
+    db_session.add(
+        LearnerKCState(
+            learner_id=api_learner.id,
+            kc_id=root_id,
+            ability=1.5,
+            uncertainty=0.3,
+            last_seen_at=now,
+            achieved_at=now,
+        )
+    )
+    await db_session.flush()
+
+    r = await api_client.get(f"{API}/subjects/{subject_id}/lesson-plan")
+    assert r.status_code == 200, r.text
+    status = r.json()["goal_status"]
+    assert status["objective_kc_count"] == 1
+    assert status["current_kc_count"] == 1
+    assert status["achieved_kc_count"] == 1
+
+
+async def test_a_measured_component_with_room_to_spare_is_mastered(
+    db_session: AsyncSession,
+) -> None:
+    """2.2 - 2 * 0.8 = 0.6 clears the bar; measured, so the guard lets it through.
+
+    The old rule's `uncertainty <= 0.5` would have refused this row. The conservative bar
+    trades the two against each other instead, and this pins that it does.
+    """
+    learner, _subject, root, _dependent = await _graph(db_session)
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=root.id,
+            ability=2.2,
+            uncertainty=0.8,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+
+    assert root.id in await svc.mastered_kc_ids(db_session, learner.id, [root.id])
+
+
+async def test_the_planner_does_not_reopen_a_long_idle_component(
+    db_session: AsyncSession,
+) -> None:
+    """Deliberate: stale evidence is reported by `goal_status`, not acted on by the planner.
+
+    Decay caps uncertainty at 1.0 and never lowers ability, so a component measured high
+    enough — at two deviations, ability 2.5 or more — stays planner-mastered however long ago
+    that was. The old `uncertainty <= 0.5`
+    rule reopened it; re-surfacing idle material is now FSRS's due-review job.
+    """
+    learner, _subject, root, _dependent = await _graph(db_session)
+    long_ago = datetime.now(UTC) - timedelta(days=400)
+    measured = Estimate(ability=3.0, uncertainty=0.3)
+    decayed = mastery.DEFAULT_ESTIMATOR.decay(measured, elapsed_days=400.0)
+    # The premise: after 400 days the uncertainty is at its cap — well past what the old rule
+    # accepted — and the conservative estimate still clears the bar.
+    assert decayed.uncertainty == 1.0
+    assert decayed.conservative >= get_settings().mastery_conservative_bar
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=root.id,
+            ability=measured.ability,
+            uncertainty=measured.uncertainty,
+            last_seen_at=long_ago,
+        )
+    )
+    await db_session.flush()
+
+    assert root.id in await svc.mastered_kc_ids(db_session, learner.id, [root.id])
+
+
+async def test_closing_a_goal_changes_no_evidence(db_session: AsyncSession) -> None:
+    """Closure is an intention, not a measurement (V0_DECISIONS).
+
+    There is deliberately no code path from `goal_closed_at` to any estimate; this is the
+    test that says so out loud.
+    """
+    learner, subject, root, _dependent = await _graph(db_session)
+    state = LearnerKCState(
+        learner_id=learner.id,
+        kc_id=root.id,
+        ability=0.2,
+        uncertainty=0.9,
+        last_seen_at=datetime.now(UTC),
+    )
+    db_session.add(state)
+    await db_session.flush()
+    before = (state.ability, state.uncertainty, state.achieved_at)
+
+    plan = await svc.generate_lesson_plan(
+        db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+    await svc.set_goal_closed(db_session, learner_id=learner.id, subject_id=subject.id, closed=True)
+
+    await db_session.refresh(state)
+    await db_session.refresh(plan)
+    assert plan.goal_closed_at is not None
+    assert (state.ability, state.uncertainty, state.achieved_at) == before
+
+    status = await svc.goal_status(
+        db_session,
+        learner_id=learner.id,
+        objective_kc_ids=[str(root.id)],
+        closed_at=plan.goal_closed_at,
+    )
+    assert status.closed_at is not None
+    assert status.achieved_kc_count == 0, "closing did not fabricate an achievement"
+
+
+async def test_closure_belongs_to_the_goal_it_was_given_for(db_session: AsyncSession) -> None:
+    """Regenerating the same goal is a revision and keeps the closure; changing the goal
+    clears it, because a different goal has not been closed by anyone."""
+    learner, subject, _root, _dependent = await _graph(db_session)
+    await svc.generate_lesson_plan(
+        db_session,
+        fake_llm_client(),
+        learner_id=learner.id,
+        subject_id=subject.id,
+        goal="learn derivatives",
+    )
+    await svc.set_goal_closed(db_session, learner_id=learner.id, subject_id=subject.id, closed=True)
+
+    same = await svc.generate_lesson_plan(
+        db_session,
+        fake_llm_client(),
+        learner_id=learner.id,
+        subject_id=subject.id,
+        goal="learn derivatives",
+    )
+    assert same.goal_closed_at is not None, "a regenerate of the same goal is a revision"
+
+    changed = await svc.generate_lesson_plan(
+        db_session,
+        fake_llm_client(),
+        learner_id=learner.id,
+        subject_id=subject.id,
+        goal="learn integrals",
+    )
+    assert changed.goal_closed_at is None
+
+
+# --- guidance and detour decisions over the route (S11) ------------------------------------
+
+
+async def _plan_for(session: AsyncSession, learner: Learner) -> Subject:
+    """A plan for `learner`, on a fresh single-KC subject."""
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Physics")
+    session.add(subject)
+    await session.flush()
+    topic = Topic(subject_id=subject.id, slug="t", name="T")
+    session.add(topic)
+    await session.flush()
+    kc = KC(topic_id=topic.id, slug="a", name="A")
+    session.add(kc)
+    await session.flush()
+    await svc.generate_lesson_plan(
+        session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+    return subject
+
+
+async def _subject_without_plan(session: AsyncSession, learner: Learner) -> Subject:
+    """A subject `learner` can see, with nothing planned on it yet."""
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Physics")
+    session.add(subject)
+    await session.flush()
+    return subject
+
+
+async def _stuck_for(
+    session: AsyncSession,
+    learner: Learner,
+    *,
+    guidance: Literal["guided", "exploration"] = "guided",
+) -> tuple[Subject, KC, KC]:
+    """`learner`, stuck on a dependent KC with a lapsed prerequisite and two failures behind
+    them (as ``tests/test_prerequisite_detour.py::_stuck`` does, but for a caller-supplied
+    learner), under `guidance`, and revised so the resulting detour is actually in `plan.steps`."""
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Chemistry")
+    session.add(subject)
+    await session.flush()
+    topic = Topic(subject_id=subject.id, slug="t", name="T")
+    session.add(topic)
+    await session.flush()
+    prereq = KC(topic_id=topic.id, slug="a-root", name="A Root")
+    blocked = KC(topic_id=topic.id, slug="b-dependent", name="B Dependent")
+    session.add_all([prereq, blocked])
+    await session.flush()
+    session.add(KCEdge(kc_id=blocked.id, prereq_kc_id=prereq.id))
+    await session.flush()
+    # Mastered the prerequisite's step out of the way so the dependent is what is active.
+    session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=prereq.id,
+            ability=2.0,
+            uncertainty=0.2,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
+    await session.flush()
+    await svc.generate_lesson_plan(
+        session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id, goal=None
+    )
+
+    # Now let the prerequisite lapse, and fail the dependent twice.
+    state = await session.scalar(
+        select(LearnerKCState).where(
+            LearnerKCState.learner_id == learner.id, LearnerKCState.kc_id == prereq.id
+        )
+    )
+    assert state is not None
+    state.ability = -1.0
+    state.uncertainty = 0.9
+    await session.flush()
+    for _ in range(2):
+        await mastery.record_observation(
+            session,
+            mastery.Observation(learner_id=learner.id, kc_weights={blocked.id: 1.0}, score=0.1),
+        )
+    await session.flush()
+
+    await svc.set_guidance(session, learner_id=learner.id, subject_id=subject.id, guidance=guidance)
+    revised = await svc.revise_plan(session, learner_id=learner.id, subject_id=subject.id)
+    assert revised is not None
+    return subject, prereq, blocked
+
+
+async def test_guidance_is_set_over_the_route(api_client, db_session, api_learner) -> None:
+    subject = await _plan_for(db_session, api_learner)  # this file's helper that makes a plan
+    r = await api_client.patch(
+        f"{API}/subjects/{subject.id}/lesson-plan/guidance", json={"guidance": "exploration"}
+    )
+    assert r.status_code == 200 and r.json()["guidance"] == "exploration"
+    r = await api_client.patch(
+        f"{API}/subjects/{subject.id}/lesson-plan/guidance", json={"guidance": "wander"}
+    )
+    assert r.status_code == 422
+
+
+async def test_detour_decisions_over_the_route(api_client, db_session, api_learner) -> None:
+    subject, prereq, _blocked = await _stuck_for(db_session, api_learner, guidance="exploration")
+    url = f"{API}/subjects/{subject.id}/lesson-plan/detours/{prereq.id}"
+
+    r = await api_client.post(url, json={"decision": "accept"})
+    assert r.status_code == 200
+    step = next(s for s in r.json()["steps"] if s["kc_id"] == str(prereq.id))
+    assert step["status"] == "active" and step["opened_at"] is not None
+
+    # Review focus 2: a double-submitted accept is refused, not applied twice.
+    assert (await api_client.post(url, json={"decision": "accept"})).status_code == 409
+
+    r = await api_client.post(url, json={"decision": "skip"})
+    assert r.status_code == 200
+    step = next(s for s in r.json()["steps"] if s["kc_id"] == str(prereq.id))
+    assert (step["status"], step["detour_outcome"]) == ("skipped", "skipped")
+
+    assert (await api_client.post(url, json={"decision": "skip"})).status_code == 409
+    assert (await api_client.post(url, json={"decision": "maybe"})).status_code == 422
+
+
+async def test_deciding_without_a_plan_is_404(api_client, db_session, api_learner) -> None:
+    subject = await _subject_without_plan(db_session, api_learner)
+    r = await api_client.post(
+        f"{API}/subjects/{subject.id}/lesson-plan/detours/{uuid.uuid4()}",
+        json={"decision": "skip"},
+    )
+    assert r.status_code == 404

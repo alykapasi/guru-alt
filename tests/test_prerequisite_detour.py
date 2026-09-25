@@ -7,8 +7,10 @@ because they never learned projections got the same component again, rescaffolde
 """
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,20 +22,24 @@ from app.learning.lesson_plan import (
     DETOUR_DIAGNOSED,
     DETOUR_REPEATED_FAILURE,
     Detour,
+    DetourNotOpen,
     ScaffoldingHints,
     StepDict,
     StepStatus,
     StepType,
+    decide_detour,
     prerequisite_detour,
     revise_steps,
 )
 from app.learning.mastery import Observation
 from app.llm.registry import fake_llm_client
-from app.models.assessment import RUBRIC_GRADABLE
-from app.models.knowledge import KC, KCEdge, Subject, Topic
+from app.models.assessment import RUBRIC_GRADABLE, EvidenceKind, Item, ItemKC, ItemType
+from app.models.knowledge import KC, ConceptLink, ConceptLinkDecision, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
 from app.models.profile import ProfileDimension
+from app.schemas.assessment import AnswerSubmit
+from app.services import assessment as assessment_svc
 from app.services import knowledge as knowledge_svc
 from app.services import lesson_plan as svc
 
@@ -175,11 +181,14 @@ def test_no_prerequisites_means_no_detour() -> None:
 
 
 def _step(
-    kc_id: uuid.UUID, step_type: StepType = "new", status: StepStatus = "pending"
+    kc_id: uuid.UUID,
+    step_type: StepType = "new",
+    status: StepStatus = "pending",
+    order: int = 0,
 ) -> StepDict:
     return StepDict(
         kc_id=str(kc_id),
-        order=0,
+        order=order,
         step_type=step_type,
         status=status,
         target_difficulty=None,
@@ -278,6 +287,284 @@ def test_plans_written_before_detours_existed_revise_unchanged() -> None:
     assert revised[0]["status"] == "active"
 
 
+# --- cross-subject prerequisites (S24) ----------------------------------------
+
+
+def _external(prereq: uuid.UUID, blocked: uuid.UUID) -> engine.Detour:
+    return engine.Detour(
+        prereq_kc_id=prereq,
+        blocked_kc_id=blocked,
+        reason=engine.DETOUR_EXTERNAL,
+        source_subject_id=uuid.uuid4(),
+        source_subject_name="Linear Algebra",
+    )
+
+
+def test_an_external_prerequisite_sits_just_before_the_step_that_needs_it() -> None:
+    first, blocked, foreign = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    steps = [_step(first, status="active", order=0), _step(blocked, status="pending", order=1)]
+    revised = _revise(steps, external_detours=[_external(foreign, blocked)])
+    assert [s["kc_id"] for s in revised] == [str(first), str(foreign), str(blocked)]
+    ext = _by_kc(revised, foreign)
+    assert (ext["step_type"], ext["status"], ext["source_subject_name"]) == (
+        "detour",
+        "pending",
+        "Linear Algebra",
+    )
+    assert _by_kc(revised, first)["status"] == "active"
+
+
+def test_exploration_offers_an_external_prerequisite() -> None:
+    blocked, foreign = uuid.uuid4(), uuid.uuid4()
+    revised = _revise(
+        [_step(blocked, status="active")],
+        external_detours=[_external(foreign, blocked)],
+        guidance="exploration",
+    )
+    assert _by_kc(revised, foreign)["status"] == "proposed"
+
+
+def test_an_external_prerequisite_is_never_disproved() -> None:
+    blocked, foreign = uuid.uuid4(), uuid.uuid4()
+    steps = _revise(
+        [_step(blocked, status="active")], external_detours=[_external(foreign, blocked)]
+    )
+    steps = _revise(steps, disproved_kc_ids=[foreign])
+    assert _by_kc(steps, foreign)["status"] != "done"
+
+
+def test_an_external_step_is_dropped_once_its_step_is_done() -> None:
+    blocked, foreign = uuid.uuid4(), uuid.uuid4()
+    steps = _revise(
+        [_step(blocked, status="active")], external_detours=[_external(foreign, blocked)]
+    )
+    steps = _revise(steps, mastered_kc_ids=[blocked])
+    assert all(s["kc_id"] != str(foreign) for s in steps)
+
+
+def test_a_provisional_component_is_checked_first() -> None:
+    kc = uuid.uuid4()
+    steps = _revise([_step(kc, status="active")], provisional_kc_ids=[kc])
+    assert _by_kc(steps, kc)["check_first"] is True
+    steps = _revise(steps)
+    assert _by_kc(steps, kc)["check_first"] is False
+
+
+def test_an_external_is_not_inserted_for_an_already_done_blocked_step() -> None:
+    """Review fix round 1, finding 1: a caller computes its `external_detours` candidates from
+    the plan as it stood *before* this revision, which cannot know a blocked step this very
+    revision's own mastery flip is about to finish. Without the refusal in `_insert`, the
+    external got inserted anyway and — since the blocked "new" step was already done — became
+    the active step instead of the component actually next."""
+    blocked, later, foreign = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    steps = engine.build_initial_steps([blocked, later])
+    revised = _revise(
+        steps, mastered_kc_ids=[blocked], external_detours=[_external(foreign, blocked)]
+    )
+    assert all(s["kc_id"] != str(foreign) for s in revised)
+    assert _by_kc(revised, later)["status"] == "active"
+
+
+# --- the learner's say (S11, V07) --------------------------------------------
+
+NOW = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+
+
+def _with_detour(guidance: str = "guided") -> tuple[list[StepDict], uuid.UUID, uuid.UUID]:
+    blocked, prereq = _ids(2)
+    steps = revise_steps(
+        [_step(blocked, status="active")],
+        mastered_kc_ids=[],
+        due_review_kc_ids=[],
+        scaffolding=NO_HINTS,
+        detour=Detour(prereq_kc_id=prereq, blocked_kc_id=blocked, reason=DETOUR_DIAGNOSED),
+        guidance=guidance,  # ty: ignore[invalid-argument-type]
+        now=NOW,
+    )
+    return steps, blocked, prereq
+
+
+def _by_kc(steps: list[StepDict], kc: uuid.UUID) -> StepDict:
+    return next(s for s in steps if s["kc_id"] == str(kc))
+
+
+def _revise(steps: list[StepDict], **kwargs: Any) -> list[StepDict]:
+    base: dict[str, Any] = {"mastered_kc_ids": [], "due_review_kc_ids": [], "scaffolding": NO_HINTS}
+    return revise_steps(steps, **(base | kwargs))
+
+
+def test_guided_takes_the_detour_and_records_when_it_opened() -> None:
+    steps, blocked, prereq = _with_detour("guided")
+    assert _by_kc(steps, prereq)["status"] == "active"
+    assert _by_kc(steps, prereq)["opened_at"] == NOW.isoformat()
+    assert _by_kc(steps, blocked)["status"] == "pending"
+
+
+def test_exploration_only_proposes() -> None:
+    steps, blocked, prereq = _with_detour("exploration")
+    proposal = _by_kc(steps, prereq)
+    assert proposal["status"] == "proposed"
+    assert proposal.get("opened_at") is None
+    assert _by_kc(steps, blocked)["status"] == "active"
+    # Directly before the step it was proposed for.
+    assert [s["kc_id"] for s in steps] == [str(prereq), str(blocked)]
+
+
+def test_offered_at_is_stamped_on_insertion_in_both_modes() -> None:
+    """Fix round 2 (S11): unlike ``opened_at``, ``offered_at`` marks when a step first
+    entered the plan regardless of guidance — it is what a caller keys a per-step outcome on,
+    since a route can legitimately reopen after closing ``mastered`` and the route alone
+    cannot tell two steps on it apart."""
+    for guidance in ("guided", "exploration"):
+        steps, _blocked, prereq = _with_detour(guidance)
+        assert _by_kc(steps, prereq)["offered_at"] == NOW.isoformat()
+
+
+def test_a_proposal_is_never_activated_by_revision() -> None:
+    steps, blocked, prereq = _with_detour("exploration")
+    for _ in range(3):
+        steps = _revise(steps, guidance="exploration")
+    assert _by_kc(steps, prereq)["status"] == "proposed"
+    assert _by_kc(steps, blocked)["status"] == "active"
+
+
+def test_a_proposal_blocks_a_second_one_for_the_same_prerequisite() -> None:
+    steps, blocked, prereq = _with_detour("exploration")
+    again = _revise(
+        steps,
+        guidance="exploration",
+        detour=Detour(prereq_kc_id=prereq, blocked_kc_id=blocked, reason=DETOUR_DIAGNOSED),
+    )
+    assert sum(1 for s in again if s["step_type"] == "detour") == 1
+
+
+def test_accepting_makes_it_the_active_step() -> None:
+    steps, blocked, prereq = _with_detour("exploration")
+    later = NOW + timedelta(minutes=5)
+    steps = _revise(
+        decide_detour(steps, prereq_kc_id=prereq, decision="accept", now=later),
+        guidance="exploration",
+    )
+    assert _by_kc(steps, prereq)["status"] == "active"
+    assert _by_kc(steps, prereq)["opened_at"] == later.isoformat()
+    assert _by_kc(steps, blocked)["status"] == "pending"
+
+
+def test_skipping_returns_to_the_blocked_step_in_either_mode() -> None:
+    for guidance in ("guided", "exploration"):
+        steps, blocked, prereq = _with_detour(guidance)
+        steps = _revise(
+            decide_detour(steps, prereq_kc_id=prereq, decision="skip", now=NOW),
+            guidance=guidance,
+        )
+        skipped = _by_kc(steps, prereq)
+        assert skipped["status"] == "skipped"
+        assert skipped["detour_outcome"] == "skipped"
+        assert _by_kc(steps, blocked)["status"] == "active"
+
+
+def test_a_skipped_detour_does_not_stop_a_new_one_being_offered() -> None:
+    # "Already open" must not count a skipped step; whether that route is *allowed* again is
+    # the service's call (closed_detour_routes), not the engine's.
+    steps, blocked, prereq = _with_detour("guided")
+    steps = decide_detour(steps, prereq_kc_id=prereq, decision="skip", now=NOW)
+    again = _revise(
+        steps,
+        detour=Detour(prereq_kc_id=prereq, blocked_kc_id=blocked, reason=DETOUR_DIAGNOSED),
+        now=NOW,
+    )
+    assert [s["status"] for s in again if s["step_type"] == "detour"].count("active") == 1
+
+
+def test_accept_on_an_accepted_detour_is_refused() -> None:
+    steps, _blocked, prereq = _with_detour("guided")
+    with pytest.raises(DetourNotOpen):
+        decide_detour(steps, prereq_kc_id=prereq, decision="accept", now=NOW)
+
+
+def test_deciding_on_a_detour_that_is_not_there_is_refused() -> None:
+    steps, _blocked, _prereq = _with_detour("guided")
+    with pytest.raises(DetourNotOpen):
+        decide_detour(steps, prereq_kc_id=uuid.uuid4(), decision="skip", now=NOW)
+
+
+def test_a_disproved_gap_ends_the_detour_and_goes_back() -> None:
+    steps, blocked, prereq = _with_detour("guided")
+    steps = _revise(steps, disproved_kc_ids=[prereq])
+    done = _by_kc(steps, prereq)
+    assert (done["status"], done["detour_outcome"]) == ("done", "disproved")
+    assert _by_kc(steps, blocked)["status"] == "active"
+
+
+def test_mastery_wins_over_disproval() -> None:
+    steps, _blocked, prereq = _with_detour("guided")
+    steps = _revise(steps, mastered_kc_ids=[prereq], disproved_kc_ids=[prereq])
+    assert _by_kc(steps, prereq)["detour_outcome"] == "mastered"
+
+
+def test_a_detour_with_no_start_time_cannot_be_disproved() -> None:
+    # Written before this slice: no trustworthy start, so an old pass must not close it.
+    steps, _blocked, prereq = _with_detour("guided")
+    _by_kc(steps, prereq).pop("opened_at")
+    steps = _revise(steps, disproved_kc_ids=[prereq])
+    assert _by_kc(steps, prereq)["status"] == "active"
+
+
+def test_a_proposal_is_not_disproved_but_is_dropped_once_mastered() -> None:
+    steps, _blocked, prereq = _with_detour("exploration")
+    assert _by_kc(_revise(steps, disproved_kc_ids=[prereq]), prereq)["status"] == "proposed"
+    dropped = _by_kc(_revise(steps, mastered_kc_ids=[prereq]), prereq)
+    assert (dropped["status"], dropped["detour_outcome"]) == ("done", "mastered")
+
+
+def test_a_hand_built_proposal_with_an_opened_at_stamp_is_still_never_disproved() -> None:
+    # `revise_steps` itself never puts an `opened_at` on a proposal, but a step dict handed
+    # back in (e.g. round-tripped from persistence, or built by another caller) should not
+    # depend on that invariant holding elsewhere — the "proposed" status alone, not the
+    # absence of a timestamp, is what protects an offer from being treated as disproved.
+    blocked, prereq = _ids(2)
+    hand_built = StepDict(
+        kc_id=str(prereq),
+        order=0,
+        step_type="detour",
+        status="proposed",
+        target_difficulty=None,
+        hint_density=None,
+        preferred_item_type=None,
+        detour_for=str(blocked),
+        detour_reason=DETOUR_DIAGNOSED,
+        opened_at=NOW.isoformat(),
+    )
+    steps = _revise([hand_built, _step(blocked, status="active")], disproved_kc_ids=[prereq])
+    proposal = _by_kc(steps, prereq)
+    assert proposal["status"] == "proposed"
+    assert proposal.get("detour_outcome") is None
+
+
+def test_a_proposal_is_dropped_once_its_step_is_done() -> None:
+    # An offer nobody answered is not a decision left open — once the step it was for is done
+    # some other way, the offer is stale and revision drops it rather than leaving it stranded.
+    steps, blocked, prereq = _with_detour("exploration")
+    after = _revise(steps, mastered_kc_ids=[blocked])
+    assert not any(s["kc_id"] == str(prereq) for s in after)
+
+
+def test_a_proposal_is_dropped_when_its_step_is_no_longer_in_the_plan() -> None:
+    steps, blocked, prereq = _with_detour("exploration")
+    without_blocked = [s for s in steps if s["kc_id"] != str(blocked)]
+    after = _revise(without_blocked)
+    assert not any(s["kc_id"] == str(prereq) for s in after)
+
+
+def test_a_guided_detour_is_not_dropped_by_the_new_pruning_rule() -> None:
+    # `pending`/`active` detours are a decision already acted on, not an outstanding offer —
+    # the pruning rule only ever touches proposals, so guided mode is unchanged.
+    steps, blocked, prereq = _with_detour("guided")
+    without_blocked = [s for s in steps if s["kc_id"] != str(blocked)]
+    after = _revise(without_blocked)
+    assert _by_kc(after, prereq)["status"] == "active"
+
+
 # --- the struggle signal -----------------------------------------------------
 
 
@@ -369,8 +656,16 @@ async def _plan(session: AsyncSession, learner: Learner, subject: Subject):
 async def test_a_stuck_learner_is_sent_to_the_prerequisite(db_session: AsyncSession) -> None:
     learner, subject, prereq, blocked = await _graph(db_session)
     # Mastered the prerequisite's *step* out of the way so least squares is what is active.
+    # Mastery takes ability evidence as well as a confident row, so the fixture has to have
+    # been measured — an unmeasured row is a placement seed, and the step would stay active.
     db_session.add(
-        LearnerKCState(learner_id=learner.id, kc_id=prereq.id, ability=2.0, uncertainty=0.2)
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=prereq.id,
+            ability=2.0,
+            uncertainty=0.2,
+            last_seen_at=datetime.now(UTC),
+        )
     )
     await db_session.flush()
     plan = await _plan(db_session, learner, subject)
@@ -462,8 +757,16 @@ async def test_which_prerequisite_a_stuck_learner_is_sent_to_is_decided_not_obse
 async def _stuck(session: AsyncSession) -> tuple[Learner, Subject, KC, KC]:
     """A learner active on ``blocked`` with a lapsed prerequisite and two failures behind them."""
     learner, subject, prereq, blocked = await _graph(session)
+    # Measured, not merely asserted: mastery needs ability evidence, and this row exists to
+    # carry the prerequisite's step past the planner before it is lapsed below.
     session.add(
-        LearnerKCState(learner_id=learner.id, kc_id=prereq.id, ability=2.0, uncertainty=0.2)
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=prereq.id,
+            ability=2.0,
+            uncertainty=0.2,
+            last_seen_at=datetime.now(UTC),
+        )
     )
     await session.flush()
     await _plan(session, learner, subject)
@@ -633,3 +936,635 @@ async def test_a_format_preference_does_not_override_a_detour(db_session: AsyncS
     other = next(s for s in revised.steps if s["step_type"] == "new" and s["status"] != "done")
     assert detour_step["preferred_item_type"] == engine.DETOUR_ITEM_TYPE
     assert other["preferred_item_type"] == "flashcard"
+
+
+# --- the learner's say, end to end (S11) -------------------------------------
+
+
+async def _outcome_events(session: AsyncSession, learner: Learner) -> list[LearningEvent]:
+    rows = await session.scalars(
+        select(LearningEvent).where(
+            LearningEvent.learner_id == learner.id,
+            LearningEvent.event_type == mastery.DETOUR_OUTCOME_EVENT,
+        )
+    )
+    return list(rows)
+
+
+async def _exploring(session: AsyncSession) -> tuple[Learner, Subject, KC, KC]:
+    learner, subject, prereq, blocked = await _stuck(session)
+    await svc.set_guidance(
+        session, learner_id=learner.id, subject_id=subject.id, guidance="exploration"
+    )
+    return learner, subject, prereq, blocked
+
+
+def _detour_step(plan, prereq: KC) -> dict:
+    return next(
+        s for s in plan.steps if s["step_type"] == "detour" and s["kc_id"] == str(prereq.id)
+    )
+
+
+async def test_exploration_proposes_and_records_the_offer(db_session: AsyncSession) -> None:
+    learner, subject, prereq, blocked = await _exploring(db_session)
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    assert _detour_step(plan, prereq)["status"] == "proposed"
+    active = next(s for s in plan.steps if s["status"] == "active")
+    assert active["kc_id"] == str(blocked.id)
+    events = await _detour_events(db_session, learner)
+    assert len(events) == 1 and events[0].payload["proposed"] is True
+
+
+async def test_accepting_then_answering_well_disproves_the_gap(db_session: AsyncSession) -> None:
+    learner, subject, prereq, blocked = await _exploring(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    await svc.decide_detour(
+        db_session,
+        learner_id=learner.id,
+        subject_id=subject.id,
+        prereq_kc_id=prereq.id,
+        decision="accept",
+    )
+    for _ in range(3):
+        await _observe(db_session, learner, prereq, 0.9)
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    step = _detour_step(plan, prereq)
+    assert (step["status"], step["detour_outcome"]) == ("done", "disproved")
+    assert next(s for s in plan.steps if s["status"] == "active")["kc_id"] == str(blocked.id)
+    outcomes = await _outcome_events(db_session, learner)
+    assert [(e.kc_id, e.payload["outcome"]) for e in outcomes] == [(blocked.id, "disproved")]
+
+
+async def test_a_pass_from_before_the_detour_does_not_disprove_it(
+    db_session: AsyncSession,
+) -> None:
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    # A good, unassisted answer on the prerequisite — an hour before the detour opens.
+    await mastery.record_observation(
+        db_session,
+        Observation(learner_id=learner.id, kc_weights={prereq.id: 1.0}, score=0.95),
+        now=datetime.now(UTC) - timedelta(hours=1),
+    )
+    await db_session.flush()
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    assert _detour_step(plan, prereq)["status"] == "active"
+
+
+async def test_an_assisted_pass_does_not_disprove_it(db_session: AsyncSession) -> None:
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    for _ in range(3):
+        await _pass(db_session, learner, prereq, hints_used=1)
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    assert _detour_step(plan, prereq)["status"] == "active"
+
+
+async def test_a_self_rating_does_not_disprove_it(db_session: AsyncSession) -> None:
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    await mastery.record_observation(
+        db_session,
+        Observation(
+            learner_id=learner.id,
+            kc_weights={prereq.id: 1.0},
+            score=1.0,
+            evidence_kind=EvidenceKind.SELF_REPORTED,
+        ),
+    )
+    await db_session.flush()
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    assert _detour_step(plan, prereq)["status"] == "active"
+
+
+async def test_a_pass_straight_after_a_worked_example_does_not_disprove_it(
+    db_session: AsyncSession,
+) -> None:
+    # Guided practice shows a worked example before every problem, so its correct, hint-free
+    # first answer is the detour working — not evidence the prerequisite was never the gap.
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    for _ in range(3):
+        await _pass(db_session, learner, prereq, taught_first=True)
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    assert _detour_step(plan, prereq).get("detour_outcome") != "disproved"
+    assert "disproved" not in [
+        e.payload["outcome"] for e in await _outcome_events(db_session, learner)
+    ]
+
+
+async def test_the_same_pass_without_a_worked_example_still_disproves_it(
+    db_session: AsyncSession,
+) -> None:
+    # The control for the test above: the same correct, hint-free answers from a check or a
+    # review (not taught first) are unaided demonstrations, and a run of them still disproves.
+    learner, subject, prereq, blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    for _ in range(3):
+        await _pass(db_session, learner, prereq)
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    step = _detour_step(plan, prereq)
+    assert (step["status"], step["detour_outcome"]) == ("done", "disproved")
+    outcomes = await _outcome_events(db_session, learner)
+    assert [(e.kc_id, e.payload["outcome"]) for e in outcomes] == [(blocked.id, "disproved")]
+
+
+async def _pass(
+    session: AsyncSession,
+    learner: Learner,
+    kc: KC,
+    *,
+    hints_used: int = 0,
+    taught_first: bool = False,
+    item_id: uuid.UUID | None = None,
+) -> None:
+    await mastery.record_observation(
+        session,
+        Observation(
+            learner_id=learner.id,
+            kc_weights={kc.id: 1.0},
+            score=0.95,
+            hints_used=hints_used,
+            taught_first=taught_first,
+            item_id=item_id,
+        ),
+    )
+    await session.flush()
+
+
+async def _still_open(
+    session: AsyncSession, learner: Learner, subject: Subject, prereq: KC
+) -> bool:
+    plan = await svc.revise_plan(session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    return _detour_step(plan, prereq)["status"] == "active"
+
+
+async def test_one_or_two_passes_are_not_enough_to_disprove_it(
+    db_session: AsyncSession,
+) -> None:
+    # One answer is too small a sample to call a learner solid: a guess or an easy item gets
+    # there. The detour stays open until a full run of `detour_disprove_passes`.
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    for _ in range(get_settings().detour_disprove_passes - 1):
+        await _pass(db_session, learner, prereq)
+        assert await _still_open(db_session, learner, subject, prereq)
+    assert await _outcome_events(db_session, learner) == []
+
+
+async def test_a_failure_starts_the_run_over(db_session: AsyncSession) -> None:
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    await _pass(db_session, learner, prereq)
+    await _pass(db_session, learner, prereq)
+    await _observe(db_session, learner, prereq, 0.1)
+    await _pass(db_session, learner, prereq)
+    await _pass(db_session, learner, prereq)
+    assert await _still_open(db_session, learner, subject, prereq)
+    await _pass(db_session, learner, prereq)
+    assert not await _still_open(db_session, learner, subject, prereq)
+
+
+async def test_a_helped_pass_neither_counts_nor_breaks_the_run(db_session: AsyncSession) -> None:
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    await _pass(db_session, learner, prereq)
+    await _pass(db_session, learner, prereq, hints_used=1)
+    await _pass(db_session, learner, prereq, taught_first=True)
+    await _pass(db_session, learner, prereq)
+    assert await _still_open(db_session, learner, subject, prereq)
+    await _pass(db_session, learner, prereq)
+    assert not await _still_open(db_session, learner, subject, prereq)
+
+
+async def test_the_same_question_answered_again_counts_once(db_session: AsyncSession) -> None:
+    learner, subject, prereq, _blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    item = uuid.uuid4()
+    for _ in range(3):
+        await _pass(db_session, learner, prereq, item_id=item)
+    assert await _still_open(db_session, learner, subject, prereq)
+
+
+async def test_a_disproved_route_is_not_closed(db_session: AsyncSession) -> None:
+    # A disproval is an inference from a handful of answers and can be wrong; only the
+    # learner's own skip bars a route for good. `detour_max_repeats` stops endless retries.
+    learner, _subject, prereq, blocked = await _stuck(db_session)
+    mastery.record_detour_outcome(
+        db_session,
+        learner_id=learner.id,
+        blocked_kc_id=blocked.id,
+        prereq_kc_id=prereq.id,
+        outcome="disproved",
+    )
+    await db_session.flush()
+    assert await mastery.closed_detour_routes(db_session, learner.id, blocked.id) == set()
+
+
+async def test_skipping_returns_to_the_blocked_step_and_is_remembered(
+    db_session: AsyncSession,
+) -> None:
+    learner, subject, prereq, blocked = await _stuck(db_session)  # guided: already active
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    plan = await svc.decide_detour(
+        db_session,
+        learner_id=learner.id,
+        subject_id=subject.id,
+        prereq_kc_id=prereq.id,
+        decision="skip",
+    )
+    assert plan is not None
+    assert _detour_step(plan, prereq)["status"] == "skipped"
+    assert next(s for s in plan.steps if s["status"] == "active")["kc_id"] == str(blocked.id)
+    assert [e.payload["outcome"] for e in await _outcome_events(db_session, learner)] == ["skipped"]
+
+    # Still failing the blocked component: the skipped route is not offered again.
+    await _observe(db_session, learner, blocked, 0.1)
+    await _observe(db_session, learner, blocked, 0.1)
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    assert not any(
+        s["step_type"] == "detour" and s["status"] in ("active", "pending", "proposed")
+        for s in plan.steps
+    )
+
+
+async def test_a_mastered_route_is_not_closed(db_session: AsyncSession) -> None:
+    learner, _subject, prereq, blocked = await _stuck(db_session)
+    mastery.record_detour_outcome(
+        db_session,
+        learner_id=learner.id,
+        blocked_kc_id=blocked.id,
+        prereq_kc_id=prereq.id,
+        outcome="mastered",
+    )
+    await db_session.flush()
+    assert await mastery.closed_detour_routes(db_session, learner.id, blocked.id) == set()
+
+
+async def test_outcomes_are_decisions_not_evidence(db_session: AsyncSession) -> None:
+    learner, subject, prereq, blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    before = await mastery.kc_evidence(db_session, learner.id, [prereq.id, blocked.id])
+    await svc.decide_detour(
+        db_session,
+        learner_id=learner.id,
+        subject_id=subject.id,
+        prereq_kc_id=prereq.id,
+        decision="skip",
+    )
+    after = await mastery.kc_evidence(db_session, learner.id, [prereq.id, blocked.id])
+    assert after == before
+    struggle = await mastery.recent_struggle(db_session, learner.id, blocked.id, threshold=0.5)
+    assert struggle.consecutive_failures == 2
+
+
+async def test_switching_guidance_leaves_an_open_proposal_alone(
+    db_session: AsyncSession,
+) -> None:
+    """Review focus 1: changing the setting does not rewrite steps (spec §2)."""
+    learner, subject, prereq, _blocked = await _exploring(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    await svc.set_guidance(
+        db_session, learner_id=learner.id, subject_id=subject.id, guidance="guided"
+    )
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    assert _detour_step(plan, prereq)["status"] == "proposed"
+    plan = await svc.decide_detour(
+        db_session,
+        learner_id=learner.id,
+        subject_id=subject.id,
+        prereq_kc_id=prereq.id,
+        decision="accept",
+    )
+    assert plan is not None and _detour_step(plan, prereq)["status"] == "active"
+
+
+async def test_a_new_plan_is_guided(db_session: AsyncSession) -> None:
+    learner, subject, _prereq, _blocked = await _graph(db_session)
+    plan = await _plan(db_session, learner, subject)
+    assert plan is not None and plan.guidance == "guided"
+
+
+async def test_a_route_closed_mastered_can_reopen_and_its_own_skip_is_remembered(
+    db_session: AsyncSession,
+) -> None:
+    """Review fix round 1, finding 1: `closed_detour_routes` does not bar a route that closed
+    `"mastered"` — mastery can slip and send the learner back to it. That second trip is a
+    different *step* on the same route, and its own close needs its own event; keying the
+    diff on the route alone let the second closure collide with the first in the dict and
+    silently write nothing."""
+    learner, subject, prereq, blocked = await _stuck(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)  # detour 1
+
+    # Master the prerequisite: the open detour closes "mastered".
+    state = await db_session.scalar(
+        select(LearnerKCState).where(
+            LearnerKCState.learner_id == learner.id, LearnerKCState.kc_id == prereq.id
+        )
+    )
+    assert state is not None
+    state.ability, state.uncertainty, state.last_seen_at = 2.0, 0.2, datetime.now(UTC)
+    await db_session.flush()
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    first = _detour_step(plan, prereq)
+    assert (first["status"], first["detour_outcome"]) == ("done", "mastered")
+    assert await mastery.closed_detour_routes(db_session, learner.id, blocked.id) == set()
+
+    # Mastery slips: still failing the blocked component, so the route reopens.
+    state.ability, state.uncertainty = -1.0, 0.9
+    await db_session.flush()
+    plan = await svc.revise_plan(
+        db_session, learner_id=learner.id, subject_id=subject.id
+    )  # detour 2
+    assert plan is not None
+    detour_steps = [
+        s for s in plan.steps if s["step_type"] == "detour" and s["kc_id"] == str(prereq.id)
+    ]
+    assert len(detour_steps) == 2
+    second = next(s for s in detour_steps if s["status"] == "active")
+    assert second["opened_at"] != first["opened_at"]
+
+    plan = await svc.decide_detour(
+        db_session,
+        learner_id=learner.id,
+        subject_id=subject.id,
+        prereq_kc_id=prereq.id,
+        decision="skip",
+    )
+    assert plan is not None
+
+    outcomes = await _outcome_events(db_session, learner)
+    assert {e.payload["outcome"] for e in outcomes} == {"mastered", "skipped"}
+    assert len(outcomes) == 2
+    assert await mastery.closed_detour_routes(db_session, learner.id, blocked.id) == {prereq.id}
+
+
+async def test_two_never_accepted_proposals_on_one_route_are_remembered_separately(
+    db_session: AsyncSession,
+) -> None:
+    """Review fix round 2, finding 1: the round-1 fix's fallback for a step with no
+    `opened_at` (an occurrence index among same-route steps) was order-dependent —
+    `revise_steps` re-sorts closed steps by their *previous* order, so the index a step got in
+    the "before" read of `plan.steps` was not guaranteed to match the index it gets in the
+    "after" read of `revised`. This is the case that actually needs it: neither proposal here
+    is ever accepted, so neither ever gets an `opened_at` — only `offered_at`, stamped on
+    every insertion regardless of guidance, tells the two apart."""
+    learner, subject, prereq, blocked = await _exploring(db_session)
+    await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)  # P1 proposed
+
+    # Master the prerequisite without ever accepting the offer: P1 closes "mastered" still
+    # `"proposed"` (revise_steps rule 1 applies to every detour status, not only open ones).
+    state = await db_session.scalar(
+        select(LearnerKCState).where(
+            LearnerKCState.learner_id == learner.id, LearnerKCState.kc_id == prereq.id
+        )
+    )
+    assert state is not None
+    state.ability, state.uncertainty, state.last_seen_at = 2.0, 0.2, datetime.now(UTC)
+    await db_session.flush()
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    first = _detour_step(plan, prereq)
+    assert (first["status"], first["detour_outcome"]) == ("done", "mastered")
+    assert first.get("opened_at") is None
+
+    # Mastery slips: still failing the blocked component, so the route reopens — P2 proposed.
+    state.ability, state.uncertainty = -1.0, 0.9
+    await db_session.flush()
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject.id)
+    assert plan is not None
+    detour_steps = [
+        s for s in plan.steps if s["step_type"] == "detour" and s["kc_id"] == str(prereq.id)
+    ]
+    assert len(detour_steps) == 2
+    second = next(s for s in detour_steps if s["status"] == "proposed")
+    assert second.get("opened_at") is None
+    assert second["offered_at"] != first["offered_at"]
+
+    plan = await svc.decide_detour(
+        db_session,
+        learner_id=learner.id,
+        subject_id=subject.id,
+        prereq_kc_id=prereq.id,
+        decision="skip",
+    )
+    assert plan is not None
+
+    outcomes = await _outcome_events(db_session, learner)
+    assert {e.payload["outcome"] for e in outcomes} == {"mastered", "skipped"}
+    assert len(outcomes) == 2
+    assert await mastery.closed_detour_routes(db_session, learner.id, blocked.id) == {prereq.id}
+
+
+# --- cross-subject prerequisites, end to end (S24) ---------------------------
+
+
+async def _foreign_prereq(session: AsyncSession, *, owner: Learner | None = None):
+    """Subject B's `blocked` requires `foreign` from subject A."""
+    learner = owner or Learner(handle=f"x-{uuid.uuid4().hex[:8]}")
+    session.add(learner)
+    subject_a = Subject(slug=f"a-{uuid.uuid4().hex[:8]}", name="Linear Algebra")
+    subject_b = Subject(slug=f"b-{uuid.uuid4().hex[:8]}", name="Graphics")
+    session.add_all([subject_a, subject_b])
+    await session.flush()
+    ta = Topic(subject_id=subject_a.id, slug="t", name="T")
+    tb = Topic(subject_id=subject_b.id, slug="t", name="T")
+    session.add_all([ta, tb])
+    await session.flush()
+    foreign = KC(topic_id=ta.id, slug="vectors", name="Vectors")
+    blocked = KC(topic_id=tb.id, slug="transforms", name="Transforms")
+    session.add_all([foreign, blocked])
+    await session.flush()
+    session.add(KCEdge(prereq_kc_id=foreign.id, kc_id=blocked.id))
+    await session.flush()
+    return learner, subject_a, subject_b, foreign, blocked
+
+
+async def test_an_unmastered_foreign_prerequisite_becomes_an_external_step(
+    db_session: AsyncSession,
+) -> None:
+    learner, _subject_a, subject_b, foreign, _blocked = await _foreign_prereq(db_session)
+    plan = await _plan(db_session, learner, subject_b)
+    ext = _detour_step(plan, foreign)
+    assert (ext["detour_reason"], ext["source_subject_name"]) == ("external", "Linear Algebra")
+
+
+async def test_a_mastered_foreign_prerequisite_is_satisfied(db_session: AsyncSession) -> None:
+    learner, _a, subject_b, foreign, _blocked = await _foreign_prereq(db_session)
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=foreign.id,
+            ability=3.0,
+            uncertainty=0.2,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+    plan = await _plan(db_session, learner, subject_b)
+    assert all(s["kc_id"] != str(foreign.id) for s in plan.steps)
+
+
+async def test_a_mastered_blocked_step_gets_no_external_detour(db_session: AsyncSession) -> None:
+    """Review fix round 1, finding 1: the learner has already mastered `blocked` (subject B's
+    own component) but not `foreign` (subject A's). `_external_detours` computes its candidates
+    from `bare_steps`, whose statuses are always `"pending"` regardless of mastery — the
+    refusal that stops an external being planned for an already-done step has to live in
+    `revise_steps`'s own `_insert`, checked against mastery as revised, not in the service."""
+    learner, _a, subject_b, foreign, blocked = await _foreign_prereq(db_session)
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=blocked.id,
+            ability=3.0,
+            uncertainty=0.2,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+    plan = await _plan(db_session, learner, subject_b)
+    assert all(s["kc_id"] != str(foreign.id) for s in plan.steps)
+
+
+async def test_a_foreign_prerequisite_in_a_subject_the_learner_cannot_see_is_dropped(
+    db_session: AsyncSession,
+) -> None:
+    """Review focus 4."""
+    learner, subject_a, subject_b, foreign, _blocked = await _foreign_prereq(db_session)
+    stranger = Learner(handle=f"s-{uuid.uuid4().hex[:8]}")
+    db_session.add(stranger)
+    await db_session.flush()
+    subject_a.owner_learner_id = stranger.id
+    await db_session.flush()
+    plan = await _plan(db_session, learner, subject_b)
+    assert all(s["kc_id"] != str(foreign.id) for s in plan.steps)
+
+
+async def test_a_linked_local_equivalent_orders_the_plan_instead(db_session: AsyncSession) -> None:
+    learner, _a, subject_b, foreign, blocked = await _foreign_prereq(db_session)
+    topic_b = await db_session.scalar(select(Topic).where(Topic.subject_id == subject_b.id))
+    assert topic_b is not None
+    local = KC(topic_id=topic_b.id, slug="zz-vectors", name="Vectors")  # slug sorts last on purpose
+    db_session.add(local)
+    await db_session.flush()
+    a, b = sorted((foreign.id, local.id))
+    link = ConceptLink(
+        kc_a_id=a, kc_b_id=b, scope="curated", verdict="endorsed", endorsed_by="admin"
+    )
+    db_session.add(link)
+    await db_session.flush()
+    db_session.add(ConceptLinkDecision(learner_id=learner.id, link_id=link.id, decision="accepted"))
+    await db_session.flush()
+    plan = await _plan(db_session, learner, subject_b)
+    order = [s["kc_id"] for s in plan.steps]
+    assert str(foreign.id) not in order
+    assert order.index(str(local.id)) < order.index(str(blocked.id))
+
+
+async def test_a_skipped_external_step_is_not_offered_again(db_session: AsyncSession) -> None:
+    learner, _a, subject_b, foreign, _blocked = await _foreign_prereq(db_session)
+    await _plan(db_session, learner, subject_b)
+    await svc.decide_detour(
+        db_session,
+        learner_id=learner.id,
+        subject_id=subject_b.id,
+        prereq_kc_id=foreign.id,
+        decision="skip",
+    )
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject_b.id)
+    assert plan is not None
+    open_ = [
+        s
+        for s in plan.steps
+        if s["kc_id"] == str(foreign.id) and s["status"] not in ("done", "skipped")
+    ]
+    assert open_ == []
+
+
+async def test_an_external_step_closes_mastered_once_the_prerequisite_is(
+    db_session: AsyncSession,
+) -> None:
+    learner, _a, subject_b, foreign, _blocked = await _foreign_prereq(db_session)
+    await _plan(db_session, learner, subject_b)
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=foreign.id,
+            ability=3.0,
+            uncertainty=0.2,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+    plan = await svc.revise_plan(db_session, learner_id=learner.id, subject_id=subject_b.id)
+    assert plan is not None
+    step = _detour_step(plan, foreign)
+    assert (step["status"], step["detour_outcome"]) == ("done", "mastered")
+
+
+async def _mcq_item(session: AsyncSession, kc_id: uuid.UUID) -> Item:
+    item = Item(
+        visibility="curated",
+        item_type=ItemType.MCQ,
+        stem="Q",
+        answer_key={"choices": ["a", "b"], "correct": 0},
+        kc_links=[ItemKC(kc_id=kc_id, weight=1.0)],
+    )
+    session.add(item)
+    await session.flush()
+    return item
+
+
+async def test_answering_an_external_step_revises_the_plan_that_holds_it(
+    db_session: AsyncSession,
+) -> None:
+    """``_revise_plans`` (``app/services/assessment.py``) used to revise only the plans of
+    ``knowledge_svc.subjects_for_kcs`` — the subject that OWNS the answered KC (A). Subject B's
+    plan holds `foreign` only as an *external* detour step, so answering it never reached B and
+    B's active step stayed `foreign` forever, even once it was mastered."""
+    learner, _subject_a, subject_b, foreign, blocked = await _foreign_prereq(db_session)
+    plan_b = await _plan(db_session, learner, subject_b)
+    ext = _detour_step(plan_b, foreign)
+    assert ext["status"] == "active"  # sanity: the external step is what B's plan is on
+
+    # Close enough to the bar that one more correct, unaided answer clears it (0.48 -> 0.54;
+    # see the final-fix-report for the derivation) — without seeding mastery outright, so the
+    # answer itself is what has to do the work this fix is about.
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=foreign.id,
+            ability=1.48,
+            uncertainty=0.5,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+    assert foreign.id not in await svc.mastered_kc_ids(db_session, learner.id, [foreign.id])
+
+    item = await _mcq_item(db_session, foreign.id)
+    await assessment_svc.answer_item(
+        db_session, learner.id, item, AnswerSubmit(response={"choice": 0}), llm=fake_llm_client()
+    )
+    assert foreign.id in await svc.mastered_kc_ids(db_session, learner.id, [foreign.id])
+
+    plan_b_after = await svc.get_lesson_plan(
+        db_session, learner_id=learner.id, subject_id=subject_b.id
+    )
+    assert plan_b_after is not None
+    ext_after = _detour_step(plan_b_after, foreign)
+    assert (ext_after["status"], ext_after["detour_outcome"]) == ("done", "mastered")
+    assert next(s for s in plan_b_after.steps if s["status"] == "active")["kc_id"] == str(
+        blocked.id
+    )

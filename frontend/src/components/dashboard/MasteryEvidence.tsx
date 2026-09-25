@@ -21,10 +21,6 @@ export function MasteryEvidence({ kc }: { kc: KCMastery }) {
     <p className="text-caption text-base-content/40 pl-4">
       {problems}, {unassisted}
       {" · "}
-      <span className={kc.transfer_shown ? "text-success" : undefined}>
-        {kc.transfer_shown ? "solved a different one" : "no different problem yet"}
-      </span>
-      {" · "}
       <span className={kc.retention_shown ? "text-success" : undefined}>
         {kc.retention_shown ? "held up later" : "no delayed check yet"}
       </span>

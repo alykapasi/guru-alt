@@ -24,6 +24,9 @@ class ConversationPhase(StrEnum):
     CHATTING = "chatting"  # nothing pending: an ordinary reply, whatever produced it
     GOAL_PROPOSED = "goal_proposed"  # the refinement gate proposed a goal; accept or refine
     AWAITING_ANSWER = "awaiting_answer"  # a practice item is in play and expects an answer
+    # Guided practice paused for a side discussion. Resuming or skipping is explicit — a side
+    # question or a skip must never be graded as a wrong answer (S52).
+    PRACTICE_PAUSED = "practice_paused"
 
 
 class TurnStatus(StrEnum):
@@ -126,6 +129,11 @@ class Conversation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # different transactions, and ordering the two by clock is exactly the kind of inference
     # this column exists to avoid.
     active_item_scaffolds: Mapped[int] = mapped_column(server_default="0", default=0)
+    # Tutor replies given while guided practice was paused for a side discussion (S52). Counted
+    # here for the same reason ``active_item_scaffolds`` is: the reply that helps and the attempt
+    # it discounts are written in different transactions, so ordering them by ``created_at``
+    # would be inferring what this column instead records outright.
+    practice_scaffolds: Mapped[int] = mapped_column(server_default="0", default=0)
     # The newest message memory extraction has already read. Extraction used to take the last
     # N messages regardless, so a conversation that grew by more than N between write-backs
     # had the middle silently skipped — and one that grew by nothing paid a model call to
