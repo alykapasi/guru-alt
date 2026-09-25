@@ -690,3 +690,70 @@ looks like it was transcribed out of a textbook, it probably was.
 The foreign keys are `SET NULL` and the handles are kept as text, so the record survives the
 author closing their account. Closing an account clears the author's half and keeps the
 reviewer's: an audit any author can erase is not an audit.
+
+## 13. Concept links (S24)
+
+Two components in different subjects can share a concept name. A shared name only makes them a
+**candidate**. It never links anything, and it never moves anyone's estimate.
+
+A link takes two agreements:
+
+1. **An endorsement.** An administrator endorses a pair where both subjects are curated. The
+   judge (the `SMART` role) endorses a pair that touches a learner's own subject.
+2. **The learner's acceptance.** Each learner who can see both sides accepts or declines for
+   themselves, from the *Connections* panel on the Lessons page. They can revoke later.
+
+### What you are actually deciding
+
+Endorsing a curated pair makes it a suggestion to every learner who can see both subjects. The
+suggestion carries your reason, which is the only thing the learner reads before deciding.
+Endorsing does not link the pair for anyone. The learner accepts or declines it.
+
+Endorse only when an answer that shows understanding of one component would also show
+understanding of the other. Similar names are not enough.
+
+What a learner's acceptance does:
+
+- **The head start is provisional.** It is taken from their estimate on the other side, with
+  the uncertainty raised to at least `transfer_uncertainty_floor` (0.6).
+- **It must be confirmed.** It does not count as mastered until they pass
+  `transfer_confirm_passes` (2) different questions on it unaided.
+- **It is checked, not taught.** In guided practice, a component with a head start gets a
+  question before any explanation.
+- **Nothing else changes.** Their evidence on the source side is never touched.
+
+A wrong endorsement therefore costs a learner a few questions, not a false mastery claim. It is
+still a claim made in the product's name, so write a reason you would stand behind.
+
+### Working the queue
+
+- **Where:** the admin portal, under **Concept links**.
+- **Order:** undecided pairs first. Opening the queue also picks up any new curated candidates.
+- **Endorse / Reject:** both need a reason.
+- **A verdict is final.** A second verdict on the same pair gets a 409.
+
+### The judge
+
+- **When it runs:** a queued job (`judge_concept_links_task`), started when a learner commits a
+  subject. It judges that learner's candidates that have no verdict yet. It does not run on a
+  schedule.
+- **What it reads:** only names and structure from subjects the learner can already see. That is
+  the component, its topic and subject, and the names of its direct prerequisites and dependents.
+- **Rejections:** a rejection is final for that pair and is never shown to the learner.
+- **Failures:** a failure (timeout, unreadable reply, provider down) leaves the pair unjudged for
+  the next commit. It is never recorded as a rejection.
+- **Cost:** each call is logged with its cost like any other model call.
+- **If the queue is down:** committing a subject still succeeds, and the pairs wait for that
+  learner's next commit.
+
+### Where the records are
+
+- `concept_links`: one row per pair, with the verdict and its reason.
+  - `endorsed_by` is `admin` or `judge`.
+  - For an administrator's verdict, `decided_by_admin_id` records who made it and `decided_at`
+    records when.
+- `concept_link_decisions`: each learner's accept, decline or revoke.
+- `learner_kc_state.transferred_from_kc_id`, `transferred_at` and `transfer_confirmed_at`:
+  which component a head start came from, and whether it has been confirmed.
+- `learning_events`: a `transfer_seed` event for each head start, and `transfer_revoked` when
+  one is withdrawn.

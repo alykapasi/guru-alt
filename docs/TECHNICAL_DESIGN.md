@@ -241,12 +241,19 @@ curriculum_proposals(learner_id,           # server-side record that a draft cam
 publications(source_subject_id, published_subject_id, author_id, author_handle, status,
              snapshot jsonb, excluded_item_ids jsonb, reviewer_id, reviewer_handle,
              reviewed_at, review_note)     # the frozen copy an administrator reviewed (7.1a)
-learner_kc_state(learner_id, kc_id, ability, uncertainty, last_seen, due_at)
+learner_kc_state(learner_id, kc_id, ability, uncertainty, last_seen, due_at,
+                 achieved_at,              # kept once reached; never cleared by decay
+                 transferred_from_kc_id,   # a head start from a linked component, provisional
+                 transferred_at, transfer_confirmed_at)  #   until real answers confirm it
+concept_links(kc_a_id, kc_b_id, scope,     # cross-subject pair: endorsed by an admin (curated)
+              verdict, endorsed_by, reason) #   or the judge (private); never by name alone
+concept_link_decisions(learner_id, link_id, decision)  # the learner's own accept/decline/revoke
 learner_profiles(learner_id, created_at, updated_at)               # the "how they learn" model
 profile_dimensions(learner_id, key, value jsonb, uncertainty,      # one row per dimension
                    kind, source, updated_at)  # kind=trait|state, source=behavioral|self_report
 learning_events(...)                       # immutable, replayable, KC-tagged (see 7.5)
-lesson_plans(learner_id, goal, steps[])    # adaptive teaching policy
+lesson_plans(learner_id, goal, steps[],    # adaptive teaching policy
+             guidance, goal_closed_at)     #   guided|exploration; closure writes no evidence
 conversations, messages
 sources, chunks(embedding vector, tsv, provenance jsonb)
 memory(learner_id, kind, content, embedding)

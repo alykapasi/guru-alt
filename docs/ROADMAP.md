@@ -38,6 +38,18 @@
 > talked to a real Clerk endpoint, and production mail, account recovery in a real environment, and
 > the existing-data ownership migration against production data all remain open.
 
+> **Learning evidence, goals and guidance implemented, 2026-09-26:** V0 workstream 2 landed in
+> four slices (tracker items S56/S54, S01/S14/S63, S11/S52, S34/S23/S24; designs and plans under
+> [docs/superpowers/](./superpowers/)). A flashcard self-rating now updates review scheduling
+> only; mastery is judged on ability − 2·uncertainty ≥ 0.5 over measured evidence, achievement is
+> recorded per component and kept, and goal status reports closure, current, achieved and stale
+> separately. Detours follow a per-plan guidance setting and can be taken, skipped, or disproved by
+> a run of unassisted passes; practice can be paused, resumed or skipped without inventing
+> evidence. Concurrent answers and graph edits are serialized, and a concept link across subjects
+> takes an endorsement plus the learner's acceptance and gives only a provisional head start that
+> real answers must confirm. **Not established:** every new threshold is uncalibrated (S18), and
+> S56's grading provenance and S14's delayed probes remain open.
+
 **Working agreement**
 
 - Keep changes small and reviewable; check in with the maintainer between slices.
@@ -674,7 +686,7 @@ scoped materials.
 > **Two new backend endpoints, both thin plumbing over already-tested code, no new math:**
 > `GET /subjects/{id}/mastery` walks `app/learning/mastery.py`'s existing `estimate_kc`/
 > `rollup_topic`/`rollup_subject` (unit-tested since an earlier phase, just never exposed) and
-> reuses the lesson plan's own mastery rule (the conservative estimate, ability − uncertainty,
+> reuses the lesson plan's own mastery rule (the conservative estimate, ability − 2·uncertainty,
 > at or above the `mastery_conservative_bar` setting, on a KC that has actually been measured)
 > so a KC/topic/subject's "mastered" badge means the same thing here as it does on the lesson-plan
 > page. `GET /activity` is new: a pure `streak_days`/`momentum_trend` policy
@@ -721,7 +733,7 @@ scoped materials.
 >
 > **A real gap surfaced live, not a bug**: finishing a workflow round with a correct answer ends
 > that round (`detail: "mastered"`) but does **not** by itself flip the lesson-plan step to
-> `"done"` — that requires the KC's rolling conservative estimate (ability − uncertainty) to reach
+> `"done"` — that requires the KC's rolling conservative estimate (ability − 2·uncertainty) to reach
 > the `mastery_conservative_bar` setting on measured evidence (`app/services/lesson_plan.py`'s
 > `mastered_kc_ids`), which one correct short-answer response usually doesn't reach
 > from a cold start — exactly the point of a continuous IRT model (partial, accumulating
