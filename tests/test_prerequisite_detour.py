@@ -348,6 +348,21 @@ def test_a_provisional_component_is_checked_first() -> None:
     assert _by_kc(steps, kc)["check_first"] is False
 
 
+def test_an_external_is_not_inserted_for_an_already_done_blocked_step() -> None:
+    """Review fix round 1, finding 1: a caller computes its `external_detours` candidates from
+    the plan as it stood *before* this revision, which cannot know a blocked step this very
+    revision's own mastery flip is about to finish. Without the refusal in `_insert`, the
+    external got inserted anyway and — since the blocked "new" step was already done — became
+    the active step instead of the component actually next."""
+    blocked, later, foreign = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    steps = engine.build_initial_steps([blocked, later])
+    revised = _revise(
+        steps, mastered_kc_ids=[blocked], external_detours=[_external(foreign, blocked)]
+    )
+    assert all(s["kc_id"] != str(foreign) for s in revised)
+    assert _by_kc(revised, later)["status"] == "active"
+
+
 # --- the learner's say (S11, V07) --------------------------------------------
 
 NOW = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
@@ -1389,6 +1404,27 @@ async def test_a_mastered_foreign_prerequisite_is_satisfied(db_session: AsyncSes
         LearnerKCState(
             learner_id=learner.id,
             kc_id=foreign.id,
+            ability=3.0,
+            uncertainty=0.2,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+    plan = await _plan(db_session, learner, subject_b)
+    assert all(s["kc_id"] != str(foreign.id) for s in plan.steps)
+
+
+async def test_a_mastered_blocked_step_gets_no_external_detour(db_session: AsyncSession) -> None:
+    """Review fix round 1, finding 1: the learner has already mastered `blocked` (subject B's
+    own component) but not `foreign` (subject A's). `_external_detours` computes its candidates
+    from `bare_steps`, whose statuses are always `"pending"` regardless of mastery — the
+    refusal that stops an external being planned for an already-done step has to live in
+    `revise_steps`'s own `_insert`, checked against mastery as revised, not in the service."""
+    learner, _a, subject_b, foreign, blocked = await _foreign_prereq(db_session)
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=blocked.id,
             ability=3.0,
             uncertainty=0.2,
             last_seen_at=datetime.now(UTC),

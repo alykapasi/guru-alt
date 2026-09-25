@@ -535,7 +535,12 @@ def revise_steps(
        everything — the learner has not agreed to go yet, so nothing else in the plan moves
        for it. Every ``external_detours`` entry (S24) is inserted the same way, one at a time,
        through the same guidance/already-open/already-mastered rules ``detour`` gets — a
-       cross-subject prerequisite has no other lifecycle to reuse.
+       cross-subject prerequisite has no other lifecycle to reuse — plus one rule of its own
+       (review fix round 1): it is refused outright if its blocked step is already ``"done"``
+       or ``"skipped"`` *in this revision*, checked fresh against the mastery flip above rather
+       than against whatever the caller saw before calling — a caller computes its candidates
+       from the plan as it stood before this revision, which cannot know a blocked step this
+       revision's own mastery flip just finished.
     1. A ``"new"`` step whose KC is now mastered flips to ``"done"``. A ``"detour"`` step whose
        KC is now mastered flips to ``"done"`` with ``detour_outcome="mastered"`` — a proposal
        included, since a proposal is dropped once there is nothing left for it to test, and a
@@ -621,6 +626,20 @@ def revise_steps(
 
     def _insert(trigger: Detour) -> None:
         prereq_id = str(trigger.prereq_kc_id)
+        # An external trigger (S24 review fix round 1) is computed by the caller from the plan
+        # as it stood *before* this revision — `_external_detours` reads pre-revision steps, so
+        # it cannot see a blocked step this very revision's mastery flip (above) just finished.
+        # Refusing it here, against `blocked_status` as revised, is what stops a step already
+        # done from getting a needless external step inserted ahead of it — and, worse, that
+        # step becoming active instead of the one actually next. An ordinary `detour` never
+        # needs this: its blocked step is the caller's own active step, which mastery flipping
+        # it to done would make ineligible to be a *trigger* in the first place, not merely a
+        # target of one already in flight.
+        if (
+            trigger.reason == DETOUR_EXTERNAL
+            and blocked_status.get(str(trigger.blocked_kc_id), "done") in CLOSED
+        ):
+            return
         already_open = any(
             step["step_type"] == "detour"
             and step["status"] in OPEN_DETOUR_STATUSES

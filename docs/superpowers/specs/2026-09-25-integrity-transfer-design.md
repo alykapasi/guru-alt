@@ -199,7 +199,10 @@ For an edge X→K where K is in the plan's subject B and X is in another subject
 and every revision:
 
 1. **X has a link in effect to X′ in B** → the edge is read as X′→K and ordered with the local
-   edges (the existing `acyclic` pass and conflict report handle any cycle this closes).
+   edges (the existing `acyclic` pass and conflict report handle any cycle this closes). This
+   ordering is decided at generation, not revision: revision never re-sorts the plan, so
+   accepting a link mid-plan stops new external offers for X at once, but the plan only orders
+   through X′ instead on its next regenerate.
 2. **X is mastered** (§5.2's rule included) → satisfied; nothing planned.
 3. **X is visible to the learner** → an **external step** for X, placed before K:
    - `step_type = "external"`, with `source_subject_id` and `source_subject_name`;
@@ -208,7 +211,9 @@ and every revision:
    - closes as `mastered` or `skipped` (no `disproved`); outcome events use the detour outcome
      event with `external: true` in the payload, and a skip bars that (X, K) pair from being
      offered again;
-   - counts toward the open-step window like a detour; never toward the goal;
+   - like a detour, does **not** count toward the open-step window (`horizon_extension` counts
+     only `"new"` steps) — a plan can carry its open external steps on top of
+     `lesson_plan_max_steps`; never counts toward the goal;
    - answers are recorded against X, in its own subject.
 4. **X not visible** → dropped and reported, as today.
 
