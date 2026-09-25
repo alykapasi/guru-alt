@@ -21,7 +21,7 @@ function stub(conflicts: unknown[], deleteStatusCode: number = 204) {
       const req = input instanceof Request ? input : new Request(String(input), init);
       calls.push({ method: req.method, url: req.url });
       if (req.method === "DELETE") {
-        return new Response(JSON.stringify({ message: "Failed to remove prerequisite" }), {
+        return new Response(JSON.stringify({ detail: "prerequisite not found" }), {
           status: deleteStatusCode,
           headers: { "Content-Type": "application/json" },
         });
@@ -72,11 +72,15 @@ describe("curriculum issues", () => {
   });
 
   it("shows an error message if removal fails", async () => {
-    stub([conflict], 500);
+    stub([conflict], 404);
     renderPanel();
     expect(await screen.findByText(/Dot product requires Vectors/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Remove this prerequisite" }));
     expect(await screen.findByRole("alert")).toBeInTheDocument();
-    expect(screen.getByText(/Failed to remove prerequisite/)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Couldn't remove that prerequisite — it may already have been removed\. Refresh and try again\./,
+      ),
+    ).toBeInTheDocument();
   });
 });

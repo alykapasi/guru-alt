@@ -37,7 +37,8 @@ export function CurriculumIssuesPanel({ subjectId }: { subjectId: string }) {
       ))}
       {remove.error && (
         <p className="text-caption text-error" role="alert">
-          {remove.error.message}
+          Couldn't remove that prerequisite — it may already have been removed. Refresh and try
+          again.
         </p>
       )}
     </section>
