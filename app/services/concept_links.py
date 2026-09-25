@@ -13,10 +13,10 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import combinations
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import structlog
-from sqlalchemy import or_, select
+from sqlalchemy import CursorResult, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -206,11 +206,40 @@ async def _side(
     )
 
 
+async def _write_verdict(
+    session: AsyncSession, link_id: uuid.UUID, *, endorse: bool, reason: str
+) -> bool:
+    """Write the judge's verdict, but only if nobody has already (final fix wave).
+
+    Two overlapping ``judge_pending`` runs can both load the same unjudged link before either
+    writes; assigning ``link.verdict`` in Python and committing lets whichever run commits
+    *second* win regardless of what the first decided, silently discarding it. Worse, if the
+    first was endorsed and the learner had already accepted it, the second overwriting it
+    rejected would take the link out of ``links_in_effect`` while the head start it granted
+    was still standing — a later ``revoke`` then finds nothing to withdraw and 404s. The
+    ``verdict IS NULL`` guard makes the write itself the check: whichever commits first wins,
+    and the loser's row count is 0. Returns whether this call's verdict was the one that stuck.
+    """
+    result = await session.execute(
+        update(ConceptLink)
+        .where(ConceptLink.id == link_id, ConceptLink.verdict.is_(None))
+        .values(
+            verdict=ENDORSED if endorse else REJECTED,
+            endorsed_by="judge",
+            reason=reason,
+            decided_at=datetime.now(UTC),
+        )
+    )
+    return cast("CursorResult[Any]", result).rowcount == 1
+
+
 async def judge_pending(session: AsyncSession, llm: LLMClient, learner_id: uuid.UUID) -> int:
     """Judge this learner's unjudged private candidates; return how many got a verdict.
 
     Commits after each verdict, so a run that dies halfway keeps what it decided. A pair the
     judge could not decide stays unjudged for the next run — never recorded as a rejection.
+    The write itself is conditional (``_write_verdict``): two overlapping runs can both load
+    the same unjudged pair, and only the one that commits first is recorded here.
     """
     await sync_candidates(session, learner_id)
     await session.commit()
@@ -247,10 +276,12 @@ async def judge_pending(session: AsyncSession, llm: LLMClient, learner_id: uuid.
         if verdict is None:
             log.warning("concept_links.judge_undecided", link_id=str(link.id))
             continue
-        link.verdict = ENDORSED if verdict.endorse else REJECTED
-        link.endorsed_by = "judge"
-        link.reason = verdict.reason
-        link.decided_at = datetime.now(UTC)
+        if not await _write_verdict(
+            session, link.id, endorse=verdict.endorse, reason=verdict.reason
+        ):
+            # Judged by an overlapping run between our load and this write; that verdict
+            # stands, not this one.
+            continue
         await session.commit()
         decided += 1
     return decided

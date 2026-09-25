@@ -2,10 +2,12 @@
 
 from typing import cast
 
+from sqlalchemy import select
+
 from app.learning import link_judge
 from app.llm.providers.fake import FakeProvider, FakeTurn
 from app.llm.registry import fake_llm_client
-from app.models.knowledge import KCEdge
+from app.models.knowledge import ConceptLink, KCEdge
 from app.services import concept_links as svc
 from tests.test_concept_links import _concept, _kc, _learner, _subject
 
@@ -60,6 +62,27 @@ async def test_a_failed_judgement_leaves_the_pair_for_the_next_run(db_session) -
     assert link.verdict is None
     llm = fake_llm_client(script=[FakeTurn(text='{"verdict": "reject", "reason": "Different."}')])
     assert await svc.judge_pending(db_session, llm, learner.id) == 1
+
+
+async def test_a_verdict_already_written_is_not_overwritten(db_session) -> None:
+    """Two overlapping judge runs can both load the same unjudged link before either writes.
+    Without a conditional write, whichever assigns `link.verdict` second wins at commit
+    regardless of what the first decided — silently discarding it, and if the first endorsed a
+    link the learner had already accepted, the second rejecting it would take the link out of
+    effect while its head start stayed, so a later revoke finds nothing and 404s."""
+    learner, a, b = await _private_pair(db_session)
+    await svc.sync_candidates(db_session, learner.id)
+    lo, hi = sorted((a.id, b.id))
+    link = await db_session.scalar(
+        select(ConceptLink).where(ConceptLink.kc_a_id == lo, ConceptLink.kc_b_id == hi)
+    )
+    assert link is not None
+
+    assert await svc._write_verdict(db_session, link.id, endorse=True, reason="first") is True
+    assert await svc._write_verdict(db_session, link.id, endorse=False, reason="second") is False
+
+    refreshed = await db_session.scalar(select(ConceptLink).where(ConceptLink.id == link.id))
+    assert (refreshed.verdict, refreshed.reason) == ("endorsed", "first")
 
 
 async def test_the_judge_is_told_nothing_from_another_learners_material(db_session) -> None:
