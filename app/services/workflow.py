@@ -22,17 +22,18 @@ from app.models.assessment import Item
 from app.models.chat import Conversation, Message
 from app.models.knowledge import KC
 from app.rag.retrieval import RetrievalHit, retrieve
+from app.rag.scope import resolve_scope
 from app.schemas.chat import CheckResultRead
 from app.services import assessment as assessment_svc
 from app.services import checkpoints, learner_context
 from app.services.assessment import item_to_read
+from app.services.grounding import format_grounding
 from app.services.llm_log import log_llm_call
 from app.services.session_runner import short_answer_item_for_kc
 from app.services.turn_common import (
     TurnEvent,
     add_message,
     extract_citations,
-    format_grounding,
 )
 
 log = structlog.get_logger(__name__)
@@ -186,6 +187,9 @@ async def run_workflow_turn(
     # the worked example — `respond`'s feedback (every resumed round) isn't source-grounded, so
     # it gets no citations. See extract_citations below, gated on `resume`.
     hits: list[RetrievalHit] = []
+    # Passages offered this round (S28): set only where retrieval ran, so a resumed round and a
+    # General conversation both record None — nothing was measured there.
+    grounding_count: int | None = None
 
     if resume:
         run_input = Command(
@@ -222,17 +226,18 @@ async def run_workflow_turn(
             )
             return
         grounding = None
-        if conversation.subject_id is not None:
+        scope = await resolve_scope(
+            session,
+            learner_id=learner_id,
+            subject_id=conversation.subject_id,
+            source_ids=source_ids,
+        )
+        if scope is not None:
             hits = await retrieve(
-                session,
-                llm,
-                step.kc_name,
-                learner_id=learner_id,
-                subject_id=conversation.subject_id,
-                source_ids=source_ids or None,
-                limit=get_settings().chat_grounding_limit,
+                session, llm, step.kc_name, scope=scope, limit=get_settings().chat_grounding_limit
             )
-            grounding = format_grounding(hits)
+            grounding = format_grounding(hits, sources_only=scope.sources_only)
+            grounding_count = len(hits)
         # A provisional component (S24) is confirmed, not taught: asking first is the "short
         # confirmation" V04 calls for, and an answer given without a worked example is exactly
         # the unaided pass that confirms it.
@@ -314,6 +319,7 @@ async def run_workflow_turn(
             model=spec.model,
             citations=citations,
             check_result=check_result,
+            grounding_count=grounding_count,
         )
     # A round can end without calling a model at all: a flashcard answered in prose is sent
     # straight back to be rated, presenting nothing new. Accounting records calls, so a round

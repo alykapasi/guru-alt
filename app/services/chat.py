@@ -28,6 +28,7 @@ from app.models.chat import Conversation, ConversationPhase, ConversationSource,
 from app.models.knowledge import KC
 from app.models.learning import LearnerKCState
 from app.rag.retrieval import retrieve
+from app.rag.scope import resolve_scope
 from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRef
 from app.schemas.chat import CheckResultRead
 from app.services import assessment as assessment_svc
@@ -36,6 +37,7 @@ from app.services import knowledge as knowledge_svc
 from app.services import learner_context
 from app.services import session_runner as session_runner_svc
 from app.services.assessment import item_to_read
+from app.services.grounding import format_grounding
 from app.services.lesson_plan import PlanGroundingContext
 from app.services.llm_log import log_llm_call
 from app.services.turn_common import (
@@ -43,7 +45,6 @@ from app.services.turn_common import (
     add_message,
     build_check_result,
     extract_citations,
-    format_grounding,
     to_chat_messages,
 )
 
@@ -548,17 +549,14 @@ async def run_tutor_turn(
 
     hits = []
     grounding = None
-    if subject_id is not None:
+    scope = await resolve_scope(
+        session, learner_id=learner_id, subject_id=subject_id, source_ids=source_ids
+    )
+    if scope is not None:
         hits = await retrieve(
-            session,
-            llm,
-            user_content,
-            learner_id=learner_id,
-            subject_id=subject_id,
-            source_ids=source_ids or None,
-            limit=get_settings().chat_grounding_limit,
+            session, llm, user_content, scope=scope, limit=get_settings().chat_grounding_limit
         )
-        grounding = format_grounding(hits)
+        grounding = format_grounding(hits, sources_only=scope.sources_only)
 
     system = learner_context.compose(
         TUTOR_SYSTEM_PROMPT,
@@ -620,6 +618,7 @@ async def run_tutor_turn(
         model=spec.model,
         citations=citations,
         check_result=check_result,
+        grounding_count=len(hits) if scope is not None else None,
     )
     cost = await log_llm_call(
         learner_id=learner_id,

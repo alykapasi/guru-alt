@@ -19,6 +19,7 @@ from app.api.deps import (
 from app.models.source import Chunk, Source, SourceKind
 from app.rag import retrieval
 from app.rag.retrieval import RetrievalHit
+from app.rag.scope import SourceScope
 from app.schemas.source import (
     ChunkRead,
     LinkCreate,
@@ -186,10 +187,12 @@ async def retrieve_chunks(
         session,
         llm,
         data.query,
-        learner_id=learner.id,
-        subject_id=data.subject_id,
-        topic_id=data.topic_id,
-        source_id=data.source_id,
+        scope=SourceScope(
+            learner_id=learner.id,
+            subject_id=data.subject_id,
+            topic_id=data.topic_id,
+            source_ids=(data.source_id,) if data.source_id is not None else (),
+        ),
         limit=data.limit,
     )
 

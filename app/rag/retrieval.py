@@ -3,11 +3,10 @@
 Two ranked candidate lists — semantic (HNSW cosine over the query embedding) and lexical
 (``tsvector`` keyword) — are merged with **reciprocal-rank fusion**, then the top hits are
 returned with their provenance for grounded, citable generation. Every query is **scoped**
-(learner always; optionally subject/topic/source) via the chunk → source join.
+by a ``SourceScope`` (``app.rag.scope``) via the chunk → source join.
 """
 
 import uuid
-from collections.abc import Sequence
 
 from pydantic import BaseModel
 from sqlalchemy import Select, func, or_, select
@@ -15,8 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.llm import LLMClient, ModelRole
-from app.llm.embedding_space import current_space
+from app.llm.embedding_space import current_space, exact_cosine_distance
 from app.models.source import Chunk, Source
+from app.rag.scope import SourceScope
 
 _RRF_K = 60  # standard reciprocal-rank-fusion constant
 
@@ -36,27 +36,15 @@ async def retrieve(
     llm: LLMClient,
     query: str,
     *,
-    learner_id: uuid.UUID,
-    subject_id: uuid.UUID | None = None,
-    topic_id: uuid.UUID | None = None,
-    source_id: uuid.UUID | None = None,
-    source_ids: Sequence[uuid.UUID] | None = None,
-    include_untagged_sources: bool = False,
+    scope: SourceScope,
     limit: int = 10,
     candidates: int = 50,
 ) -> list[RetrievalHit]:
-    """Hybrid-retrieve the most relevant chunks for ``query`` within the given scope.
+    """Hybrid-retrieve the most relevant chunks for ``query`` within ``scope``.
 
-    ``source_ids`` narrows to several specific sources (a conversation's explicit picks, see
-    ``ConversationSource``) — distinct from ``source_id``, which narrows to exactly one (the
-    debug ``/retrieve`` endpoint's existing use). Both may be combined with ``subject_id``.
-
-    ``include_untagged_sources`` widens ``subject_id`` to also admit sources carrying no subject
-    at all (S26). The tag is optional at upload, so most sources have none, and the two
-    exclusions are not equally justified: a source tagged to a *different* subject is known to be
-    about something else, while an untagged one is merely unclassified. Dropping the first
-    removes contamination; dropping the second would remove the grounding itself. It has no
-    effect unless ``subject_id`` is given.
+    The scope is decided by ``app.rag.scope`` (S26), never here: this only applies it. A
+    subject admits sources tagged to it, plus untagged ones when the subject opted in; picked
+    sources narrow further.
     """
     query = query.strip()
     if not query:
@@ -66,20 +54,18 @@ async def retrieve(
 
     def scoped(stmt: Select) -> Select:
         stmt = stmt.join(Source, Chunk.source_id == Source.id).where(
-            Source.learner_id == learner_id
+            Source.learner_id == scope.learner_id
         )
-        if source_id is not None:
-            stmt = stmt.where(Chunk.source_id == source_id)
-        if source_ids is not None:
-            stmt = stmt.where(Chunk.source_id.in_(source_ids))
-        if subject_id is not None:
+        if scope.source_ids:
+            stmt = stmt.where(Chunk.source_id.in_(scope.source_ids))
+        if scope.subject_id is not None:
             stmt = stmt.where(
-                or_(Source.subject_id == subject_id, Source.subject_id.is_(None))
-                if include_untagged_sources
-                else Source.subject_id == subject_id
+                or_(Source.subject_id == scope.subject_id, Source.subject_id.is_(None))
+                if scope.include_untagged
+                else Source.subject_id == scope.subject_id
             )
-        if topic_id is not None:
-            stmt = stmt.where(Source.topic_id == topic_id)
+        if scope.topic_id is not None:
+            stmt = stmt.where(Source.topic_id == scope.topic_id)
         return stmt
 
     query_vec = (await llm.embed(ModelRole.EMBED, [query])).vectors[0]
@@ -91,7 +77,7 @@ async def retrieve(
     vector_q = (
         scoped(select(Chunk))
         .where(Chunk.embedding_space == space)
-        .order_by(Chunk.embedding.cosine_distance(query_vec))
+        .order_by(exact_cosine_distance(Chunk.embedding, query_vec))
         .limit(candidates)
     )
     keyword_q = (

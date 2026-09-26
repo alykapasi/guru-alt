@@ -31,6 +31,7 @@ from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRef
 from app.services import assessment as assessment_svc
 from app.services import lesson_plan as lesson_plan_svc
 from app.services import workflow as workflow_svc
+from app.services.grounding import instruction
 from app.services.turn_common import TurnEvent
 from app.services.workflow import is_awaiting_reply, run_workflow_turn
 from tests.embedding import FAKE_SPACE
@@ -721,3 +722,26 @@ async def test_a_re_asked_flashcard_adds_nothing_to_the_transcript(
     # present only: the re-ask called no model, so it is billed for none.
     calls = (await db_session.scalars(select(LLMCall))).all()
     assert len(calls) == 1
+
+
+async def test_a_sources_only_practice_step_with_nothing_retrieved_is_told_not_to_fill_in(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Practice explains through the same grounding policy chat does (S28)."""
+    conv = await _conversation_with_active_step(db_session)
+    subject = await db_session.get(Subject, conv.subject_id)
+    assert subject is not None
+    subject.sources_only = True
+    await db_session.commit()
+    captured: list[str | None] = []
+    original = workflow_svc.learner_context.compose
+
+    def spy(base, context, **kwargs):
+        captured.append(kwargs.get("grounding"))
+        return original(base, context, **kwargs)
+
+    monkeypatch.setattr(workflow_svc.learner_context, "compose", spy)
+
+    await _drain(db_session, fake_llm_client(PRESENT), conv, user_content="let's practice")
+
+    assert captured == [instruction(sources_only=True, has_passages=False)]

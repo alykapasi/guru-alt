@@ -33,6 +33,7 @@ from app.models.knowledge import KC, Topic
 from app.models.source import Chunk
 from app.rag import retrieval
 from app.rag.retrieval import RetrievalHit
+from app.rag.scope import resolve_scope
 from app.services.llm_log import log_llm_call
 
 GROUNDING_K = 6
@@ -56,12 +57,24 @@ _GUIDANCE: dict[ContentType, str] = {
 }
 
 _SYSTEM_PROMPT = (
-    "You are an expert instructional author. Using ONLY the numbered context snippets, write "
-    "{guidance} for the learning objective. Ground every claim in the context and cite the "
-    "snippets you used by their index. If the snippets disagree with one another, say so in "
-    "the body and cite both rather than silently choosing one. Respond with ONLY a JSON "
-    "object of the form "
+    "You are an expert instructional author. Write {guidance} for the learning objective from "
+    "the numbered context snippets. Ground every claim you can in the context and cite the "
+    "snippets you used by their index. {scope_rule} If the snippets disagree with one another, "
+    "say so in the body and cite both rather than silently choosing one. Respond with ONLY a "
+    "JSON object of the form "
     '{{"body": "<the content>", "citations": [<indices of snippets used>]}} and nothing else.'
+)
+
+# The two scope rules (S26). Normal mode may fill a gap from general knowledge but has to say
+# which part that is; sources-only names the gap instead of filling it.
+_SUPPLEMENT_RULE = (
+    "Where the snippets leave a gap the objective needs, you may fill it from general "
+    "knowledge, but say plainly in the body which part does not come from the learner's "
+    "materials."
+)
+_SOURCES_ONLY_RULE = (
+    "Use ONLY the numbered context snippets: where they leave a gap, say in the body what they "
+    "do not cover rather than filling it from general knowledge."
 )
 
 # The instruction for a request with nothing retrieved (S28). Previously one system prompt
@@ -81,6 +94,17 @@ _UNGROUNDED_SYSTEM_PROMPT = (
 
 class ContentGenerationError(RuntimeError):
     """The model's reply could not be parsed into a content block."""
+
+
+class NoSourceCoverage(LookupError):
+    """Sources-only, and nothing in the subject's sources matched this KC (S26).
+
+    Raised before any model call: there is nothing the block would be allowed to say.
+    """
+
+    def __init__(self, kc_id: uuid.UUID) -> None:
+        super().__init__(f"no source coverage for KC {kc_id}")
+        self.kc_id = kc_id
 
 
 class _GeneratedBlock(BaseModel):
@@ -111,24 +135,23 @@ async def generate_block(
     if kc is None:
         raise LookupError(f"KC {kc_id} not found")
 
-    # Scoped to the KC's own subject (S26). Every other retrieval path in the app passes a
-    # subject; this one did not, so a lesson on eigenvalues could be grounded in chunks uploaded
-    # for immunology purely because they shared a word. Untagged sources are still admitted —
-    # the tag is optional at upload, so excluding them would replace cross-subject grounding
-    # with no grounding, and the block would quietly fall back to general knowledge.
+    # Scoped by the KC's subject through the one rule every path uses (S26): its own sources,
+    # plus untagged ones only if the subject opted in. Before this, lessons alone admitted every
+    # untagged upload, which V05 rules out: unassigned material is not added silently.
     subject_id = await session.scalar(select(Topic.subject_id).where(Topic.id == kc.topic_id))
+    scope = await resolve_scope(session, learner_id=learner_id, subject_id=subject_id)
+    assert scope is not None, "a KC always belongs to a subject"
     grounding = await retrieval.retrieve(
-        session,
-        llm,
-        _kc_query(kc),
-        learner_id=learner_id,
-        subject_id=subject_id,
-        include_untagged_sources=True,
-        limit=grounding_k,
+        session, llm, _kc_query(kc), scope=scope, limit=grounding_k
     )
+    if not grounding and scope.sources_only:
+        raise NoSourceCoverage(kc_id)
     role = _ROLE_BY_TYPE[block_type]
-    template = _SYSTEM_PROMPT if grounding else _UNGROUNDED_SYSTEM_PROMPT
-    system = template.format(guidance=_GUIDANCE[block_type])
+    if grounding:
+        rule = _SOURCES_ONLY_RULE if scope.sources_only else _SUPPLEMENT_RULE
+        system = _SYSTEM_PROMPT.format(guidance=_GUIDANCE[block_type], scope_rule=rule)
+    else:
+        system = _UNGROUNDED_SYSTEM_PROMPT.format(guidance=_GUIDANCE[block_type])
     user = _build_prompt(kc, grounding)
     cache_key = _cache_key(
         learner_id,

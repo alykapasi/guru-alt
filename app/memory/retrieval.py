@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.llm import LLMClient, ModelRole
-from app.llm.embedding_space import current_space
+from app.llm.embedding_space import current_space, exact_cosine_distance
 from app.models.memory import Memory, MemoryStatus
 
 
@@ -42,7 +42,7 @@ async def retrieve(
 
     settings = get_settings()
     query_vec = (await llm.embed(ModelRole.EMBED, [query])).vectors[0]
-    distance = Memory.embedding.cosine_distance(query_vec)
+    distance = exact_cosine_distance(Memory.embedding, query_vec)
     rows = (
         await session.execute(
             select(Memory, distance.label("distance"))

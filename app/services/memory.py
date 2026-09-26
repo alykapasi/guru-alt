@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.llm import LLMClient, ModelRole
-from app.llm.embedding_space import current_space
+from app.llm.embedding_space import current_space, exact_cosine_distance
 from app.memory.extraction import EXTRACTION_ROLE, extract_memories
 from app.models.chat import Conversation, Message
 from app.models.memory import Memory, MemoryKind, MemoryStatus
@@ -188,7 +188,7 @@ async def _nearest(
     is not a distance to anything, and would both miss real duplicates and suppress genuinely
     new memories at random.
     """
-    distance = Memory.embedding.cosine_distance(embedding)
+    distance = exact_cosine_distance(Memory.embedding, embedding)
     row = (
         await session.execute(
             select(Memory, distance.label("distance"))

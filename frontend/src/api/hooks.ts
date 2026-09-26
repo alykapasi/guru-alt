@@ -79,6 +79,24 @@ export function useSubjects() {
   });
 }
 
+/** The subject's source switches (S26); refreshes the subject list the Lessons page reads. */
+export function useUpdateSourceSettings(subjectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (patch: { include_untagged_sources?: boolean; sources_only?: boolean }) => {
+      const { data, error } = await api.PATCH("/api/v1/subjects/{subject_id}/source-settings", {
+        params: { path: { subject_id: subjectId } },
+        body: patch,
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["subjects"] });
+    },
+  });
+}
+
 /** For the "New chat" scope picker's per-source narrowing, once a subject is chosen. */
 export function useSources(subjectId: string | undefined) {
   return useQuery({

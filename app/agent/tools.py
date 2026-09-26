@@ -21,7 +21,8 @@ from app.core.config import get_settings
 from app.llm import LLMClient, ToolDef
 from app.rag.fetch import Fetcher, FetchError
 from app.rag.retrieval import RetrievalHit, retrieve
-from app.services.turn_common import format_grounding
+from app.rag.scope import SourceScope
+from app.services.grounding import format_grounding
 
 log = structlog.get_logger(__name__)
 
@@ -73,59 +74,55 @@ class Tool:
         return ToolDef(name=self.name, description=self.description, parameters=self.parameters)
 
 
+# What the search answers in a General conversation (S26). It used to search the learner's
+# whole library there, under a label promising no library grounding at all.
+NO_SCOPE_RESULT = (
+    "This conversation is not tied to a subject, so none of the learner's materials are in "
+    "scope. Answer from general knowledge and say so."
+)
+
+
 def build_tools(
     session: AsyncSession,
     llm: LLMClient,
     *,
-    learner_id: uuid.UUID,
-    subject_id: uuid.UUID | None = None,
-    source_ids: Sequence[uuid.UUID] | None = None,
+    scope: SourceScope | None,
     citations: CitationAccumulator | None = None,
 ) -> list[Tool]:
-    """The tool set for one turn. ``citations`` defaults to a fresh, throwaway accumulator when
-    the caller doesn't need to read it back (e.g. most existing tests) — pass one explicitly
-    (``run_agentic_turn`` does) to collect what was cited across the whole turn.
+    """The tool set for one turn. ``scope`` is ``None`` in a General conversation, where
+    ``search_materials`` answers that nothing is in scope rather than searching anything.
+    ``citations`` defaults to a fresh, throwaway accumulator when the caller doesn't need to
+    read it back (e.g. most existing tests) — pass one explicitly (``run_agentic_turn`` does)
+    to collect what was cited across the whole turn.
 
     v0 only searches stored materials. External web tools are never registered.
     """
     citations = citations if citations is not None else CitationAccumulator()
-    return [
-        _search_materials_tool(
-            session,
-            llm,
-            learner_id=learner_id,
-            subject_id=subject_id,
-            source_ids=source_ids,
-            citations=citations,
-        ),
-    ]
+    return [_search_materials_tool(session, llm, scope=scope, citations=citations)]
 
 
 def _search_materials_tool(
     session: AsyncSession,
     llm: LLMClient,
     *,
-    learner_id: uuid.UUID,
-    subject_id: uuid.UUID | None,
-    source_ids: Sequence[uuid.UUID] | None,
+    scope: SourceScope | None,
     citations: CitationAccumulator,
 ) -> Tool:
     async def execute(args: dict[str, object]) -> ToolResult:
         query = args.get("query")
         if not isinstance(query, str) or not query.strip():
             return ToolResult(content="A non-empty query is required.", is_error=True)
-        hits = await retrieve(
-            session,
-            llm,
-            query,
-            learner_id=learner_id,
-            subject_id=subject_id,
-            source_ids=source_ids,
-        )
+        if scope is None:
+            return ToolResult(content=NO_SCOPE_RESULT)
+        hits = await retrieve(session, llm, query, scope=scope)
         citations.add(hits)
         # The full accumulated set, not just this call's hits — keeps [N] numbering stable and
         # consistent across every search_materials call in this turn (see CitationAccumulator).
-        grounding = format_grounding(citations.hits)
+        grounding = (
+            format_grounding(citations.hits, sources_only=scope.sources_only)
+            if citations.hits
+            else None
+        )
         return ToolResult(
             content=grounding or "No relevant passages found in the learner's materials."
         )

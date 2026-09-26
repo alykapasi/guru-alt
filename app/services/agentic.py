@@ -14,7 +14,9 @@ from app.core.config import get_settings
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, ToolCall, Usage
 from app.models.chat import Conversation, Message
+from app.rag.scope import resolve_scope
 from app.services import learner_context
+from app.services.grounding import policy_note
 from app.services.llm_log import log_llm_call
 from app.services.turn_common import (
     TurnEvent,
@@ -76,18 +78,23 @@ async def run_agentic_turn(
         session, llm, learner_id=learner_id, conversation=conversation, query=user_content
     )
     citation_acc = CitationAccumulator()
-    tools = build_tools(
+    scope = await resolve_scope(
         session,
-        llm,
         learner_id=learner_id,
         subject_id=conversation.subject_id,
-        source_ids=source_ids or None,
-        citations=citation_acc,
+        source_ids=source_ids,
     )
+    tools = build_tools(session, llm, scope=scope, citations=citation_acc)
     spec = llm.spec(ModelRole.SMART)
     initial: AgenticState = {
         "messages": messages,
-        "system": learner_context.compose(AGENTIC_SYSTEM_PROMPT, context),
+        # The same grounding rule chat gets (S28), stated up front because this flow's
+        # passages arrive later, in search results, rather than in the prompt itself.
+        "system": learner_context.compose(
+            AGENTIC_SYSTEM_PROMPT,
+            context,
+            extra=[policy_note(sources_only=scope.sources_only)] if scope is not None else [],
+        ),
         "max_tokens": max_tokens,
         "max_iterations": get_settings().agentic_max_iterations,
         "iterations": 0,
@@ -131,6 +138,9 @@ async def run_agentic_turn(
         reply,
         model=spec.model,
         citations=citations,
+        # Everything the searches offered this turn (0 if it never searched); None in a General
+        # conversation, which has no library to have searched (S28).
+        grounding_count=len(citation_acc.hits) if scope is not None else None,
     )
     cost = await log_llm_call(
         learner_id=learner_id,

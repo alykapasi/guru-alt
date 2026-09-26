@@ -30,6 +30,16 @@ class SubjectRead(BaseModel):
     # request whatever the browser renders — it is what keeps a learner from being shown a
     # door that refuses them. Same reasoning as `is_admin` on `LearnerRead`.
     private_source_derived: bool = False
+    # The owner's source switches (S26); curated subjects always carry the defaults.
+    include_untagged_sources: bool = False
+    sources_only: bool = False
+
+
+class SourceSettingsUpdate(BaseModel):
+    """A partial change to a subject's source switches; a field left out stays as it is."""
+
+    include_untagged_sources: bool | None = None
+    sources_only: bool | None = None
 
 
 class TopicCreate(BaseModel):

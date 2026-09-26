@@ -1,13 +1,30 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { NotebookText } from "lucide-react";
-import { useSubjects } from "../api/hooks";
+import { useSubjects, useUpdateSourceSettings } from "../api/hooks";
+import type { components } from "../api/schema";
 import { PublishPanel } from "../components/PublishPanel";
 import { LessonPlanPanel } from "../components/lessons/LessonPlanPanel";
 import { CurriculumIssuesPanel } from "../components/lessons/CurriculumIssuesPanel";
 import { ConnectionsPanel } from "../components/lessons/ConnectionsPanel";
+import { SourceSettingsPanel } from "../components/lessons/SourceSettingsPanel";
 import { PlaceholderPage } from "../components/PlaceholderPage";
 import { SubjectPicker } from "../components/SubjectPicker";
+
+type Subject = components["schemas"]["SubjectRead"];
+
+/** The owner's source switches for one subject (S26), wired to the API. */
+function SubjectSources({ subject }: { subject: Subject }) {
+  const update = useUpdateSourceSettings(subject.id);
+  return (
+    <SourceSettingsPanel
+      includeUntagged={subject.include_untagged_sources ?? false}
+      sourcesOnly={subject.sources_only ?? false}
+      onChange={(patch) => update.mutate(patch)}
+      disabled={update.isPending}
+    />
+  );
+}
 
 export function Lessons() {
   const { data: subjects, isLoading } = useSubjects();
@@ -48,6 +65,7 @@ export function Lessons() {
           showing a door that answers 404. */}
       {selected && selected.owner_learner_id !== null && (
         <>
+          <SubjectSources key={`sources-${selected.id}`} subject={selected} />
           <CurriculumIssuesPanel key={`issues-${selected.id}`} subjectId={selected.id} />
           <PublishPanel
             key={selected.id}

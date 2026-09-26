@@ -26,12 +26,19 @@ async def generate_content(
     Cache-aware: an identical request reuses stored blocks rather than regenerating.
     """
     await knowledge_svc.require_visible_kc(session, data.kc_id, learner.id)
-    if data.type is not None:
-        block = await svc.generate_block(
-            session, llm, learner_id=learner.id, kc_id=data.kc_id, block_type=data.type
-        )
-        return [block]
-    return await svc.assemble(session, llm, learner_id=learner.id, kc_id=data.kc_id)
+    try:
+        if data.type is not None:
+            block = await svc.generate_block(
+                session, llm, learner_id=learner.id, kc_id=data.kc_id, block_type=data.type
+            )
+            return [block]
+        return await svc.assemble(session, llm, learner_id=learner.id, kc_id=data.kc_id)
+    except svc.NoSourceCoverage as err:
+        # Sources-only with nothing to cite (S26): said plainly rather than written anyway.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "Your sources for this subject don't cover this concept.",
+        ) from err
 
 
 @router.post("/blocks/{block_id}/citation-check", response_model=SupportReportRead)

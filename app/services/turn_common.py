@@ -12,7 +12,6 @@ from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.untrusted import as_untrusted
 from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult
 from app.learning.mastery import Estimate
@@ -26,12 +25,6 @@ from app.schemas.chat import CheckComponentRead, CheckResultRead
 
 _CITATION_MARKER = re.compile(r"\[(\d+)\]")
 
-GROUNDING_INSTRUCTION = (
-    "When your answer draws on one of the numbered passages below, cite it inline immediately "
-    'after the sentence that uses it, like this: "...as shown here [1]." Only cite a passage '
-    "you actually used — never invent a number that isn't listed."
-)
-
 
 async def add_message(
     session: AsyncSession,
@@ -41,6 +34,7 @@ async def add_message(
     model: str | None = None,
     citations: list[dict] | None = None,
     check_result: CheckResultRead | None = None,
+    grounding_count: int | None = None,
 ) -> Message:
     actor = session.info.get("admin_actor_id")
     action = session.info.get("admin_action_id")
@@ -55,24 +49,11 @@ async def add_message(
         # Dumped here rather than by each caller, so the two flows cannot store the same
         # report in two shapes.
         check_result=check_result.model_dump(mode="json") if check_result is not None else None,
+        grounding_count=grounding_count,
     )
     session.add(message)
     await session.flush()
     return message
-
-
-def format_grounding(hits: Sequence[RetrievalHit]) -> str | None:
-    """Numbered passages for a system prompt, paired with ``GROUNDING_INSTRUCTION``.
-
-    Returns ``None`` for empty ``hits`` — the caller omits the grounding section entirely
-    rather than including an awkward empty block.
-    """
-    if not hits:
-        return None
-    passages = "\n".join(f"[{i}] {hit.text}" for i, hit in enumerate(hits, start=1))
-    # Fenced as data (S31): a passage is whatever someone uploaded, and an uploaded document
-    # can contain a sentence addressed to the model.
-    return f"{GROUNDING_INSTRUCTION}\n\n{as_untrusted('RETRIEVED PASSAGES', passages)}"
 
 
 def extract_citations(reply: str, hits: Sequence[RetrievalHit]) -> list[dict]:

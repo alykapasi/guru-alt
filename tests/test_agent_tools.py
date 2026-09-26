@@ -17,6 +17,7 @@ from app.llm.registry import fake_llm_client
 from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.rag.fetch import FetchError
+from app.rag.scope import SourceScope
 from tests.embedding import FAKE_SPACE
 
 _FAKE = fake_llm_client()
@@ -70,7 +71,7 @@ async def test_search_materials_surfaces_seeded_chunk_content(db_session: AsyncS
     source = await _source(db_session, learner)
     await _chunk(db_session, source, "mitochondria is the powerhouse of the cell")
 
-    tools = build_tools(db_session, fake_llm_client(), learner_id=learner.id)
+    tools = build_tools(db_session, fake_llm_client(), scope=SourceScope(learner_id=learner.id))
     result = await _search_materials(tools).execute({"query": "mitochondria"})
 
     assert not result.is_error
@@ -81,7 +82,7 @@ async def test_search_materials_scoped_to_learner(db_session: AsyncSession) -> N
     mine, theirs = await _learner(db_session), await _learner(db_session)
     await _chunk(db_session, await _source(db_session, theirs), "shared keyword content")
 
-    tools = build_tools(db_session, fake_llm_client(), learner_id=mine.id)
+    tools = build_tools(db_session, fake_llm_client(), scope=SourceScope(learner_id=mine.id))
     result = await _search_materials(tools).execute({"query": "shared"})
 
     assert not result.is_error
@@ -92,7 +93,7 @@ async def test_search_materials_empty_query_is_a_tool_error_not_an_exception(
     db_session: AsyncSession,
 ) -> None:
     learner = await _learner(db_session)
-    tools = build_tools(db_session, fake_llm_client(), learner_id=learner.id)
+    tools = build_tools(db_session, fake_llm_client(), scope=SourceScope(learner_id=learner.id))
 
     result = await _search_materials(tools).execute({"query": "   "})
     assert result.is_error
@@ -102,7 +103,7 @@ async def test_search_materials_missing_query_is_a_tool_error_not_an_exception(
     db_session: AsyncSession,
 ) -> None:
     learner = await _learner(db_session)
-    tools = build_tools(db_session, fake_llm_client(), learner_id=learner.id)
+    tools = build_tools(db_session, fake_llm_client(), scope=SourceScope(learner_id=learner.id))
 
     result = await _search_materials(tools).execute({})
     assert result.is_error
@@ -110,7 +111,7 @@ async def test_search_materials_missing_query_is_a_tool_error_not_an_exception(
 
 async def test_search_materials_no_hits_is_not_an_error(db_session: AsyncSession) -> None:
     learner = await _learner(db_session)
-    tools = build_tools(db_session, fake_llm_client(), learner_id=learner.id)
+    tools = build_tools(db_session, fake_llm_client(), scope=SourceScope(learner_id=learner.id))
 
     result = await _search_materials(tools).execute({"query": "nonexistent topic"})
     assert not result.is_error

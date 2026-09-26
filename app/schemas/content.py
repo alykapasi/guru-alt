@@ -2,9 +2,11 @@
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
 
 from app.models.content import ContentType
+from app.rag import coverage as coverage_rules
+from app.rag.coverage import Coverage
 
 
 class GenerateRequest(BaseModel):
@@ -56,3 +58,14 @@ class ContentBlockRead(BaseModel):
     # cannot say, since a model given snippets may cite none of them. ``None`` means the block
     # predates the column and nothing was recorded.
     grounding_count: int | None = None
+
+    @computed_field
+    @property
+    def coverage(self) -> Coverage | None:
+        """How much of this the learner's sources carried (S28), from what was recorded."""
+        return coverage_rules.coverage(self.grounding_count, self.citations)
+
+    @computed_field
+    @property
+    def cited_source_count(self) -> int:
+        return coverage_rules.cited_source_count(self.citations)
