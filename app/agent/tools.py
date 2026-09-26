@@ -22,7 +22,7 @@ from app.llm import LLMClient, ToolDef
 from app.rag.fetch import Fetcher, FetchError
 from app.rag.retrieval import RetrievalHit, retrieve
 from app.rag.scope import SourceScope
-from app.services.turn_common import format_grounding
+from app.services.grounding import format_grounding
 
 log = structlog.get_logger(__name__)
 
@@ -118,7 +118,11 @@ def _search_materials_tool(
         citations.add(hits)
         # The full accumulated set, not just this call's hits — keeps [N] numbering stable and
         # consistent across every search_materials call in this turn (see CitationAccumulator).
-        grounding = format_grounding(citations.hits)
+        grounding = (
+            format_grounding(citations.hits, sources_only=scope.sources_only)
+            if citations.hits
+            else None
+        )
         return ToolResult(
             content=grounding or "No relevant passages found in the learner's materials."
         )

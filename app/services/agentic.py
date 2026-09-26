@@ -16,6 +16,7 @@ from app.llm.types import ChatMessage, ChatRole, ModelRole, ToolCall, Usage
 from app.models.chat import Conversation, Message
 from app.rag.scope import resolve_scope
 from app.services import learner_context
+from app.services.grounding import policy_note
 from app.services.llm_log import log_llm_call
 from app.services.turn_common import (
     TurnEvent,
@@ -87,7 +88,13 @@ async def run_agentic_turn(
     spec = llm.spec(ModelRole.SMART)
     initial: AgenticState = {
         "messages": messages,
-        "system": learner_context.compose(AGENTIC_SYSTEM_PROMPT, context),
+        # The same grounding rule chat gets (S28), stated up front because this flow's
+        # passages arrive later, in search results, rather than in the prompt itself.
+        "system": learner_context.compose(
+            AGENTIC_SYSTEM_PROMPT,
+            context,
+            extra=[policy_note(sources_only=scope.sources_only)] if scope is not None else [],
+        ),
         "max_tokens": max_tokens,
         "max_iterations": get_settings().agentic_max_iterations,
         "iterations": 0,

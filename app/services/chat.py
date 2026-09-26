@@ -37,6 +37,7 @@ from app.services import knowledge as knowledge_svc
 from app.services import learner_context
 from app.services import session_runner as session_runner_svc
 from app.services.assessment import item_to_read
+from app.services.grounding import format_grounding
 from app.services.lesson_plan import PlanGroundingContext
 from app.services.llm_log import log_llm_call
 from app.services.turn_common import (
@@ -44,7 +45,6 @@ from app.services.turn_common import (
     add_message,
     build_check_result,
     extract_citations,
-    format_grounding,
     to_chat_messages,
 )
 
@@ -556,7 +556,7 @@ async def run_tutor_turn(
         hits = await retrieve(
             session, llm, user_content, scope=scope, limit=get_settings().chat_grounding_limit
         )
-        grounding = format_grounding(hits)
+        grounding = format_grounding(hits, sources_only=scope.sources_only)
 
     system = learner_context.compose(
         TUTOR_SYSTEM_PROMPT,

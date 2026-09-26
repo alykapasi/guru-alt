@@ -27,13 +27,13 @@ from app.schemas.chat import CheckResultRead
 from app.services import assessment as assessment_svc
 from app.services import checkpoints, learner_context
 from app.services.assessment import item_to_read
+from app.services.grounding import format_grounding
 from app.services.llm_log import log_llm_call
 from app.services.session_runner import short_answer_item_for_kc
 from app.services.turn_common import (
     TurnEvent,
     add_message,
     extract_citations,
-    format_grounding,
 )
 
 log = structlog.get_logger(__name__)
@@ -233,7 +233,7 @@ async def run_workflow_turn(
             hits = await retrieve(
                 session, llm, step.kc_name, scope=scope, limit=get_settings().chat_grounding_limit
             )
-            grounding = format_grounding(hits)
+            grounding = format_grounding(hits, sources_only=scope.sources_only)
         # A provisional component (S24) is confirmed, not taught: asking first is the "short
         # confirmation" V04 calls for, and an answer given without a worked example is exactly
         # the unaided pass that confirms it.

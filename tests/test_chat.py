@@ -28,6 +28,7 @@ from app.services import chat as chat_svc
 from app.services import lesson_plan as lesson_plan_svc
 from app.services import memory as memory_svc
 from app.services import turn_lock
+from app.services.grounding import instruction
 from tests.embedding import FAKE_SPACE
 
 API = "/api/v1"
@@ -1079,3 +1080,34 @@ async def test_a_retried_check_answer_is_recorded_once(db_session: AsyncSession)
         .where(LearningEvent.attempt_id == attempt_id)
     )
     assert count == len(item.kc_links)
+
+
+async def test_a_subject_chat_with_nothing_retrieved_is_told_so(
+    api_client: AsyncClient,
+    db_session: AsyncSession,
+    recording_llm: list[str | None],
+    api_learner: Learner,
+) -> None:
+    """S28: an empty retrieval used to add nothing to the prompt, so the tutor fell back to
+    general knowledge without ever being asked to say so."""
+    subject = Subject(
+        slug=f"s-{uuid.uuid4().hex[:8]}", name="Physics", owner_learner_id=api_learner.id
+    )
+    db_session.add(subject)
+    await db_session.commit()
+    r = await api_client.post(
+        f"{API}/conversations", json={"title": "Physics", "subject_id": str(subject.id)}
+    )
+    conversation = await db_session.get(Conversation, uuid.UUID(r.json()["id"]))
+    assert conversation is not None
+    conversation.goal = "Learn physics"
+    await db_session.commit()
+
+    r = await api_client.post(
+        f"{API}/conversations/{conversation.id}/messages", json={"content": "what is inertia?"}
+    )
+
+    assert r.status_code == 200
+    system = recording_llm[0]
+    assert system is not None
+    assert instruction(sources_only=False, has_passages=False) in system
