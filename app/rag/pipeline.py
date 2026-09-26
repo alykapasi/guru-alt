@@ -11,11 +11,12 @@ import asyncio
 import os
 import tempfile
 import time
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
 import structlog
-from sqlalchemy import delete, select
+from sqlalchemy import ARRAY, String, bindparam, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -250,8 +251,8 @@ async def run(
             usage=embedded.usage,
         )
 
-    # Idempotent: replace any prior chunks for this source (their KC tags cascade away with them).
-    await session.execute(delete(Chunk).where(Chunk.source_id == source.id))
+    # Replace the prior chunks, keeping any a citation still points at (S29).
+    await supersede_chunks(session, source)
     rows: list[Chunk] = []
     space = current_space(llm, dim=settings.embed_dim)
     for ordinal, (unit, vector) in enumerate(zip(chunks, embedded.vectors, strict=True)):
@@ -282,6 +283,58 @@ async def run(
 
     await _tag_chunks(session, llm, source, rows, settings)
     return len(chunks)
+
+
+# Chunk ids a learner's own chat replies or lesson blocks cite. Scoped to the learner twice
+# over: a chunk is only ever cited in its owner's material, and the scope keeps the scan to
+# their rows rather than every message in the database.
+_CITED = text(
+    """
+    SELECT c->>'chunk_id' FROM messages m
+      JOIN conversations v ON v.id = m.conversation_id AND v.learner_id = :learner
+      CROSS JOIN LATERAL jsonb_array_elements(m.citations) AS c
+     WHERE c->>'chunk_id' = ANY(:ids)
+    UNION
+    SELECT c->>'chunk_id' FROM content_blocks b
+      CROSS JOIN LATERAL jsonb_array_elements(b.citations) AS c
+     WHERE b.learner_id = :learner AND c->>'chunk_id' = ANY(:ids)
+    """
+).bindparams(bindparam("ids", type_=ARRAY(String)))
+
+
+async def supersede_chunks(session: AsyncSession, source: Source) -> tuple[int, int]:
+    """Retire a source's current chunks before new ones are written (S29). Returns (kept, deleted).
+
+    A chunk something cites — a chat reply or a lesson block, only ever the owner's — is kept as
+    history: its text and locator stay so the citation still shows what it cited, while its
+    vector and concept tags go, because nothing will search or tag it again. Everything else is
+    deleted as before. Chunks superseded by an earlier re-ingest are left exactly as they are.
+    """
+    current = list(
+        (
+            await session.scalars(
+                select(Chunk.id).where(Chunk.source_id == source.id, Chunk.superseded_at.is_(None))
+            )
+        ).all()
+    )
+    if not current:
+        return 0, 0
+    rows = await session.execute(
+        _CITED, {"learner": source.learner_id, "ids": [str(i) for i in current]}
+    )
+    cited = {uuid.UUID(row[0]) for row in rows}
+    uncited = [i for i in current if i not in cited]
+    if uncited:
+        await session.execute(delete(Chunk).where(Chunk.id.in_(uncited)))
+    if cited:
+        await session.execute(delete(ChunkKC).where(ChunkKC.chunk_id.in_(cited)))
+        await session.execute(
+            update(Chunk)
+            .where(Chunk.id.in_(cited))
+            .values(superseded_at=func.now(), embedding=None)
+            .execution_options(synchronize_session=False)
+        )
+    return len(cited), len(uncited)
 
 
 async def _tag_chunks(

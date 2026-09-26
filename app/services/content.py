@@ -201,6 +201,24 @@ async def assemble(
     ]
 
 
+async def _cited_passages(
+    session: AsyncSession, block: ContentBlock
+) -> list[citation_support.CitedPassage]:
+    """The passages a block cites, in citation order, read by id — superseded ones included,
+    since a re-ingest keeps cited chunks as history precisely so this still works (S29). A
+    chunk that no longer exists at all drops out."""
+    ids = [uuid.UUID(c["chunk_id"]) for c in block.citations if c.get("chunk_id")]
+    rows = (
+        list((await session.scalars(select(Chunk).where(Chunk.id.in_(ids)))).all()) if ids else []
+    )
+    by_id = {chunk.id: chunk for chunk in rows}
+    return [
+        citation_support.CitedPassage(chunk_id=chunk.id, source_id=chunk.source_id, text=chunk.text)
+        for chunk in (by_id.get(i) for i in ids)
+        if chunk is not None
+    ]
+
+
 async def check_block_citations(
     session: AsyncSession,
     llm: LLMClient,
@@ -223,17 +241,7 @@ async def check_block_citations(
     if block is None or block.learner_id != learner_id:
         raise LookupError(f"content block {block_id} not found")
 
-    ids = [uuid.UUID(c["chunk_id"]) for c in block.citations if c.get("chunk_id")]
-    rows = (
-        list((await session.scalars(select(Chunk).where(Chunk.id.in_(ids)))).all()) if ids else []
-    )
-    by_id = {chunk.id: chunk for chunk in rows}
-    passages = [
-        citation_support.CitedPassage(chunk_id=chunk.id, source_id=chunk.source_id, text=chunk.text)
-        for chunk in (by_id.get(i) for i in ids)
-        if chunk is not None
-    ]
-
+    passages = await _cited_passages(session, block)
     report, usage = await citation_support.check_support(llm, body=block.body, passages=passages)
     if usage.total_tokens:
         await log_llm_call(
