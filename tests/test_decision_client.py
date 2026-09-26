@@ -28,6 +28,7 @@ from app.llm.decisions import (
     YesNoQuestion,
     build_decision_client,
 )
+from app.services import decisions
 
 QUESTIONS = {
     "intent": ChoiceQuestion(
@@ -238,6 +239,24 @@ def test_a_mode_that_is_on_with_a_key_builds_the_typesafe_client() -> None:
     assert isinstance(client, TypeSafeDecisionClient)
     assert client.model == "jev-1.13.0"
     assert client.provider == "typesafe"
+
+
+def test_get_runtime_refuses_a_switched_on_question_with_no_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Startup wiring (Task 5): entering the app lifespan opens the checkpointer against a real
+    database, so this exercises the same refusal at the seam that actually does it —
+    `get_runtime` building the runtime from settings on first use. A question switched on with
+    an empty key must fail here, not silently on a learner's turn."""
+    monkeypatch.setattr(
+        decisions,
+        "get_settings",
+        lambda: Settings(typesafe_api_key=SecretStr(""), decision_intent_mode="shadow"),
+    )
+    decisions.set_runtime(None)
+
+    with pytest.raises(DecisionsMisconfigured):
+        decisions.get_runtime()
 
 
 def test_only_the_decision_client_imports_the_vendor_sdk() -> None:
