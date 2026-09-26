@@ -195,11 +195,17 @@ async def delete_conversation(session: AsyncSession, conversation: Conversation)
 
 
 async def list_conversations(
-    session: AsyncSession, learner_id: uuid.UUID
+    session: AsyncSession, learner_id: uuid.UUID, *, archived: bool = False
 ) -> Sequence[Conversation]:
+    """Newest first; archived conversations only when ``archived`` (S61)."""
     result = await session.scalars(
         select(Conversation)
-        .where(Conversation.learner_id == learner_id)
+        .where(
+            Conversation.learner_id == learner_id,
+            Conversation.archived_at.is_not(None)
+            if archived
+            else Conversation.archived_at.is_(None),
+        )
         .order_by(Conversation.created_at.desc())
         .options(selectinload(Conversation.conversation_sources))
     )

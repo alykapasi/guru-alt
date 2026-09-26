@@ -13,8 +13,10 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.chat import Conversation
 from app.models.source import Source
 from app.rag import pipeline
+from app.services import chat as chat_svc
 
 
 class RemovalRefused(Exception):
@@ -56,3 +58,15 @@ async def set_source_archived(
     await session.commit()
     await session.refresh(source)
     return source
+
+
+async def set_conversation_archived(
+    session: AsyncSession, learner_id: uuid.UUID, conversation_id: uuid.UUID, *, archived: bool
+) -> Conversation | None:
+    """Archive or unarchive a conversation: out of the list and read-only, memories untouched."""
+    conversation = await chat_svc.get_conversation(session, conversation_id, learner_id=learner_id)
+    if conversation is None or conversation.learner_id != learner_id:
+        return None
+    conversation.archived_at = datetime.now(UTC) if archived else None
+    await session.commit()
+    return await chat_svc.get_conversation(session, conversation_id, learner_id=learner_id)

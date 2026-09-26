@@ -198,3 +198,27 @@ async def test_the_api_lists_archived_sources_apart_and_refuses_retry(
     assert r.status_code == 200 and r.json()["archived_at"] is None
     r = await api_client.post(f"{API}/sources/{uuid.uuid4()}/archive")
     assert r.status_code == 404
+
+
+async def test_an_archived_conversation_is_listed_apart_and_read_only(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    conversation = Conversation(learner_id=api_learner.id)
+    db_session.add(conversation)
+    await db_session.commit()
+    cid = str(conversation.id)
+
+    r = await api_client.post(f"{API}/conversations/{cid}/archive")
+    assert r.status_code == 200 and r.json()["archived_at"] is not None
+    assert cid not in [c["id"] for c in (await api_client.get(f"{API}/conversations")).json()]
+    archived = (await api_client.get(f"{API}/conversations?archived=true")).json()
+    assert [c["id"] for c in archived] == [cid]
+    r = await api_client.post(f"{API}/conversations/{cid}/messages", json={"content": "hello"})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "archived"
+    r = await api_client.post(f"{API}/conversations/{cid}/practice", json={"action": "skip"})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "archived"
+    assert (await api_client.get(f"{API}/conversations/{cid}/messages")).status_code == 200
+
+    r = await api_client.post(f"{API}/conversations/{cid}/unarchive")
+    assert r.status_code == 200 and r.json()["archived_at"] is None
+    assert (await api_client.post(f"{API}/conversations/{uuid.uuid4()}/archive")).status_code == 404
