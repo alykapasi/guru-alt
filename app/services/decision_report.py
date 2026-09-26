@@ -72,6 +72,7 @@ class Operations:
     p95: int | None
     p99: int | None
     spend_usd: float
+    no_latency: int  # requests with no row carrying a latency: timed out or still running
 
 
 def _band_of(value: float) -> int:
@@ -163,19 +164,35 @@ def _percentile(values: Sequence[int], q: float) -> int | None:
     return values[max(1, math.ceil(len(values) * q)) - 1]
 
 
+def _max_cost(group: Sequence[DecisionCall]) -> float | None:
+    """The largest non-``None`` cost across a request's rows. A row written while the request
+    was still running (a live deadline miss) has no cost even when a sibling row on the same
+    request, written after it finished, does."""
+    costs = [r.cost_usd for r in group if r.cost_usd is not None]
+    return max(costs) if costs else None
+
+
+def _max_latency(group: Sequence[DecisionCall]) -> int | None:
+    """Same as :func:`_max_cost`, for latency."""
+    latencies = [r.latency_ms for r in group if r.latency_ms is not None]
+    return max(latencies) if latencies else None
+
+
 def summarise_operations(rows: Sequence[DecisionCall]) -> Operations:
-    first_row_of_request: dict[uuid.UUID, DecisionCall] = {}
+    rows_of_request: dict[uuid.UUID, list[DecisionCall]] = {}
     for r in rows:
-        first_row_of_request.setdefault(r.request_id, r)
-    requests = list(first_row_of_request.values())
-    latencies = sorted(r.latency_ms for r in requests if r.latency_ms is not None)
+        rows_of_request.setdefault(r.request_id, []).append(r)
+    costs = [_max_cost(group) for group in rows_of_request.values()]
+    request_latencies = [_max_latency(group) for group in rows_of_request.values()]
+    latencies = sorted(v for v in request_latencies if v is not None)
     return Operations(
-        requests=len(requests),
+        requests=len(rows_of_request),
         statuses=dict(Counter(r.status for r in rows)),
         p50=_percentile(latencies, 0.50),
         p95=_percentile(latencies, 0.95),
         p99=_percentile(latencies, 0.99),
-        spend_usd=sum((r.cost_usd or 0.0 for r in requests), 0.0),
+        spend_usd=sum((c for c in costs if c is not None), 0.0),
+        no_latency=sum(1 for v in request_latencies if v is None),
     )
 
 
@@ -273,6 +290,8 @@ async def build_report(
         "operations",
         "  status: " + ", ".join(f"{k} {v}" for k, v in sorted(ops.statuses.items())),
         f"  latency ms p50 {ops.p50} · p95 {ops.p95} · p99 {ops.p99}",
+        f"  requests with no latency recorded (timed out, or still running when written): "
+        f"{ops.no_latency} — excluded from the percentiles above",
         f"  Jev spend: ${ops.spend_usd:.6f}",
     ]
 

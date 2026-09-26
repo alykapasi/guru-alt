@@ -111,6 +111,32 @@ def test_no_rows_is_a_report_not_a_crash() -> None:
     assert summarise_operations([]).p50 is None
 
 
+def test_a_request_with_a_still_running_row_uses_the_siblings_values() -> None:
+    """The first row written (while live was still waiting at the deadline) has no cost or
+    latency; a sibling row on the same request, written after it finished, does."""
+    shared = uuid.uuid4()
+    rows = [
+        _intent("attempt", 0.9, "attempt", request_id=shared),  # no cost/latency yet
+        _grade(0.9, 1.0, request_id=shared, cost_usd=0.004, latency_ms=250),
+    ]
+
+    ops = summarise_operations(rows)
+
+    assert ops.requests == 1
+    assert ops.spend_usd == pytest.approx(0.004)
+    assert ops.p50 == 250
+    assert ops.no_latency == 0
+
+
+def test_a_request_with_no_latency_anywhere_is_excluded_and_counted() -> None:
+    rows = [_intent("attempt", 0.9, "attempt")]  # still running when recorded: no latency at all
+
+    ops = summarise_operations(rows)
+
+    assert ops.no_latency == 1
+    assert ops.p50 is None
+
+
 async def test_the_report_shows_a_false_pass_with_the_learners_answer(
     db_session: AsyncSession,
 ) -> None:
@@ -139,3 +165,21 @@ async def test_the_report_shows_a_false_pass_with_the_learners_answer(
 
     assert "false passes" in text.lower()
     assert "the mitochondria is the powerhouse" in text
+
+
+async def test_the_report_counts_requests_with_no_latency_recorded(
+    db_session: AsyncSession,
+) -> None:
+    db_session.add(_intent("attempt", 0.9, "attempt"))  # still running when recorded
+    await db_session.flush()
+
+    text = await build_report(
+        db_session,
+        since=datetime(2000, 1, 1, tzinfo=UTC),
+        intent_threshold=0.9,
+        grade_threshold=0.9,
+        examples=0,
+    )
+
+    assert "no latency" in text.lower()
+    assert "1" in text.split("no latency")[1].splitlines()[0]
