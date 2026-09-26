@@ -30,14 +30,14 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import checkpointing
-from app.learning import conversation_evidence
 from app.learning.conversation_evidence import TurnIntent
+from app.learning.turn_read import ReadContext
 from app.llm.registry import LLMClient
 from app.models.assessment import Item
 from app.models.chat import Conversation, ConversationPhase
 from app.services import assessment as assessment_svc
+from app.services import decisions as decisions_svc
 from app.services import workflow as workflow_svc
-from app.services.llm_log import log_llm_call
 
 
 class PracticeConflict(Exception):
@@ -76,18 +76,14 @@ async def classify_paused_message(
     if item is None:
         return TurnIntent.DEFERRAL
 
-    intent, usage = await conversation_evidence.classify_intent(
-        llm, question=item.stem, message=content
+    return await decisions_svc.decide_intent(
+        llm,
+        question=item.stem,
+        message=content,
+        context=ReadContext(
+            learner_id=learner_id, conversation_id=conversation.id, item_id=item.id
+        ),
     )
-    if usage.input_tokens or usage.output_tokens:
-        await log_llm_call(
-            learner_id=learner_id,
-            conversation_id=conversation.id,
-            role=conversation_evidence.CHECK_ROLE.value,
-            spec=llm.spec(conversation_evidence.CHECK_ROLE),
-            usage=usage,
-        )
-    return intent
 
 
 async def pause(

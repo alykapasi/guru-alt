@@ -22,7 +22,7 @@ independent-connection behaviour directly.
 """
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any
@@ -39,6 +39,7 @@ from app.core.db import get_session
 from app.main import app
 from app.models.learner import Learner
 from app.services import auth
+from app.services.decisions import DecisionPolicy, DecisionRuntime, set_runtime
 from app.services.llm_log import set_accounting_session_factory
 from app.storage import InMemoryBlobStore
 
@@ -87,6 +88,17 @@ def object_store_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     store = InMemoryBlobStore()
     monkeypatch.setattr("app.api.deps._blob_store", lambda: store)
+
+
+@pytest.fixture(autouse=True)
+def decisions_off() -> Iterator[None]:
+    """Every test starts with every Jev question off and no client, whatever the developer's
+    `.env` says — the suite must never reach the network or depend on a key (S78)."""
+    previous = set_runtime(DecisionRuntime(client=None, policy=DecisionPolicy.off()))
+    try:
+        yield
+    finally:
+        set_runtime(previous)
 
 
 @pytest_asyncio.fixture(autouse=True)

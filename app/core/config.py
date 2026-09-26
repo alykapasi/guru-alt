@@ -9,7 +9,11 @@ from enum import StrEnum
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+DecisionMode = Literal["off", "shadow", "live"]
+"""How a Jev decision is used (S81/S83): not asked, asked and only recorded, or allowed to decide."""
 
 
 class AppEnv(StrEnum):
@@ -234,6 +238,24 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_api_key: str = ""
     anthropic_api_key: str = ""
+
+    # Jev, TypeSafe's System One decision model (S78). It answers typed questions about a turn;
+    # it never writes text. Each question has its own mode — `off` (never asked), `shadow` (asked
+    # and recorded beside today's model call, which still decides) or `live` (a confident answer
+    # decides and the model call is skipped). Everything is off by default, so CI, the browser
+    # journeys and a fresh checkout need no key. See docs/RUNBOOK.md §14.
+    typesafe_api_key: SecretStr = SecretStr("")
+    decision_model: str = "jev-1.13.0"
+    decision_intent_mode: DecisionMode = "off"
+    decision_fully_correct_mode: DecisionMode = "off"
+    # Choice confidence (intent) and P(yes) (fully_correct) at or above which a live answer is
+    # used. Tuned from `uv run poe decision-report`, per question, never from vendor claims.
+    decision_intent_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
+    decision_fully_correct_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
+    # A live question waits this long for Jev, then today's path runs.
+    decision_live_deadline_ms: int = Field(default=800, gt=0)
+    # A shadow request's own timeout. Nobody waits on it; it only bounds a stuck request.
+    decision_shadow_timeout_s: float = Field(default=5.0, gt=0)
 
     # Default cap on assistant output tokens for a chat turn.
     chat_max_tokens: int = 2048

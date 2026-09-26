@@ -15,11 +15,12 @@ from sqlalchemy.orm import selectinload
 
 from app.agent.tutor import TutorState, build_tutor_graph
 from app.core.config import get_settings
-from app.learning import conversation_evidence, declared_check, feedback, mastery
+from app.learning import declared_check, feedback, mastery
 from app.learning import prerequisites as prereq_index
 from app.learning.conversation_evidence import TurnIntent
 from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult, InvalidResponse
+from app.learning.turn_read import FULLY_CORRECT, INTENT, ReadContext
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.models.assessment import Item, ItemType
@@ -30,6 +31,7 @@ from app.rag.retrieval import retrieve
 from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRef
 from app.schemas.chat import CheckResultRead
 from app.services import assessment as assessment_svc
+from app.services import decisions as decisions_svc
 from app.services import knowledge as knowledge_svc
 from app.services import learner_context
 from app.services import session_runner as session_runner_svc
@@ -301,17 +303,20 @@ async def _resolve_check(
         # with that delete — and grading is not the place to find out.
         return None, None
 
-    intent, usage = await conversation_evidence.classify_intent(
-        llm, question=item.stem, message=user_content
+    # One Jev read for both decisions this reply can need (S81): what it does about the
+    # question, and — if it is an attempt — whether it is fully correct. Nothing is asked when
+    # both questions are off, and today's gate and grader decide unless a question is live.
+    context = ReadContext(learner_id=learner_id, conversation_id=conversation.id, item_id=item.id)
+    read = decisions_svc.start_turn_read(
+        questions=[INTENT, FULLY_CORRECT],
+        stem=item.stem,
+        message=user_content,
+        rubric_criteria=item.rubric.criteria if item.rubric is not None else None,
+        context=context,
     )
-    if usage.input_tokens or usage.output_tokens:
-        await log_llm_call(
-            learner_id=learner_id,
-            conversation_id=conversation.id,
-            role=conversation_evidence.CHECK_ROLE.value,
-            spec=llm.spec(conversation_evidence.CHECK_ROLE),
-            usage=usage,
-        )
+    intent = await decisions_svc.decide_intent(
+        llm, question=item.stem, message=user_content, context=context, read=read
+    )
 
     if intent is TurnIntent.WITHDRAWAL:
         # Declining a question is not failing it. The check is dropped and nothing reaches the
@@ -345,6 +350,7 @@ async def _resolve_check(
                 attempt_id=attempt_id,
             ),
             llm=llm,
+            read=read,
         )
     except InvalidResponse:
         # The response does not fit the item type at all. Only SHORT items are ever posed as

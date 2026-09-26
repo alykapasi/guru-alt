@@ -121,6 +121,21 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   a frozen snapshot an administrator approved; it never makes the original public, and a subject
   built from the learner's uploads can never be published at all. See
   [docs/RUNBOOK.md](docs/RUNBOOK.md) §12.
+- **A self-rating is not evidence of ability** (S56) — the server decides whether a score was
+  judged or self-reported, and a self-rating moves the review schedule only. Mastery is the
+  conservative estimate `ability − 2·uncertainty ≥ 0.5` on measured evidence (V02); achievement
+  is recorded per component and kept, and staleness is reported, never used to un-master.
+- **A cross-subject link needs two agreements** (S24) — an endorsement (admin for curated
+  pairs, the `SMART` judge for private ones) and the learner's own acceptance. A shared name
+  never links anything, and an accepted link gives only a provisional head start that real
+  answers must confirm. `links_in_effect` in `app/services/concept_links.py` is the one rule;
+  see [docs/RUNBOOK.md](docs/RUNBOOK.md) §13.
+- **Jev is a first pass, never an author** (S78–S83) — TypeSafe's System One model answers
+  typed questions about a turn (`intent`, `fully_correct`) in front of the FAST gate and the
+  SMART grader. A confident live answer may skip that model call; it never writes text and
+  never produces a failing grade. Each question is off / shadow / live on its own and goes live
+  only after a person reads `uv run poe decision-report`. `app/llm/decisions.py` is the only
+  SDK importer. See [docs/RUNBOOK.md](docs/RUNBOOK.md) §14.
 - **Pydantic at boundaries · async throughout · Alembic-tracked schema.**
 
 ## Performance & Conciseness Guidelines

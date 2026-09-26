@@ -1,5 +1,14 @@
 # Proposed Jev architecture for Guru
 
+> **Superseded in part, 2026-09-26.** The implemented design is
+> [the Jev turn read](superpowers/specs/2026-09-26-jev-turn-read-design.md). Jev is used as a
+> fast first pass in front of the LLM, not only as a substitute for the FAST intent gate: one
+> read per turn asks `intent` and `fully_correct`, each switched off / shadow / live on its own
+> after a person reads `uv run poe decision-report`. Shadow runs on all traffic, since the
+> founder is the only learner. The vendor privacy review is a precondition for inviting anyone
+> else (RUNBOOK §14), not for shadow mode. The analysis below remains the background for that
+> design.
+
 Date: 2026-09-18. Status: design for review; no runtime integration, provider call, or behavior change implemented. Read alongside [capability evidence](jev-capabilities.md) and [implementation plan](jev-implementation-plan.md). Vendor interface facts and unresolved data-handling questions are recorded in the capability snapshot; the architecture below is a Guru proposal.
 
 ## Recommendation and alternatives

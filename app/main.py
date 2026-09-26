@@ -15,6 +15,7 @@ from app.core.db import engine
 from app.core.logging import configure_logging
 from app.core.middleware import request_id_middleware
 from app.core.release import enforce_production_settings
+from app.services import decisions as decisions_svc
 from app.services.admin_audit import AdminAuditMiddleware
 from app.services.knowledge import NotVisible
 
@@ -34,12 +35,17 @@ async def lifespan(_: FastAPI):
     # Building the registry validates the role→provider map (see llm.registry). Doing it here
     # turns a typo in GURU_MODEL_* into a refusal to start, not a 500 mid-conversation.
     get_llm_client()
+    # Same for the Jev decisions (S78): a question switched on without a key refuses to start
+    # rather than failing on a learner's turn.
+    decisions_svc.get_runtime()
     # Opens the checkpointer's pool and migrates its schema, so the first learner to pause a
     # practice does not pay for it — and so a database that cannot host durable state is
     # reported at startup rather than discovered by a conversation that fails to resume.
     await checkpointing.start(settings)
     log.info("app.startup", env=str(settings.env), durable_checkpoints=checkpointing.is_durable())
     yield
+    # Shadow decision rows are written in the background; let the last ones land.
+    await decisions_svc.drain()
     await checkpointing.stop()
     await engine.dispose()
     log.info("app.shutdown")

@@ -44,6 +44,15 @@ def set_accounting_session_factory(factory: AccountingSessionFactory) -> Account
     return previous
 
 
+def accounting_session() -> AbstractAsyncContextManager[AsyncSession]:
+    """A session for an accounting write, from whichever source is current.
+
+    Public so other ledgers (``app.services.decision_log``) share the same independence from
+    the business transaction — and the same test routing — without reaching into this module.
+    """
+    return _session_factory()
+
+
 async def log_llm_call(
     *,
     learner_id: uuid.UUID | None,

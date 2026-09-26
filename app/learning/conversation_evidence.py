@@ -63,17 +63,37 @@ class TurnIntent(StrEnum):
     question without that refusal itself becoming a mark against them."""
 
 
-_SYSTEM_PROMPT = (
+INTENT_TASK = (
     "A tutor asked a learner a specific practice question. Classify what the learner's reply "
-    "does about that question — not whether it is correct, which is graded separately. "
-    'Respond with ONLY a JSON object {"intent": "attempt"|"deferral"|"withdrawal"} and '
-    "nothing else. "
-    '"attempt" = they are trying to answer it, even partially, even if they are unsure or '
-    "plainly wrong. "
-    '"deferral" = they are engaging but not answering: asking what it means, asking for a '
-    "hint, or asking something else first. "
-    '"withdrawal" = they are leaving it: changing the subject, or declining to answer. '
+    "does about that question — not whether it is correct, which is graded separately."
+)
+"""The question itself, shared with Jev's intent question (``app.learning.turn_read``), so a
+disagreement between the two readers is about the readers and not the wording."""
+
+INTENT_OPTIONS = {
+    TurnIntent.ATTEMPT.value: (
+        "they are trying to answer it, even partially, even if they are unsure or plainly wrong."
+    ),
+    TurnIntent.DEFERRAL.value: (
+        "they are engaging but not answering: asking what it means, asking for a hint, or "
+        "asking something else first."
+    ),
+    TurnIntent.WITHDRAWAL.value: (
+        "they are leaving it: changing the subject, or declining to answer."
+    ),
+}
+
+INTENT_TIEBREAK = (
     "When the reply could be read either way, prefer the weaker claim: deferral over attempt."
+)
+
+_SYSTEM_PROMPT = (
+    INTENT_TASK
+    + ' Respond with ONLY a JSON object {"intent": "attempt"|"deferral"|"withdrawal"} and '
+    "nothing else. "
+    + " ".join(f'"{label}" = {meaning}' for label, meaning in INTENT_OPTIONS.items())
+    + " "
+    + INTENT_TIEBREAK
 )
 
 
