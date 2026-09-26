@@ -1,5 +1,6 @@
 import { Sprout } from "lucide-react";
 import { RichText } from "../content/RichText";
+import { CoverageChip, type Coverage } from "./CoverageChip";
 import type { Citation } from "../../api/sse";
 
 /** Flat message blocks, no bubbles — Claude.ai-style. Same visual language as the landing
@@ -18,6 +19,8 @@ export function MessageBlock({
   adminAttributed = false,
   citations = [],
   onCitationClick,
+  coverage = null,
+  sourceCount = 0,
 }: {
   role: string;
   content: string;
@@ -25,6 +28,8 @@ export function MessageBlock({
   adminAttributed?: boolean;
   citations?: Citation[];
   onCitationClick?: (citation: Citation) => void;
+  coverage?: Coverage | null;
+  sourceCount?: number;
 }) {
   if (role === "user") {
     return (
@@ -46,6 +51,7 @@ export function MessageBlock({
         )}
         <RichText content={content} citations={citations} onCitationClick={onCitationClick} />
         {streaming && <span className="animate-pulse">▍</span>}
+        {!streaming && <CoverageChip coverage={coverage} sourceCount={sourceCount} />}
       </div>
     </div>
   );
