@@ -35,7 +35,7 @@ from app.storage import BlobStore
 
 # Bumped whenever extraction or chunking changes in a way that changes chunk text (S50).
 # `poe reindex` compares every current chunk against it; see docs/RUNBOOK.md §15.
-PIPELINE_VERSION = 1
+PIPELINE_VERSION = 2  # 2: structure-aware chunking (S27)
 
 log = structlog.get_logger(__name__)
 
