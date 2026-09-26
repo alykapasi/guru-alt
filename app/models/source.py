@@ -12,7 +12,7 @@ from enum import StrEnum
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Computed, ForeignKey, Index, Text, UniqueConstraint
+from sqlalchemy import Computed, DateTime, ForeignKey, Index, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -115,7 +115,9 @@ class Chunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     ordinal: Mapped[int]  # position within the source
     text: Mapped[str] = mapped_column(Text)
-    embedding: Mapped[Any] = mapped_column(Vector(_EMBED_DIM))
+    # NULL only on a superseded chunk (S29): it keeps its text for the citations that point at
+    # it and gives up the vector, since nothing searches superseded chunks.
+    embedding: Mapped[Any | None] = mapped_column(Vector(_EMBED_DIM), nullable=True)
     # Which embedding model produced `embedding` ("provider:model:dim"). Vectors are only
     # comparable within one space, and swapping to a same-dimension model is a config edit
     # that would otherwise leave no trace — see app/llm/embedding_space.py.
@@ -125,6 +127,13 @@ class Chunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         TSVECTOR, Computed("to_tsvector('english', text)", persisted=True)
     )
     provenance: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # The extraction/chunking version that wrote this chunk (``app.rag.pipeline.PIPELINE_VERSION``).
+    # Lower than the current version means the text may now come out differently, and only a
+    # re-extraction can bring it up to date (S50).
+    pipeline_version: Mapped[int] = mapped_column(server_default="1", default=1)
+    # Set when a re-ingest replaced this chunk but something still cites it (S29). A superseded
+    # chunk is history: readable through its citation, never retrieved, tagged or re-embedded.
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     source: Mapped["Source"] = relationship(back_populates="chunks")
     kc_links: Mapped[list["ChunkKC"]] = relationship(

@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, computed_field
 
 
 class LinkCreate(BaseModel):
@@ -49,6 +49,13 @@ class ChunkRead(BaseModel):
     ordinal: int
     text: str
     provenance: dict
+    # A re-ingest replaced this passage but a citation still points at it (S29).
+    superseded_at: datetime | None = Field(default=None, exclude=True)
+
+    @computed_field
+    @property
+    def superseded(self) -> bool:
+        return self.superseded_at is not None
 
 
 class SimilarSourceRead(BaseModel):

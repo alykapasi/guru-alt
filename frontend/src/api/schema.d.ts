@@ -2257,6 +2257,8 @@ export interface components {
             provenance: {
                 [key: string]: unknown;
             };
+            /** Superseded */
+            readonly superseded: boolean;
             /** Text */
             text: string;
         };

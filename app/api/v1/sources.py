@@ -230,7 +230,9 @@ async def get_source_chunks(source_id: uuid.UUID, session: SessionDep, learner: 
         raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
     chunks = (
         await session.scalars(
-            select(Chunk).where(Chunk.source_id == source_id).order_by(Chunk.ordinal)
+            select(Chunk)
+            .where(Chunk.source_id == source_id, Chunk.superseded_at.is_(None))
+            .order_by(Chunk.ordinal)
         )
     ).all()
     return list(chunks)

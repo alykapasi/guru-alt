@@ -150,6 +150,7 @@ async def test_ingest_txt_creates_embedded_chunks(db_session: AsyncSession) -> N
     assert result.meta["chunk_count"] >= 1
     chunks = (await db_session.scalars(select(Chunk).where(Chunk.source_id == source.id))).all()
     assert len(chunks) >= 1
+    assert chunks[0].embedding is not None
     assert len(chunks[0].embedding) == 768
     assert chunks[0].provenance["source_id"] == str(source.id)
     assert chunks[0].provenance["method"] == "text"

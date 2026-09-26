@@ -32,6 +32,10 @@ from app.rag.transcription import Transcriber
 from app.services.llm_log import log_llm_call
 from app.storage import BlobStore
 
+# Bumped whenever extraction or chunking changes in a way that changes chunk text (S50).
+# `poe reindex` compares every current chunk against it; see docs/RUNBOOK.md §15.
+PIPELINE_VERSION = 1
+
 log = structlog.get_logger(__name__)
 
 
@@ -254,6 +258,7 @@ async def run(
         row = Chunk(
             source_id=source.id,
             embedding_space=space,
+            pipeline_version=PIPELINE_VERSION,
             ordinal=ordinal,
             text=unit.text,
             embedding=vector,
@@ -331,7 +336,9 @@ async def retag_source(
     rows = list(
         (
             await session.scalars(
-                select(Chunk).where(Chunk.source_id == source.id).order_by(Chunk.ordinal)
+                select(Chunk)
+                .where(Chunk.source_id == source.id, Chunk.superseded_at.is_(None))
+                .order_by(Chunk.ordinal)
             )
         ).all()
     )
