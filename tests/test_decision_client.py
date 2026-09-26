@@ -12,7 +12,7 @@ import time
 
 import httpx2
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from app.core.config import Settings
 from app.llm.decisions import (
@@ -211,6 +211,23 @@ def test_a_mode_that_is_on_without_a_key_refuses_to_start(field: str, mode: str)
 
     assert f"GURU_{field.upper()}" in str(raised.value)
     assert "GURU_TYPESAFE_API_KEY" in str(raised.value)
+
+
+@pytest.mark.parametrize("field", ["decision_intent_threshold", "decision_fully_correct_threshold"])
+@pytest.mark.parametrize("value", [-0.1, 1.5])
+def test_a_threshold_outside_zero_to_one_is_rejected(field: str, value: float) -> None:
+    with pytest.raises(ValidationError):
+        Settings(**{field: value})  # ty: ignore[invalid-argument-type]
+
+
+def test_a_zero_live_deadline_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Settings(decision_live_deadline_ms=0)
+
+
+def test_a_zero_shadow_timeout_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Settings(decision_shadow_timeout_s=0)
 
 
 def test_a_mode_that_is_on_with_a_key_builds_the_typesafe_client() -> None:

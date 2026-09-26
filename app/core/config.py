@@ -9,7 +9,7 @@ from enum import StrEnum
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DecisionMode = Literal["off", "shadow", "live"]
@@ -250,12 +250,12 @@ class Settings(BaseSettings):
     decision_fully_correct_mode: DecisionMode = "off"
     # Choice confidence (intent) and P(yes) (fully_correct) at or above which a live answer is
     # used. Tuned from `uv run poe decision-report`, per question, never from vendor claims.
-    decision_intent_threshold: float = 0.9
-    decision_fully_correct_threshold: float = 0.9
+    decision_intent_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
+    decision_fully_correct_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
     # A live question waits this long for Jev, then today's path runs.
-    decision_live_deadline_ms: int = 800
+    decision_live_deadline_ms: int = Field(default=800, gt=0)
     # A shadow request's own timeout. Nobody waits on it; it only bounds a stuck request.
-    decision_shadow_timeout_s: float = 5.0
+    decision_shadow_timeout_s: float = Field(default=5.0, gt=0)
 
     # Default cap on assistant output tokens for a chat turn.
     chat_max_tokens: int = 2048
