@@ -40,6 +40,9 @@ export function UploadForm({ subjects }: { subjects: Subject[] }) {
           ))}
         </select>
       </div>
+      <p className="text-caption text-base-content/50 -mt-2">
+        Without a subject, a file is only used by subjects that opt in to untagged materials.
+      </p>
       <div className="flex flex-wrap items-center gap-3">
         <button
           onClick={() => fileInputRef.current?.click()}
