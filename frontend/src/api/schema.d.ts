@@ -1817,6 +1817,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/subjects/{subject_id}/source-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Source Settings
+         * @description Change what this subject may draw on (S26). Owner only; curated subjects keep the
+         *     defaults, so the same 403 as any other change to the shared library.
+         */
+        patch: operations["update_source_settings_api_v1_subjects__subject_id__source_settings_patch"];
+        trace?: never;
+    };
     "/api/v1/subjects/{subject_id}/topics": {
         parameters: {
             query?: never;
@@ -3814,6 +3835,16 @@ export interface components {
             topic_id: string | null;
         };
         /**
+         * SourceSettingsUpdate
+         * @description A partial change to a subject's source switches; a field left out stays as it is.
+         */
+        SourceSettingsUpdate: {
+            /** Include Untagged Sources */
+            include_untagged_sources?: boolean | null;
+            /** Sources Only */
+            sources_only?: boolean | null;
+        };
+        /**
          * SpendBucket
          * @description Spend and timing attributed to one role or one model.
          */
@@ -3934,6 +3965,11 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /**
+             * Include Untagged Sources
+             * @default false
+             */
+            include_untagged_sources: boolean;
             /** Name */
             name: string;
             /** Owner Learner Id */
@@ -3945,6 +3981,11 @@ export interface components {
             private_source_derived: boolean;
             /** Slug */
             slug: string;
+            /**
+             * Sources Only
+             * @default false
+             */
+            sources_only: boolean;
         };
         /**
          * SupportReportRead
@@ -6827,6 +6868,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PublicationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_source_settings_api_v1_subjects__subject_id__source_settings_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subject_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubjectRead"];
                 };
             };
             /** @description Validation Error */

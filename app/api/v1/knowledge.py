@@ -21,6 +21,7 @@ from app.schemas.knowledge import (
     KCRead,
     PrerequisiteCreate,
     PrerequisiteRead,
+    SourceSettingsUpdate,
     SubjectCreate,
     SubjectRead,
     TopicCreate,
@@ -281,6 +282,23 @@ async def list_subjects(session: SessionDep, learner: CurrentLearner):
 @router.get("/subjects/{subject_id}", response_model=SubjectRead)
 async def get_subject(subject_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
     return await _visible_subject(session, subject_id, learner)
+
+
+@router.patch("/subjects/{subject_id}/source-settings", response_model=SubjectRead)
+async def update_source_settings(
+    subject_id: uuid.UUID, data: SourceSettingsUpdate, session: SessionDep, learner: CurrentLearner
+):
+    """Change what this subject may draw on (S26). Owner only; curated subjects keep the
+    defaults, so the same 403 as any other change to the shared library."""
+    subject = await _visible_subject(session, subject_id, learner)
+    _require_writable(subject, learner)
+    if data.include_untagged_sources is not None:
+        subject.include_untagged_sources = data.include_untagged_sources
+    if data.sources_only is not None:
+        subject.sources_only = data.sources_only
+    await session.commit()
+    await session.refresh(subject)
+    return subject
 
 
 # --- Topics -----------------------------------------------------------------

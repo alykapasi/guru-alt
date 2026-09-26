@@ -192,6 +192,10 @@ class Message(UUIDPrimaryKeyMixin, Base):
     # as it appears in `content`, mapped to the chunk it cites. Mirrors ContentBlock.citations'
     # shape (thin references, not the chunk text inline — see app/services/turn_common.py).
     citations: Mapped[list[dict]] = mapped_column(JSONB, default=list)
+    # How many passages were offered to the model for this reply (S28). NULL means there was no
+    # library scope — a General conversation, a refinement reply, or a row from before this was
+    # recorded — which is different from 0, "searched and found nothing".
+    grounding_count: Mapped[int | None] = mapped_column(default=None)
     # The learner-facing grade for an answer this turn marked, if it marked one (S15) — a
     # ``CheckResultRead`` dumped to JSON. It lives on the message rather than only in the
     # stream because the stream is gone the moment the page reloads: the grade moved the

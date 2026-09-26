@@ -71,6 +71,13 @@ class Subject(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # never taken from a request body. A subject carrying it cannot be published, because
     # publishing it would put one learner's private uploads in the shared library.
     private_source_derived: Mapped[bool] = mapped_column(server_default=false(), default=False)
+    # What this subject may draw on (S26, V05). Untagged sources — most uploads, since the tag
+    # is optional — are admitted only when the owner switches this on; nothing unassigned is
+    # added to a subject silently.
+    include_untagged_sources: Mapped[bool] = mapped_column(server_default=false(), default=False)
+    # Teach only from the subject's sources: where they do not cover something, say so rather
+    # than answering from general knowledge. Read by every grounding path (app.rag.scope).
+    sources_only: Mapped[bool] = mapped_column(server_default=false(), default=False)
     # Set on a *published copy*, naming the decision that created it. NULL on everything else,
     # including the author's original, which is not itself published.
     #

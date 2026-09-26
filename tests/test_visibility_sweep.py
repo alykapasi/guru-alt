@@ -240,6 +240,15 @@ CASES: list[Case] = [
         lambda c, t, o: c.get(f"{API}/subjects/{t.subject}"),
     ),
     Case(
+        "PATCH",
+        "/api/v1/subjects/{subject_id}/source-settings",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.patch(
+            f"{API}/subjects/{t.subject}/source-settings", json={"sources_only": True}
+        ),
+    ),
+    Case(
         "GET",
         "/api/v1/subjects/{subject_id}/coverage",
         "subject_id",
