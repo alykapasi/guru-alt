@@ -18,28 +18,31 @@ retried; nothing the learner can still reach survives.
 """
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import structlog
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import CursorResult, Result, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.core.config import Settings
 from app.core.identity import IdentityProvider
 from app.models.assessment import Item, Rubric
 from app.models.auth import AccountAction, AdminAction, Impersonation, Invitation
-from app.models.chat import Conversation, Message, Turn
+from app.models.chat import Conversation, LLMCall, Message, Turn, TurnStatus
 from app.models.content import ContentBlock
+from app.models.decision import DecisionCall
 from app.models.erasure import ErasureKind, PendingErasure
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
 from app.models.lesson_plan import LessonPlan
 from app.models.memory import Memory
 from app.models.note import Note, NoteRender, NoteRevision
+from app.models.ops import AlertTransition
 from app.models.profile import LearnerProfile, ProfileDimension
 from app.models.publication import Publication
 from app.models.source import Chunk, Source
@@ -101,7 +104,12 @@ RETENTION: tuple[StoreRetention, ...] = (
     ),
     StoreRetention("conversations", "deleted", "Cascades from the learner; messages with it."),
     StoreRetention("messages", "deleted", "Cascades from the conversation."),
-    StoreRetention("turns", "deleted", "Cascades from the conversation."),
+    StoreRetention(
+        "turns",
+        "deleted",
+        "Cascades from the conversation. Finished turns are also deleted after the diagnostic "
+        "window; the transcript is the durable copy.",
+    ),
     StoreRetention(
         "onboarding_sessions",
         "deleted",
@@ -152,7 +160,9 @@ RETENTION: tuple[StoreRetention, ...] = (
         "anonymised",
         "The learner id is dropped (SET NULL) and the row kept: token spend is the platform's "
         "own accounting, and it must still add up after an account is closed. It carries no "
-        "learner content — role, model, token counts, cost.",
+        "learner content — role, model, token counts, cost. After the diagnostic window (30 "
+        "days by default) the learner and conversation ids are dropped even for a live "
+        "account.",
     ),
     StoreRetention(
         "decision_calls",
@@ -161,7 +171,8 @@ RETENTION: tuple[StoreRetention, ...] = (
         "dropped (SET NULL) and the row kept, because it is evidence for whether Jev can "
         "replace a model call and that evidence must still add up after an account is closed. "
         "It carries no learner content — the question, the answer label or probability, and "
-        "the baseline the model would have given.",
+        "the baseline the model would have given. After the diagnostic window (30 days by "
+        "default) the learner and conversation ids are dropped even for a live account.",
     ),
     StoreRetention(
         "subjects/topics/kcs/kc_edges",
@@ -554,6 +565,79 @@ async def stuck_erasures(session: AsyncSession, *, attempts: int) -> int:
         select(func.count()).select_from(PendingErasure).where(PendingErasure.attempts >= attempts)
     )
     return count or 0
+
+
+async def _count(statement: Awaitable[Result[Any]]) -> int:
+    """How many rows an UPDATE or DELETE touched."""
+    return int(cast("CursorResult[Any]", await statement).rowcount)
+
+
+@dataclass
+class ExpiryReport:
+    calls_anonymised: int = 0
+    decisions_anonymised: int = 0
+    turns_deleted: int = 0
+    alerts_deleted: int = 0
+
+    @property
+    def changed(self) -> bool:
+        return any(
+            (
+                self.calls_anonymised,
+                self.decisions_anonymised,
+                self.turns_deleted,
+                self.alerts_deleted,
+            )
+        )
+
+
+async def expire_diagnostics(session: AsyncSession, *, older_than: timedelta) -> ExpiryReport:
+    """Apply the diagnostic window (V12) — selectively.
+
+    Accounting rows are anonymised, not deleted: spend totals and Jev's evidence must still
+    add up, and without a learner or conversation they point at nobody. Finished turns go —
+    their messages are the durable copy. Alert history goes except each condition's newest row,
+    which is its current state. Learning history, notes, memories, sources and audit records
+    are never touched here.
+    """
+    cutoff = func.now() - older_than
+    report = ExpiryReport()
+    for model in (LLMCall, DecisionCall):
+        anonymised = await _count(
+            session.execute(
+                update(model)
+                .where(
+                    model.created_at < cutoff,
+                    or_(model.learner_id.is_not(None), model.conversation_id.is_not(None)),
+                )
+                .values(learner_id=None, conversation_id=None)
+            )
+        )
+        if model is LLMCall:
+            report.calls_anonymised = anonymised
+        else:
+            report.decisions_anonymised = anonymised
+    report.turns_deleted = await _count(
+        session.execute(
+            delete(Turn).where(
+                Turn.created_at < cutoff,
+                Turn.status.in_([TurnStatus.COMPLETED, TurnStatus.FAILED, TurnStatus.CANCELLED]),
+            )
+        )
+    )
+    newer = aliased(AlertTransition)
+    has_newer = (
+        select(newer.id)
+        .where(newer.name == AlertTransition.name, newer.seq > AlertTransition.seq)
+        .exists()
+    )
+    report.alerts_deleted = await _count(
+        session.execute(
+            delete(AlertTransition).where(AlertTransition.created_at < cutoff, has_newer)
+        )
+    )
+    await session.commit()
+    return report
 
 
 def _as_dict(row: Any) -> dict[str, Any]:

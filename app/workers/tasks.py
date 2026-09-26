@@ -149,6 +149,24 @@ async def _retry_erasures_once() -> None:
         logger.info("resolved %d pending erasure(s)", resolved)
 
 
+async def _expire_diagnostics_once() -> None:
+    """Drop the learner from diagnostic rows older than the window (S61, V12)."""
+    settings = get_settings()
+    async with SessionFactory() as session:
+        report = await retention_svc.expire_diagnostics(
+            session, older_than=timedelta(days=settings.diagnostic_retention_days)
+        )
+    if report.changed:
+        logger.info(
+            "expired diagnostics: %d call(s) and %d decision(s) anonymised, %d turn(s) and "
+            "%d alert row(s) deleted",
+            report.calls_anonymised,
+            report.decisions_anonymised,
+            report.turns_deleted,
+            report.alerts_deleted,
+        )
+
+
 async def _purge_checkpoints_once() -> None:
     """Discard paused graph state for conversations nobody has come back to (S17)."""
     settings = get_settings()
@@ -248,6 +266,16 @@ async def _retry_erasures_loop(interval: int) -> None:
             logger.exception("erasure retry sweep failed; will retry")
 
 
+async def _expire_diagnostics_loop(interval: int) -> None:
+    """Expire diagnostics forever, surviving its own failures like the reconciler above."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await _expire_diagnostics_once()
+        except Exception:
+            logger.exception("diagnostic expiry sweep failed; will retry")
+
+
 async def _start_reconciler(state: TaskiqState) -> None:
     interval = get_settings().ingest_reconcile_interval_seconds
     if interval <= 0:
@@ -303,6 +331,17 @@ async def _stop_erasure_retry(state: TaskiqState) -> None:
     await _cancel(getattr(state, "erasure_retry", None))
 
 
+async def _start_diagnostic_expiry(state: TaskiqState) -> None:
+    interval = get_settings().diagnostic_expiry_interval_seconds
+    if interval <= 0:
+        return
+    state.diagnostic_expiry = asyncio.create_task(_expire_diagnostics_loop(interval))
+
+
+async def _stop_diagnostic_expiry(state: TaskiqState) -> None:
+    await _cancel(getattr(state, "diagnostic_expiry", None))
+
+
 async def _start_checkpoint_purge(state: TaskiqState) -> None:
     interval = get_settings().checkpoint_purge_interval_seconds
     if interval <= 0:
@@ -352,6 +391,8 @@ broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_account_erase)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_account_erase)
 broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_erasure_retry)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_erasure_retry)
+broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_diagnostic_expiry)
+broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_diagnostic_expiry)
 broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_checkpoint_purge)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_checkpoint_purge)
 broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_alerts)
