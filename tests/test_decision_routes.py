@@ -1,7 +1,8 @@
 """Each answer path, with Jev in shadow: what the learner gets is unchanged, and the rows exist.
 
-Three routes reach grading (spec §3): a conversational check (one read for both questions), a
-paused guided-practice question (intent at the gate), and a direct submission (grading only).
+Four routes reach grading (spec §3, §5): a conversational check (one read for both questions), a
+paused guided-practice question (intent at the gate), a direct submission (grading only), and a
+guided-practice answer graded inside the workflow graph itself (grading only, a fresh read).
 """
 
 import uuid
@@ -14,9 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_llm_client
 from app.learning.turn_read import FULLY_CORRECT, INTENT
 from app.llm.decisions import ChoiceAnswer, FakeDecisionClient, YesNoAnswer
+from app.llm.providers.fake import FakeTurn
 from app.llm.registry import fake_llm_client
 from app.main import app
 from app.models.decision import DecisionCall
+from app.models.learner import Learner
 from app.models.learning import LearningEvent
 from app.services import chat as chat_svc
 from app.services import practice
@@ -25,6 +28,13 @@ from tests.decision_support import runtime, using
 from tests.test_assessment import RUBRIC_REPLY, _seed_kcs
 from tests.test_conversation_evidence import GRADE_REPLY, _open_check, _role_client
 from tests.test_practice_pause import _presented
+from tests.test_workflow import (
+    PRESENT,
+    RESPOND_2,
+    RIGHT_GRADE,
+    _learner_and_subject_with_active_step,
+    _parse_sse,
+)
 
 API = "/api/v1"
 
@@ -113,6 +123,47 @@ async def test_a_paused_practice_question_is_gated_in_shadow(db_session: AsyncSe
     assert row.baseline_intent == intent.value
     assert row.answer == "attempt"
     assert row.item_id == item_id
+
+
+async def test_a_guided_practice_answer_is_gated_in_shadow_inside_the_workflow_graph(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """The fourth route (spec §5): a guided-practice answer is graded inside the workflow graph
+    itself (assessment_svc.answer_item -> _grade -> decide_grade), not through
+    chat._resolve_check or the direct-submission endpoint. It starts its own read — the router
+    resolves the flow's intent gate first (classify_paused_message), which is a separate read
+    that leaves no fully_correct row of its own here since intent stays off."""
+    _learner, subject = await _learner_and_subject_with_active_step(db_session, learner=api_learner)
+    script = [
+        FakeTurn(text=PRESENT),
+        FakeTurn(text='{"intent": "attempt"}'),
+        FakeTurn(text=RIGHT_GRADE),
+        FakeTurn(text=RESPOND_2),
+    ]
+    client = fake_llm_client(script=script)
+    app.dependency_overrides[get_llm_client] = lambda: client
+    try:
+        r = await api_client.post(f"{API}/conversations", json={"subject_id": str(subject.id)})
+        conversation_id = r.json()["id"]
+        await api_client.post(
+            f"{API}/conversations/{conversation_id}/messages",
+            json={"content": "let's practice", "mode": "workflow"},
+        )
+
+        with using(runtime(_jev(yes=0.4), fully_correct="shadow")):
+            r = await api_client.post(
+                f"{API}/conversations/{conversation_id}/messages",
+                json={"content": "sunlight -> sugars"},
+            )
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+
+    done = next(e for e in _parse_sse(r.text) if e["type"] == "done")
+    assert done["detail"] == "mastered"  # SMART's 0.9 grade decided, not Jev's 0.4
+
+    (row,) = [row for row in await _rows(db_session) if row.question == FULLY_CORRECT]
+    assert row.baseline_score == pytest.approx(0.9)
+    assert row.used is False
 
 
 @pytest.fixture
