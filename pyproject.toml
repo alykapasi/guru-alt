@@ -97,6 +97,7 @@ api-contract = "bash scripts/check-api-contract.sh"
 backup-drill = "bash scripts/backup-drill.sh"
 blob-check = "python -m app.workers.blob_check"
 decision-report = "python -m app.workers.decision_report"
+reindex = "python -m app.workers.reindex"
 hooks-install = "pre-commit install"
 hooks = "pre-commit run --all-files"
 check.sequence = ["lint", "type-check", "test"]

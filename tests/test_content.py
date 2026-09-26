@@ -23,6 +23,7 @@ from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.services import content as svc
+from app.services.grounding import READING_NOTE_RULE
 from tests.embedding import FAKE_SPACE
 
 API = "/api/v1"
@@ -514,6 +515,43 @@ async def test_with_grounding_the_source_only_instruction_is_the_one_sent(
     assert "Use ONLY" not in system
     assert "No source material was retrieved" not in system
     assert "Context snippets:" in user
+
+
+async def test_lesson_snippets_carry_reading_notes(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+    scanned, _ = await _seed_grounding(db_session, learner)
+    scanned.provenance = {**scanned.provenance, "method": "ocr"}
+    await db_session.flush()
+    client = _client()
+    seen = _spy_on_prompts(client, monkeypatch)
+
+    await svc.generate_block(
+        db_session, client, learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    system, user = seen[0]
+    assert "(read from a scan or image; wording may contain errors) mitochondria" in user
+    assert system is not None and READING_NOTE_RULE in system
+
+
+async def test_clean_snippets_carry_no_reading_rule(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+    await _seed_grounding(db_session, learner)
+    client = _client()
+    seen = _spy_on_prompts(client, monkeypatch)
+
+    await svc.generate_block(
+        db_session, client, learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    system, _ = seen[0]
+    assert system is not None and READING_NOTE_RULE not in system
 
 
 async def test_grounding_count_records_what_was_offered_not_what_was_cited(

@@ -3,7 +3,9 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, computed_field
+
+from app.rag import extraction_quality
 
 
 class LinkCreate(BaseModel):
@@ -37,7 +39,14 @@ class SourceRead(BaseModel):
     error: str | None
     subject_id: uuid.UUID | None
     topic_id: uuid.UUID | None
+    duplicate_of_id: uuid.UUID | None = None
     created_at: datetime
+
+
+class RetryRequest(BaseModel):
+    """Re-processing a finished source replaces its passages, so it has to be confirmed (S29)."""
+
+    confirm: bool = False
 
 
 class ChunkRead(BaseModel):
@@ -49,6 +58,19 @@ class ChunkRead(BaseModel):
     ordinal: int
     text: str
     provenance: dict
+    # A re-ingest replaced this passage but a citation still points at it (S29).
+    superseded_at: datetime | None = Field(default=None, exclude=True)
+
+    @computed_field
+    @property
+    def superseded(self) -> bool:
+        return self.superseded_at is not None
+
+    @computed_field
+    @property
+    def reading_note(self) -> str | None:
+        """How this passage was read, when that should temper trust in it (S27)."""
+        return extraction_quality.reading_note(self.provenance)
 
 
 class SimilarSourceRead(BaseModel):

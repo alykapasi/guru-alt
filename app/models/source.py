@@ -12,7 +12,7 @@ from enum import StrEnum
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Computed, ForeignKey, Index, Text, UniqueConstraint
+from sqlalchemy import Computed, DateTime, ForeignKey, Index, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -73,6 +73,12 @@ class Source(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # learner's own sources, which is tens of rows; a cross-learner search would need LSH
     # banding, and cross-learner similarity is not something a learner may observe anyway.
     simhash: Mapped[str | None] = mapped_column(default=None)
+    # The source this one is a text duplicate of (S77): same learner, same scope, same text,
+    # so it was not chunked and the original answers for it. SET NULL on delete, so an original
+    # that goes away leaves a mark the recovery sweep can find rather than a dangling id in meta.
+    duplicate_of_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("sources.id", ondelete="SET NULL"), default=None, index=True
+    )
     content_type: Mapped[str | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(index=True, default=SourceStatus.PENDING)
     error: Mapped[str | None] = mapped_column(Text, default=None)
@@ -115,7 +121,9 @@ class Chunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     ordinal: Mapped[int]  # position within the source
     text: Mapped[str] = mapped_column(Text)
-    embedding: Mapped[Any] = mapped_column(Vector(_EMBED_DIM))
+    # NULL only on a superseded chunk (S29): it keeps its text for the citations that point at
+    # it and gives up the vector, since nothing searches superseded chunks.
+    embedding: Mapped[Any | None] = mapped_column(Vector(_EMBED_DIM), nullable=True)
     # Which embedding model produced `embedding` ("provider:model:dim"). Vectors are only
     # comparable within one space, and swapping to a same-dimension model is a config edit
     # that would otherwise leave no trace — see app/llm/embedding_space.py.
@@ -125,6 +133,13 @@ class Chunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         TSVECTOR, Computed("to_tsvector('english', text)", persisted=True)
     )
     provenance: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # The extraction/chunking version that wrote this chunk (``app.rag.pipeline.PIPELINE_VERSION``).
+    # Lower than the current version means the text may now come out differently, and only a
+    # re-extraction can bring it up to date (S50).
+    pipeline_version: Mapped[int] = mapped_column(server_default="1", default=1)
+    # Set when a re-ingest replaced this chunk but something still cites it (S29). A superseded
+    # chunk is history: readable through its citation, never retrieved, tagged or re-embedded.
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     source: Mapped["Source"] = relationship(back_populates="chunks")
     kc_links: Mapped[list["ChunkKC"]] = relationship(

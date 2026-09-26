@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Body, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import select
 
 from app.api.deps import (
@@ -16,7 +16,7 @@ from app.api.deps import (
     SessionDep,
     SettingsDep,
 )
-from app.models.source import Chunk, Source, SourceKind
+from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.rag import retrieval
 from app.rag.retrieval import RetrievalHit
 from app.rag.scope import SourceScope
@@ -24,6 +24,7 @@ from app.schemas.source import (
     ChunkRead,
     LinkCreate,
     RetrieveRequest,
+    RetryRequest,
     SimilarSourceRead,
     SourceRead,
 )
@@ -117,6 +118,12 @@ async def link_source(
     raise HTTPException(status.HTTP_403_FORBIDDEN, svc.WEB_DISABLED_REASON)
 
 
+_CONFIRM_REQUIRED = (
+    "This source is already in your library. Re-processing it replaces its passages; older "
+    "replies will show their citations as an earlier version."
+)
+
+
 @router.post(
     "/sources/{source_id}/retry",
     response_model=SourceRead,
@@ -127,21 +134,36 @@ async def retry_source(
     session: SessionDep,
     learner: CurrentLearner,
     enqueue: IngestionEnqueuerDep,
+    data: Annotated[RetryRequest | None, Body()] = None,
 ):
     """Re-run ingestion for a finished or failed source.
 
     A completed source is deliberately not claimable by a job (S37), so re-ingesting one has
-    to be asked for. 409 while a claim is live rather than yanking work in flight.
+    to be asked for — and, since it replaces passages the learner's replies may cite, confirmed
+    (S29). A failed source has nothing to replace and retries directly. 409 while a claim is
+    live rather than yanking work in flight; the two 409s carry different codes.
     """
     source = await session.get(Source, source_id)
     if source is None or source.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    if source.kind == SourceKind.URL:
+        # Refused before any confirmation is asked for: there is nothing to confirm when the
+        # answer would be no regardless (v0 web policy).
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(svc.WebIngestionDisabled()))
+    if source.status == SourceStatus.DONE and not (data is not None and data.confirm):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "confirm_required", "message": _CONFIRM_REQUIRED},
+        )
     try:
         reset = await svc.reset_for_reingest(session, source_id)
     except svc.WebIngestionDisabled as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     if reset is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "this source is being ingested right now")
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "ingesting", "message": "This source is being ingested right now."},
+        )
     await svc.dispatch(enqueue, reset.id)
     return reset
 
@@ -230,7 +252,9 @@ async def get_source_chunks(source_id: uuid.UUID, session: SessionDep, learner: 
         raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
     chunks = (
         await session.scalars(
-            select(Chunk).where(Chunk.source_id == source_id).order_by(Chunk.ordinal)
+            select(Chunk)
+            .where(Chunk.source_id == source_id, Chunk.superseded_at.is_(None))
+            .order_by(Chunk.ordinal)
         )
     ).all()
     return list(chunks)

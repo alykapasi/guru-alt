@@ -32,8 +32,10 @@ from app.models.content import ContentBlock, ContentType
 from app.models.knowledge import KC, Topic
 from app.models.source import Chunk
 from app.rag import retrieval
+from app.rag.extraction_quality import reading_note
 from app.rag.retrieval import RetrievalHit
 from app.rag.scope import resolve_scope
+from app.services import grounding as grounding_policy
 from app.services.llm_log import log_llm_call
 
 GROUNDING_K = 6
@@ -150,6 +152,8 @@ async def generate_block(
     if grounding:
         rule = _SOURCES_ONLY_RULE if scope.sources_only else _SUPPLEMENT_RULE
         system = _SYSTEM_PROMPT.format(guidance=_GUIDANCE[block_type], scope_rule=rule)
+        if any(reading_note(hit.provenance) for hit in grounding):
+            system = f"{system} {grounding_policy.READING_NOTE_RULE}"
     else:
         system = _UNGROUNDED_SYSTEM_PROMPT.format(guidance=_GUIDANCE[block_type])
     user = _build_prompt(kc, grounding)
@@ -201,6 +205,24 @@ async def assemble(
     ]
 
 
+async def _cited_passages(
+    session: AsyncSession, block: ContentBlock
+) -> list[citation_support.CitedPassage]:
+    """The passages a block cites, in citation order, read by id — superseded ones included,
+    since a re-ingest keeps cited chunks as history precisely so this still works (S29). A
+    chunk that no longer exists at all drops out."""
+    ids = [uuid.UUID(c["chunk_id"]) for c in block.citations if c.get("chunk_id")]
+    rows = (
+        list((await session.scalars(select(Chunk).where(Chunk.id.in_(ids)))).all()) if ids else []
+    )
+    by_id = {chunk.id: chunk for chunk in rows}
+    return [
+        citation_support.CitedPassage(chunk_id=chunk.id, source_id=chunk.source_id, text=chunk.text)
+        for chunk in (by_id.get(i) for i in ids)
+        if chunk is not None
+    ]
+
+
 async def check_block_citations(
     session: AsyncSession,
     llm: LLMClient,
@@ -223,17 +245,7 @@ async def check_block_citations(
     if block is None or block.learner_id != learner_id:
         raise LookupError(f"content block {block_id} not found")
 
-    ids = [uuid.UUID(c["chunk_id"]) for c in block.citations if c.get("chunk_id")]
-    rows = (
-        list((await session.scalars(select(Chunk).where(Chunk.id.in_(ids)))).all()) if ids else []
-    )
-    by_id = {chunk.id: chunk for chunk in rows}
-    passages = [
-        citation_support.CitedPassage(chunk_id=chunk.id, source_id=chunk.source_id, text=chunk.text)
-        for chunk in (by_id.get(i) for i in ids)
-        if chunk is not None
-    ]
-
+    passages = await _cited_passages(session, block)
     report, usage = await citation_support.check_support(llm, body=block.body, passages=passages)
     if usage.total_tokens:
         await log_llm_call(
@@ -295,7 +307,7 @@ def _build_prompt(kc: KC, grounding: list[RetrievalHit]) -> str:
     objective = _kc_query(kc)
     if not grounding:
         return f"Learning objective:\n{objective}"
-    context = "\n\n".join(f"[{i}] {hit.text}" for i, hit in enumerate(grounding))
+    context = "\n\n".join(grounding_policy.passage(i, hit) for i, hit in enumerate(grounding))
     return f"Learning objective:\n{objective}\n\nContext snippets:\n{context}"
 
 

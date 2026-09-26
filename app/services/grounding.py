@@ -8,6 +8,7 @@ nothing at all and the model's fallback to general knowledge was never announced
 from collections.abc import Sequence
 
 from app.agent.untrusted import as_untrusted
+from app.rag.extraction_quality import reading_note
 from app.rag.retrieval import RetrievalHit
 
 _CITE = (
@@ -47,6 +48,20 @@ def instruction(*, sources_only: bool, has_passages: bool) -> str:
     return " ".join((_CITE, _CONFLICT, _ONLY if sources_only else _BEYOND))
 
 
+# Added only when a passage carries a note (S27): machine-read text can be wrong in exactly the
+# places a learner would copy — a figure, a name, a formula.
+READING_NOTE_RULE = (
+    "Passages marked with a reading note were machine-read and may contain errors: do not "
+    "present exact figures, names or formulas from them as certain, and say so where it matters."
+)
+
+
+def passage(i: int, hit: RetrievalHit) -> str:
+    """One numbered passage, with its reading note ahead of the text when it has one."""
+    note = reading_note(hit.provenance)
+    return f"[{i}] ({note}) {hit.text}" if note else f"[{i}] {hit.text}"
+
+
 def format_grounding(hits: Sequence[RetrievalHit], *, sources_only: bool) -> str:
     """The grounding section of a system prompt: the rule, then the passages fenced as data.
 
@@ -56,7 +71,9 @@ def format_grounding(hits: Sequence[RetrievalHit], *, sources_only: bool) -> str
     rule = instruction(sources_only=sources_only, has_passages=bool(hits))
     if not hits:
         return rule
-    passages = "\n".join(f"[{i}] {hit.text}" for i, hit in enumerate(hits, start=1))
+    if any(reading_note(hit.provenance) for hit in hits):
+        rule = f"{rule} {READING_NOTE_RULE}"
+    passages = "\n".join(passage(i, hit) for i, hit in enumerate(hits, start=1))
     # Fenced as data (S31): a passage is whatever someone uploaded, and an uploaded document
     # can contain a sentence addressed to the model.
     return f"{rule}\n\n{as_untrusted('RETRIEVED PASSAGES', passages)}"

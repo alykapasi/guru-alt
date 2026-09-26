@@ -14,6 +14,7 @@ import uuid
 
 import pytest
 
+from app.core.config import get_settings
 from tests.migration_harness import database_at, downgrade, upgrade
 
 SCRATCH = "guru_migration_test"
@@ -267,5 +268,89 @@ async def test_a_provider_link_survives_the_round_trip_down_and_back_up() -> Non
                     "third",
                     "user_def456",
                 )
+        finally:
+            await conn.close()
+
+
+async def test_chunks_that_predate_versions_come_through_as_version_one_and_current() -> None:
+    """0064 (S29/S50): every existing chunk was written by pipeline 1, and none is superseded."""
+    async with database_at("0063_source_scope_settings") as connect:
+        conn = await connect()
+        try:
+            learner_id, source_id, chunk_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            dim = get_settings().embed_dim
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "reader"
+            )
+            await conn.execute(
+                "INSERT INTO sources (id, learner_id, kind, origin, status, meta, attempts) "
+                "VALUES ($1, $2, 'file', 'notes.txt', 'done', '{}'::jsonb, 0)",
+                source_id,
+                learner_id,
+            )
+            await conn.execute(
+                "INSERT INTO chunks (id, source_id, ordinal, text, embedding, embedding_space, "
+                "provenance) VALUES ($1, $2, 0, 'old text', $3::vector, 'fake:fake-1:x', "
+                "'{}'::jsonb)",
+                chunk_id,
+                source_id,
+                "[" + ",".join(["0.1"] * dim) + "]",
+            )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0064_chunk_versions")
+
+        conn = await connect()
+        try:
+            row = await conn.fetchrow(
+                "SELECT pipeline_version, superseded_at, text FROM chunks WHERE id = $1",
+                chunk_id,
+            )
+            assert row is not None, "the chunk did not survive the upgrade"
+            assert row["pipeline_version"] == 1
+            assert row["superseded_at"] is None
+            assert row["text"] == "old text"
+        finally:
+            await conn.close()
+
+
+async def test_duplicates_recorded_in_meta_get_the_column_backfilled() -> None:
+    """0065 (S77): the relation moves from meta into a foreign key. An original that still
+    exists is linked; one that is gone backfills to NULL, which is what lets the sweep find it."""
+    async with database_at("0064_chunk_versions") as connect:
+        conn = await connect()
+        try:
+            learner_id = uuid.uuid4()
+            original, linked, orphan = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "reader"
+            )
+            for sid, meta in (
+                (original, "{}"),
+                (linked, f'{{"duplicate_of": "{original}"}}'),
+                (orphan, f'{{"duplicate_of": "{uuid.uuid4()}"}}'),
+            ):
+                await conn.execute(
+                    "INSERT INTO sources (id, learner_id, kind, origin, status, meta, attempts) "
+                    "VALUES ($1, $2, 'file', 'x.txt', 'done', $3::jsonb, 0)",
+                    sid,
+                    learner_id,
+                    meta,
+                )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0065_source_duplicate_of")
+
+        conn = await connect()
+        try:
+            rows = {
+                r["id"]: r["duplicate_of_id"]
+                for r in await conn.fetch("SELECT id, duplicate_of_id FROM sources")
+            }
+            assert rows[linked] == original
+            assert rows[orphan] is None
+            assert rows[original] is None
         finally:
             await conn.close()

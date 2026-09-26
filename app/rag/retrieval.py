@@ -54,7 +54,9 @@ async def retrieve(
 
     def scoped(stmt: Select) -> Select:
         stmt = stmt.join(Source, Chunk.source_id == Source.id).where(
-            Source.learner_id == scope.learner_id
+            Source.learner_id == scope.learner_id,
+            # Superseded chunks are history kept for their citations (S29), never grounding.
+            Chunk.superseded_at.is_(None),
         )
         if scope.source_ids:
             stmt = stmt.where(Chunk.source_id.in_(scope.source_ids))

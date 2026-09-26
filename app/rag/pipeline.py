@@ -11,11 +11,12 @@ import asyncio
 import os
 import tempfile
 import time
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
 import structlog
-from sqlalchemy import delete, select
+from sqlalchemy import ARRAY, String, bindparam, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -31,6 +32,10 @@ from app.rag.demux import MediaDemuxer
 from app.rag.transcription import Transcriber
 from app.services.llm_log import log_llm_call
 from app.storage import BlobStore
+
+# Bumped whenever extraction or chunking changes in a way that changes chunk text (S50).
+# `poe reindex` compares every current chunk against it; see docs/RUNBOOK.md §15.
+PIPELINE_VERSION = 2  # 2: structure-aware chunking (S27)
 
 log = structlog.get_logger(__name__)
 
@@ -120,6 +125,11 @@ async def _same_text_source(session: AsyncSession, source: Source) -> Source | N
     book under two subjects is a real intent, and retrieval is subject-scoped so the copies
     never compete. Only ``DONE`` counts — a match with no chunks behind it would leave this
     source suppressed in favour of one that cannot answer anything.
+
+    For the same reason the match must have current chunks of its own. A twin that was itself
+    suppressed as a duplicate is DONE with none, and re-extracting the original would otherwise
+    defer to it — leaving the original's stale chunks in place and every reindex queueing it
+    again (S50).
     """
     if source.text_sha256 is None:
         return None
@@ -131,6 +141,9 @@ async def _same_text_source(session: AsyncSession, source: Source) -> Source | N
             Source.text_sha256 == source.text_sha256,
             Source.status == SourceStatus.DONE,
             Source.id != source.id,
+            select(Chunk.id)
+            .where(Chunk.source_id == Source.id, Chunk.superseded_at.is_(None))
+            .exists(),
             Source.subject_id.is_(None)
             if source.subject_id is None
             else Source.subject_id == source.subject_id,
@@ -199,10 +212,16 @@ async def run(
     if twin is not None:
         # Already embedded, under this learner's own scope. Chunking it again would pay for a
         # second copy and then let the two crowd each other out of every grounding window.
-        source.meta = {**source.meta, "duplicate_of": str(twin.id)}
+        source.duplicate_of_id = twin.id
+        # Its own earlier chunks go too (cited ones kept as history): a source re-ingested into
+        # a scope where its twin already answers must stop answering itself, or both copies are
+        # retrieved — and a stale-version original would be queued by every reindex (S77, S50).
+        await supersede_chunks(session, source)
         log.info("pipeline.duplicate_text", source_id=str(source.id), duplicate_of=str(twin.id))
         await session.flush()
         return 0
+    # Answering for itself from here on, so no longer anyone's duplicate (S77).
+    source.duplicate_of_id = None
 
     chunks = chunk_units(units)
     if not chunks:
@@ -246,14 +265,15 @@ async def run(
             usage=embedded.usage,
         )
 
-    # Idempotent: replace any prior chunks for this source (their KC tags cascade away with them).
-    await session.execute(delete(Chunk).where(Chunk.source_id == source.id))
+    # Replace the prior chunks, keeping any a citation still points at (S29).
+    await supersede_chunks(session, source)
     rows: list[Chunk] = []
     space = current_space(llm, dim=settings.embed_dim)
     for ordinal, (unit, vector) in enumerate(zip(chunks, embedded.vectors, strict=True)):
         row = Chunk(
             source_id=source.id,
             embedding_space=space,
+            pipeline_version=PIPELINE_VERSION,
             ordinal=ordinal,
             text=unit.text,
             embedding=vector,
@@ -277,6 +297,58 @@ async def run(
 
     await _tag_chunks(session, llm, source, rows, settings)
     return len(chunks)
+
+
+# Chunk ids a learner's own chat replies or lesson blocks cite. Scoped to the learner twice
+# over: a chunk is only ever cited in its owner's material, and the scope keeps the scan to
+# their rows rather than every message in the database.
+_CITED = text(
+    """
+    SELECT c->>'chunk_id' FROM messages m
+      JOIN conversations v ON v.id = m.conversation_id AND v.learner_id = :learner
+      CROSS JOIN LATERAL jsonb_array_elements(m.citations) AS c
+     WHERE c->>'chunk_id' = ANY(:ids)
+    UNION
+    SELECT c->>'chunk_id' FROM content_blocks b
+      CROSS JOIN LATERAL jsonb_array_elements(b.citations) AS c
+     WHERE b.learner_id = :learner AND c->>'chunk_id' = ANY(:ids)
+    """
+).bindparams(bindparam("ids", type_=ARRAY(String)))
+
+
+async def supersede_chunks(session: AsyncSession, source: Source) -> tuple[int, int]:
+    """Retire a source's current chunks before new ones are written (S29). Returns (kept, deleted).
+
+    A chunk something cites — a chat reply or a lesson block, only ever the owner's — is kept as
+    history: its text and locator stay so the citation still shows what it cited, while its
+    vector and concept tags go, because nothing will search or tag it again. Everything else is
+    deleted as before. Chunks superseded by an earlier re-ingest are left exactly as they are.
+    """
+    current = list(
+        (
+            await session.scalars(
+                select(Chunk.id).where(Chunk.source_id == source.id, Chunk.superseded_at.is_(None))
+            )
+        ).all()
+    )
+    if not current:
+        return 0, 0
+    rows = await session.execute(
+        _CITED, {"learner": source.learner_id, "ids": [str(i) for i in current]}
+    )
+    cited = {uuid.UUID(row[0]) for row in rows}
+    uncited = [i for i in current if i not in cited]
+    if uncited:
+        await session.execute(delete(Chunk).where(Chunk.id.in_(uncited)))
+    if cited:
+        await session.execute(delete(ChunkKC).where(ChunkKC.chunk_id.in_(cited)))
+        await session.execute(
+            update(Chunk)
+            .where(Chunk.id.in_(cited))
+            .values(superseded_at=func.now(), embedding=None)
+            .execution_options(synchronize_session=False)
+        )
+    return len(cited), len(uncited)
 
 
 async def _tag_chunks(
@@ -331,7 +403,9 @@ async def retag_source(
     rows = list(
         (
             await session.scalars(
-                select(Chunk).where(Chunk.source_id == source.id).order_by(Chunk.ordinal)
+                select(Chunk)
+                .where(Chunk.source_id == source.id, Chunk.superseded_at.is_(None))
+                .order_by(Chunk.ordinal)
             )
         ).all()
     )
