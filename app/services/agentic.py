@@ -138,6 +138,9 @@ async def run_agentic_turn(
         reply,
         model=spec.model,
         citations=citations,
+        # Everything the searches offered this turn (0 if it never searched); None in a General
+        # conversation, which has no library to have searched (S28).
+        grounding_count=len(citation_acc.hits) if scope is not None else None,
     )
     cost = await log_llm_call(
         learner_id=learner_id,

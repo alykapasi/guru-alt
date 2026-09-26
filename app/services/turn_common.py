@@ -34,6 +34,7 @@ async def add_message(
     model: str | None = None,
     citations: list[dict] | None = None,
     check_result: CheckResultRead | None = None,
+    grounding_count: int | None = None,
 ) -> Message:
     actor = session.info.get("admin_actor_id")
     action = session.info.get("admin_action_id")
@@ -48,6 +49,7 @@ async def add_message(
         # Dumped here rather than by each caller, so the two flows cannot store the same
         # report in two shapes.
         check_result=check_result.model_dump(mode="json") if check_result is not None else None,
+        grounding_count=grounding_count,
     )
     session.add(message)
     await session.flush()

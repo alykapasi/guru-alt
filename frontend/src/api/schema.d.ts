@@ -2353,6 +2353,10 @@ export interface components {
             citations: {
                 [key: string]: unknown;
             }[];
+            /** Cited Source Count */
+            readonly cited_source_count: number;
+            /** @description How much of this the learner's sources carried (S28), from what was recorded. */
+            readonly coverage: components["schemas"]["Coverage"] | null;
             /** Grounding Count */
             grounding_count?: number | null;
             /**
@@ -2423,6 +2427,11 @@ export interface components {
             /** Title */
             title: string;
         };
+        /**
+         * Coverage
+         * @enum {string}
+         */
+        Coverage: "cited" | "retrieved_not_cited" | "none";
         /** CurriculumRequest */
         CurriculumRequest: {
             /** Goal */
@@ -3324,13 +3333,19 @@ export interface components {
             citations: {
                 [key: string]: unknown;
             }[];
+            /** Cited Source Count */
+            readonly cited_source_count: number;
             /** Content */
             content: string;
+            /** @description How much of this the learner's sources carried (S28), from what was recorded. */
+            readonly coverage: components["schemas"]["Coverage"] | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** Grounding Count */
+            grounding_count?: number | null;
             /**
              * Id
              * Format: uuid

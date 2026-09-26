@@ -618,6 +618,7 @@ async def run_tutor_turn(
         model=spec.model,
         citations=citations,
         check_result=check_result,
+        grounding_count=len(hits) if scope is not None else None,
     )
     cost = await log_llm_call(
         learner_id=learner_id,

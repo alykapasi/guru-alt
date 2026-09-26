@@ -4,8 +4,10 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
+from app.rag import coverage as coverage_rules
+from app.rag.coverage import Coverage
 from app.schemas.assessment import ItemRead
 
 
@@ -108,6 +110,19 @@ class MessageRead(BaseModel):
     # a statement rather than recalling it.
     check_result: CheckResultRead | None = None
     created_at: datetime
+    # Passages offered for this reply (S28); NULL = no library scope, or written before S28.
+    grounding_count: int | None = None
+
+    @computed_field
+    @property
+    def coverage(self) -> Coverage | None:
+        """How much of this the learner's sources carried (S28), from what was recorded."""
+        return coverage_rules.coverage(self.grounding_count, self.citations)
+
+    @computed_field
+    @property
+    def cited_source_count(self) -> int:
+        return coverage_rules.cited_source_count(self.citations)
 
 
 class TurnRead(BaseModel):

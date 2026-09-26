@@ -187,6 +187,9 @@ async def run_workflow_turn(
     # the worked example — `respond`'s feedback (every resumed round) isn't source-grounded, so
     # it gets no citations. See extract_citations below, gated on `resume`.
     hits: list[RetrievalHit] = []
+    # Passages offered this round (S28): set only where retrieval ran, so a resumed round and a
+    # General conversation both record None — nothing was measured there.
+    grounding_count: int | None = None
 
     if resume:
         run_input = Command(
@@ -234,6 +237,7 @@ async def run_workflow_turn(
                 session, llm, step.kc_name, scope=scope, limit=get_settings().chat_grounding_limit
             )
             grounding = format_grounding(hits, sources_only=scope.sources_only)
+            grounding_count = len(hits)
         # A provisional component (S24) is confirmed, not taught: asking first is the "short
         # confirmation" V04 calls for, and an answer given without a worked example is exactly
         # the unaided pass that confirms it.
@@ -315,6 +319,7 @@ async def run_workflow_turn(
             model=spec.model,
             citations=citations,
             check_result=check_result,
+            grounding_count=grounding_count,
         )
     # A round can end without calling a model at all: a flashcard answered in prose is sent
     # straight back to be rated, presenting nothing new. Accounting records calls, so a round

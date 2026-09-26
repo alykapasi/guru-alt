@@ -1111,3 +1111,75 @@ async def test_a_subject_chat_with_nothing_retrieved_is_told_so(
     system = recording_llm[0]
     assert system is not None
     assert instruction(sources_only=False, has_passages=False) in system
+
+
+async def _assistant_messages(api_client: AsyncClient, conversation_id: str) -> list[dict]:
+    r = await api_client.get(f"{API}/conversations/{conversation_id}/messages")
+    return [m for m in r.json()["messages"] if m["role"] == "assistant"]
+
+
+async def _goal(db_session: AsyncSession, conversation_id: str) -> None:
+    conversation = await db_session.get(Conversation, uuid.UUID(conversation_id))
+    assert conversation is not None
+    conversation.goal = "Learn"
+    await db_session.commit()
+
+
+async def test_a_subject_reply_records_what_it_was_offered(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, api_learner: Learner
+) -> None:
+    """S28: the coverage label reads from the count, so a scoped reply must store one — 0 here,
+    because the subject has no sources, which is "Not from your materials", not "unknown"."""
+    subject = Subject(
+        slug=f"s-{uuid.uuid4().hex[:8]}", name="Physics", owner_learner_id=api_learner.id
+    )
+    db_session.add(subject)
+    await db_session.commit()
+    r = await api_client.post(f"{API}/conversations", json={"subject_id": str(subject.id)})
+    conversation_id = r.json()["id"]
+    await _goal(db_session, conversation_id)
+
+    await api_client.post(
+        f"{API}/conversations/{conversation_id}/messages", json={"content": "what is inertia?"}
+    )
+
+    [reply] = await _assistant_messages(api_client, conversation_id)
+    assert reply["grounding_count"] == 0
+    assert reply["coverage"] == "none"
+
+
+async def test_a_general_reply_has_no_coverage(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+) -> None:
+    r = await api_client.post(f"{API}/conversations", json={"title": "General"})
+    conversation_id = r.json()["id"]
+    await _goal(db_session, conversation_id)
+
+    await api_client.post(
+        f"{API}/conversations/{conversation_id}/messages", json={"content": "hello"}
+    )
+
+    [reply] = await _assistant_messages(api_client, conversation_id)
+    assert reply["grounding_count"] is None
+    assert reply["coverage"] is None
+
+
+async def test_an_agentic_reply_counts_what_its_searches_offered(
+    api_client: AsyncClient, db_session: AsyncSession, agentic_llm: None, api_learner: Learner
+) -> None:
+    subject = Subject(
+        slug=f"s-{uuid.uuid4().hex[:8]}", name="Biology", owner_learner_id=api_learner.id
+    )
+    db_session.add(subject)
+    await db_session.commit()
+    r = await api_client.post(f"{API}/conversations", json={"subject_id": str(subject.id)})
+    conversation_id = r.json()["id"]
+    await _goal(db_session, conversation_id)
+
+    await api_client.post(
+        f"{API}/conversations/{conversation_id}/messages",
+        json={"content": "look it up", "mode": "agentic"},
+    )
+
+    [reply] = await _assistant_messages(api_client, conversation_id)
+    assert reply["grounding_count"] == 0
