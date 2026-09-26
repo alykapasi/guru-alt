@@ -100,7 +100,10 @@ header: str | None)`, over already-normalized text, line by line:
 
 - **prose** → `_windows` exactly as today. A unit with no blocks produces chunks identical to the
   current implementation (pinned by a regression test).
-- **block ≤ `BLOCK_CAP` (= 4 × size, 4000 chars)** → one chunk, never cut.
+- **block ≤ `size`** → stays in the prose stream, read with the sentence around it *(ruling
+  during implementation: pulling every short equation or table out as its own chunk made tiny
+  context-free chunks)*.
+- **`size` < block ≤ `BLOCK_CAP` (= 4 × size, 4000 chars)** → one chunk, never cut.
 - **block > `BLOCK_CAP`** → split at line breaks into parts of at most `BLOCK_CAP` characters
   *including* the repeated context: each table part starts with `header`; each code part is
   wrapped in its opening fence line and closing fence; each math part is wrapped in its opening
@@ -124,8 +127,8 @@ only:
   characters could not be read"
 - several → joined with "; "; none → `None`.
 
-The indicators are measured per extracted unit (e.g. a page), so the note describes the unit the
-chunk came from — accurate for every chunk of it.
+The indicators are measured on each chunk's own text, so the note describes that chunk. Form and
+vertical feeds are page layout, not undecodable characters, and do not count.
 
 **Tutor:**
 

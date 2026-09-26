@@ -73,9 +73,10 @@ class ExtractionIndicators(BaseModel):
 
 
 def _is_control(ch: str) -> bool:
-    """A control character that is not ordinary layout. Tab, newline and carriage return are
-    how documents are shaped; the rest have no business surviving extraction."""
-    return ch not in "\t\n\r" and unicodedata.category(ch) == "Cc"
+    """A control character that is not ordinary layout. Tab, newline, carriage return and the
+    form and vertical feeds that break pages are how documents are shaped; the rest have no
+    business surviving extraction — and a reading note says so to the learner (S27)."""
+    return ch not in "\t\n\r\f\v" and unicodedata.category(ch) == "Cc"
 
 
 def measure(text: str) -> ExtractionIndicators:

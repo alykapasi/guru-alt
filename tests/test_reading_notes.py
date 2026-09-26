@@ -61,3 +61,13 @@ def test_the_citation_api_carries_the_note() -> None:
     assert read.model_dump()["reading_note"] == (
         "transcribed from audio; wording may contain errors"
     )
+
+
+def test_a_form_feed_page_break_is_layout_not_damage() -> None:
+    """Plain-text documents break pages with a form feed; that is not a character the reader
+    failed to decode, and saying so would be a false note."""
+    from app.rag.chunking import normalize
+    from app.rag.extraction_quality import measure
+
+    indicators = measure(normalize("end of page one.\n\x0cChapter 2\x0b"))
+    assert indicators.control_chars == 0
