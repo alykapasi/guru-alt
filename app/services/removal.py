@@ -39,9 +39,11 @@ class RemovalRefused(Exception):
 
 
 async def _own_source(
-    session: AsyncSession, learner_id: uuid.UUID, source_id: uuid.UUID
+    session: AsyncSession, learner_id: uuid.UUID, source_id: uuid.UUID, *, lock: bool = False
 ) -> Source | None:
-    source = await session.get(Source, source_id, populate_existing=True)
+    source = await session.get(
+        Source, source_id, populate_existing=True, with_for_update=lock or None
+    )
     return source if source is not None and source.learner_id == learner_id else None
 
 
@@ -209,7 +211,9 @@ async def delete_source(
     when no other source shares it; a store failure is reported, not raised — the database is
     already consistent, and an orphaned file is recoverable where a half-deleted source is not.
     """
-    source = await _own_source(session, learner_id, source_id)
+    # Locked until the delete commits: a worker's claim is an UPDATE of this row, so it waits
+    # and then matches nothing, rather than paying for an extraction whose chunks cannot land.
+    source = await _own_source(session, learner_id, source_id, lock=True)
     if source is None:
         return None
     if source.status == SourceStatus.PROCESSING and source.lease_expires_at is not None:

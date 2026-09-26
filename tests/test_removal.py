@@ -455,3 +455,121 @@ async def test_forgetting_leaves_mastery_alone(db_session: AsyncSession) -> None
         .where(LearningEvent.learner_id == learner.id)
     )
     assert count == 1
+
+
+# --- final-review fixes --------------------------------------------------------------------
+
+
+async def test_re_uploading_an_archived_file_brings_it_back(db_session: AsyncSession) -> None:
+    """The same bytes again is the learner wanting the file; handing back a hidden archived row
+    would make the upload look like it vanished and ground nothing."""
+    learner = await _learner(db_session)
+    store = InMemoryBlobStore()
+    source_id = await _source(db_session, learner, store=store)
+    await removal.set_source_archived(db_session, learner.id, source_id, archived=True)
+
+    again, queue_it = await ingestion.create_or_reuse_source(
+        db_session,
+        store,
+        learner_id=learner.id,
+        kind=SourceKind.FILE,
+        origin="again.txt",
+        content_type="text/plain",
+        data=PHOTO,
+        content_sha256=ingestion.digest_of(PHOTO),
+    )
+
+    assert again.id == source_id and not queue_it
+    assert (await _get(db_session, source_id)).archived_at is None
+    assert await _hits(db_session, learner)
+
+
+async def test_an_archived_duplicate_is_left_parked(db_session: AsyncSession) -> None:
+    """Both archived: releasing the duplicate would pay to re-extract something out of use."""
+    learner = await _learner(db_session)
+    store = InMemoryBlobStore()
+    original = await _source(db_session, learner, PHOTO, store=store)
+    dup = await _source(db_session, learner, PHOTO_US, store=store)
+    await removal.set_source_archived(db_session, learner.id, dup, archived=True)
+    await removal.set_source_archived(db_session, learner.id, original, archived=True)
+
+    assert dup not in await ingestion.stranded_duplicates(db_session)
+    assert await ingestion.release_duplicates(db_session, [dup]) == []
+
+
+async def test_a_forgotten_memory_is_not_brought_back_by_write_back(
+    db_session: AsyncSession,
+) -> None:
+    learner = await _learner(db_session)
+    conversation = Conversation(learner_id=learner.id)
+    db_session.add(conversation)
+    await db_session.flush()
+    db_session.add(
+        Message(conversation_id=conversation.id, role="user", content="I study in the mornings.")
+    )
+    await db_session.commit()
+    reply = json.dumps({"memories": [{"kind": "preference", "content": "Studies in mornings"}]})
+    llm = fake_llm_client(reply=reply)
+    await memory_svc.write_back(db_session, llm, conversation_id=conversation.id)
+    await removal.forget_conversation_memories(db_session, learner.id, conversation.id)
+    db_session.add(
+        Message(conversation_id=conversation.id, role="user", content="Mornings suit me best.")
+    )
+    await db_session.commit()
+
+    revived = await memory_svc.write_back(db_session, llm, conversation_id=conversation.id)
+
+    assert revived == []
+
+
+async def test_a_corrected_memory_survives_forgetting_its_conversation(
+    db_session: AsyncSession,
+) -> None:
+    learner = await _learner(db_session)
+    conversation = Conversation(learner_id=learner.id)
+    db_session.add(conversation)
+    await db_session.flush()
+    learned = await _memory(db_session, learner, conversation, "Studies in the evenings")
+    cid = conversation.id
+    await db_session.commit()
+    corrected = await memory_svc.correct_memory(
+        db_session, fake_llm_client(), learner.id, learned.id, content="Studies in the mornings"
+    )
+    assert corrected is not None
+    corrected_id = corrected.id
+
+    await removal.forget_conversation_memories(db_session, learner.id, cid)
+
+    kept = await db_session.get(Memory, corrected_id, populate_existing=True)
+    assert kept is not None and kept.status == MemoryStatus.CURRENT
+
+
+async def test_another_learners_ids_are_not_found_through_the_api(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    other = await _learner(db_session)
+    source_id = await _source(db_session, other)
+    conversation = Conversation(learner_id=other.id)
+    db_session.add(conversation)
+    await db_session.flush()
+    memory = await _memory(db_session, other, conversation, "Studies in the mornings")
+    cid, mid = conversation.id, memory.id
+    await db_session.commit()
+
+    for method, path in (
+        ("GET", f"/sources/{source_id}/removal"),
+        ("DELETE", f"/sources/{source_id}"),
+        ("POST", f"/sources/{source_id}/archive"),
+        ("POST", f"/sources/{source_id}/unarchive"),
+        ("GET", f"/conversations/{cid}/removal"),
+        ("DELETE", f"/conversations/{cid}?forget=true"),
+        ("POST", f"/conversations/{cid}/archive"),
+        ("POST", f"/conversations/{cid}/unarchive"),
+    ):
+        r = await api_client.request(method, f"{API}{path}")
+        assert r.status_code == 404, (method, path)
+    r = await api_client.post(f"{API}/memory/forget-origin/{cid}")
+    assert r.json() == {"forgotten": 0}
+    assert await db_session.get(Source, source_id) is not None
+    untouched = await db_session.get(Memory, mid, populate_existing=True)
+    assert untouched is not None and untouched.status == MemoryStatus.CURRENT

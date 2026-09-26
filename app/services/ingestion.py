@@ -211,6 +211,15 @@ async def create_or_reuse_source(
         topic_id=topic_id,
     )
     if existing is not None:
+        if existing.archived_at is not None:
+            # Uploading the same file again is wanting it back (S61). Handing back the hidden
+            # row as-is would make the upload look like it vanished and ground nothing.
+            from app.services import removal  # removal imports this module
+
+            existing = await removal.set_source_archived(
+                session, learner_id, existing.id, archived=False
+            )
+            assert existing is not None, "find_duplicate only returns this learner's sources"
         if existing.status != SourceStatus.FAILED:
             return existing, False
         retried = await reset_for_reingest(session, existing.id)
@@ -476,12 +485,19 @@ async def reconcile_stranded(
 def _chunkless_done():
     """A DONE file source with no current chunks — by construction a text duplicate (S77).
 
-    Files only: web ingestion is off, so a released legacy URL source could only fail.
+    Files only: web ingestion is off, so a released legacy URL source could only fail. Not
+    archived: one out of use stays parked rather than paying for a re-extraction nobody reads;
+    once unarchived, the sweep finds it if its original is still gone (S61).
     """
     has_chunks = (
         select(Chunk.id).where(Chunk.source_id == Source.id, Chunk.superseded_at.is_(None)).exists()
     )
-    return and_(Source.status == SourceStatus.DONE, Source.kind == SourceKind.FILE, ~has_chunks)
+    return and_(
+        Source.status == SourceStatus.DONE,
+        Source.kind == SourceKind.FILE,
+        Source.archived_at.is_(None),
+        ~has_chunks,
+    )
 
 
 def _stranded():
