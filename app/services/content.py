@@ -33,6 +33,7 @@ from app.models.knowledge import KC, Topic
 from app.models.source import Chunk
 from app.rag import retrieval
 from app.rag.retrieval import RetrievalHit
+from app.rag.scope import resolve_scope
 from app.services.llm_log import log_llm_call
 
 GROUNDING_K = 6
@@ -111,20 +112,14 @@ async def generate_block(
     if kc is None:
         raise LookupError(f"KC {kc_id} not found")
 
-    # Scoped to the KC's own subject (S26). Every other retrieval path in the app passes a
-    # subject; this one did not, so a lesson on eigenvalues could be grounded in chunks uploaded
-    # for immunology purely because they shared a word. Untagged sources are still admitted —
-    # the tag is optional at upload, so excluding them would replace cross-subject grounding
-    # with no grounding, and the block would quietly fall back to general knowledge.
+    # Scoped by the KC's subject through the one rule every path uses (S26): its own sources,
+    # plus untagged ones only if the subject opted in. Before this, lessons alone admitted every
+    # untagged upload, which V05 rules out: unassigned material is not added silently.
     subject_id = await session.scalar(select(Topic.subject_id).where(Topic.id == kc.topic_id))
+    scope = await resolve_scope(session, learner_id=learner_id, subject_id=subject_id)
+    assert scope is not None, "a KC always belongs to a subject"
     grounding = await retrieval.retrieve(
-        session,
-        llm,
-        _kc_query(kc),
-        learner_id=learner_id,
-        subject_id=subject_id,
-        include_untagged_sources=True,
-        limit=grounding_k,
+        session, llm, _kc_query(kc), scope=scope, limit=grounding_k
     )
     role = _ROLE_BY_TYPE[block_type]
     template = _SYSTEM_PROMPT if grounding else _UNGROUNDED_SYSTEM_PROMPT

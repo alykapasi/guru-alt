@@ -39,6 +39,7 @@ from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.rag import retrieval
+from app.rag.scope import SourceScope
 from app.services import content as content_svc
 from tests.embedding import FAKE_SPACE
 
@@ -282,7 +283,7 @@ async def score_retrieval(
     for case in cases:
         learner, by_doc = await _seed_corpus(session, llm, [(d.id, d.text) for d in case.corpus])
         hits = await retrieval.retrieve(
-            session, llm, case.query, learner_id=learner.id, limit=case.k
+            session, llm, case.query, scope=SourceScope(learner_id=learner.id), limit=case.k
         )
         top = {h.chunk_id for h in hits}
         want = {by_doc[doc_id] for doc_id in case.expect_top}
@@ -391,7 +392,11 @@ async def _seed_corpus(
 
 
 async def _seed_kc(session: AsyncSession, name: str) -> KC:
-    subject = Subject(slug=f"eval-{uuid.uuid4().hex[:8]}", name="Eval")
+    # The corpus is seeded untagged, so the subject opts in to untagged sources (S26): this
+    # suite measures the citation contract, not scope, which has its own tests.
+    subject = Subject(
+        slug=f"eval-{uuid.uuid4().hex[:8]}", name="Eval", include_untagged_sources=True
+    )
     session.add(subject)
     await session.flush()
     topic = Topic(subject_id=subject.id, slug=f"eval-{uuid.uuid4().hex[:8]}", name="Eval")

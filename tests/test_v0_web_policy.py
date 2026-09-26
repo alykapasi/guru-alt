@@ -16,6 +16,7 @@ from app.main import app
 from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.rag import retrieval, textnorm
+from app.rag.scope import SourceScope
 from app.services import ingestion
 from app.storage import InMemoryBlobStore
 from tests.embedding import FAKE_SPACE
@@ -155,7 +156,9 @@ async def test_url_retry_is_refused_but_existing_source_stays_readable(
 
 
 def test_tutor_only_exposes_internal_material_search() -> None:
-    tools = build_tools(AsyncMock(spec=AsyncSession), fake_llm_client(), learner_id=uuid.uuid4())
+    tools = build_tools(
+        AsyncMock(spec=AsyncSession), fake_llm_client(), scope=SourceScope(learner_id=uuid.uuid4())
+    )
     assert [tool.name for tool in tools] == ["search_materials"]
 
 
@@ -199,7 +202,6 @@ async def test_uploading_a_file_does_not_reuse_a_legacy_url(
         db_session,
         fake_llm_client(),
         "imported page",
-        learner_id=api_learner.id,
-        source_ids=[source.id],
+        scope=SourceScope(learner_id=api_learner.id, source_ids=(source.id,)),
     )
     assert hits and hits[0].source_id == source.id

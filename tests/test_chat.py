@@ -855,7 +855,11 @@ async def test_agentic_mode_cites_search_materials_results(
     api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
 ) -> None:
     learner = api_learner
-    source = await _learner_source(db_session, learner.id)
+    # A subject conversation: since S26 a General one reaches no materials at all.
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Biology", owner_learner_id=learner.id)
+    db_session.add(subject)
+    await db_session.flush()
+    source = await _learner_source(db_session, learner.id, subject_id=subject.id)
     chunk = Chunk(
         embedding_space=FAKE_SPACE,
         source_id=source.id,
@@ -876,7 +880,10 @@ async def test_agentic_mode_cites_search_materials_results(
     )
     app.dependency_overrides[get_llm_client] = lambda: client
     try:
-        r = await api_client.post(f"{API}/conversations", json={"title": "Agentic cite test"})
+        r = await api_client.post(
+            f"{API}/conversations",
+            json={"title": "Agentic cite test", "subject_id": str(subject.id)},
+        )
         conversation_id = r.json()["id"]
         r = await api_client.post(
             f"{API}/conversations/{conversation_id}/messages",

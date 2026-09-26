@@ -22,6 +22,7 @@ from app.models.knowledge import Subject
 from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.rag import retrieval
+from app.rag.scope import SourceScope
 from tests.embedding import FAKE_SPACE, crowd
 
 API = "/api/v1"
@@ -94,7 +95,9 @@ async def test_vector_match_ranks_first(db_session: AsyncSession) -> None:
     a = await _chunk(db_session, source, "lorem ipsum dolor sit", embedding=await _embed("marker"))
     await _chunk(db_session, source, "an unrelated body of text", embedding=await _embed("other"))
 
-    hits = await retrieval.retrieve(db_session, fake_llm_client(), "marker", learner_id=learner.id)
+    hits = await retrieval.retrieve(
+        db_session, fake_llm_client(), "marker", scope=SourceScope(learner_id=learner.id)
+    )
     assert hits[0].chunk_id == a.id  # found by the vector path alone (no keyword overlap)
 
 
@@ -105,7 +108,7 @@ async def test_keyword_match_boosts_ranking(db_session: AsyncSession) -> None:
     b = await _chunk(db_session, source, "rivers flow to the ocean slowly", ordinal=1)
 
     hits = await retrieval.retrieve(
-        db_session, fake_llm_client(), "mitochondria", learner_id=learner.id
+        db_session, fake_llm_client(), "mitochondria", scope=SourceScope(learner_id=learner.id)
     )
     assert {h.chunk_id for h in hits} == {a.id, b.id}  # vector returns both
     assert hits[0].chunk_id == a.id  # keyword hit fuses higher
@@ -118,7 +121,7 @@ async def test_retrieval_respects_limit(db_session: AsyncSession) -> None:
         await _chunk(db_session, source, f"topic sentence number {i}", ordinal=i)
 
     hits = await retrieval.retrieve(
-        db_session, fake_llm_client(), "topic", learner_id=learner.id, limit=2
+        db_session, fake_llm_client(), "topic", limit=2, scope=SourceScope(learner_id=learner.id)
     )
     assert len(hits) == 2
 
@@ -126,7 +129,10 @@ async def test_retrieval_respects_limit(db_session: AsyncSession) -> None:
 async def test_empty_query_returns_empty(db_session: AsyncSession) -> None:
     learner = await _learner(db_session)
     assert (
-        await retrieval.retrieve(db_session, fake_llm_client(), "   ", learner_id=learner.id) == []
+        await retrieval.retrieve(
+            db_session, fake_llm_client(), "   ", scope=SourceScope(learner_id=learner.id)
+        )
+        == []
     )
 
 
@@ -138,7 +144,9 @@ async def test_retrieval_scoped_to_learner(db_session: AsyncSession) -> None:
     mine = await _chunk(db_session, await _source(db_session, l1), "shared keyword content")
     theirs = await _chunk(db_session, await _source(db_session, l2), "shared keyword content")
 
-    hits = await retrieval.retrieve(db_session, fake_llm_client(), "shared", learner_id=l1.id)
+    hits = await retrieval.retrieve(
+        db_session, fake_llm_client(), "shared", scope=SourceScope(learner_id=l1.id)
+    )
     ids = {h.chunk_id for h in hits}
     assert mine.id in ids and theirs.id not in ids
 
@@ -157,7 +165,10 @@ async def test_retrieval_scoped_to_subject(db_session: AsyncSession) -> None:
     )
 
     hits = await retrieval.retrieve(
-        db_session, fake_llm_client(), "calculus", learner_id=learner.id, subject_id=s1.id
+        db_session,
+        fake_llm_client(),
+        "calculus",
+        scope=SourceScope(learner_id=learner.id, subject_id=s1.id),
     )
     ids = {h.chunk_id for h in hits}
     assert in_scope.id in ids and out_scope.id not in ids
@@ -184,15 +195,16 @@ async def test_a_subject_scope_excludes_untagged_sources_unless_asked(
     untagged = await _chunk(db_session, await _source(db_session, learner), "calculus integrals")
 
     strict = await retrieval.retrieve(
-        db_session, fake_llm_client(), "calculus", learner_id=learner.id, subject_id=subject.id
+        db_session,
+        fake_llm_client(),
+        "calculus",
+        scope=SourceScope(learner_id=learner.id, subject_id=subject.id),
     )
     widened = await retrieval.retrieve(
         db_session,
         fake_llm_client(),
         "calculus",
-        learner_id=learner.id,
-        subject_id=subject.id,
-        include_untagged_sources=True,
+        scope=SourceScope(learner_id=learner.id, subject_id=subject.id, include_untagged=True),
     )
 
     assert {h.chunk_id for h in strict} == {tagged.id}
@@ -214,8 +226,7 @@ async def test_retrieval_scoped_to_source_ids(db_session: AsyncSession) -> None:
         db_session,
         fake_llm_client(),
         "narrowed",
-        learner_id=learner.id,
-        source_ids=[src_a.id, src_b.id],
+        scope=SourceScope(learner_id=learner.id, source_ids=(src_a.id, src_b.id)),
     )
     ids = {h.chunk_id for h in hits}
     assert ids == {a.id, b.id}
@@ -262,7 +273,7 @@ async def test_a_vector_from_another_embedding_model_is_not_ranked_against_this_
     await db_session.flush()
 
     hits = await retrieval.retrieve(
-        db_session, fake_llm_client(), "mitochondria", learner_id=learner.id
+        db_session, fake_llm_client(), "mitochondria", scope=SourceScope(learner_id=learner.id)
     )
 
     ids = {h.chunk_id for h in hits}
@@ -282,9 +293,25 @@ async def test_an_old_vector_does_not_make_its_text_unsearchable(
     await db_session.flush()
 
     hits = await retrieval.retrieve(
-        db_session, fake_llm_client(), "mitochondria", learner_id=learner.id
+        db_session, fake_llm_client(), "mitochondria", scope=SourceScope(learner_id=learner.id)
     )
     assert {h.chunk_id for h in hits} == {stale.id}
+
+
+async def test_picked_sources_are_all_a_scope_reads(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    picked, other = await _source(db_session, learner), await _source(db_session, learner)
+    a = await _chunk(db_session, picked, "calculus limits", ordinal=0)
+    await _chunk(db_session, other, "calculus derivatives", ordinal=0)
+
+    hits = await retrieval.retrieve(
+        db_session,
+        fake_llm_client(),
+        "calculus",
+        scope=SourceScope(learner_id=learner.id, source_ids=(picked.id,)),
+    )
+
+    assert {h.chunk_id for h in hits} == {a.id}
 
 
 async def test_the_space_names_the_provider_the_model_and_the_dimension() -> None:
@@ -322,6 +349,8 @@ async def test_a_learners_chunks_are_found_however_near_other_learners_vectors_a
     ]
     await db_session.execute(text("SET LOCAL enable_sort = off"))
 
-    hits = await retrieval.retrieve(db_session, fake_llm_client(), "marker", learner_id=learner.id)
+    hits = await retrieval.retrieve(
+        db_session, fake_llm_client(), "marker", scope=SourceScope(learner_id=learner.id)
+    )
 
     assert {h.chunk_id for h in hits} == {c.id for c in mine}

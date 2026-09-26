@@ -22,6 +22,7 @@ from app.models.assessment import Item
 from app.models.chat import Conversation, Message
 from app.models.knowledge import KC
 from app.rag.retrieval import RetrievalHit, retrieve
+from app.rag.scope import resolve_scope
 from app.schemas.chat import CheckResultRead
 from app.services import assessment as assessment_svc
 from app.services import checkpoints, learner_context
@@ -222,15 +223,15 @@ async def run_workflow_turn(
             )
             return
         grounding = None
-        if conversation.subject_id is not None:
+        scope = await resolve_scope(
+            session,
+            learner_id=learner_id,
+            subject_id=conversation.subject_id,
+            source_ids=source_ids,
+        )
+        if scope is not None:
             hits = await retrieve(
-                session,
-                llm,
-                step.kc_name,
-                learner_id=learner_id,
-                subject_id=conversation.subject_id,
-                source_ids=source_ids or None,
-                limit=get_settings().chat_grounding_limit,
+                session, llm, step.kc_name, scope=scope, limit=get_settings().chat_grounding_limit
             )
             grounding = format_grounding(hits)
         # A provisional component (S24) is confirmed, not taught: asking first is the "short

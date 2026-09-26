@@ -48,8 +48,14 @@ async def _learner(session: AsyncSession, *, handle: str | None = None) -> Learn
     return learner
 
 
-async def _kc(session: AsyncSession, name: str = "Mitochondria") -> KC:
-    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="Biology")
+async def _kc(
+    session: AsyncSession, name: str = "Mitochondria", *, include_untagged: bool = True
+) -> KC:
+    """A KC in its own subject. ``include_untagged`` defaults on because most tests here seed
+    untagged sources as grounding; the S26 tests below turn it off to test the default."""
+    subject = Subject(
+        slug=f"s-{uuid.uuid4().hex[:8]}", name="Biology", include_untagged_sources=include_untagged
+    )
     session.add(subject)
     await session.flush()
     topic = Topic(subject_id=subject.id, slug=f"t-{uuid.uuid4().hex[:8]}", name="Cells")
@@ -416,15 +422,26 @@ async def test_a_source_tagged_to_another_subject_does_not_ground_the_block(
     assert str(foreign_chunk.id) not in cited
 
 
-async def test_an_untagged_source_still_grounds_the_block(db_session: AsyncSession) -> None:
-    """The deliberate half of the scope, and the reason it is not a plain equality filter.
-
-    Subject tagging is optional at upload, so most sources carry none. Excluding them would not
-    tighten the grounding — it would remove it, and `_build_prompt` would fall back to writing
-    from general knowledge with nothing cited, which looks identical to a working lesson.
-    """
+async def test_an_untagged_source_is_left_out_by_default(db_session: AsyncSession) -> None:
+    """V05: unassigned material is not silently added. Before S26 it was, for lessons only."""
     learner = await _learner(db_session)
-    kc = await _kc(db_session)
+    kc = await _kc(db_session, include_untagged=False)
+    untagged = await _source(db_session, learner)
+    await _chunk(db_session, untagged, "mitochondria are the powerhouse of the cell", 0)
+
+    block = await svc.generate_block(
+        db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    assert block.grounding_count == 0
+    assert block.citations == []
+
+
+async def test_an_untagged_source_grounds_the_block_once_the_subject_opts_in(
+    db_session: AsyncSession,
+) -> None:
+    learner = await _learner(db_session)
+    kc = await _kc(db_session, include_untagged=True)
     untagged = await _source(db_session, learner)
     chunk = await _chunk(db_session, untagged, "mitochondria are the powerhouse of the cell", 0)
 
@@ -432,7 +449,6 @@ async def test_an_untagged_source_still_grounds_the_block(db_session: AsyncSessi
         db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
     )
 
-    assert untagged.subject_id is None
     assert [c["chunk_id"] for c in block.citations] == [str(chunk.id)]
 
 

@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, ToolCall, Usage
 from app.models.chat import Conversation, Message
+from app.rag.scope import resolve_scope
 from app.services import learner_context
 from app.services.llm_log import log_llm_call
 from app.services.turn_common import (
@@ -76,14 +77,13 @@ async def run_agentic_turn(
         session, llm, learner_id=learner_id, conversation=conversation, query=user_content
     )
     citation_acc = CitationAccumulator()
-    tools = build_tools(
+    scope = await resolve_scope(
         session,
-        llm,
         learner_id=learner_id,
         subject_id=conversation.subject_id,
-        source_ids=source_ids or None,
-        citations=citation_acc,
+        source_ids=source_ids,
     )
+    tools = build_tools(session, llm, scope=scope, citations=citation_acc)
     spec = llm.spec(ModelRole.SMART)
     initial: AgenticState = {
         "messages": messages,

@@ -28,6 +28,7 @@ from app.models.chat import Conversation, ConversationPhase, ConversationSource,
 from app.models.knowledge import KC
 from app.models.learning import LearnerKCState
 from app.rag.retrieval import retrieve
+from app.rag.scope import resolve_scope
 from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRef
 from app.schemas.chat import CheckResultRead
 from app.services import assessment as assessment_svc
@@ -548,15 +549,12 @@ async def run_tutor_turn(
 
     hits = []
     grounding = None
-    if subject_id is not None:
+    scope = await resolve_scope(
+        session, learner_id=learner_id, subject_id=subject_id, source_ids=source_ids
+    )
+    if scope is not None:
         hits = await retrieve(
-            session,
-            llm,
-            user_content,
-            learner_id=learner_id,
-            subject_id=subject_id,
-            source_ids=source_ids or None,
-            limit=get_settings().chat_grounding_limit,
+            session, llm, user_content, scope=scope, limit=get_settings().chat_grounding_limit
         )
         grounding = format_grounding(hits)
 

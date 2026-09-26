@@ -15,6 +15,7 @@ from app.learning.curriculum import CurriculumProposal, generate_curriculum
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.rag import retrieval
+from app.rag.scope import SourceScope
 from app.services import onboarding_sessions
 from app.services.llm_log import log_llm_call
 from app.services.turn_common import TurnEvent
@@ -157,8 +158,7 @@ async def generate_curriculum_for_onboarding(
                 session,
                 llm,
                 goal,
-                learner_id=learner_id,
-                source_id=source_id,
+                scope=SourceScope(learner_id=learner_id, source_ids=(source_id,)),
                 limit=3,
             )
             for hit in hits:
