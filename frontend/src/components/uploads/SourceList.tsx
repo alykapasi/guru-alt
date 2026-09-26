@@ -1,5 +1,7 @@
 import { FileText, Link2 } from "lucide-react";
+import { useRetrySource } from "../../api/hooks";
 import type { components } from "../../api/schema";
+import { SourceActions } from "./SourceActions";
 
 type Source = components["schemas"]["SourceRead"];
 
@@ -12,6 +14,7 @@ const STATUS_BADGE: Record<string, string> = {
 
 function SourceRow({ source }: { source: Source }) {
   const Icon = source.kind === "url" ? Link2 : FileText;
+  const retry = useRetrySource();
   return (
     <div className="hover:bg-base-200 flex items-center justify-between gap-4 rounded-field px-3 py-2">
       <div className="flex min-w-0 items-center gap-2">
@@ -20,9 +23,16 @@ function SourceRow({ source }: { source: Source }) {
           {source.origin}
         </span>
       </div>
-      <span className={`badge badge-sm shrink-0 ${STATUS_BADGE[source.status] ?? "badge-ghost"}`}>
-        {source.status}
-      </span>
+      <div className="flex shrink-0 items-center gap-2">
+        <SourceActions
+          status={source.status}
+          pending={retry.isPending}
+          onRetry={(confirm) => retry.mutate({ sourceId: source.id, confirm })}
+        />
+        <span className={`badge badge-sm shrink-0 ${STATUS_BADGE[source.status] ?? "badge-ghost"}`}>
+          {source.status}
+        </span>
+      </div>
     </div>
   );
 }

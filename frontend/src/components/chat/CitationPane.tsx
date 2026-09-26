@@ -13,8 +13,40 @@ function locatorLabel(provenance: Record<string, unknown>): string | null {
   return null;
 }
 
+/** What a citation shows (S29): the passage, labelled when a re-ingest replaced it, or a plain
+ * statement when the passage no longer exists at all. */
+export function CitationBody({
+  origin,
+  locator,
+  text,
+  superseded = false,
+  missing = false,
+}: {
+  origin?: string;
+  locator?: string | null;
+  text?: string;
+  superseded?: boolean;
+  missing?: boolean;
+}) {
+  if (missing) {
+    return <p className="text-body text-base-content/60">This passage is no longer available.</p>;
+  }
+  return (
+    <>
+      <div>
+        <p className="text-caption text-base-content/60 truncate">{origin}</p>
+        {locator && <p className="text-caption text-primary">{locator}</p>}
+        {superseded && (
+          <p className="text-caption text-warning">From an earlier version of this source</p>
+        )}
+      </div>
+      <p className="text-body text-base-content/90 whitespace-pre-wrap">{text}</p>
+    </>
+  );
+}
+
 export function CitationPane({ citation, onClose }: { citation: Citation; onClose: () => void }) {
-  const { data: chunk, isLoading: chunkLoading } = useChunk(citation.chunk_id);
+  const { data: chunk, isLoading: chunkLoading, isError: chunkError } = useChunk(citation.chunk_id);
   const { data: source, isLoading: sourceLoading } = useSource(citation.source_id);
   const locator = chunk ? locatorLabel(chunk.provenance) : null;
 
@@ -33,15 +65,13 @@ export function CitationPane({ citation, onClose }: { citation: Citation; onClos
         {sourceLoading || chunkLoading ? (
           <p className="text-caption text-base-content/50">Loading…</p>
         ) : (
-          <>
-            <div>
-              <p className="text-caption text-base-content/60 truncate">
-                {source?.origin ?? "Unknown source"}
-              </p>
-              {locator && <p className="text-caption text-primary">{locator}</p>}
-            </div>
-            <p className="text-body text-base-content/90 whitespace-pre-wrap">{chunk?.text}</p>
-          </>
+          <CitationBody
+            missing={chunkError || !chunk}
+            origin={source?.origin ?? "Your source"}
+            locator={locator}
+            text={chunk?.text}
+            superseded={chunk?.superseded ?? false}
+          />
         )}
       </div>
     </div>

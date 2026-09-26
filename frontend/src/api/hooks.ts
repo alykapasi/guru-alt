@@ -186,6 +186,24 @@ export function useSource(sourceId: string | undefined) {
   });
 }
 
+/** Retry a failed source, or re-process a finished one once the learner confirmed (S29). */
+export function useRetrySource() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ sourceId, confirm }: { sourceId: string; confirm: boolean }) => {
+      const { data, error } = await api.POST("/api/v1/sources/{source_id}/retry", {
+        params: { path: { source_id: sourceId } },
+        body: { confirm },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sources"] });
+    },
+  });
+}
+
 /** For the citation pane's click-through — fetched on demand, not preloaded. */
 export function useChunk(chunkId: string | undefined) {
   return useQuery({
