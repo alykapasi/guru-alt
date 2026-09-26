@@ -131,6 +131,11 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   learner's confirmed decision. `uv run poe reindex` re-embeds in place (ids kept) and only
   re-extracts when asked; staleness is read from the chunks, so a run resumes by running again.
   See [docs/RUNBOOK.md](docs/RUNBOOK.md) §15.
+- **Archive, delete and forget are three actions** (S61, S42; V11) — archive is reversible and
+  out of use (retrieval drops archived sources, archived conversations are read-only); delete is
+  immediate after an impact report of what stays; forget removes only what was derived — lessons
+  built on a source, memories learned in a conversation — never answers or mastery.
+  `app/services/removal.py` is the one place that decides what derives from what.
 - **A self-rating is not evidence of ability** (S56) — the server decides whether a score was
   judged or self-reported, and a self-rating moves the review schedule only. Mastery is the
   conservative estimate `ability − 2·uncertainty ≥ 0.5` on measured evidence (V02); achievement
