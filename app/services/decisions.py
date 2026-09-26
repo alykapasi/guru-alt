@@ -284,7 +284,16 @@ async def decide_grade(
             # No rationale, no diagnosis and no per-component scores: a correct answer has no
             # failure to diagnose, and every component takes the aggregate.
             return GradeResult(score=1.0, correct=True, detail={"method": "decision"})
-    result = await smart()
+    try:
+        result = await smart()
+    except Exception:
+        # A read already in flight must still be recorded — losing the row would be worse than
+        # the failure itself, which propagates unchanged either way.
+        if read is not None:
+            await _settle(
+                read, FULLY_CORRECT, mode=mode, used=False, answer=verdict, attempt_id=attempt_id
+            )
+        raise
     if read is not None:
         await _settle(
             read,

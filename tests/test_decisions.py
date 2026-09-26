@@ -420,6 +420,33 @@ async def test_jev_never_fails_an_answer(fake: FakeDecisionClient) -> None:
     assert smart.calls == 1
 
 
+async def test_a_failing_smart_call_still_records_the_shadow_row(
+    db_session: AsyncSession,
+) -> None:
+    """Review focus: a SMART exception must not lose the fully_correct row that was already in
+    flight — the exception still propagates unchanged."""
+    fake = FakeDecisionClient({FULLY_CORRECT: YesNoAnswer(probability=0.4)})
+
+    async def failing_smart() -> GradeResult:
+        raise RuntimeError("smart boom")
+
+    with using(runtime(fake, fully_correct="shadow")):
+        with pytest.raises(RuntimeError, match="smart boom"):
+            await decisions.decide_grade(
+                smart=failing_smart,
+                stem="q",
+                answer="a",
+                rubric_criteria=None,
+                context=NOBODY,
+                attempt_id=None,
+            )
+
+    row = (await db_session.scalars(select(DecisionCall))).one()
+    assert row.question == FULLY_CORRECT
+    assert row.baseline_score is None
+    assert row.used is False
+
+
 async def test_a_live_fallback_records_the_smart_score(db_session: AsyncSession) -> None:
     fake = FakeDecisionClient({FULLY_CORRECT: YesNoAnswer(probability=0.5)})
 
