@@ -239,7 +239,13 @@ async def delete_source(
                 session, ErasureKind.BLOB, blob_key, "refused at source delete"
             )
             notes.append("The stored file could not be removed yet; it will be retried.")
-    return Impact(kept=impact.kept, forgettable=impact.forgettable, notes=notes)
+    return _after(impact, forget=forget, notes=notes)
+
+
+def _after(impact: Impact, *, forget: bool, notes: list[str]) -> Impact:
+    """What a finished delete reports: with ``forget``, nothing it removed is counted as kept."""
+    kept = {k: 0 if forget and k in impact.forgettable else v for k, v in impact.kept.items()}
+    return Impact(kept=kept, forgettable=impact.forgettable, notes=notes)
 
 
 async def delete_conversation(
@@ -263,7 +269,7 @@ async def delete_conversation(
         await _clear_profile_watermark(session, learner_id)
     await session.execute(delete(Conversation).where(Conversation.id == conversation_id))
     await session.commit()
-    return impact
+    return _after(impact, forget=forget, notes=impact.notes)
 
 
 async def forget_conversation_memories(

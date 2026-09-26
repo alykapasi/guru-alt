@@ -1084,9 +1084,30 @@ export interface paths {
         };
         /**
          * Export Me
-         * @description Everything held about this learner, as JSON. Uploads appear as metadata, not bytes.
+         * @description Everything held about this learner, as JSON. Each upload's bytes download separately,
+         *     from the ``file_path`` on its source entry.
          */
         get: operations["export_me_api_v1_me_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/export/sources/{source_id}/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Source File
+         * @description The file this learner uploaded, as they uploaded it (S61) — archived sources included.
+         */
+        get: operations["export_source_file_api_v1_me_export_sources__source_id__file_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -6037,6 +6058,37 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    export_source_file_api_v1_me_export_sources__source_id__file_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

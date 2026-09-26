@@ -192,3 +192,85 @@ async def test_an_administrator_visiting_a_pending_account_is_gated_too(
         assert exc.status_code == 403
     else:
         raise AssertionError("a pending account was admitted")
+
+
+async def test_a_learner_can_download_their_own_upload(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    from app.api.deps import get_blob_store
+    from app.llm.registry import fake_llm_client
+    from app.main import app
+    from app.models.source import SourceKind
+    from app.services import ingestion
+
+    store = InMemoryBlobStore()
+    app.dependency_overrides[get_blob_store] = lambda: store
+    try:
+        source = await ingestion.create_source(
+            db_session,
+            store,
+            learner_id=api_learner.id,
+            kind=SourceKind.FILE,
+            origin="notes.txt",
+            content_type="text/plain",
+            data=b"Mitochondria make ATP.",
+        )
+        await ingestion.ingest_source(db_session, store, fake_llm_client(), source.id)
+        other = Learner(handle=f"o-{uuid.uuid4().hex[:8]}")
+        db_session.add(other)
+        await db_session.flush()
+        theirs = await ingestion.create_source(
+            db_session,
+            store,
+            learner_id=other.id,
+            kind=SourceKind.FILE,
+            origin="theirs.txt",
+            content_type="text/plain",
+            data=b"Not yours.",
+        )
+        await db_session.commit()
+
+        r = await api_client.get(f"{API}/me/export/sources/{source.id}/file")
+        assert r.status_code == 200 and r.content == b"Mitochondria make ATP."
+        assert r.headers["content-type"].startswith("text/plain")
+        assert 'filename="notes.txt"' in r.headers["content-disposition"]
+        exported = (await api_client.get(f"{API}/me/export")).json()
+        [entry] = [s for s in exported["sources"] if s["id"] == str(source.id)]
+        assert entry["file_path"] == f"/api/v1/me/export/sources/{source.id}/file"
+        assert (
+            await api_client.get(f"{API}/me/export/sources/{theirs.id}/file")
+        ).status_code == 404
+    finally:
+        app.dependency_overrides.pop(get_blob_store, None)
+
+
+async def test_a_download_survives_a_filename_outside_latin_1(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    from app.api.deps import get_blob_store
+    from app.main import app
+    from app.models.source import SourceKind
+    from app.services import ingestion
+
+    store = InMemoryBlobStore()
+    app.dependency_overrides[get_blob_store] = lambda: store
+    try:
+        source = await ingestion.create_source(
+            db_session,
+            store,
+            learner_id=api_learner.id,
+            kind=SourceKind.FILE,
+            origin='細胞 "notes"\r\n.txt',
+            content_type="text/plain",
+            data=b"Cells.",
+        )
+        await db_session.commit()
+
+        r = await api_client.get(f"{API}/me/export/sources/{source.id}/file")
+
+        assert r.status_code == 200 and r.content == b"Cells."
+        disposition = r.headers["content-disposition"]
+        assert "\r" not in disposition and "\n" not in disposition
+        assert "filename*=UTF-8''" in disposition
+    finally:
+        app.dependency_overrides.pop(get_blob_store, None)

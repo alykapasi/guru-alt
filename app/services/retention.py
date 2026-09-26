@@ -252,9 +252,8 @@ class DeletionReport:
 async def export_learner(session: AsyncSession, learner_id: uuid.UUID) -> dict[str, Any]:
     """Everything the platform holds about one learner, as plain JSON-able data.
 
-    Metadata only for uploads: the export names each source and its blob key, not the bytes.
-    Shipping the raw files needs a packaging step (and, for anything large, a signed download)
-    that this does not attempt — what it does guarantee is that nothing is silently omitted,
+    Uploads are listed with a ``file_path`` each: the bytes download one file at a time rather
+    than packaged into this response. What it guarantees is that nothing is silently omitted,
     because the store list is the same :data:`RETENTION` the deletion walks.
     """
     learner = await session.get(Learner, learner_id)
@@ -279,6 +278,12 @@ async def export_learner(session: AsyncSession, learner_id: uuid.UUID) -> dict[s
         result = await session.scalars(select(model).where(where))
         return [_as_dict(row) for row in result.all()]
 
+    sources = await rows(Source, Source.learner_id == learner_id)
+    for entry in sources:
+        entry["file_path"] = (
+            f"/api/v1/me/export/sources/{entry['id']}/file" if entry.get("blob_key") else None
+        )
+
     return {
         "learner": _as_dict(learner),
         "conversations": await rows(Conversation, Conversation.learner_id == learner_id),
@@ -296,7 +301,7 @@ async def export_learner(session: AsyncSession, learner_id: uuid.UUID) -> dict[s
         "note_revisions": await rows(NoteRevision, NoteRevision.note_id.in_(note_ids)),
         "note_renders": await rows(NoteRender, NoteRender.note_id.in_(note_ids)),
         "content_blocks": await rows(ContentBlock, ContentBlock.learner_id == learner_id),
-        "sources": await rows(Source, Source.learner_id == learner_id),
+        "sources": sources,
         "chunks": await rows(Chunk, Chunk.source_id.in_(source_ids)),
         "authored_items": await rows(
             Item, or_(Item.author_learner_id == learner_id, Item.owner_learner_id == learner_id)

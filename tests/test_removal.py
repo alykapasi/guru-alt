@@ -594,3 +594,31 @@ async def test_a_file_the_store_refuses_on_delete_is_queued_for_retry(
 
     queued = await db_session.scalar(select(PendingErasure).where(PendingErasure.target == key))
     assert queued is not None and queued.kind == "blob"
+
+
+async def test_forget_reports_nothing_kept_that_it_removed(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    store = InMemoryBlobStore()
+    source_id = await _source(db_session, learner, store=store)
+    await _lesson_citing(db_session, learner, source_id)
+    await db_session.commit()
+
+    done = await removal.delete_source(db_session, store, learner.id, source_id, forget=True)
+
+    assert done is not None and done.kept["lessons"] == 0 and done.forgettable["lessons"] == 1
+
+
+async def test_forgetting_a_conversation_reports_its_memories_as_not_kept(
+    db_session: AsyncSession,
+) -> None:
+    learner = await _learner(db_session)
+    conversation = Conversation(learner_id=learner.id)
+    db_session.add(conversation)
+    await db_session.flush()
+    await _memory(db_session, learner, conversation, "Studies in the mornings")
+    cid = conversation.id
+    await db_session.commit()
+
+    done = await removal.delete_conversation(db_session, learner.id, cid, forget=True)
+
+    assert done is not None and done.kept["memories"] == 0 and done.forgettable["memories"] == 1

@@ -5,7 +5,10 @@ get their data out or have it removed, and two stores no foreign key reaches. Se
 ``app.services.retention`` for the policy these two endpoints execute.
 """
 
-from fastapi import APIRouter, HTTPException, status
+import uuid
+from urllib.parse import quote
+
+from fastapi import APIRouter, HTTPException, Response, status
 
 from app.api.deps import (
     AccountHolder,
@@ -15,6 +18,7 @@ from app.api.deps import (
     SessionDep,
     SettingsDep,
 )
+from app.models.source import Source
 from app.schemas.retention import (
     DeletionReportRead,
     DeletionRequestRead,
@@ -44,11 +48,38 @@ async def retention_policy(_: CurrentLearner):
 
 @router.get("/me/export")
 async def export_me(session: SessionDep, learner: AccountHolder) -> dict:
-    """Everything held about this learner, as JSON. Uploads appear as metadata, not bytes."""
+    """Everything held about this learner, as JSON. Each upload's bytes download separately,
+    from the ``file_path`` on its source entry."""
     try:
         return await svc.export_learner(session, learner.id)
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "learner not found") from exc
+
+
+@router.get("/me/export/sources/{source_id}/file")
+async def export_source_file(
+    source_id: uuid.UUID, session: SessionDep, learner: AccountHolder, blobstore: BlobStoreDep
+) -> Response:
+    """The file this learner uploaded, as they uploaded it (S61) — archived sources included."""
+    source = await session.get(Source, source_id)
+    if source is None or source.learner_id != learner.id or not source.blob_key:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found")
+    try:
+        data = await blobstore.get(source.blob_key)
+    except Exception as exc:  # the bytes are gone from the store
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found") from exc
+    return Response(
+        content=data,
+        media_type=source.content_type or "application/octet-stream",
+        headers={"Content-Disposition": _attachment(source.origin)},
+    )
+
+
+def _attachment(origin: str) -> str:
+    """A download header for any filename: an ASCII fallback, and the exact name (RFC 6266)."""
+    name = "".join(ch for ch in origin if ch.isprintable())
+    fallback = "".join(ch if ch.isascii() and ch not in '"\\' else "_" for ch in name)
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name, safe='')}"
 
 
 @router.delete("/me", response_model=DeletionRequestRead, status_code=status.HTTP_202_ACCEPTED)
