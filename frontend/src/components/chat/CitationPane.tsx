@@ -14,19 +14,21 @@ function locatorLabel(provenance: Record<string, unknown>): string | null {
 }
 
 /** What a citation shows (S29): the passage, labelled when a re-ingest replaced it, or a plain
- * statement when the passage no longer exists at all. */
+ * statement when the passage no longer exists at all. A machine-read passage says so (S27). */
 export function CitationBody({
   origin,
   locator,
   text,
   superseded = false,
   missing = false,
+  note = null,
 }: {
   origin?: string;
   locator?: string | null;
   text?: string;
   superseded?: boolean;
   missing?: boolean;
+  note?: string | null;
 }) {
   if (missing) {
     return <p className="text-body text-base-content/60">This passage is no longer available.</p>;
@@ -38,6 +40,11 @@ export function CitationBody({
         {locator && <p className="text-caption text-primary">{locator}</p>}
         {superseded && (
           <p className="text-caption text-warning">From an earlier version of this source</p>
+        )}
+        {note && (
+          <p className="text-caption text-base-content/60">
+            {note.charAt(0).toUpperCase() + note.slice(1)}
+          </p>
         )}
       </div>
       <p className="text-body text-base-content/90 whitespace-pre-wrap">{text}</p>
@@ -71,6 +78,7 @@ export function CitationPane({ citation, onClose }: { citation: Citation; onClos
             locator={locator}
             text={chunk?.text}
             superseded={chunk?.superseded ?? false}
+            note={chunk?.reading_note ?? null}
           />
         )}
       </div>

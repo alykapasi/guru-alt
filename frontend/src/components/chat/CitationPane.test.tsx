@@ -21,3 +21,18 @@ describe("CitationBody", () => {
     expect(screen.queryByText(/earlier version/)).not.toBeInTheDocument();
   });
 });
+
+describe("CitationBody reading note", () => {
+  it("shows how a passage was read", () => {
+    render(
+      <CitationBody
+        origin="scan.pdf"
+        text="blurry words"
+        note="read from a scan or image; wording may contain errors"
+      />,
+    );
+    expect(
+      screen.getByText("Read from a scan or image; wording may contain errors"),
+    ).toBeInTheDocument();
+  });
+});
