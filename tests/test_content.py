@@ -510,7 +510,8 @@ async def test_with_grounding_the_source_only_instruction_is_the_one_sent(
 
     system, user = seen[0]
     assert system is not None
-    assert "ONLY the numbered context snippets" in system
+    assert "say plainly in the body which part" in system
+    assert "Use ONLY" not in system
     assert "No source material was retrieved" not in system
     assert "Context snippets:" in user
 
@@ -550,3 +551,85 @@ async def test_a_block_written_without_sources_records_zero_grounding(
 
     assert block.grounding_count == 0
     assert block.citations == []
+
+
+# --- sources-only (S26) -----------------------------------------------------
+
+
+async def _sources_only(session: AsyncSession, kc: KC) -> None:
+    subject = await session.scalar(
+        select(Subject).join(Topic, Topic.subject_id == Subject.id).where(Topic.id == kc.topic_id)
+    )
+    assert subject is not None
+    subject.sources_only = True
+    await session.flush()
+
+
+async def test_sources_only_with_nothing_retrieved_generates_nothing(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+    await _sources_only(db_session, kc)
+    client = _client()
+    seen = _spy_on_prompts(client, monkeypatch)
+
+    with pytest.raises(svc.NoSourceCoverage):
+        await svc.generate_block(
+            db_session, client, learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+        )
+
+    assert seen == [], "no model call was made"
+    assert await _count_blocks(db_session, kc) == 0
+
+
+async def test_sources_only_is_the_rule_sent_with_grounding(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+    await _sources_only(db_session, kc)
+    await _seed_grounding(db_session, learner)
+    client = _client()
+    seen = _spy_on_prompts(client, monkeypatch)
+
+    await svc.generate_block(
+        db_session, client, learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    system, _ = seen[0]
+    assert system is not None
+    assert "Use ONLY the numbered context snippets" in system
+
+
+async def test_switching_to_sources_only_does_not_reuse_a_block_written_without_it(
+    db_session: AsyncSession,
+) -> None:
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+    await _seed_grounding(db_session, learner)
+    first = await svc.generate_block(
+        db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+    await _sources_only(db_session, kc)
+
+    second = await svc.generate_block(
+        db_session, _client(), learner_id=learner.id, kc_id=kc.id, block_type=ContentType.LESSON
+    )
+
+    assert second.id != first.id
+
+
+async def test_the_api_says_the_sources_do_not_cover_the_concept(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, api_learner: Learner
+) -> None:
+    kc = await _kc(db_session)
+    await _sources_only(db_session, kc)
+    await db_session.commit()
+
+    response = await api_client.post(
+        "/api/v1/content/generate", json={"kc_id": str(kc.id), "type": "lesson"}
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Your sources for this subject don't cover this concept."
