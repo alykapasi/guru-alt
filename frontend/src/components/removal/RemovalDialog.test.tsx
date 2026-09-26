@@ -29,4 +29,14 @@ describe("RemovalDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     expect(mutate).toHaveBeenLastCalledWith({ id: "s1", forget: true }, expect.anything());
   });
+
+  it("does not call something kept once forgetting it is ticked", () => {
+    render(<RemovalDialog kind="source" id="s1" name="notes.pdf" open onClose={() => {}} />);
+    expect(screen.getByText("1 lesson built from this")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("checkbox"));
+
+    expect(screen.queryByText("1 lesson built from this")).not.toBeInTheDocument();
+    expect(screen.getByText("Removes 1 lesson built from this.")).toBeInTheDocument();
+  });
 });

@@ -28,8 +28,17 @@ export function RemovalDialog({
   const [forget, setForget] = useState(false);
   const impact = useRemovalImpact(kind, id, open);
   const remove = useRemove(kind);
-  const kept = describeCounts(impact.data?.kept ?? {}, KEPT_COPY);
-  const forgettable = describeCounts(impact.data?.forgettable ?? {}, FORGET_COPY);
+  const forgettableCounts = impact.data?.forgettable ?? {};
+  // Once forgetting is ticked, what it removes is no longer "kept" — say each thing once.
+  const kept = describeCounts(
+    Object.fromEntries(
+      Object.entries(impact.data?.kept ?? {}).filter(
+        ([key]) => !(forget && key in forgettableCounts),
+      ),
+    ),
+    KEPT_COPY,
+  );
+  const forgettable = describeCounts(forgettableCounts, FORGET_COPY);
   const message = refusal(remove.error);
 
   return (
