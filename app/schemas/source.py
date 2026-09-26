@@ -5,6 +5,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, computed_field
 
+from app.rag import extraction_quality
+
 
 class LinkCreate(BaseModel):
     """Request to ingest a public web page."""
@@ -63,6 +65,12 @@ class ChunkRead(BaseModel):
     @property
     def superseded(self) -> bool:
         return self.superseded_at is not None
+
+    @computed_field
+    @property
+    def reading_note(self) -> str | None:
+        """How this passage was read, when that should temper trust in it (S27)."""
+        return extraction_quality.reading_note(self.provenance)
 
 
 class SimilarSourceRead(BaseModel):

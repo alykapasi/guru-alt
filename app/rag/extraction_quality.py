@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Mapping
 
 from pydantic import BaseModel
 
@@ -100,3 +101,26 @@ def measure(text: str) -> ExtractionIndicators:
         vowelless_word_ratio=ratio(vowelless, len(long_enough)),
         runaway_token_ratio=ratio(runaway, n_words),
     )
+
+
+_METHOD_NOTES = {
+    "ocr": "read from a scan or image; wording may contain errors",
+    "asr": "transcribed from audio; wording may contain errors",
+}
+
+
+def reading_note(provenance: Mapping) -> str | None:
+    """What a reader should know about how this passage was read — facts only (S27).
+
+    How the text was obtained, and whether the decoder had to give up on characters. The ratio
+    indicators are left out on purpose: none has a measured threshold, and as written they fire
+    on ordinary English (single-letter words count as isolated letters).
+    """
+    notes = []
+    method_note = _METHOD_NOTES.get(str(provenance.get("method", "")))
+    if method_note:
+        notes.append(method_note)
+    extraction = provenance.get("extraction") or {}
+    if extraction.get("replacement_chars") or extraction.get("control_chars"):
+        notes.append("some characters could not be read")
+    return "; ".join(notes) or None

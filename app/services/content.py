@@ -32,8 +32,10 @@ from app.models.content import ContentBlock, ContentType
 from app.models.knowledge import KC, Topic
 from app.models.source import Chunk
 from app.rag import retrieval
+from app.rag.extraction_quality import reading_note
 from app.rag.retrieval import RetrievalHit
 from app.rag.scope import resolve_scope
+from app.services import grounding as grounding_policy
 from app.services.llm_log import log_llm_call
 
 GROUNDING_K = 6
@@ -150,6 +152,8 @@ async def generate_block(
     if grounding:
         rule = _SOURCES_ONLY_RULE if scope.sources_only else _SUPPLEMENT_RULE
         system = _SYSTEM_PROMPT.format(guidance=_GUIDANCE[block_type], scope_rule=rule)
+        if any(reading_note(hit.provenance) for hit in grounding):
+            system = f"{system} {grounding_policy.READING_NOTE_RULE}"
     else:
         system = _UNGROUNDED_SYSTEM_PROMPT.format(guidance=_GUIDANCE[block_type])
     user = _build_prompt(kc, grounding)
@@ -303,7 +307,7 @@ def _build_prompt(kc: KC, grounding: list[RetrievalHit]) -> str:
     objective = _kc_query(kc)
     if not grounding:
         return f"Learning objective:\n{objective}"
-    context = "\n\n".join(f"[{i}] {hit.text}" for i, hit in enumerate(grounding))
+    context = "\n\n".join(grounding_policy.passage(i, hit) for i, hit in enumerate(grounding))
     return f"Learning objective:\n{objective}\n\nContext snippets:\n{context}"
 
 

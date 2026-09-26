@@ -2259,6 +2259,11 @@ export interface components {
             provenance: {
                 [key: string]: unknown;
             };
+            /**
+             * Reading Note
+             * @description How this passage was read, when that should temper trust in it (S27).
+             */
+            readonly reading_note: string | null;
             /** Superseded */
             readonly superseded: boolean;
             /** Text */
