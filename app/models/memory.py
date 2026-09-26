@@ -75,6 +75,10 @@ class Memory(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("conversations.id", ondelete="SET NULL"), index=True, default=None
     )
+    # Where it was learned, with no foreign key: `conversation_id` nulls when the conversation is
+    # deleted, and this is what still lets the learner forget what was learned there (S42, V11).
+    # None for a memory the learner wrote themselves (a correction).
+    origin_conversation_id: Mapped[uuid.UUID | None] = mapped_column(index=True, default=None)
     kind: Mapped[str] = mapped_column(index=True)  # MemoryKind
     content: Mapped[str] = mapped_column(Text)
     embedding: Mapped[Any] = mapped_column(Vector(_EMBED_DIM))

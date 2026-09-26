@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -139,6 +139,8 @@ class Conversation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # had the middle silently skipped — and one that grew by nothing paid a model call to
     # re-read what it had already extracted (S43). Same cursor idea as Note's watermarks (S38).
     memory_watermark: Mapped[datetime | None] = mapped_column(default=None)
+    # Out of the way and read-only, fully reversible (S61, V11); its memories stay current.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     messages: Mapped[list["Message"]] = relationship(
         back_populates="conversation",

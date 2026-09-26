@@ -40,6 +40,7 @@ class SourceRead(BaseModel):
     subject_id: uuid.UUID | None
     topic_id: uuid.UUID | None
     duplicate_of_id: uuid.UUID | None = None
+    archived_at: datetime | None = None
     created_at: datetime
 
 

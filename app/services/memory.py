@@ -118,6 +118,7 @@ async def write_back(
             embedding_space=space,
             learner_id=conversation.learner_id,
             conversation_id=conversation_id,
+            origin_conversation_id=conversation_id,
             kind=item.kind,
             content=item.content,
             embedding=embedding,

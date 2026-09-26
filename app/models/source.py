@@ -79,6 +79,8 @@ class Source(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     duplicate_of_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("sources.id", ondelete="SET NULL"), default=None, index=True
     )
+    # Out of the way and out of use, fully reversible (S61, V11): never retrieved while set.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     content_type: Mapped[str | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(index=True, default=SourceStatus.PENDING)
     error: Mapped[str | None] = mapped_column(Text, default=None)

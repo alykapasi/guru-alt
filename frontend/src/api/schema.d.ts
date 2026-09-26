@@ -2403,6 +2403,8 @@ export interface components {
         ConversationRead: {
             /** Active Item Id */
             active_item_id: string | null;
+            /** Archived At */
+            archived_at?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -3844,6 +3846,8 @@ export interface components {
          * @description An ingestion source and its current status.
          */
         SourceRead: {
+            /** Archived At */
+            archived_at?: string | null;
             /** Content Type */
             content_type: string | null;
             /**

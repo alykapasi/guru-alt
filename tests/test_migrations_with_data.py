@@ -354,3 +354,52 @@ async def test_duplicates_recorded_in_meta_get_the_column_backfilled() -> None:
             assert rows[original] is None
         finally:
             await conn.close()
+
+
+async def test_memories_keep_where_they_came_from_across_the_archive_migration() -> None:
+    """0066 (S61): the origin is copied from the FK, which a conversation delete nulls; the
+    copy has no FK, so it survives the delete and "forget" can still find the memory."""
+    async with database_at("0065_source_duplicate_of") as connect:
+        conn = await connect()
+        try:
+            learner_id, conversation_id, memory_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            dim = get_settings().embed_dim
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "rememberer"
+            )
+            await conn.execute(
+                "INSERT INTO conversations (id, learner_id, kind, phase) "
+                "VALUES ($1, $2, 'chat', 'chatting')",
+                conversation_id,
+                learner_id,
+            )
+            await conn.execute(
+                "INSERT INTO memories (id, learner_id, conversation_id, kind, content, embedding, "
+                "embedding_space, status) VALUES ($1, $2, $3, 'fact', 'likes mornings', "
+                "$4::vector, 'fake:fake-1:x', 'current')",
+                memory_id,
+                learner_id,
+                conversation_id,
+                "[" + ",".join(["0.1"] * dim) + "]",
+            )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0066_archive_and_memory_origin")
+
+        conn = await connect()
+        try:
+            row = await conn.fetchrow(
+                "SELECT origin_conversation_id FROM memories WHERE id = $1", memory_id
+            )
+            assert row is not None and row["origin_conversation_id"] == conversation_id
+            await conn.execute("DELETE FROM conversations WHERE id = $1", conversation_id)
+            row = await conn.fetchrow(
+                "SELECT conversation_id, origin_conversation_id FROM memories WHERE id = $1",
+                memory_id,
+            )
+            assert row is not None
+            assert row["conversation_id"] is None
+            assert row["origin_conversation_id"] == conversation_id
+        finally:
+            await conn.close()
