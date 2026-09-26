@@ -135,6 +135,20 @@ async def _erase_due_once() -> None:
         logger.info("erased %d account(s) past their recovery window", erased)
 
 
+async def _retry_erasures_once() -> None:
+    """Retry deletes the object store or identity provider refused (S61, V12)."""
+    settings = get_settings()
+    async with SessionFactory() as session:
+        resolved = await retention_svc.retry_erasures(
+            session,
+            build_blob_store(settings),
+            build_identity_provider(settings),
+            now=datetime.now(UTC),
+        )
+    if resolved:
+        logger.info("resolved %d pending erasure(s)", resolved)
+
+
 async def _purge_checkpoints_once() -> None:
     """Discard paused graph state for conversations nobody has come back to (S17)."""
     settings = get_settings()
@@ -166,6 +180,9 @@ async def _alerts_once() -> None:
             backlog=await backlog(session, settings=settings),
             spend=await spend_window(session, settings=settings),
             settings=settings,
+            stuck_erasures=await retention_svc.stuck_erasures(
+                session, attempts=settings.alert_stuck_erasure_attempts
+            ),
         )
         changed = await alert_history.record(session, report)
     for row in changed:
@@ -221,6 +238,16 @@ async def _erase_due_loop(interval: int) -> None:
             logger.exception("account erase sweep failed; will retry")
 
 
+async def _retry_erasures_loop(interval: int) -> None:
+    """Retry refused erasures forever, surviving its own failures like the reconciler above."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await _retry_erasures_once()
+        except Exception:
+            logger.exception("erasure retry sweep failed; will retry")
+
+
 async def _start_reconciler(state: TaskiqState) -> None:
     interval = get_settings().ingest_reconcile_interval_seconds
     if interval <= 0:
@@ -263,6 +290,17 @@ async def _start_account_erase(state: TaskiqState) -> None:
 
 async def _stop_account_erase(state: TaskiqState) -> None:
     await _cancel(getattr(state, "account_erase", None))
+
+
+async def _start_erasure_retry(state: TaskiqState) -> None:
+    interval = get_settings().erasure_retry_interval_seconds
+    if interval <= 0:
+        return
+    state.erasure_retry = asyncio.create_task(_retry_erasures_loop(interval))
+
+
+async def _stop_erasure_retry(state: TaskiqState) -> None:
+    await _cancel(getattr(state, "erasure_retry", None))
 
 
 async def _start_checkpoint_purge(state: TaskiqState) -> None:
@@ -312,6 +350,8 @@ broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_session_purge)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_session_purge)
 broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_account_erase)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_account_erase)
+broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_erasure_retry)
+broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_erasure_retry)
 broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_checkpoint_purge)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_checkpoint_purge)
 broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_alerts)

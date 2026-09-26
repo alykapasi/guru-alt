@@ -573,3 +573,24 @@ async def test_another_learners_ids_are_not_found_through_the_api(
     assert await db_session.get(Source, source_id) is not None
     untouched = await db_session.get(Memory, mid, populate_existing=True)
     assert untouched is not None and untouched.status == MemoryStatus.CURRENT
+
+
+async def test_a_file_the_store_refuses_on_delete_is_queued_for_retry(
+    db_session: AsyncSession,
+) -> None:
+    from app.models.erasure import PendingErasure
+
+    class _Refusing(InMemoryBlobStore):
+        async def delete(self, key: str) -> None:
+            raise RuntimeError("store unavailable")
+
+    learner = await _learner(db_session)
+    store = _Refusing()
+    source_id = await _source(db_session, learner, store=store)
+    key = (await _get(db_session, source_id)).blob_key
+    await db_session.commit()
+
+    await removal.delete_source(db_session, store, learner.id, source_id, forget=False)
+
+    queued = await db_session.scalar(select(PendingErasure).where(PendingErasure.target == key))
+    assert queued is not None and queued.kind == "blob"

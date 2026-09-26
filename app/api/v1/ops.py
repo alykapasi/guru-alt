@@ -21,6 +21,7 @@ from app.core.alerts import AlertReport, evaluate
 from app.core.readiness import ReadinessReport, readiness
 from app.schemas.ops import AlertTransitionRead
 from app.services import alert_history
+from app.services import retention as retention_svc
 from app.services.ingestion import IngestionBacklog, backlog
 from app.services.spend import SpendWindow
 from app.services.spend import window as spend_window
@@ -106,4 +107,7 @@ async def alerts(session: SessionDep, store: BlobStoreDep, settings: SettingsDep
         backlog=await backlog(session, settings=settings),
         spend=await spend_window(session, settings=settings),
         settings=settings,
+        stuck_erasures=await retention_svc.stuck_erasures(
+            session, attempts=settings.alert_stuck_erasure_attempts
+        ),
     )

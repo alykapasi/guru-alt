@@ -24,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 import structlog
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -494,6 +494,66 @@ async def erase_due(
         await erase_learner(session, blobstore, provider, learner_id)
         erased += 1
     return erased
+
+
+_MAX_BACKOFF = timedelta(days=1)
+
+
+def _backoff(attempts: int) -> timedelta:
+    return min(timedelta(minutes=2**attempts), _MAX_BACKOFF)
+
+
+async def retry_erasures(
+    session: AsyncSession,
+    blobstore: BlobStore,
+    provider: IdentityProvider | None,
+    *,
+    now: datetime,
+) -> int:
+    """Try every due pending erasure once. Returns how many were resolved (row removed).
+
+    A blob is deleted only while nothing references its key again — bytes are
+    content-addressed, and a re-upload since the refusal makes them somebody's file; either way
+    the erasure is no longer owed. An identity already gone at the provider counts as done.
+    Failures back off exponentially to a day and keep retrying; ``stuck_erasures`` is what
+    makes a persistent one visible.
+    """
+    rows = list(
+        (
+            await session.scalars(
+                select(PendingErasure)
+                .where(PendingErasure.next_attempt_at <= now)
+                .order_by(PendingErasure.next_attempt_at)
+            )
+        ).all()
+    )
+    resolved = 0
+    for row in rows:
+        try:
+            if row.kind == ErasureKind.BLOB:
+                await ingestion.unreference_blob(session, blobstore, row.target)
+            elif provider is None:
+                raise RuntimeError("no identity provider configured")
+            else:
+                await provider.delete_user(row.target)
+        except Exception as exc:
+            row.attempts += 1
+            row.last_error = str(exc)[:500]
+            row.next_attempt_at = now + _backoff(row.attempts)
+            await session.commit()
+            continue
+        await session.delete(row)
+        await session.commit()
+        resolved += 1
+    return resolved
+
+
+async def stuck_erasures(session: AsyncSession, *, attempts: int) -> int:
+    """How many pending erasures have been refused at least ``attempts`` times."""
+    count = await session.scalar(
+        select(func.count()).select_from(PendingErasure).where(PendingErasure.attempts >= attempts)
+    )
+    return count or 0
 
 
 def _as_dict(row: Any) -> dict[str, Any]:

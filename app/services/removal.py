@@ -18,12 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat import Conversation, Message
 from app.models.content import ContentBlock
+from app.models.erasure import ErasureKind
 from app.models.memory import Memory, MemoryStatus
 from app.models.profile import LearnerProfile
 from app.models.source import Source, SourceStatus
 from app.rag import pipeline
 from app.services import chat as chat_svc
-from app.services import ingestion
+from app.services import ingestion, retention
 from app.storage import BlobStore
 
 log = structlog.get_logger()
@@ -234,7 +235,10 @@ async def delete_source(
             await ingestion.unreference_blob(session, blobstore, blob_key)
         except Exception:
             log.warning("removal.blob_not_deleted", source_id=str(source_id), exc_info=True)
-            notes.append("The stored file could not be removed yet; it will be cleaned up.")
+            await retention.queue_erasure(
+                session, ErasureKind.BLOB, blob_key, "refused at source delete"
+            )
+            notes.append("The stored file could not be removed yet; it will be retried.")
     return Impact(kept=impact.kept, forgettable=impact.forgettable, notes=notes)
 
 

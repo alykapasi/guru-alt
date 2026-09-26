@@ -57,6 +57,7 @@ def evaluate(
     backlog: IngestionBacklog,
     spend: SpendWindow,
     settings: Settings,
+    stuck_erasures: int = 0,
 ) -> AlertReport:
     """Every alert condition, against the thresholds in settings."""
     firing: list[Alert] = []
@@ -67,6 +68,7 @@ def evaluate(
         "ingestion_backlog_ageing",
         "leases_expired",
         "spend_over_budget",
+        "erasures_stuck",
     ]
 
     failed = [dep.name for dep in readiness.dependencies if not dep.ok]
@@ -135,6 +137,18 @@ def evaluate(
                 ),
                 action="Check /api/v1/ops/spend for which role and model. A runaway is usually "
                 "one loop, not general growth.",
+            )
+        )
+
+    if stuck_erasures:
+        firing.append(
+            Alert(
+                name="erasures_stuck",
+                severity="warning",
+                detail=f"{stuck_erasures} erasure(s) refused "
+                f"{settings.alert_stuck_erasure_attempts}+ times",
+                action="Object storage or the identity provider keeps refusing deletes. Read "
+                "`pending_erasures.last_error`; the worker keeps retrying daily.",
             )
         )
 
