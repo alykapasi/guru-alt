@@ -1,6 +1,12 @@
 import { useState } from "react";
 import { Brain, Check, Pencil, Trash2, X } from "lucide-react";
-import { useCorrectMemory, useForgetAllMemory, useForgetMemory, useMemories } from "../api/hooks";
+import {
+  useCorrectMemory,
+  useForgetAllMemory,
+  useForgetMemory,
+  useForgetOrigin,
+  useMemories,
+} from "../api/hooks";
 import type { components } from "../api/schema";
 
 type Memory = components["schemas"]["MemoryRead"];
@@ -15,6 +21,47 @@ type Memory = components["schemas"]["MemoryRead"];
  * Correcting is offered ahead of forgetting on purpose. Most of what goes wrong with an
  * extracted memory is that it is nearly right, and erasing it throws away the true part while
  * leaving the extractor free to derive the same mistake again from the same history. */
+
+/** Where a memory was learned (S42), and the means to forget everything learned there — which
+ * still works once that conversation is deleted, because the origin outlives it. */
+function Origin({ memory }: { memory: Memory }) {
+  const forgetOrigin = useForgetOrigin();
+  const [confirming, setConfirming] = useState(false);
+  const origin = memory.origin_conversation_id;
+  if (!origin) return null;
+  return (
+    <div className="text-caption text-base-content/50 flex items-center gap-2 pl-27">
+      <span>
+        {memory.origin_live
+          ? `From: ${memory.origin_title ?? "an untitled conversation"}`
+          : "From a deleted conversation"}
+      </span>
+      {confirming ? (
+        <>
+          <button
+            type="button"
+            className="btn btn-error btn-xs"
+            disabled={forgetOrigin.isPending}
+            onClick={() => forgetOrigin.mutate(origin, { onSuccess: () => setConfirming(false) })}
+          >
+            Yes, forget them
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs"
+            onClick={() => setConfirming(false)}
+          >
+            Keep
+          </button>
+        </>
+      ) : (
+        <button type="button" className="btn btn-ghost btn-xs" onClick={() => setConfirming(true)}>
+          Forget all from this conversation
+        </button>
+      )}
+    </div>
+  );
+}
 
 const KIND_COPY: Record<string, string> = {
   fact: "Fact",
@@ -100,6 +147,7 @@ function Row({ memory }: { memory: Memory }) {
           )}
         </div>
       </div>
+      <Origin memory={memory} />
       {correct.isError && (
         <p className="text-caption text-error pl-24">
           That correction didn&apos;t save. Try again.

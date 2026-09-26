@@ -125,3 +125,49 @@ describe("forgetting everything", () => {
     expect(screen.getByRole("button", { name: "Yes, forget everything" })).toBeInTheDocument();
   });
 });
+
+describe("where a memory was learned", () => {
+  it("names a live conversation, and says so when it was deleted", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse([
+            {
+              ...MEMORY,
+              id: "m-live",
+              content: "Studies in the mornings",
+              origin_conversation_id: "c-live",
+              origin_title: "Chem help",
+              origin_live: true,
+            },
+            {
+              ...MEMORY,
+              id: "m-gone",
+              content: "Prefers short sessions",
+              origin_conversation_id: "c-gone",
+              origin_title: null,
+              origin_live: false,
+            },
+          ]),
+        ),
+      ),
+    );
+    renderPage();
+    expect(await screen.findByText("From: Chem help")).toBeInTheDocument();
+    expect(screen.getByText("From a deleted conversation")).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: "Forget all from this conversation" }),
+    ).toHaveLength(2);
+  });
+
+  it("shows no origin for something the learner wrote themselves", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse([{ ...MEMORY, origin_conversation_id: null }]))),
+    );
+    renderPage();
+    await screen.findByText("Prefers worked examples before definitions");
+    expect(screen.queryByText(/^From/)).not.toBeInTheDocument();
+  });
+});
