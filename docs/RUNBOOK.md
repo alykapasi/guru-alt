@@ -811,3 +811,22 @@ tracker (S80), not enforced in code.
 - Rows: `decision_calls`.
 - Smoke test: `GURU_JEV_SMOKE=1 uv run pytest tests/test_decisions_live.py -v -s`. It is paid,
   so run it only on purpose.
+
+## 15. Reindexing sources (S29, S50)
+
+A chunk records the embedding space and the pipeline version that wrote it. `uv run poe reindex`
+compares both against the running configuration and lists what is stale; it changes nothing
+without `--apply`.
+
+1. `uv run poe reindex` — dry run. Read the three groups: re-embed (the embedding model changed),
+   re-extract (`PIPELINE_VERSION` in `app/rag/pipeline.py` was bumped), scope repair (legacy
+   subject/topic tags that disagree with the graph).
+2. `uv run poe reindex --apply [--limit N]` — re-embeds in place and repairs scope. Chunk ids do
+   not change, so every citation keeps resolving. Costs one embed per chunk; the dry run's chunk
+   count is the bill. Interrupting is safe: run it again and it continues.
+3. `uv run poe reindex --apply --reextract [--limit N]` — also re-ingests sources whose
+   extraction is stale, through the normal ingestion queue. This gives their chunks new ids;
+   chunks something cites are kept as "earlier version" history (S29), the rest are deleted.
+
+Bump `PIPELINE_VERSION` whenever a change to extraction or chunking changes chunk text. Do not
+bump it for changes that only affect tagging or metadata.
