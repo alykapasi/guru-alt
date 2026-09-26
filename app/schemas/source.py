@@ -40,6 +40,12 @@ class SourceRead(BaseModel):
     created_at: datetime
 
 
+class RetryRequest(BaseModel):
+    """Re-processing a finished source replaces its passages, so it has to be confirmed (S29)."""
+
+    confirm: bool = False
+
+
 class ChunkRead(BaseModel):
     """A stored chunk as exposed for debugging — text + provenance, not the raw vector."""
 

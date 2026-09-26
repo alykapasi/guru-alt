@@ -1475,7 +1475,9 @@ export interface paths {
          * @description Re-run ingestion for a finished or failed source.
          *
          *     A completed source is deliberately not claimable by a job (S37), so re-ingesting one has
-         *     to be asked for. 409 while a claim is live rather than yanking work in flight.
+         *     to be asked for — and, since it replaces passages the learner's replies may cite, confirmed
+         *     (S29). A failed source has nothing to replace and retries directly. 409 while a claim is
+         *     live rather than yanking work in flight; the two 409s carry different codes.
          */
         post: operations["retry_source_api_v1_sources__source_id__retry_post"];
         delete?: never;
@@ -3706,6 +3708,17 @@ export interface components {
             subject_id?: string | null;
             /** Topic Id */
             topic_id?: string | null;
+        };
+        /**
+         * RetryRequest
+         * @description Re-processing a finished source replaces its passages, so it has to be confirmed (S29).
+         */
+        RetryRequest: {
+            /**
+             * Confirm
+             * @default false
+             */
+            confirm: boolean;
         };
         /**
          * RevealRead
@@ -6267,7 +6280,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RetryRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             202: {
