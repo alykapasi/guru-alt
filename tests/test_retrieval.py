@@ -11,6 +11,7 @@ from collections.abc import Iterator
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_llm_client
@@ -21,7 +22,7 @@ from app.models.knowledge import Subject
 from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.rag import retrieval
-from tests.embedding import FAKE_SPACE
+from tests.embedding import FAKE_SPACE, crowd
 
 API = "/api/v1"
 _FAKE = fake_llm_client()
@@ -291,3 +292,36 @@ async def test_the_space_names_the_provider_the_model_and_the_dimension() -> Non
     from app.llm.embedding_space import current_space
 
     assert current_space(fake_llm_client(), dim=768) == "fake:fake-1:768"
+
+
+# --- exactness under the learner filter (S76) -------------------------------
+
+
+async def test_a_learners_chunks_are_found_however_near_other_learners_vectors_are(
+    db_session: AsyncSession,
+) -> None:
+    """The failure behind S76's intermittent gate, pinned rather than waited for.
+
+    Whether the planner answers the vector arm exactly or through the HNSW index was left to
+    its statistics. The index finds the ~40 nearest vectors in the *whole table* and only then
+    applies the learner filter, so a learner whose chunks are further from the query than
+    other rows got some or none of them back. Disabling sorts makes the index path the
+    planner's choice deterministically, which is what stale or small-table statistics did by
+    accident.
+    """
+    stranger = await _source(db_session, await _learner(db_session))
+    for i, vector in enumerate(crowd(await _embed("marker"))):
+        await _chunk(db_session, stranger, f"someone else's note {i}", embedding=vector, ordinal=i)
+    learner = await _learner(db_session)
+    source = await _source(db_session, learner)
+    mine = [
+        await _chunk(
+            db_session, source, f"lorem ipsum {i}", embedding=await _embed(f"far {i}"), ordinal=i
+        )
+        for i in range(3)
+    ]
+    await db_session.execute(text("SET LOCAL enable_sort = off"))
+
+    hits = await retrieval.retrieve(db_session, fake_llm_client(), "marker", learner_id=learner.id)
+
+    assert {h.chunk_id for h in hits} == {c.id for c in mine}

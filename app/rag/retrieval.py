@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.llm import LLMClient, ModelRole
-from app.llm.embedding_space import current_space
+from app.llm.embedding_space import current_space, exact_cosine_distance
 from app.models.source import Chunk, Source
 
 _RRF_K = 60  # standard reciprocal-rank-fusion constant
@@ -91,7 +91,7 @@ async def retrieve(
     vector_q = (
         scoped(select(Chunk))
         .where(Chunk.embedding_space == space)
-        .order_by(Chunk.embedding.cosine_distance(query_vec))
+        .order_by(exact_cosine_distance(Chunk.embedding, query_vec))
         .limit(candidates)
     )
     keyword_q = (

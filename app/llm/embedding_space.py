@@ -13,6 +13,11 @@ because it is the one incompatibility that would otherwise surface as a database
 than as silently wrong ranking.
 """
 
+from collections.abc import Sequence
+from typing import Any
+
+from sqlalchemy import ColumnElement
+
 from app.llm.registry import LLMClient
 from app.llm.types import ModelRole
 
@@ -21,3 +26,21 @@ def current_space(llm: LLMClient, *, dim: int) -> str:
     """The space vectors written now belong to."""
     spec = llm.spec(ModelRole.EMBED)
     return f"{spec.provider}:{spec.model}:{dim}"
+
+
+def exact_cosine_distance(column: Any, vector: Sequence[float]) -> ColumnElement[float]:
+    """Cosine distance from ``column`` to ``vector`` that the HNSW index cannot answer (S76).
+
+    Every vector search here is scoped to one learner. Ordering by the bare ``column <=>
+    vector`` lets the planner choose the HNSW index, which returns the ~40 nearest vectors in
+    the *whole table* and only then applies the learner filter — so a learner whose rows are
+    further from the query than other learners' rows gets some or none of them back, silently.
+    Which plan it chose depended on table statistics, which is why this surfaced as an
+    intermittent test failure that a ``VACUUM ANALYZE`` made disappear.
+
+    Adding zero changes no value and matches no index operator, so the distance is computed
+    exactly over the learner's own rows. That exact path is what was measured (50/50 against a
+    sequential scan, about 4 µs per owned chunk); trading it for the index's speed is a
+    separate, measured decision.
+    """
+    return column.cosine_distance(vector) + 0

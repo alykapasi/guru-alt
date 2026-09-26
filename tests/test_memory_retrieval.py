@@ -7,14 +7,16 @@ neighbour of a query ``X``. Mirrors ``tests/test_retrieval.py``'s idiom for ``Ch
 
 import uuid
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm import ModelRole
 from app.llm.registry import fake_llm_client
 from app.memory import retrieval
 from app.models.learner import Learner
-from app.models.memory import Memory, MemoryKind
-from tests.embedding import FAKE_SPACE
+from app.models.memory import Memory, MemoryKind, MemoryStatus
+from app.services import memory as memory_svc
+from tests.embedding import FAKE_SPACE, crowd
 
 _FAKE = fake_llm_client()
 
@@ -100,3 +102,50 @@ async def test_hit_shape_omits_the_embedding(db_session: AsyncSession) -> None:
     assert hits[0].kind == MemoryKind.FACT
     assert hits[0].content == "target content"
     assert not hasattr(hits[0], "embedding")
+
+
+async def test_a_learners_memories_are_found_however_near_other_learners_vectors_are(
+    db_session: AsyncSession,
+) -> None:
+    """S76, for memories: the index answered before the learner filter, so a learner whose
+    memories were further from the query than other rows got some or none of them back.
+    Disabling sorts makes that index path the planner's choice deterministically."""
+    stranger = await _learner(db_session)
+    for i, vector in enumerate(crowd(await _embed("marker"))):
+        await _memory(db_session, stranger, f"someone else's fact {i}", embedding=vector)
+    learner = await _learner(db_session)
+    mine = [
+        await _memory(db_session, learner, f"lorem ipsum {i}", embedding=await _embed(f"far {i}"))
+        for i in range(3)
+    ]
+    await db_session.execute(text("SET LOCAL enable_sort = off"))
+
+    hits = await retrieval.retrieve(db_session, fake_llm_client(), "marker", learner_id=learner.id)
+
+    assert {h.id for h in hits} == {m.id for m in mine}
+
+
+async def test_duplicate_detection_finds_the_learners_own_nearest_memory(
+    db_session: AsyncSession,
+) -> None:
+    """S76, where it costs most: extraction recognises a fact it has already seen by the nearest
+    existing memory. If other learners' vectors crowd the index, that lookup comes back empty,
+    and a deleted memory returns or a correction is stored as a second fact."""
+    stranger = await _learner(db_session)
+    for i, vector in enumerate(crowd(await _embed("marker"))):
+        await _memory(db_session, stranger, f"someone else's fact {i}", embedding=vector)
+    learner = await _learner(db_session)
+    mine = await _memory(db_session, learner, "lorem ipsum", embedding=await _embed("far"))
+    await db_session.execute(text("SET LOCAL enable_sort = off"))
+
+    nearest = await memory_svc._nearest(
+        db_session,
+        learner.id,
+        MemoryKind.FACT,
+        await _embed("marker"),
+        max_distance=2.0,
+        space=FAKE_SPACE,
+        status=MemoryStatus.CURRENT,
+    )
+
+    assert nearest is not None and nearest.id == mine.id
