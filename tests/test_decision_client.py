@@ -5,8 +5,10 @@ hook with a canned HTTP response, so the mapping from the vendor's wire shape to
 tested without a key or a network.
 """
 
+import asyncio
 import json
 import pathlib
+import time
 
 import httpx2
 import pytest
@@ -150,6 +152,23 @@ async def test_a_connection_timeout_is_a_timeout() -> None:
     result = await _client(handler).read(STATE, QUESTIONS, timeout_s=0.1)
 
     assert result == DecisionFailure(FailureKind.TIMEOUT)
+
+
+async def test_a_trickling_server_still_hits_the_overall_bound() -> None:
+    """httpx's per-operation timeout does not cap the request as a whole (Review focus 2): a
+    handler that just sleeps past `timeout_s` never trips httpx's own machinery, since the mock
+    transport never touches a socket. Only `asyncio.timeout` around the whole call catches it."""
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        await asyncio.sleep(0.3)
+        return httpx2.Response(200, json=_ok_body(fully_correct={"type": "noul", "noul": 0.5}))
+
+    started = time.perf_counter()
+    result = await _client(handler).read(STATE, QUESTIONS, timeout_s=0.05)
+    elapsed = time.perf_counter() - started
+
+    assert result == DecisionFailure(FailureKind.TIMEOUT)
+    assert elapsed < 0.2
 
 
 async def test_an_unreadable_body_is_invalid() -> None:

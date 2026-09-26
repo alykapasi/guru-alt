@@ -149,11 +149,27 @@ class TypeSafeDecisionClient:
     ) -> DecisionResponse | DecisionFailure:
         started = time.perf_counter()
         try:
-            response = await self._client.system_one(
-                dict(state),
-                {name: _to_sdk(question) for name, question in questions.items()},
-                timeout=timeout_s,
-                retry=_NO_RETRIES,
+            # httpx's `timeout` bounds each operation (connect/read/write/pool) separately, not
+            # the request as a whole — a server trickling data can outlast it. This is the hard
+            # overall bound. `TimeoutError` from its expiry maps to FailureKind.TIMEOUT below,
+            # same as the SDK's own timeout error.
+            async with asyncio.timeout(timeout_s):
+                response = await self._client.system_one(
+                    dict(state),
+                    {name: _to_sdk(question) for name, question in questions.items()},
+                    timeout=timeout_s,
+                    retry=_NO_RETRIES,
+                )
+            # Inside the same try as the request: a malformed answer must fall back too, not
+            # raise past this method.
+            return DecisionResponse(
+                answers={
+                    name: _from_sdk(question, response.answers.get(name))
+                    for name, question in questions.items()
+                },
+                model=response.model,
+                input_tokens=response.usage.input_tokens,
+                latency_ms=round((time.perf_counter() - started) * 1000),
             )
         except Exception as exc:  # every failure has the same answer: fall back
             failure = _failure_of(exc)
@@ -161,15 +177,6 @@ class TypeSafeDecisionClient:
                 "decision.request_failed", kind=failure.kind.value, error=type(exc).__name__
             )
             return failure
-        return DecisionResponse(
-            answers={
-                name: _from_sdk(question, response.answers.get(name))
-                for name, question in questions.items()
-            },
-            model=response.model,
-            input_tokens=response.usage.input_tokens,
-            latency_ms=round((time.perf_counter() - started) * 1000),
-        )
 
 
 def _failure_of(exc: Exception) -> DecisionFailure:
