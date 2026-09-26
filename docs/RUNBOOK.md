@@ -787,6 +787,9 @@ every eligible turn and today's model still decides; both answers land in `decis
   before overall agreement. Those are the two ways a confident disagreement hurts a learner.
 - Savings are priced at the mean FAST/SMART call in `llm_calls`. The SMART figure is rough,
   because grading calls and tutor turns share the role.
+- A retried chat turn re-runs the intent gate on every retry (as the FAST gate always has), so
+  it can add an `intent` row each time; a direct-submission retry replays the recorded grade
+  and never reaches the grader, so it asks Jev nothing.
 
 **Going live.** Set the question's mode to `live`, and optionally raise
 `GURU_DECISION_<QUESTION>_THRESHOLD` (default 0.9) to what the report supports, then restart.
