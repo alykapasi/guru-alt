@@ -71,4 +71,20 @@ def policy_note(*, sources_only: bool) -> str:
         if sources_only
         else "If a search finds nothing relevant, say so, then answer from general knowledge."
     )
-    return " ".join(("Passages come from the search_materials tool.", found, _CONFLICT, missing))
+    # Sources-only has to require the search: this flow's model may otherwise decide a search
+    # would not help and answer from general knowledge, which is the one thing the setting
+    # forbids. Chat and practice cannot skip it, because they retrieve before the model runs.
+    must_search = (
+        ("Before answering, search the learner's materials with search_materials.",)
+        if sources_only
+        else ()
+    )
+    return " ".join(
+        (
+            *must_search,
+            "Passages come from the search_materials tool.",
+            found,
+            _CONFLICT,
+            missing,
+        )
+    )

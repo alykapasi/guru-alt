@@ -53,3 +53,11 @@ def test_an_empty_retrieval_still_tells_the_tutor_what_happened() -> None:
 def test_the_agent_note_carries_the_same_rule() -> None:
     assert "only from" in policy_note(sources_only=True)
     assert "general knowledge" in policy_note(sources_only=False)
+
+
+def test_a_sources_only_agent_must_search_before_answering() -> None:
+    """The agent decides whether to search; under sources-only, not searching would answer from
+    general knowledge unannounced — the one path the policy could otherwise be skipped on."""
+    note = policy_note(sources_only=True)
+    assert "Before answering, search the learner's materials with search_materials" in note
+    assert "Before answering" not in policy_note(sources_only=False)
