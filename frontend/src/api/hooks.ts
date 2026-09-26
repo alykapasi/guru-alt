@@ -753,3 +753,42 @@ export function useForgetOrigin() {
     },
   });
 }
+
+/** Account deletion (S61, V12): request, restore within the window, or erase now. All three
+ * change who the learner is, so they refresh every query. `now` erases in the same call — it
+ * cannot follow the request, which signs every session out, this one included. */
+export function useRequestDeletion() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ now = false }: { now?: boolean } = {}) => {
+      const { data, error } = await api.DELETE("/api/v1/me", { params: { query: { now } } });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => void queryClient.invalidateQueries(),
+  });
+}
+
+export function useRestoreAccount() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const { data, error } = await api.POST("/api/v1/me/deletion/restore");
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => void queryClient.invalidateQueries(),
+  });
+}
+
+export function useEraseAccount() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const { data, error } = await api.POST("/api/v1/me/deletion/erase");
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => void queryClient.invalidateQueries(),
+  });
+}

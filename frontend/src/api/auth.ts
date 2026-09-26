@@ -17,6 +17,8 @@ export type CurrentLearner = {
   /** Whether to offer the operator's portal at all (P10). Not what authorizes it — the API
    * refuses a non-administrator whatever the browser renders. */
   is_admin: boolean;
+  /** Set while the account is pending deletion (S61): the app shows the recovery screen. */
+  deletion_due_at?: string | null;
 };
 
 export function useCurrentLearner() {

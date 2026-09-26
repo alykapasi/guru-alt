@@ -2,6 +2,7 @@ import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useCurrentLearner } from "../api/auth";
 import { ClerkSessionWatcher } from "../auth/ClerkPanels";
 import { clerkEnabled } from "../auth/mode";
+import { Recovery } from "../pages/Recovery";
 
 /** Gate for every route that needs a learner (S21).
  *
@@ -22,6 +23,11 @@ export function RequireLearner() {
   }
   if (!learner) {
     return <Navigate to="/signin" replace state={{ from: location.pathname + location.search }} />;
+  }
+  if (learner.deletion_due_at) {
+    // A pending-deletion account (S61) reaches one screen until it is restored or erased; the
+    // API refuses it everywhere else.
+    return <Recovery dueAt={learner.deletion_due_at} />;
   }
   return (
     <>
