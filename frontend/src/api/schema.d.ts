@@ -1367,7 +1367,8 @@ export interface paths {
         /**
          * List Sources
          * @description List the learner's sources, optionally scoped to a subject — backs the conversation
-         *     creation modal's source picker (Phase 7).
+         *     creation modal's source picker (Phase 7). Archived sources are listed only with
+         *     ``archived=true`` (S61).
          */
         get: operations["list_sources_api_v1_sources_get"];
         put?: never;
@@ -1444,6 +1445,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sources/{source_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archive Source
+         * @description Out of the way and out of use, reversibly (S61): never retrieved while archived.
+         */
+        post: operations["archive_source_api_v1_sources__source_id__archive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sources/{source_id}/chunks": {
         parameters: {
             query?: never;
@@ -1507,6 +1528,23 @@ export interface paths {
         get: operations["similar_sources_api_v1_sources__source_id__similar_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/unarchive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Unarchive Source */
+        post: operations["unarchive_source_api_v1_sources__source_id__unarchive_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6127,6 +6165,7 @@ export interface operations {
         parameters: {
             query?: {
                 subject_id?: string | null;
+                archived?: boolean;
             };
             header?: never;
             path?: never;
@@ -6251,6 +6290,37 @@ export interface operations {
             };
         };
     };
+    archive_source_api_v1_sources__source_id__archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_source_chunks_api_v1_sources__source_id__chunks_get: {
         parameters: {
             query?: never;
@@ -6337,6 +6407,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SimilarSourceRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unarchive_source_api_v1_sources__source_id__unarchive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceRead"];
                 };
             };
             /** @description Validation Error */

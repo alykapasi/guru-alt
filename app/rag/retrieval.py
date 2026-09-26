@@ -57,6 +57,9 @@ async def retrieve(
             Source.learner_id == scope.learner_id,
             # Superseded chunks are history kept for their citations (S29), never grounding.
             Chunk.superseded_at.is_(None),
+            # Archived sources are out of use until unarchived (S61) — here, the one place a
+            # scope is applied, so no generation path can read one.
+            Source.archived_at.is_(None),
         )
         if scope.source_ids:
             stmt = stmt.where(Chunk.source_id.in_(scope.source_ids))

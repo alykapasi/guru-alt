@@ -118,7 +118,7 @@ class TooManyChunks(IngestionError):
     """The source chunked into more pieces than one job is allowed to embed."""
 
 
-async def _same_text_source(session: AsyncSession, source: Source) -> Source | None:
+async def same_text_source(session: AsyncSession, source: Source) -> Source | None:
     """Another finished source of this learner, in this scope, that says the same thing.
 
     Scoped the same way the byte-level check is (see ``ingestion.find_duplicate``): the same
@@ -140,6 +140,8 @@ async def _same_text_source(session: AsyncSession, source: Source) -> Source | N
             Source.kind == source.kind,
             Source.text_sha256 == source.text_sha256,
             Source.status == SourceStatus.DONE,
+            # An archived source answers for nothing, so it is no one's twin (S61).
+            Source.archived_at.is_(None),
             Source.id != source.id,
             select(Chunk.id)
             .where(Chunk.source_id == Source.id, Chunk.superseded_at.is_(None))
@@ -208,7 +210,7 @@ async def run(
     canonical_text = textnorm.canonical("\n".join(unit.text for unit in units))
     source.text_sha256 = textnorm.digest(canonical_text)
     source.simhash = simhash.to_hex(simhash.simhash(canonical_text))
-    twin = await _same_text_source(session, source)
+    twin = await same_text_source(session, source)
     if twin is not None:
         # Already embedded, under this learner's own scope. Chunking it again would pay for a
         # second copy and then let the two crowd each other out of every grounding window.

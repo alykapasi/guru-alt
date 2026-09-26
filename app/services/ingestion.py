@@ -491,7 +491,7 @@ def _stranded():
     current chunks — which is exactly what retrieval reads. Deliberately not the original's
     status: an original being re-processed, or whose re-processing failed, keeps its chunks and
     keeps answering, and releasing its duplicate then would put a second copy in every
-    grounding window. Moved, deleted or emptied, and the duplicate grounds nothing while
+    grounding window. Moved, archived, deleted or emptied, and the duplicate grounds nothing while
     looking finished.
     """
     original = aliased(Source)
@@ -504,6 +504,7 @@ def _stranded():
         select(original.id)
         .where(
             original.id == Source.duplicate_of_id,
+            original.archived_at.is_(None),
             original.learner_id == Source.learner_id,
             original.subject_id.is_not_distinct_from(Source.subject_id),
             original.topic_id.is_not_distinct_from(Source.topic_id),

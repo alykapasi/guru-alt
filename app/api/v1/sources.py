@@ -29,7 +29,7 @@ from app.schemas.source import (
     SourceRead,
 )
 from app.services import ingestion as svc
-from app.services import knowledge
+from app.services import knowledge, removal
 
 router = APIRouter(tags=["sources"])
 
@@ -150,6 +150,11 @@ async def retry_source(
         # Refused before any confirmation is asked for: there is nothing to confirm when the
         # answer would be no regardless (v0 web policy).
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(svc.WebIngestionDisabled()))
+    if source.archived_at is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "archived", "message": "Unarchive this source to process it again."},
+        )
     if source.status == SourceStatus.DONE and not (data is not None and data.confirm):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -173,12 +178,17 @@ async def list_sources(
     session: SessionDep,
     learner: CurrentLearner,
     subject_id: Annotated[uuid.UUID | None, Query()] = None,
+    archived: Annotated[bool, Query()] = False,
 ):
     """List the learner's sources, optionally scoped to a subject — backs the conversation
-    creation modal's source picker (Phase 7)."""
+    creation modal's source picker (Phase 7). Archived sources are listed only with
+    ``archived=true`` (S61)."""
     if subject_id is not None:
         await knowledge.require_visible_subject(session, subject_id, learner.id)
-    stmt = select(Source).where(Source.learner_id == learner.id)
+    stmt = select(Source).where(
+        Source.learner_id == learner.id,
+        Source.archived_at.is_not(None) if archived else Source.archived_at.is_(None),
+    )
     if subject_id is not None:
         stmt = stmt.where(Source.subject_id == subject_id)
     sources = (await session.scalars(stmt.order_by(Source.created_at.desc()))).all()
@@ -189,6 +199,23 @@ async def list_sources(
 async def get_source(source_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
     source = await session.get(Source, source_id)
     if source is None or source.learner_id != learner.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    return source
+
+
+@router.post("/sources/{source_id}/archive", response_model=SourceRead)
+async def archive_source(source_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+    """Out of the way and out of use, reversibly (S61): never retrieved while archived."""
+    source = await removal.set_source_archived(session, learner.id, source_id, archived=True)
+    if source is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    return source
+
+
+@router.post("/sources/{source_id}/unarchive", response_model=SourceRead)
+async def unarchive_source(source_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+    source = await removal.set_source_archived(session, learner.id, source_id, archived=False)
+    if source is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
     return source
 
