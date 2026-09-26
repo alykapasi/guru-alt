@@ -20,16 +20,21 @@ retried; nothing the learner can still reach survives.
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 import structlog
 from sqlalchemy import delete, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings
+from app.core.identity import IdentityProvider
 from app.models.assessment import Item, Rubric
 from app.models.auth import AccountAction, AdminAction, Impersonation, Invitation
 from app.models.chat import Conversation, Message, Turn
 from app.models.content import ContentBlock
+from app.models.erasure import ErasureKind, PendingErasure
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
 from app.models.lesson_plan import LessonPlan
@@ -38,6 +43,7 @@ from app.models.note import Note, NoteRender, NoteRevision
 from app.models.profile import LearnerProfile, ProfileDimension
 from app.models.publication import Publication
 from app.models.source import Chunk, Source
+from app.services import auth as auth_svc
 from app.services import ingestion
 from app.storage.base import BlobStore
 
@@ -377,6 +383,117 @@ async def delete_learner(
         items_deleted=report.items_deleted,
     )
     return report
+
+
+class NotPending(Exception):
+    """Restore or erase-now asked of an account that is not pending deletion."""
+
+
+async def request_deletion(
+    session: AsyncSession, learner_id: uuid.UUID, *, settings: Settings
+) -> Learner:
+    """Start the recovery window (V12): access ends now, the data stays until the due time.
+
+    Every session is revoked, so every device is signed out at once. Idempotent: asking again
+    while pending neither moves the due date nor extends the window.
+    """
+    learner = await session.get(Learner, learner_id, populate_existing=True, with_for_update=True)
+    if learner is None:
+        raise LookupError(str(learner_id))
+    if learner.deletion_due_at is None:
+        now = datetime.now(UTC)
+        learner.deletion_requested_at = now
+        learner.deletion_due_at = now + timedelta(days=settings.account_recovery_days)
+    await session.commit()  # before revoking: revoke_all commits its own transaction
+    await auth_svc.revoke_all(session, learner_id)
+    await session.refresh(learner)
+    return learner
+
+
+async def restore_account(session: AsyncSession, learner_id: uuid.UUID) -> Learner:
+    """End the recovery window early by keeping the account. ``NotPending`` if it is active."""
+    learner = await session.get(Learner, learner_id, populate_existing=True, with_for_update=True)
+    if learner is None:
+        raise LookupError(str(learner_id))
+    if learner.deletion_due_at is None:
+        raise NotPending(str(learner_id))
+    learner.deletion_requested_at = None
+    learner.deletion_due_at = None
+    await session.commit()
+    await session.refresh(learner)
+    return learner
+
+
+async def queue_erasure(session: AsyncSession, kind: ErasureKind, target: str, error: str) -> None:
+    """Record something that could not be erased, for the retry worker. Commits."""
+    await session.execute(
+        pg_insert(PendingErasure)
+        .values(id=uuid.uuid4(), kind=kind, target=target, last_error=error[:500])
+        .on_conflict_do_nothing(constraint="uq_pending_erasures_kind_target")
+    )
+    await session.commit()
+
+
+async def erase_learner(
+    session: AsyncSession,
+    blobstore: BlobStore,
+    provider: IdentityProvider | None,
+    learner_id: uuid.UUID,
+) -> DeletionReport:
+    """Erase the account now: every store per :data:`RETENTION`, then the provider's copy.
+
+    A refusal by the object store or the provider never undoes the database erase; it becomes a
+    pending erasure the worker retries until it succeeds.
+    """
+    learner = await session.get(Learner, learner_id)
+    subject = learner.auth_subject if learner is not None else None
+    report = await delete_learner(session, blobstore, learner_id)
+    for key in report.blobs_failed:
+        await queue_erasure(session, ErasureKind.BLOB, key, "refused at account erase")
+    if subject:
+        if provider is None:
+            await queue_erasure(session, ErasureKind.IDENTITY, subject, "no provider configured")
+        else:
+            try:
+                await provider.delete_user(subject)
+            except Exception as exc:
+                log.warning("retention.identity_not_deleted", learner_id=str(learner_id))
+                await queue_erasure(session, ErasureKind.IDENTITY, subject, str(exc))
+    return report
+
+
+async def erase_due(
+    session: AsyncSession,
+    blobstore: BlobStore,
+    provider: IdentityProvider | None,
+    *,
+    now: datetime,
+) -> int:
+    """Erase every account whose recovery window has passed. Returns how many.
+
+    Each candidate is re-read under a row lock: a learner who restored between the query and
+    the erase is no longer due and is skipped.
+    """
+    ids = list(
+        (
+            await session.scalars(
+                select(Learner.id).where(
+                    Learner.deletion_due_at.is_not(None), Learner.deletion_due_at <= now
+                )
+            )
+        ).all()
+    )
+    erased = 0
+    for learner_id in ids:
+        learner = await session.get(
+            Learner, learner_id, populate_existing=True, with_for_update=True
+        )
+        if learner is None or learner.deletion_due_at is None or learner.deletion_due_at > now:
+            await session.rollback()
+            continue
+        await erase_learner(session, blobstore, provider, learner_id)
+        erased += 1
+    return erased
 
 
 def _as_dict(row: Any) -> dict[str, Any]:

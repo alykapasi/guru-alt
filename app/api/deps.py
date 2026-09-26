@@ -212,11 +212,37 @@ Authenticated = Annotated[auth.Authenticated, Depends(get_authenticated)]
 
 
 async def get_current_learner(request: Request, who: Authenticated) -> Learner:
-    """The effective learner; authenticated sudo requests already have durable audit intent."""
+    """The effective learner; authenticated sudo requests already have durable audit intent.
+
+    A pending-deletion account is refused (S61): its sessions were revoked at the request, and
+    a new one only reaches the recovery routes (``AccountHolder``).
+    """
+    if who.learner.deletion_due_at is not None:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            {
+                "code": "deletion_pending",
+                "due_at": who.learner.deletion_due_at.isoformat(),
+                "message": "This account is scheduled for deletion.",
+            },
+        )
     return who.learner
 
 
 CurrentLearner = Annotated[Learner, Depends(get_current_learner)]
+
+
+async def get_account_holder(who: Authenticated) -> Learner:
+    """The learner, admitted even while their account is pending deletion (S61).
+
+    For the few routes a pending account must still reach: its status, restore, erase-now,
+    export, who-am-I and sign-out-everywhere. Everything else goes through
+    ``get_current_learner``, which refuses a pending account.
+    """
+    return who.learner
+
+
+AccountHolder = Annotated[Learner, Depends(get_account_holder)]
 
 
 async def get_current_admin(who: Authenticated) -> Learner:

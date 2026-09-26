@@ -9,7 +9,7 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from taskiq import TaskiqEvents, TaskiqState
 
@@ -17,6 +17,7 @@ from app.agent import checkpointing
 from app.core.alerts import evaluate
 from app.core.config import get_settings
 from app.core.db import SessionFactory
+from app.core.identity import build_identity_provider
 from app.core.readiness import readiness
 from app.llm import build_llm_client
 from app.models.source import Source
@@ -28,6 +29,7 @@ from app.services import auth as auth_svc
 from app.services import checkpoints as checkpoints_svc
 from app.services import concept_links as concept_links_svc
 from app.services import memory as memory_svc
+from app.services import retention as retention_svc
 from app.services.ingestion import backlog
 from app.services.spend import window as spend_window
 from app.storage import build_blob_store
@@ -119,6 +121,20 @@ async def _purge_sessions_once() -> None:
         logger.info("purged %d dead session(s)", removed)
 
 
+async def _erase_due_once() -> None:
+    """Erase every account whose recovery window has passed (S61, V12)."""
+    settings = get_settings()
+    async with SessionFactory() as session:
+        erased = await retention_svc.erase_due(
+            session,
+            build_blob_store(settings),
+            build_identity_provider(settings),
+            now=datetime.now(UTC),
+        )
+    if erased:
+        logger.info("erased %d account(s) past their recovery window", erased)
+
+
 async def _purge_checkpoints_once() -> None:
     """Discard paused graph state for conversations nobody has come back to (S17)."""
     settings = get_settings()
@@ -195,6 +211,16 @@ async def _purge_sessions_loop(interval: int) -> None:
             logger.exception("session purge sweep failed; will retry")
 
 
+async def _erase_due_loop(interval: int) -> None:
+    """Erase due accounts forever, surviving its own failures like the reconciler above."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await _erase_due_once()
+        except Exception:
+            logger.exception("account erase sweep failed; will retry")
+
+
 async def _start_reconciler(state: TaskiqState) -> None:
     interval = get_settings().ingest_reconcile_interval_seconds
     if interval <= 0:
@@ -226,6 +252,17 @@ async def _start_session_purge(state: TaskiqState) -> None:
 
 async def _stop_session_purge(state: TaskiqState) -> None:
     await _cancel(getattr(state, "session_purge", None))
+
+
+async def _start_account_erase(state: TaskiqState) -> None:
+    interval = get_settings().account_erase_interval_seconds
+    if interval <= 0:
+        return
+    state.account_erase = asyncio.create_task(_erase_due_loop(interval))
+
+
+async def _stop_account_erase(state: TaskiqState) -> None:
+    await _cancel(getattr(state, "account_erase", None))
 
 
 async def _start_checkpoint_purge(state: TaskiqState) -> None:
@@ -273,6 +310,8 @@ broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_reconciler)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_reconciler)
 broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_session_purge)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_session_purge)
+broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_account_erase)
+broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_account_erase)
 broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_checkpoint_purge)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_checkpoint_purge)
 broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_alerts)

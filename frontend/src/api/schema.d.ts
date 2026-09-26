@@ -1001,13 +1001,75 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * Delete Me
-         * @description Erase this learner from every store.
+         * Request Delete Me
+         * @description Delete this account (V12): access ends now; it can be restored for the recovery window
+         *     by signing in again, then it is erased. ``POST /me/deletion/erase`` erases at once.
+         */
+        delete: operations["request_delete_me_api_v1_me_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/deletion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Deletion Status
+         * @description Whether this account is pending deletion, and when it will be erased.
+         */
+        get: operations["deletion_status_api_v1_me_deletion_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/deletion/erase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Erase Me
+         * @description Erase now, without waiting out the recovery window. Only for a pending account: an
+         *     active one asks for deletion first, so there is one way in to erasing.
          *
          *     Returns the report rather than 204: a deletion that could not remove every uploaded file
-         *     has to say so, because those keys can no longer be found by walking the database.
+         *     has to say so; those keys are queued and retried (``pending_erasures``).
          */
-        delete: operations["delete_me_api_v1_me_delete"];
+        post: operations["erase_me_api_v1_me_deletion_erase_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/deletion/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore Me
+         * @description Keep this account: cancel the pending deletion.
+         */
+        post: operations["restore_me_api_v1_me_deletion_restore_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2625,6 +2687,26 @@ export interface components {
              * Format: uuid
              */
             learner_id: string;
+        };
+        /**
+         * DeletionRequestRead
+         * @description When a pending account will be erased, unless it is restored first (S61).
+         */
+        DeletionRequestRead: {
+            /**
+             * Due At
+             * Format: date-time
+             */
+            due_at: string;
+        };
+        /** DeletionStatusRead */
+        DeletionStatusRead: {
+            /** Due At */
+            due_at: string | null;
+            /** Pending */
+            pending: boolean;
+            /** Requested At */
+            requested_at: string | null;
         };
         /** DependencyStatus */
         DependencyStatus: {
@@ -5857,7 +5939,47 @@ export interface operations {
             };
         };
     };
-    delete_me_api_v1_me_delete: {
+    request_delete_me_api_v1_me_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionRequestRead"];
+                };
+            };
+        };
+    };
+    deletion_status_api_v1_me_deletion_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionStatusRead"];
+                };
+            };
+        };
+    };
+    erase_me_api_v1_me_deletion_erase_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -5873,6 +5995,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeletionReportRead"];
+                };
+            };
+        };
+    };
+    restore_me_api_v1_me_deletion_restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionStatusRead"];
                 };
             };
         };
