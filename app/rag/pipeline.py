@@ -125,6 +125,11 @@ async def _same_text_source(session: AsyncSession, source: Source) -> Source | N
     book under two subjects is a real intent, and retrieval is subject-scoped so the copies
     never compete. Only ``DONE`` counts — a match with no chunks behind it would leave this
     source suppressed in favour of one that cannot answer anything.
+
+    For the same reason the match must have current chunks of its own. A twin that was itself
+    suppressed as a duplicate is DONE with none, and re-extracting the original would otherwise
+    defer to it — leaving the original's stale chunks in place and every reindex queueing it
+    again (S50).
     """
     if source.text_sha256 is None:
         return None
@@ -136,6 +141,9 @@ async def _same_text_source(session: AsyncSession, source: Source) -> Source | N
             Source.text_sha256 == source.text_sha256,
             Source.status == SourceStatus.DONE,
             Source.id != source.id,
+            select(Chunk.id)
+            .where(Chunk.source_id == Source.id, Chunk.superseded_at.is_(None))
+            .exists(),
             Source.subject_id.is_(None)
             if source.subject_id is None
             else Source.subject_id == source.subject_id,

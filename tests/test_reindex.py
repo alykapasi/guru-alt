@@ -316,3 +316,67 @@ async def test_scope_repair_clears_a_topic_from_another_subject(db_session: Asyn
     repaired = await db_session.get(Source, source.id, populate_existing=True)
     assert repaired is not None
     assert (repaired.subject_id, repaired.topic_id) == (s1.id, None)
+
+
+async def test_a_legacy_url_source_does_not_stop_a_reextract_run(db_session: AsyncSession) -> None:
+    """v0 refuses URL ingestion; such a source must not crash every future --reextract run."""
+    learner = await _learner(db_session)
+    url_source = await _done_source(db_session, learner, b"Old web page text.")
+    url_source.kind = SourceKind.URL
+    await _age(db_session, url_source, version=pipeline.PIPELINE_VERSION - 1)
+    file_source = await _done_source(db_session, learner, b"A file of facts.")
+    await _age(db_session, file_source, version=pipeline.PIPELINE_VERSION - 1)
+    url_id, file_id = url_source.id, file_source.id
+
+    found = await reindex.plan(db_session, space=_space(), learner_id=learner.id)
+    result = await reindex.apply(
+        db_session,
+        fake_llm_client(),
+        found,
+        space=_space(),
+        reextract=True,
+        limit=None,
+        enqueue=_Queue(),
+        settings=get_settings(),
+    )
+
+    assert url_id not in {s.source_id for s in found.reextract}
+    assert result.reextracted == [file_id]
+
+
+async def test_reextracting_a_source_with_an_empty_twin_gives_it_fresh_chunks(
+    db_session: AsyncSession,
+) -> None:
+    """A same-text twin with no chunks cannot stand in for this source; if it did, every
+    reindex would re-extract (and pay for) the source again and it would never converge."""
+    learner = await _learner(db_session)
+    store = InMemoryBlobStore()
+    original = await ingestion.create_source(
+        db_session,
+        store,
+        learner_id=learner.id,
+        kind=SourceKind.FILE,
+        origin="a.txt",
+        content_type="text/plain",
+        data=b"Enzymes lower activation energy.",
+    )
+    await ingestion.ingest_source(db_session, store, fake_llm_client(), original.id)
+    twin = await ingestion.create_source(
+        db_session,
+        store,
+        learner_id=learner.id,
+        kind=SourceKind.FILE,
+        origin="a.md",
+        content_type="text/markdown",
+        data=b"Enzymes lower activation energy.\n",
+    )
+    await ingestion.ingest_source(db_session, store, fake_llm_client(), twin.id)
+    original_id = original.id
+    assert await _chunks(db_session, twin) == [], "the twin was suppressed as a duplicate"
+    await _age(db_session, original, version=pipeline.PIPELINE_VERSION - 1)
+
+    await ingestion.reset_for_reingest(db_session, original_id)
+    await ingestion.ingest_source(db_session, store, fake_llm_client(), original_id)
+
+    again = await reindex.plan(db_session, space=_space(), learner_id=learner.id)
+    assert original_id not in {s.source_id for s in again.reextract}

@@ -23,7 +23,7 @@ from sqlalchemy.orm import aliased
 from app.core.config import Settings
 from app.llm import LLMClient, ModelRole
 from app.models.knowledge import Subject, Topic
-from app.models.source import Chunk, Source, SourceStatus
+from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.rag.pipeline import PIPELINE_VERSION, PartialEmbedding, embed_in_batches
 from app.services import ingestion
 from app.services.llm_log import log_llm_call
@@ -64,7 +64,7 @@ class ReindexResult:
 
 
 async def _stale(
-    session: AsyncSession, condition, learner_id: uuid.UUID | None
+    session: AsyncSession, condition, learner_id: uuid.UUID | None, *, files_only: bool = False
 ) -> list[StaleSource]:
     stmt = (
         select(Source.id, Source.learner_id, Source.origin, func.count(Chunk.id))
@@ -76,6 +76,8 @@ async def _stale(
     )
     if learner_id is not None:
         stmt = stmt.where(Source.learner_id == learner_id)
+    if files_only:
+        stmt = stmt.where(Source.kind == SourceKind.FILE)
     return [StaleSource(*row) for row in (await session.execute(stmt)).all()]
 
 
@@ -148,7 +150,11 @@ async def plan(
     """What is stale right now. Changes nothing."""
     return ReindexPlan(
         reembed=await _stale(session, Chunk.embedding_space != space, learner_id),
-        reextract=await _stale(session, Chunk.pipeline_version < PIPELINE_VERSION, learner_id),
+        # Files only: v0 refuses URL ingestion, so a legacy URL source can never be re-extracted,
+        # and listing it would fail every --reextract run at the same source forever.
+        reextract=await _stale(
+            session, Chunk.pipeline_version < PIPELINE_VERSION, learner_id, files_only=True
+        ),
         scope=await _scope_repairs(session, learner_id),
     )
 
