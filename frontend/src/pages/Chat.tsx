@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Navigate, useParams } from "react-router-dom";
 import { useChatConversation } from "../hooks/useChatConversation";
-import { usePracticeAction } from "../api/hooks";
+import { useArchive, usePracticeAction } from "../api/hooks";
 import { MessageList } from "../components/chat/MessageList";
 import { Composer } from "../components/chat/Composer";
 import { CitationPane } from "../components/chat/CitationPane";
@@ -29,6 +29,7 @@ export function Chat() {
     send,
   } = useChatConversation(conversationId);
   const practiceAction = usePracticeAction(conversationId);
+  const unarchive = useArchive("conversation");
   const practiceBusy = practiceAction.isPending || !!pending;
   const [citation, setCitation] = useState<Citation | null>(null);
 
@@ -80,16 +81,33 @@ export function Chat() {
             )}
           </div>
         )}
-        {practicePaused ? (
-          <PracticePausedStrip
-            onResume={handleResume}
-            onSkip={handleSkip}
-            disabled={practiceBusy}
-          />
+        {conversation?.archived_at ? (
+          // Read-only until unarchived (S61): the server refuses a message here with 409.
+          <div className="border-base-300 mx-auto flex w-full max-w-3xl items-center gap-3 border-t px-6 py-4">
+            <p className="text-body text-base-content/70">This conversation is archived.</p>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={unarchive.isPending}
+              onClick={() => unarchive.mutate({ id: conversation.id, archived: false })}
+            >
+              Unarchive to continue
+            </button>
+          </div>
         ) : (
-          awaitingReply && <PracticeControls onSkip={handleSkip} disabled={practiceBusy} />
+          <>
+            {practicePaused ? (
+              <PracticePausedStrip
+                onResume={handleResume}
+                onSkip={handleSkip}
+                disabled={practiceBusy}
+              />
+            ) : (
+              awaitingReply && <PracticeControls onSkip={handleSkip} disabled={practiceBusy} />
+            )}
+            <Composer disabled={!!pending} onSend={(content, mode) => send(content, { mode })} />
+          </>
         )}
-        <Composer disabled={!!pending} onSend={(content, mode) => send(content, { mode })} />
       </div>
       {citation && (
         <aside className="border-base-300 flex w-80 shrink-0 flex-col border-l">

@@ -236,21 +236,6 @@ export function useRenameConversation() {
   });
 }
 
-export function useDeleteConversation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (id: string) => {
-      const { error } = await api.DELETE("/api/v1/conversations/{conversation_id}", {
-        params: { path: { conversation_id: id } },
-      });
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["conversations"] });
-    },
-  });
-}
-
 /** A single KC's name/description — for resolving a lesson-plan step's `kc_id` to a label. */
 export function useKC(kcId: string | undefined) {
   return useQuery({
@@ -651,6 +636,117 @@ export function useForgetAllMemory() {
     mutationFn: async () => {
       const { error } = await api.DELETE("/api/v1/memory");
       if (error) throw error;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memories"] });
+    },
+  });
+}
+type RemovalKind = "source" | "conversation";
+
+/** Archived sources, for the Uploads page's Archived section (S61). */
+export function useArchivedSources() {
+  return useQuery({
+    queryKey: ["sources", "archived"],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/sources", {
+        params: { query: { archived: true } },
+      });
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+export function useArchivedConversations() {
+  return useQuery({
+    queryKey: ["conversations", "archived"],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/conversations", {
+        params: { query: { archived: true } },
+      });
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+/** Archive or unarchive; nothing is deleted either way (S61). */
+export function useArchive(kind: RemovalKind) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, archived }: { id: string; archived: boolean }) => {
+      const verb = archived ? "archive" : "unarchive";
+      const { error } =
+        kind === "source"
+          ? await api.POST(`/api/v1/sources/{source_id}/${verb}`, {
+              params: { path: { source_id: id } },
+            })
+          : await api.POST(`/api/v1/conversations/{conversation_id}/${verb}`, {
+              params: { path: { conversation_id: id } },
+            });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: [kind === "source" ? "sources" : "conversations"],
+      });
+    },
+  });
+}
+
+/** What deleting would keep and what forgetting would also remove — read before deleting. */
+export function useRemovalImpact(kind: RemovalKind, id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["removal", kind, id],
+    enabled,
+    queryFn: async () => {
+      const { data, error } =
+        kind === "source"
+          ? await api.GET("/api/v1/sources/{source_id}/removal", {
+              params: { path: { source_id: id } },
+            })
+          : await api.GET("/api/v1/conversations/{conversation_id}/removal", {
+              params: { path: { conversation_id: id } },
+            });
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+export function useRemove(kind: RemovalKind) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, forget }: { id: string; forget: boolean }) => {
+      const { data, error } =
+        kind === "source"
+          ? await api.DELETE("/api/v1/sources/{source_id}", {
+              params: { path: { source_id: id }, query: { forget } },
+            })
+          : await api.DELETE("/api/v1/conversations/{conversation_id}", {
+              params: { path: { conversation_id: id }, query: { forget } },
+            });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      for (const key of ["sources", "conversations", "memories", "removal"]) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    },
+  });
+}
+
+export function useForgetOrigin() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (conversationId: string) => {
+      const { data, error } = await api.POST("/api/v1/memory/forget-origin/{conversation_id}", {
+        params: { path: { conversation_id: conversationId } },
+      });
+      if (error) throw error;
+      return data;
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["memories"] });

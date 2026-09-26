@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useMatch } from "react-router-dom";
 import { Plus } from "lucide-react";
-import { useConversations } from "../../api/hooks";
+import { useArchivedConversations, useConversations } from "../../api/hooks";
 import { ConversationRow } from "./ConversationRow";
 import { NewChatModal } from "./NewChatModal";
 
 export function ConversationSidebar() {
   const { data: conversations, isLoading } = useConversations();
+  const { data: archived } = useArchivedConversations();
   const activeId = useMatch("/app/chat/:conversationId")?.params.conversationId;
   const [modalOpen, setModalOpen] = useState(false);
 
@@ -29,6 +30,16 @@ export function ConversationSidebar() {
         {conversations?.map((c) => (
           <ConversationRow key={c.id} conversation={c} active={c.id === activeId} />
         ))}
+        {archived && archived.length > 0 && (
+          <details className="mt-3">
+            <summary className="text-caption text-base-content/50 cursor-pointer px-3 py-1">
+              Archived ({archived.length})
+            </summary>
+            {archived.map((c) => (
+              <ConversationRow key={c.id} conversation={c} active={c.id === activeId} archived />
+            ))}
+          </details>
+        )}
       </nav>
     </aside>
   );
