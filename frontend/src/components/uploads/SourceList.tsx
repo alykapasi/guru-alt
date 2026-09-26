@@ -26,7 +26,9 @@ function SourceRow({ source }: { source: Source }) {
       <div className="flex shrink-0 items-center gap-2">
         <SourceActions
           status={source.status}
+          kind={source.kind}
           pending={retry.isPending}
+          error={retry.error}
           onRetry={(confirm) => retry.mutate({ sourceId: source.id, confirm })}
         />
         <span className={`badge badge-sm shrink-0 ${STATUS_BADGE[source.status] ?? "badge-ghost"}`}>

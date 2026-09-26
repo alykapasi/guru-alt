@@ -35,3 +35,34 @@ describe("SourceActions", () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+describe("SourceActions failures", () => {
+  it("says why a retry was refused", () => {
+    render(
+      <SourceActions
+        status="failed"
+        onRetry={() => {}}
+        error={{
+          detail: { code: "ingesting", message: "This source is being ingested right now." },
+        }}
+      />,
+    );
+    expect(screen.getByText("This source is being ingested right now.")).toBeInTheDocument();
+  });
+
+  it("shows a plain refusal message too", () => {
+    render(
+      <SourceActions
+        status="done"
+        onRetry={() => {}}
+        error={{ detail: "URL ingestion is disabled" }}
+      />,
+    );
+    expect(screen.getByText("URL ingestion is disabled")).toBeInTheDocument();
+  });
+
+  it("offers nothing for a web source, which v0 cannot ingest", () => {
+    const { container } = render(<SourceActions status="failed" kind="url" onRetry={() => {}} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+});
