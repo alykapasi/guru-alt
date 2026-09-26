@@ -757,3 +757,54 @@ still a claim made in the product's name, so write a reason you would stand behi
   which component a head start came from, and whether it has been confirmed.
 - `learning_events`: a `transfer_seed` event for each head start, and `transfer_revoked` when
   one is withdrawn.
+
+## 14. Jev turn read (S78, S81–S83)
+
+Jev (TypeSafe's System One model) answers typed questions about a learner's turn. It never
+writes text. Two questions exist, each with its own switch:
+
+| Question | Stands in front of | Live effect when confident |
+| --- | --- | --- |
+| `intent` | the FAST answer-intent gate | its label is used; the FAST call is skipped |
+| `fully_correct` | the SMART rubric grader | the answer is graded 1.0 (`method: "decision"`); the SMART call is skipped |
+
+Jev never fails an answer: anything short of a confident pass is graded by SMART as before.
+
+**Switching a question on.** In `.env`, with `GURU_TYPESAFE_API_KEY` set:
+
+    GURU_DECISION_INTENT_MODE=shadow
+    GURU_DECISION_FULLY_CORRECT_MODE=shadow
+
+and restart. A mode that is on with an empty key refuses to start. In `shadow`, Jev is asked on
+every eligible turn and today's model still decides; both answers land in `decision_calls`.
+
+**Reading the report.** `uv run poe decision-report [--since YYYY-MM-DD] [--examples N]`.
+
+- `fully_correct`: read **FALSE PASSES** first. Each is an answer Jev was confident was fully
+  correct that SMART failed. Live, each would have written wrong mastery evidence. Do not switch
+  this question live while the count is above zero at the chosen threshold.
+- `intent`: read "would have graded a non-answer" and "would have dropped a real attempt"
+  before overall agreement. Those are the two ways a confident disagreement hurts a learner.
+- Savings are priced at the mean FAST/SMART call in `llm_calls`. The SMART figure is rough,
+  because grading calls and tutor turns share the role.
+
+**Going live.** Set the question's mode to `live`, and optionally raise
+`GURU_DECISION_<QUESTION>_THRESHOLD` (default 0.9) to what the report supports, then restart.
+Rows keep flowing, so the report stays current. A live question that isn't confident, fails, or
+misses `GURU_DECISION_LIVE_DEADLINE_MS` (default 800) falls back to today's path.
+
+**Rolling back.** Set the mode to `off` (or `shadow`) and restart. Nothing else changes.
+
+**Before anyone but the founder uses Guru.** Every eligible turn's question and reply go to
+TypeSafe. The open data-handling questions in `docs/jev-capabilities.md` ("Data handling and
+unresolved questions") must be resolved before another learner is invited: agreement,
+retention, deletion, and ZDR eligibility. This precondition is recorded here and in the
+tracker (S80), not enforced in code.
+
+**Where things are.**
+- Client: `app/llm/decisions.py`, the only importer of `typesafe_sdk`.
+- Questions: `app/learning/turn_read.py`.
+- Modes: `app/services/decisions.py`.
+- Rows: `decision_calls`.
+- Smoke test: `GURU_JEV_SMOKE=1 uv run pytest tests/test_decisions_live.py -v -s`. It is paid,
+  so run it only on purpose.

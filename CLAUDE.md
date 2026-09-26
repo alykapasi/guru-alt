@@ -130,6 +130,12 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   never links anything, and an accepted link gives only a provisional head start that real
   answers must confirm. `links_in_effect` in `app/services/concept_links.py` is the one rule;
   see [docs/RUNBOOK.md](docs/RUNBOOK.md) §13.
+- **Jev is a first pass, never an author** (S78–S83) — TypeSafe's System One model answers
+  typed questions about a turn (`intent`, `fully_correct`) in front of the FAST gate and the
+  SMART grader. A confident live answer may skip that model call; it never writes text and
+  never produces a failing grade. Each question is off / shadow / live on its own and goes live
+  only after a person reads `uv run poe decision-report`. `app/llm/decisions.py` is the only
+  SDK importer. See [docs/RUNBOOK.md](docs/RUNBOOK.md) §14.
 - **Pydantic at boundaries · async throughout · Alembic-tracked schema.**
 
 ## Performance & Conciseness Guidelines

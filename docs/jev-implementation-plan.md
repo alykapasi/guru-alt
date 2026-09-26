@@ -1,5 +1,15 @@
 # Jev integration implementation plan
 
+> **Superseded, 2026-09-26.** Implemented instead as
+> [the Jev turn read](superpowers/specs/2026-09-26-jev-turn-read-design.md), with plan
+> `docs/superpowers/plans/2026-09-26-jev-turn-read.md`:
+> - Phase 1 is done as specified.
+> - Phase 2's offline labelled comparison is replaced by the shadow report on real founder
+>   traffic.
+> - Phase 3's privacy work is now a precondition for inviting other learners.
+> - Phases 4–5 became the per-question shadow/live switch.
+> - Phase 6 and the other studies remain future work.
+
 Status: proposed on 2026-09-18. This document authorizes no implementation, dependency installation, paid evaluation, deployment, or learner-data export. Read [jev-architecture.md](jev-architecture.md) and the verified [capability snapshot](jev-capabilities.md) alongside this plan. Existing work in this checkout must remain intact.
 
 **Goal:** evaluate whether a typed decision service improves Guru's conversational answer-intent gate at acceptable cost and latency, while preserving its conservative evidence semantics.
