@@ -101,12 +101,106 @@ async def test_a_duplicate_whose_original_moved_scope_is_stranded(
     assert dup in await ingestion.stranded_duplicates(db_session)
 
 
-async def test_a_duplicate_whose_original_failed_is_stranded(db_session: AsyncSession) -> None:
+async def test_an_original_still_answering_keeps_its_duplicate_whatever_its_status(
+    db_session: AsyncSession,
+) -> None:
+    """Retrieval reads current chunks whatever the source's status, so an original being
+    re-processed, or one whose re-processing failed, still answers for its duplicate. Releasing
+    the duplicate then would put a second copy in every grounding window."""
     _, original, dup = await _pair(db_session)
-    (await _get(db_session, original)).status = SourceStatus.FAILED
+    for status in (SourceStatus.PENDING, SourceStatus.PROCESSING, SourceStatus.FAILED):
+        (await _get(db_session, original)).status = status
+        await db_session.commit()
+
+        assert dup not in await ingestion.stranded_duplicates(db_session), status
+        assert await ingestion.release_duplicates(db_session, [dup]) == [], status
+
+
+async def test_a_duplicate_whose_original_was_emptied_is_stranded(
+    db_session: AsyncSession,
+) -> None:
+    _, original, dup = await _pair(db_session)
+    for chunk in (await db_session.scalars(select(Chunk).where(Chunk.source_id == original))).all():
+        await db_session.delete(chunk)
     await db_session.commit()
 
     assert dup in await ingestion.stranded_duplicates(db_session)
+
+
+async def test_reprocessing_an_original_leaves_one_copy_answering(
+    db_session: AsyncSession,
+) -> None:
+    """The swap the status check caused: reset the original, sweep, then let both finish."""
+    store, original, dup = await _pair(db_session)
+    await ingestion.reset_for_reingest(db_session, original)
+    await db_session.commit()
+
+    await ingestion.reconcile_stranded(db_session, _Queue(), settings=Settings())
+    for source_id in (dup, original):
+        if (await _get(db_session, source_id)).status != SourceStatus.DONE:
+            await ingestion.ingest_source(db_session, store, fake_llm_client(), source_id)
+
+    answering = [s for s in (original, dup) if await _current_chunks(db_session, s)]
+    assert answering == [original]
+    assert (await _get(db_session, dup)).duplicate_of_id == original
+
+
+async def test_a_source_that_becomes_a_duplicate_stops_answering_itself(
+    db_session: AsyncSession,
+) -> None:
+    """Re-ingested into a scope where its twin already answers, a source defers to it — and
+    its own earlier chunks go, or both copies would be retrieved."""
+    from app.models.knowledge import Subject
+
+    store = InMemoryBlobStore()
+    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="S", owner_learner_id=learner.id)
+    db_session.add(subject)
+    await db_session.flush()
+    ids = []
+    for data, subject_id in ((BRITISH, subject.id), (AMERICAN, None)):
+        source = await ingestion.create_source(
+            db_session,
+            store,
+            learner_id=learner.id,
+            kind=SourceKind.FILE,
+            origin="x.txt",
+            content_type="text/plain",
+            data=data,
+            subject_id=subject_id,
+        )
+        await ingestion.ingest_source(db_session, store, fake_llm_client(), source.id)
+        ids.append(source.id)
+    kept, moved = ids
+    assert await _current_chunks(db_session, moved), "different scopes, so both answered"
+
+    (await _get(db_session, moved)).subject_id = subject.id
+    await ingestion.reset_for_reingest(db_session, moved)
+    await ingestion.ingest_source(db_session, store, fake_llm_client(), moved)
+
+    assert (await _get(db_session, moved)).duplicate_of_id == kept
+    assert await _current_chunks(db_session, moved) == 0
+
+
+async def test_a_source_that_chunks_itself_is_no_longer_marked_a_duplicate(
+    db_session: AsyncSession,
+) -> None:
+    from app.models.knowledge import Subject
+
+    store, original, dup = await _pair(db_session)
+    moved = await _get(db_session, original)
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="S", owner_learner_id=moved.learner_id)
+    db_session.add(subject)
+    await db_session.flush()
+    moved.subject_id = subject.id
+    await ingestion.reset_for_reingest(db_session, dup)
+    await ingestion.ingest_source(db_session, store, fake_llm_client(), dup)
+
+    source = await _get(db_session, dup)
+    assert await _current_chunks(db_session, dup) >= 1
+    assert source.duplicate_of_id is None
 
 
 async def test_release_puts_it_back_in_the_queue_and_it_reingests_from_its_own_file(
@@ -172,6 +266,30 @@ async def test_moving_an_original_into_a_new_subject_releases_its_duplicate(
 
     assert result.released_source_ids == [dup]
     assert (await _get(db_session, dup)).status == SourceStatus.PENDING
+
+
+async def test_moving_an_original_and_its_duplicate_together_releases_nothing(
+    db_session: AsyncSession,
+) -> None:
+    """Still the same scope, so the duplicate is still answered for; re-extracting it would pay
+    for an OCR pass only for the twin check to suppress it again."""
+    from app.services import knowledge
+
+    _, original, dup = await _pair(db_session)
+    owner = (await _get(db_session, original)).learner_id
+
+    result = await knowledge.create_subject_with_graph(
+        db_session,
+        subject_name=f"Both {uuid.uuid4().hex[:6]}",
+        subject_description=None,
+        topics_data=[],
+        source_ids=[original, dup],
+        learner_id=owner,
+        private_source_derived=True,
+    )
+
+    assert result.released_source_ids == []
+    assert (await _get(db_session, dup)).status == SourceStatus.DONE
 
 
 async def test_moving_a_duplicate_away_from_its_original_releases_it(

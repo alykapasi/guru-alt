@@ -213,9 +213,15 @@ async def run(
         # Already embedded, under this learner's own scope. Chunking it again would pay for a
         # second copy and then let the two crowd each other out of every grounding window.
         source.duplicate_of_id = twin.id
+        # Its own earlier chunks go too (cited ones kept as history): a source re-ingested into
+        # a scope where its twin already answers must stop answering itself, or both copies are
+        # retrieved — and a stale-version original would be queued by every reindex (S77, S50).
+        await supersede_chunks(session, source)
         log.info("pipeline.duplicate_text", source_id=str(source.id), duplicate_of=str(twin.id))
         await session.flush()
         return 0
+    # Answering for itself from here on, so no longer anyone's duplicate (S77).
+    source.duplicate_of_id = None
 
     chunks = chunk_units(units)
     if not chunks:

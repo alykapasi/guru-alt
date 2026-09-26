@@ -39,11 +39,17 @@ unread).
 
 **The invariant.** A DONE source with no current chunks (`superseded_at IS NULL`) is by
 construction a text duplicate — a real extraction yields at least one chunk or fails. It is
-*healthy* only while `duplicate_of_id` names a source that is DONE, has the same `learner_id`,
+*healthy* only while `duplicate_of_id` names a source that has the same `learner_id`,
 `subject_id` and `topic_id`, and has at least one current chunk. Anything else is *stranded*.
+*(Amended after the final review: an earlier draft also required the original to be DONE.
+Retrieval reads current chunks whatever the status, so an original being re-processed — or whose
+re-processing failed — still answers for its duplicate; releasing the duplicate then produced two
+answering copies. A source that becomes a duplicate on re-ingest also supersedes its own earlier
+chunks, and one that chunks itself clears `duplicate_of_id`.)*
 
 **`release_duplicates(session, source_ids) -> list[uuid.UUID]`** (`app/services/ingestion.py`):
-for each given source that is a DONE, chunkless source, clear `duplicate_of_id`, set PENDING,
+for each given source that is stranded (callers pass candidates; the invariant decides), clear
+`duplicate_of_id`, set PENDING,
 reset `attempts`, `error` and `lease_expires_at`. Flushes; returns the ids released. The caller
 dispatches them (or leaves them for the reconcile sweep, which requeues stale PENDING sources).
 A released source re-ingests from its **own** stored blob; the twin check (which requires the

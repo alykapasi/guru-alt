@@ -484,14 +484,15 @@ def _chunkless_done():
     return and_(Source.status == SourceStatus.DONE, Source.kind == SourceKind.FILE, ~has_chunks)
 
 
-async def stranded_duplicates(
-    session: AsyncSession, *, learner_id: uuid.UUID | None = None
-) -> list[uuid.UUID]:
-    """Duplicates whose original no longer stands in for them (S77).
+def _stranded():
+    """A text duplicate whose original no longer answers for it (S77).
 
-    Healthy only while the original exists, is DONE, shares the learner, subject and topic, and
-    still has current chunks. Moved, deleted, failed, or emptied — any of those and the duplicate
-    grounds nothing while looking finished.
+    Healthy only while the original exists, shares the learner, subject and topic, and has
+    current chunks — which is exactly what retrieval reads. Deliberately not the original's
+    status: an original being re-processed, or whose re-processing failed, keeps its chunks and
+    keeps answering, and releasing its duplicate then would put a second copy in every
+    grounding window. Moved, deleted or emptied, and the duplicate grounds nothing while
+    looking finished.
     """
     original = aliased(Source)
     original_has_chunks = (
@@ -503,7 +504,6 @@ async def stranded_duplicates(
         select(original.id)
         .where(
             original.id == Source.duplicate_of_id,
-            original.status == SourceStatus.DONE,
             original.learner_id == Source.learner_id,
             original.subject_id.is_not_distinct_from(Source.subject_id),
             original.topic_id.is_not_distinct_from(Source.topic_id),
@@ -511,7 +511,14 @@ async def stranded_duplicates(
         )
         .exists()
     )
-    stmt = select(Source.id).where(_chunkless_done(), ~healthy).order_by(Source.updated_at)
+    return and_(_chunkless_done(), ~healthy)
+
+
+async def stranded_duplicates(
+    session: AsyncSession, *, learner_id: uuid.UUID | None = None
+) -> list[uuid.UUID]:
+    """Every source that is a stranded text duplicate (S77) — see ``_stranded``."""
+    stmt = select(Source.id).where(_stranded()).order_by(Source.updated_at)
     if learner_id is not None:
         stmt = stmt.where(Source.learner_id == learner_id)
     return list((await session.scalars(stmt)).all())
@@ -531,20 +538,20 @@ async def duplicates_of(session: AsyncSession, source_ids: Sequence[uuid.UUID]) 
 async def release_duplicates(
     session: AsyncSession, source_ids: Sequence[uuid.UUID]
 ) -> list[uuid.UUID]:
-    """Put chunkless DONE sources back in the queue's reach, to re-ingest from their own file.
+    """Put the stranded duplicates among ``source_ids`` back in the queue's reach (S77).
 
-    Flushes, does not commit, does not enqueue: the caller dispatches the returned ids after its
-    own commit, or leaves them for the reconcile sweep, which requeues stale PENDING sources. A
-    source that is not a chunkless DONE source is skipped, which is what makes a second release
-    before the worker runs a no-op.
+    Callers pass candidates — everything a move touched — and the invariant decides: a duplicate
+    still answered for is left alone, since re-extracting it would pay for an OCR pass only for
+    the twin check to suppress it again. Flushes, does not commit, does not enqueue: the caller
+    dispatches the returned ids after its own commit, or leaves them for the reconcile sweep,
+    which requeues stale PENDING sources. A released source is no longer DONE, which is what
+    makes a second release before the worker runs a no-op.
     """
     if not source_ids:
         return []
     ids = list(
         (
-            await session.scalars(
-                select(Source.id).where(Source.id.in_(source_ids), _chunkless_done())
-            )
+            await session.scalars(select(Source.id).where(Source.id.in_(source_ids), _stranded()))
         ).all()
     )
     if ids:
