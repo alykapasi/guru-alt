@@ -678,7 +678,10 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Delete Conversation */
+        /**
+         * Delete Conversation
+         * @description Delete a conversation now (S61). With ``forget``, the memories it taught go too (V11).
+         */
         delete: operations["delete_conversation_api_v1_conversations__conversation_id__delete"];
         options?: never;
         head?: never;
@@ -778,6 +781,26 @@ export interface paths {
          *     so an explicit control cannot race a turn already in flight for this conversation.
          */
         post: operations["practice_action_api_v1_conversations__conversation_id__practice_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/removal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Conversation Removal
+         * @description What deleting this conversation would keep, and what forgetting would also remove.
+         */
+        get: operations["conversation_removal_api_v1_conversations__conversation_id__removal_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1476,7 +1499,11 @@ export interface paths {
         get: operations["get_source_api_v1_sources__source_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Source
+         * @description Delete a source now (S61). With ``forget``, the lessons built on it go too (V11).
+         */
+        delete: operations["delete_source_api_v1_sources__source_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1511,6 +1538,26 @@ export interface paths {
         };
         /** Get Source Chunks */
         get: operations["get_source_chunks_api_v1_sources__source_id__chunks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/removal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Source Removal
+         * @description What deleting this source would keep, and what forgetting would also remove.
+         */
+        get: operations["source_removal_api_v1_sources__source_id__removal_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3743,6 +3790,22 @@ export interface components {
             /** Note */
             note: string;
         };
+        /**
+         * RemovalImpactRead
+         * @description What removing a source or conversation keeps, and what "also forget" takes (S61, V11).
+         */
+        RemovalImpactRead: {
+            /** Forgettable */
+            forgettable: {
+                [key: string]: number;
+            };
+            /** Kept */
+            kept: {
+                [key: string]: number;
+            };
+            /** Notes */
+            notes: string[];
+        };
         /** RetentionPolicyRead */
         RetentionPolicyRead: {
             /** Stores */
@@ -5205,7 +5268,9 @@ export interface operations {
     };
     delete_conversation_api_v1_conversations__conversation_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                forget?: boolean;
+            };
             header?: never;
             path: {
                 conversation_id: string;
@@ -5215,11 +5280,13 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Successful Response */
-            204: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["RemovalImpactRead"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -5420,6 +5487,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PracticeStateRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    conversation_removal_api_v1_conversations__conversation_id__removal_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemovalImpactRead"];
                 };
             };
             /** @description Validation Error */
@@ -6400,6 +6498,39 @@ export interface operations {
             };
         };
     };
+    delete_source_api_v1_sources__source_id__delete: {
+        parameters: {
+            query?: {
+                forget?: boolean;
+            };
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemovalImpactRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     archive_source_api_v1_sources__source_id__archive_post: {
         parameters: {
             query?: never;
@@ -6449,6 +6580,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChunkRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    source_removal_api_v1_sources__source_id__removal_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemovalImpactRead"];
                 };
             };
             /** @description Validation Error */

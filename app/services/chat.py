@@ -186,14 +186,6 @@ async def update_conversation_title(
     return conversation
 
 
-async def delete_conversation(session: AsyncSession, conversation: Conversation) -> None:
-    # Messages cascade (Conversation.messages: cascade="all, delete-orphan" + FK ondelete
-    # CASCADE); LLMCall.conversation_id is ondelete SET NULL, so the cost/token audit log
-    # survives deletion by design.
-    await session.delete(conversation)
-    await session.commit()
-
-
 async def list_conversations(
     session: AsyncSession, learner_id: uuid.UUID, *, archived: bool = False
 ) -> Sequence[Conversation]:

@@ -187,7 +187,7 @@ async def test_delete_conversation_cascades_messages(
     assert r.status_code == 200
 
     r = await api_client.delete(f"{API}/conversations/{conversation_id}")
-    assert r.status_code == 204
+    assert r.status_code == 200
 
     assert await db_session.get(Conversation, uuid.UUID(conversation_id)) is None
     remaining = (

@@ -2,6 +2,7 @@
 
 import tempfile
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
 
@@ -23,6 +24,7 @@ from app.rag.scope import SourceScope
 from app.schemas.source import (
     ChunkRead,
     LinkCreate,
+    RemovalImpactRead,
     RetrieveRequest,
     RetryRequest,
     SimilarSourceRead,
@@ -218,6 +220,37 @@ async def unarchive_source(source_id: uuid.UUID, session: SessionDep, learner: C
     if source is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
     return source
+
+
+@router.get("/sources/{source_id}/removal", response_model=RemovalImpactRead)
+async def source_removal(source_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+    """What deleting this source would keep, and what forgetting would also remove."""
+    impact = await removal.source_impact(session, learner.id, source_id)
+    if impact is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    return asdict(impact)
+
+
+@router.delete("/sources/{source_id}", response_model=RemovalImpactRead)
+async def delete_source(
+    source_id: uuid.UUID,
+    session: SessionDep,
+    learner: CurrentLearner,
+    blobstore: BlobStoreDep,
+    forget: Annotated[bool, Query()] = False,
+):
+    """Delete a source now (S61). With ``forget``, the lessons built on it go too (V11)."""
+    try:
+        impact = await removal.delete_source(
+            session, blobstore, learner.id, source_id, forget=forget
+        )
+    except removal.RemovalRefused as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, {"code": exc.code, "message": exc.message}
+        ) from exc
+    if impact is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    return asdict(impact)
 
 
 @router.post("/retrieve", response_model=list[RetrievalHit])

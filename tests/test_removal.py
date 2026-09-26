@@ -2,7 +2,9 @@
 
 import json
 import uuid
+from datetime import UTC, datetime, timedelta
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,9 +13,10 @@ from app.core.config import Settings
 from app.llm import ModelRole
 from app.llm.registry import fake_llm_client
 from app.models.chat import Conversation, Message
+from app.models.content import ContentBlock
 from app.models.learner import Learner
-from app.models.memory import Memory, MemoryKind
-from app.models.source import Chunk, Source, SourceKind
+from app.models.memory import Memory, MemoryKind, MemoryStatus
+from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.rag import retrieval
 from app.rag.scope import SourceScope
 from app.services import ingestion, removal
@@ -222,3 +225,139 @@ async def test_an_archived_conversation_is_listed_apart_and_read_only(
     r = await api_client.post(f"{API}/conversations/{cid}/unarchive")
     assert r.status_code == 200 and r.json()["archived_at"] is None
     assert (await api_client.post(f"{API}/conversations/{uuid.uuid4()}/archive")).status_code == 404
+
+
+async def _lesson_citing(
+    session: AsyncSession, learner: Learner, source_id: uuid.UUID
+) -> uuid.UUID:
+    chunk_id = (await _current(session, source_id))[0]
+    block = ContentBlock(
+        learner_id=learner.id,
+        kc_ids=[],
+        block_type="lesson",
+        body="Photosynthesis happens in chloroplasts.",
+        citations=[{"chunk_id": str(chunk_id), "source_id": str(source_id)}],
+        cache_key=f"k-{uuid.uuid4().hex}",
+        model="fake-1",
+    )
+    session.add(block)
+    await session.flush()
+    return block.id
+
+
+async def test_the_impact_says_what_a_delete_keeps(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    source_id = await _source(db_session, learner)
+    await _lesson_citing(db_session, learner, source_id)
+    await db_session.commit()
+
+    impact = await removal.source_impact(db_session, learner.id, source_id)
+
+    assert impact is not None
+    assert impact.kept == {"lessons": 1, "cited_replies": 0}
+    assert impact.forgettable == {"lessons": 1}
+    assert any("evidence of what you can do" in note for note in impact.notes)
+
+
+async def test_a_plain_delete_keeps_the_lessons_and_removes_the_file(
+    db_session: AsyncSession,
+) -> None:
+    learner = await _learner(db_session)
+    store = InMemoryBlobStore()
+    source_id = await _source(db_session, learner, store=store)
+    key = (await _get(db_session, source_id)).blob_key
+    block_id = await _lesson_citing(db_session, learner, source_id)
+    await db_session.commit()
+
+    await removal.delete_source(db_session, store, learner.id, source_id, forget=False)
+
+    assert await db_session.get(Source, source_id) is None
+    assert await db_session.get(ContentBlock, block_id) is not None
+    assert key is not None and not await store.exists(key)
+
+
+async def test_forget_also_removes_the_lessons_built_on_it(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    store = InMemoryBlobStore()
+    source_id = await _source(db_session, learner, store=store)
+    block_id = await _lesson_citing(db_session, learner, source_id)
+    await db_session.commit()
+
+    await removal.delete_source(db_session, store, learner.id, source_id, forget=True)
+
+    assert await db_session.get(ContentBlock, block_id) is None
+
+
+async def test_a_shared_file_survives_deleting_one_of_its_sources(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    store = InMemoryBlobStore()
+    first = await _source(db_session, learner, store=store)
+    second = await _source(db_session, learner, store=store)  # same bytes → same blob key
+    key = (await _get(db_session, first)).blob_key
+    assert key == (await _get(db_session, second)).blob_key
+    await db_session.commit()
+
+    await removal.delete_source(db_session, store, learner.id, first, forget=False)
+
+    assert key is not None and await store.exists(key)
+
+
+async def test_deleting_an_original_releases_its_duplicate(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    store = InMemoryBlobStore()
+    original = await _source(db_session, learner, PHOTO, store=store)
+    dup = await _source(db_session, learner, PHOTO_US, store=store)
+    await db_session.commit()
+
+    await removal.delete_source(db_session, store, learner.id, original, forget=False)
+
+    assert dup in await ingestion.stranded_duplicates(db_session)
+
+
+async def test_a_source_mid_ingest_cannot_be_deleted(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    source_id = await _source(db_session, learner)
+    source = await _get(db_session, source_id)
+    source.status = SourceStatus.PROCESSING
+    source.lease_expires_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=5)
+    await db_session.commit()
+
+    with pytest.raises(removal.RemovalRefused) as refused:
+        await removal.delete_source(
+            db_session, InMemoryBlobStore(), learner.id, source_id, forget=False
+        )
+    assert refused.value.code == "ingesting"
+
+
+async def test_the_api_deletes_and_says_what_it_kept(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    source_id = await _source(db_session, api_learner)
+    await _lesson_citing(db_session, api_learner, source_id)
+    await db_session.commit()
+
+    impact = await api_client.get(f"{API}/sources/{source_id}/removal")
+    assert impact.status_code == 200 and impact.json()["kept"]["lessons"] == 1
+    r = await api_client.delete(f"{API}/sources/{source_id}")
+    assert r.status_code == 200 and r.json()["kept"]["lessons"] == 1
+    assert (await api_client.delete(f"{API}/sources/{source_id}")).status_code == 404
+    assert (await api_client.get(f"{API}/sources/{source_id}/removal")).status_code == 404
+
+
+async def test_deleting_a_conversation_keeps_its_memories_and_their_origin(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    conversation = Conversation(learner_id=api_learner.id)
+    db_session.add(conversation)
+    await db_session.flush()
+    memory = await _memory(db_session, api_learner, conversation, "Studies in the mornings")
+    cid, mid = conversation.id, memory.id
+    await db_session.commit()
+
+    r = await api_client.delete(f"{API}/conversations/{cid}")
+
+    assert r.status_code == 200 and r.json()["kept"] == {"memories": 1}
+    kept = await db_session.get(Memory, mid, populate_existing=True)
+    assert kept is not None and kept.status == MemoryStatus.CURRENT
+    assert kept.conversation_id is None and kept.origin_conversation_id == cid
+    assert (await api_client.delete(f"{API}/conversations/{cid}")).status_code == 404

@@ -87,3 +87,11 @@ class SimilarSourceRead(BaseModel):
     source: SourceRead
     distance: int
     agreement: float
+
+
+class RemovalImpactRead(BaseModel):
+    """What removing a source or conversation keeps, and what "also forget" takes (S61, V11)."""
+
+    kept: dict[str, int]
+    forgettable: dict[str, int]
+    notes: list[str]

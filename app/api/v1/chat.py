@@ -17,7 +17,7 @@ workflow turn.
 import json
 import uuid
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Annotated, Any
 
@@ -44,6 +44,7 @@ from app.schemas.chat import (
     PracticeStateRead,
     TurnRead,
 )
+from app.schemas.source import RemovalImpactRead
 from app.services import agentic as agentic_svc
 from app.services import budget, removal, turn_lock
 from app.services import chat as svc
@@ -158,14 +159,29 @@ async def update_conversation(
     return await svc.update_conversation_title(session, conversation, data.title)
 
 
-@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_conversation(
+@router.get("/conversations/{conversation_id}/removal", response_model=RemovalImpactRead)
+async def conversation_removal(
     conversation_id: uuid.UUID, session: SessionDep, learner: CurrentLearner
 ):
-    conversation = await svc.get_conversation(session, conversation_id, learner_id=learner.id)
-    if conversation is None or conversation.learner_id != learner.id:
+    """What deleting this conversation would keep, and what forgetting would also remove."""
+    impact = await removal.conversation_impact(session, learner.id, conversation_id)
+    if impact is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
-    await svc.delete_conversation(session, conversation)
+    return asdict(impact)
+
+
+@router.delete("/conversations/{conversation_id}", response_model=RemovalImpactRead)
+async def delete_conversation(
+    conversation_id: uuid.UUID,
+    session: SessionDep,
+    learner: CurrentLearner,
+    forget: Annotated[bool, Query()] = False,
+):
+    """Delete a conversation now (S61). With ``forget``, the memories it taught go too (V11)."""
+    impact = await removal.delete_conversation(session, learner.id, conversation_id, forget=forget)
+    if impact is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    return asdict(impact)
 
 
 class MessagePage(BaseModel):
