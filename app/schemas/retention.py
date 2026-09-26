@@ -33,6 +33,8 @@ class DeletionRequestRead(BaseModel):
     """When a pending account will be erased, unless it is restored first (S61)."""
 
     due_at: datetime
+    # True when the request asked to erase at once (``?now=true``) and it has been.
+    erased: bool = False
 
 
 class DeletionStatusRead(BaseModel):

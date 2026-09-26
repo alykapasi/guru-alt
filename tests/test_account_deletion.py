@@ -274,3 +274,16 @@ async def test_a_download_survives_a_filename_outside_latin_1(
         assert "filename*=UTF-8''" in disposition
     finally:
         app.dependency_overrides.pop(get_blob_store, None)
+
+
+async def test_erase_now_from_an_active_account_is_one_call(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """Deleting revokes every session, the caller's too, so "erase now instead" cannot be a
+    second request after the first: the server requests and erases in one call."""
+    learner_id = api_learner.id
+
+    r = await api_client.delete(f"{API}/me", params={"now": "true"})
+
+    assert r.status_code == 202 and r.json()["erased"] is True
+    assert await db_session.get(Learner, learner_id, populate_existing=True) is None

@@ -83,12 +83,28 @@ def _attachment(origin: str) -> str:
 
 
 @router.delete("/me", response_model=DeletionRequestRead, status_code=status.HTTP_202_ACCEPTED)
-async def request_delete_me(session: SessionDep, learner: AccountHolder, settings: SettingsDep):
+async def request_delete_me(
+    session: SessionDep,
+    learner: AccountHolder,
+    settings: SettingsDep,
+    blobstore: BlobStoreDep,
+    provider: IdentityProviderDep,
+    now: bool = False,
+):
     """Delete this account (V12): access ends now; it can be restored for the recovery window
-    by signing in again, then it is erased. ``POST /me/deletion/erase`` erases at once."""
-    pending = await svc.request_deletion(session, learner.id, settings=settings)
-    assert pending.deletion_due_at is not None
-    return DeletionRequestRead(due_at=pending.deletion_due_at)
+    by signing in again, then it is erased.
+
+    ``now`` erases in the same call, still by way of the request. It cannot be a second
+    request: the request revokes every session, the caller's included. A pending account that
+    signs in again erases through ``POST /me/deletion/erase``.
+    """
+    learner_id = learner.id
+    pending = await svc.request_deletion(session, learner_id, settings=settings)
+    due_at = pending.deletion_due_at
+    assert due_at is not None
+    if now:
+        await svc.erase_learner(session, blobstore, provider, learner_id)
+    return DeletionRequestRead(due_at=due_at, erased=now)
 
 
 @router.get("/me/deletion", response_model=DeletionStatusRead)

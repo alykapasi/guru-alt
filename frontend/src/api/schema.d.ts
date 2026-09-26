@@ -1003,7 +1003,11 @@ export interface paths {
         /**
          * Request Delete Me
          * @description Delete this account (V12): access ends now; it can be restored for the recovery window
-         *     by signing in again, then it is erased. ``POST /me/deletion/erase`` erases at once.
+         *     by signing in again, then it is erased.
+         *
+         *     ``now`` erases in the same call, still by way of the request. It cannot be a second
+         *     request: the request revokes every session, the caller's included. A pending account that
+         *     signs in again erases through ``POST /me/deletion/erase``.
          */
         delete: operations["request_delete_me_api_v1_me_delete"];
         options?: never;
@@ -2719,6 +2723,11 @@ export interface components {
              * Format: date-time
              */
             due_at: string;
+            /**
+             * Erased
+             * @default false
+             */
+            erased: boolean;
         };
         /** DeletionStatusRead */
         DeletionStatusRead: {
@@ -5962,7 +5971,9 @@ export interface operations {
     };
     request_delete_me_api_v1_me_delete: {
         parameters: {
-            query?: never;
+            query?: {
+                now?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5976,6 +5987,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeletionRequestRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
