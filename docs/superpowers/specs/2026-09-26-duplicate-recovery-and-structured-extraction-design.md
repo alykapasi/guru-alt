@@ -51,7 +51,7 @@ twin to have current chunks) suppresses it again only if a valid original really
 
 **Instant, at the known causes:**
 
-- **Curriculum commit reassignment** (`knowledge.commit_curriculum`'s reassign loop): for each
+- **Curriculum commit reassignment** (`knowledge.create_subject_with_graph`'s reassign loop): for each
   moved source, its duplicates (sources whose `duplicate_of_id` is the moved id) and, if the
   moved source is itself a duplicate, the moved source. Released in the same transaction; the
   API route dispatches the returned ids after commit with the ingestion enqueuer.
