@@ -380,3 +380,30 @@ async def test_reextracting_a_source_with_an_empty_twin_gives_it_fresh_chunks(
 
     again = await reindex.plan(db_session, space=_space(), learner_id=learner.id)
     assert original_id not in {s.source_id for s in again.reextract}
+
+
+async def test_reindex_lists_and_releases_stranded_duplicates(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    original = await _done_source(db_session, learner, b"The colour of the fibre was analysed.")
+    dup = await _done_source(db_session, learner, b"The color of the fiber was analyzed.")
+    original_id, dup_id = original.id, dup.id
+    await db_session.delete(await db_session.get(Source, original_id))
+    await db_session.commit()
+    queue = _Queue()
+
+    found = await reindex.plan(db_session, space=_space(), learner_id=learner.id)
+    result = await reindex.apply(
+        db_session,
+        fake_llm_client(),
+        found,
+        space=_space(),
+        reextract=False,
+        limit=0,
+        enqueue=queue,
+        settings=get_settings(),
+    )
+
+    assert [s.source_id for s in found.stranded] == [dup_id]
+    assert result.released == [dup_id], "not counted against --limit"
+    assert queue.enqueued == [dup_id]
+    assert "stranded" in reindex.render(found, result)

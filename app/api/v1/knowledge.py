@@ -12,7 +12,13 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
-from app.api.deps import ConceptLinkJudgeEnqueuerDep, CurrentLearner, RetagEnqueuerDep, SessionDep
+from app.api.deps import (
+    ConceptLinkJudgeEnqueuerDep,
+    CurrentLearner,
+    IngestionEnqueuerDep,
+    RetagEnqueuerDep,
+    SessionDep,
+)
 from app.models.knowledge import Subject
 from app.models.publication import CurriculumProposal
 from app.schemas.knowledge import (
@@ -125,6 +131,7 @@ async def commit_subject(
     learner: CurrentLearner,
     retag: RetagEnqueuerDep,
     judge: ConceptLinkJudgeEnqueuerDep,
+    enqueue: IngestionEnqueuerDep,
 ):
     """Commit a subject with its full topic/KC graph in one atomic transaction.
 
@@ -161,6 +168,9 @@ async def commit_subject(
     # no tags, which is the honest state, not a wrong one.
     for source_id in result.reassigned_source_ids:
         await ingestion_svc.dispatch(retag, source_id)
+    # Text duplicates the move stranded re-ingest from their own files (S77).
+    for source_id in result.released_source_ids:
+        await ingestion_svc.dispatch(enqueue, source_id)
     # A new subject can share concepts with the learner's others and the library. Judging a
     # pair is a model call each, so it runs in the background — best-effort, like the retag
     # dispatch above: the subject is already committed, so a queue failure here must not fail

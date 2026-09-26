@@ -1,13 +1,19 @@
 """A text duplicate never silently grounds nothing (S77)."""
 
 import uuid
+from collections.abc import Iterator
 
+import pytest
+from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_ingestion_enqueuer
 from app.core.config import Settings
 from app.llm.registry import fake_llm_client
+from app.main import app
 from app.models.learner import Learner
+from app.models.publication import CurriculumProposal
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.services import ingestion
 from app.storage import InMemoryBlobStore
@@ -24,12 +30,15 @@ class _Queue:
         self.enqueued.append(source_id)
 
 
-async def _pair(session: AsyncSession) -> tuple[InMemoryBlobStore, uuid.UUID, uuid.UUID]:
+async def _pair(
+    session: AsyncSession, learner: Learner | None = None
+) -> tuple[InMemoryBlobStore, uuid.UUID, uuid.UUID]:
     """An original and its text duplicate, both DONE. Returns (store, original_id, dup_id)."""
     store = InMemoryBlobStore()
-    learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
-    session.add(learner)
-    await session.flush()
+    if learner is None:
+        learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
+        session.add(learner)
+        await session.flush()
     ids = []
     for data, name in ((BRITISH, "uk.txt"), (AMERICAN, "us.txt")):
         source = await ingestion.create_source(
@@ -141,3 +150,77 @@ async def test_a_legacy_web_source_is_never_released(db_session: AsyncSession) -
 
     assert dup not in await ingestion.stranded_duplicates(db_session)
     assert await ingestion.release_duplicates(db_session, [dup]) == []
+
+
+async def test_moving_an_original_into_a_new_subject_releases_its_duplicate(
+    db_session: AsyncSession,
+) -> None:
+    from app.services import knowledge
+
+    _, original, dup = await _pair(db_session)
+    owner = (await _get(db_session, original)).learner_id
+
+    result = await knowledge.create_subject_with_graph(
+        db_session,
+        subject_name=f"Colour {uuid.uuid4().hex[:6]}",
+        subject_description=None,
+        topics_data=[],
+        source_ids=[original],
+        learner_id=owner,
+        private_source_derived=True,
+    )
+
+    assert result.released_source_ids == [dup]
+    assert (await _get(db_session, dup)).status == SourceStatus.PENDING
+
+
+async def test_moving_a_duplicate_away_from_its_original_releases_it(
+    db_session: AsyncSession,
+) -> None:
+    from app.services import knowledge
+
+    _, original, dup = await _pair(db_session)
+    owner = (await _get(db_session, original)).learner_id
+
+    result = await knowledge.create_subject_with_graph(
+        db_session,
+        subject_name=f"Color {uuid.uuid4().hex[:6]}",
+        subject_description=None,
+        topics_data=[],
+        source_ids=[dup],
+        learner_id=owner,
+        private_source_derived=True,
+    )
+
+    assert result.released_source_ids == [dup]
+
+
+@pytest.fixture
+def queue() -> Iterator[_Queue]:
+    recorded = _Queue()
+    app.dependency_overrides[get_ingestion_enqueuer] = lambda: recorded
+    yield recorded
+    app.dependency_overrides.pop(get_ingestion_enqueuer, None)
+
+
+async def test_the_curriculum_commit_route_dispatches_what_it_released(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner, queue: _Queue
+) -> None:
+    _, original, dup = await _pair(db_session, api_learner)
+    proposal = CurriculumProposal(learner_id=api_learner.id, grounded_in_sources=False)
+    db_session.add(proposal)
+    await db_session.commit()
+
+    r = await api_client.post(
+        "/api/v1/subjects/commit",
+        json={
+            "proposal_id": str(proposal.id),
+            "subject_name": f"Colour {uuid.uuid4().hex[:6]}",
+            "subject_description": None,
+            "topics": [{"name": "Fibres", "description": "d", "kcs": []}],
+            "source_ids": [str(original)],
+        },
+    )
+
+    assert r.status_code == 201, r.text
+    assert queue.enqueued == [dup]

@@ -52,6 +52,7 @@ class ReindexPlan:
     reembed: list[StaleSource] = field(default_factory=list)
     reextract: list[StaleSource] = field(default_factory=list)
     scope: list[ScopeRepair] = field(default_factory=list)
+    stranded: list[StaleSource] = field(default_factory=list)
 
 
 @dataclass
@@ -61,6 +62,7 @@ class ReindexResult:
     busy: list[uuid.UUID] = field(default_factory=list)
     failed: dict[uuid.UUID, str] = field(default_factory=dict)
     scope_repaired: int = 0
+    released: list[uuid.UUID] = field(default_factory=list)
 
 
 async def _stale(
@@ -144,6 +146,13 @@ async def _scope_repairs(session: AsyncSession, learner_id: uuid.UUID | None) ->
     return repairs
 
 
+async def _sources(session: AsyncSession, ids: list[uuid.UUID]) -> list[Source]:
+    """``Source`` rows for ``ids``, in the order given."""
+    rows = (await session.scalars(select(Source).where(Source.id.in_(ids)))).all()
+    by_id = {s.id: s for s in rows}
+    return [by_id[i] for i in ids if i in by_id]
+
+
 async def plan(
     session: AsyncSession, *, space: str, learner_id: uuid.UUID | None = None
 ) -> ReindexPlan:
@@ -156,6 +165,13 @@ async def plan(
             session, Chunk.pipeline_version < PIPELINE_VERSION, learner_id, files_only=True
         ),
         scope=await _scope_repairs(session, learner_id),
+        # Text duplicates whose original no longer stands in for them (S77).
+        stranded=[
+            StaleSource(s.id, s.learner_id, s.origin, 0)
+            for s in await _sources(
+                session, await ingestion.stranded_duplicates(session, learner_id=learner_id)
+            )
+        ],
     )
 
 
@@ -219,6 +235,21 @@ async def apply(
             source.subject_id, source.topic_id = fix.after
             result.scope_repaired += 1
     await session.commit()
+    # Scope repairs strand duplicates the same way a reassignment does (S77); and stranded ones
+    # found by the plan are released here. Neither costs a model call, so --limit does not apply.
+    repaired = [fix.source_id for fix in found.scope]
+    released = await ingestion.release_duplicates(
+        session,
+        [
+            *(s.source_id for s in found.stranded),
+            *repaired,
+            *await ingestion.duplicates_of(session, repaired),
+        ],
+    )
+    await session.commit()
+    for source_id in released:
+        await ingestion.dispatch(enqueue, source_id)
+    result.released = released
 
     budget = limit if limit is not None else len(found.reembed) + len(found.reextract)
     reextracting = {s.source_id for s in found.reextract} if reextract else set()
@@ -260,13 +291,15 @@ def render(found: ReindexPlan, result: ReindexResult | None) -> str:
         *(f"  {s.source_id}  {s.origin}  {s.chunks} chunks" for s in found.reextract),
         f"scope repair: {len(found.scope)} sources",
         *(f"  {r.source_id}  {r.origin}  {r.before} -> {r.after}" for r in found.scope),
+        f"stranded duplicates: {len(found.stranded)} sources (original gone or moved)",
+        *(f"  {s.source_id}  {s.origin}" for s in found.stranded),
     ]
     if result is None:
         lines.append("dry run: nothing changed. --apply to re-embed and repair scope.")
     else:
         lines += [
             f"re-embedded {len(result.reembedded)}, re-extract queued {len(result.reextracted)}, "
-            f"scope repaired {result.scope_repaired}",
+            f"scope repaired {result.scope_repaired}, released {len(result.released)}",
             *(f"  busy (skipped): {sid}" for sid in result.busy),
             *(f"  failed: {sid}  {err}" for sid, err in result.failed.items()),
         ]

@@ -517,6 +517,17 @@ async def stranded_duplicates(
     return list((await session.scalars(stmt)).all())
 
 
+async def duplicates_of(session: AsyncSession, source_ids: Sequence[uuid.UUID]) -> list[uuid.UUID]:
+    """Sources recorded as text duplicates of any of ``source_ids``."""
+    if not source_ids:
+        return []
+    return list(
+        (
+            await session.scalars(select(Source.id).where(Source.duplicate_of_id.in_(source_ids)))
+        ).all()
+    )
+
+
 async def release_duplicates(
     session: AsyncSession, source_ids: Sequence[uuid.UUID]
 ) -> list[uuid.UUID]:
