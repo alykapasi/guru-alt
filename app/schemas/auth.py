@@ -19,6 +19,9 @@ class LearnerRead(BaseModel):
     # what authorizes anything — the API refuses a non-administrator whatever the browser
     # renders — it is what keeps a learner from being shown a door that answers 403.
     is_admin: bool = False
+    # Set while the account is pending deletion (S61): the app shows the recovery screen instead
+    # of the shell.
+    deletion_due_at: datetime | None = None
 
 
 class SessionRead(BaseModel):

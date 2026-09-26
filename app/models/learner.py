@@ -46,3 +46,11 @@ class Learner(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Set by an administrator (S21). Access stops immediately and the reason is in
     # ``account_actions``; the learner's work is untouched, because suspension is not deletion.
     suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # Pending deletion (S61, V12): access ended at the request, the data stays until the due
+    # time for recovery, then the erase worker removes the account. Both NULL means active.
+    deletion_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    deletion_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None, index=True
+    )

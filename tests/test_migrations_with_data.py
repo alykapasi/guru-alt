@@ -403,3 +403,30 @@ async def test_memories_keep_where_they_came_from_across_the_archive_migration()
             assert row["origin_conversation_id"] == conversation_id
         finally:
             await conn.close()
+
+
+async def test_learners_arrive_active_across_the_deletion_migration() -> None:
+    """0067 (S61): nobody is pending deletion because a column appeared."""
+    async with database_at("0066_archive_and_memory_origin") as connect:
+        conn = await connect()
+        try:
+            learner_id = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "stayer"
+            )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0067_account_deletion_erasures")
+
+        conn = await connect()
+        try:
+            row = await conn.fetchrow(
+                "SELECT deletion_requested_at, deletion_due_at FROM learners WHERE id = $1",
+                learner_id,
+            )
+            assert row is not None
+            assert row["deletion_requested_at"] is None and row["deletion_due_at"] is None
+            assert await conn.fetchval("SELECT count(*) FROM pending_erasures") == 0
+        finally:
+            await conn.close()

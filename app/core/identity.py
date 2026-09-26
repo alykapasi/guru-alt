@@ -80,6 +80,8 @@ class IdentityProvider(Protocol):
 
     async def find_users_by_email(self, email: str) -> list[ProviderUser]: ...
 
+    async def delete_user(self, subject: str) -> None: ...
+
     async def import_user(
         self, *, email: str, password_digest: str | None, external_id: str
     ) -> ProviderUser: ...
@@ -229,6 +231,15 @@ class ClerkIdentityProvider:
     async def get_user(self, subject: str) -> ProviderUser:
         return _to_provider_user(await self._call("users.get_async", user_id=subject))
 
+    async def delete_user(self, subject: str) -> None:
+        """Remove the provider's copy of this person (S61). Already gone counts as done."""
+        try:
+            await self._call("users.delete_async", user_id=subject)
+        except ProviderError as exc:
+            if getattr(exc.__cause__, "status_code", None) == 404:
+                return
+            raise
+
     async def invite(self, email: str) -> str:
         request: dict[str, object] = {"email_address": email, "notify": True}
         if self._sign_up_url:
@@ -276,6 +287,7 @@ class FakeIdentityProvider:
         self.revoked: set[str] = set()
         self.imported: dict[str, str | None] = {}
         self.fail_next = False
+        self.deleted: set[str] = set()
 
     def add_user(
         self,
@@ -333,6 +345,11 @@ class FakeIdentityProvider:
     async def revoke_invitation(self, invitation_id: str) -> None:
         self._maybe_fail()
         self.revoked.add(invitation_id)
+
+    async def delete_user(self, subject: str) -> None:
+        self._maybe_fail()
+        self.users.pop(subject, None)
+        self.deleted.add(subject)
 
     async def find_users_by_email(self, email: str) -> list[ProviderUser]:
         self._maybe_fail()

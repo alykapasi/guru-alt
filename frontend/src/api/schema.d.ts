@@ -3218,6 +3218,8 @@ export interface components {
          * @description The learner a session belongs to.
          */
         LearnerRead: {
+            /** Deletion Due At */
+            deletion_due_at?: string | null;
             /** Display Name */
             display_name: string | null;
             /** Email */

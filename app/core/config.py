@@ -196,6 +196,15 @@ class Settings(BaseSettings):
     # rather than days because the cost of being wrong is asymmetric — a pruned checkpoint
     # costs a learner their place in one paused exercise, and a kept one costs a row.
     checkpoint_retention_days: int = 30
+    # V12. How long a deleted account can still be restored by signing in, and how long
+    # diagnostic rows (model-call accounting, finished turns, alert history) keep anything that
+    # points at a learner. 0 disables a sweep's interval, as elsewhere.
+    account_recovery_days: int = 7
+    diagnostic_retention_days: int = 30
+    account_erase_interval_seconds: int = 300
+    erasure_retry_interval_seconds: int = 300
+    diagnostic_expiry_interval_seconds: int = 3600
+    alert_stuck_erasure_attempts: int = 10
     # 0 disables the sweep, like every other interval here.
     checkpoint_purge_interval_seconds: int = 6 * 3600
 

@@ -451,3 +451,16 @@ def test_no_provider_is_built_without_a_secret_key() -> None:
     assert isinstance(built, identity.ClerkIdentityProvider)
     # Falls back to the origins the API already trusts, rather than accepting any caller.
     assert built.authorized_parties == ["http://localhost:5173"]
+
+
+async def test_the_fake_provider_deletes_users_and_can_refuse() -> None:
+    provider = identity.FakeIdentityProvider()
+    user = provider.add_user(emails=["a@example.com"])
+
+    provider.fail_next = True
+    with pytest.raises(identity.ProviderError):
+        await provider.delete_user(user.subject)
+    await provider.delete_user(user.subject)
+    await provider.delete_user(user.subject)  # already gone is success
+
+    assert user.subject in provider.deleted and user.subject not in provider.users
