@@ -24,8 +24,6 @@ from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-import structlog
-
 from app.core.config import DecisionMode, Settings, get_settings
 from app.learning import conversation_evidence, turn_read
 from app.learning.conversation_evidence import TurnIntent
@@ -42,8 +40,6 @@ from app.llm.decisions import (
 )
 from app.services.decision_log import record_decision
 from app.services.llm_log import log_llm_call
-
-log = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
