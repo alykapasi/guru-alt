@@ -10,11 +10,14 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
+from sqlalchemy import select
 
 from app.api.deps import CurrentLearner, LLMClientDep, MemoryWriteBackEnqueuerDep, SessionDep
-from app.schemas.memory import MemoryCorrection, MemoryRead, WriteBackAck
+from app.models.chat import Conversation
+from app.schemas.memory import ForgetOriginRead, MemoryCorrection, MemoryRead, WriteBackAck
 from app.services import chat as chat_svc
 from app.services import memory as svc
+from app.services import removal
 
 router = APIRouter(tags=["memory"])
 
@@ -43,7 +46,35 @@ async def list_memory(
     learner: CurrentLearner,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ):
-    return await svc.list_memories(session, learner.id, limit=limit)
+    memories = await svc.list_memories(session, learner.id, limit=limit)
+    origins = {m.origin_conversation_id for m in memories if m.origin_conversation_id}
+    live = {
+        c.id: c.title or c.goal
+        for c in (
+            await session.scalars(
+                select(Conversation).where(
+                    Conversation.id.in_(origins), Conversation.learner_id == learner.id
+                )
+            )
+        ).all()
+    }
+    return [
+        MemoryRead.model_validate(m).model_copy(
+            update={
+                "origin_title": live.get(m.origin_conversation_id),
+                "origin_live": m.origin_conversation_id in live,
+            }
+        )
+        for m in memories
+    ]
+
+
+@router.post("/memory/forget-origin/{conversation_id}", response_model=ForgetOriginRead)
+async def forget_origin(conversation_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+    """Forget every memory learned in one conversation, even one already deleted (S42)."""
+    return ForgetOriginRead(
+        forgotten=await removal.forget_conversation_memories(session, learner.id, conversation_id)
+    )
 
 
 @router.patch("/memory/{memory_id}", response_model=MemoryRead)

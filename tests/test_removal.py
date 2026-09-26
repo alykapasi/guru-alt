@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -361,3 +361,97 @@ async def test_deleting_a_conversation_keeps_its_memories_and_their_origin(
     assert kept is not None and kept.status == MemoryStatus.CURRENT
     assert kept.conversation_id is None and kept.origin_conversation_id == cid
     assert (await api_client.delete(f"{API}/conversations/{cid}")).status_code == 404
+
+
+async def test_forgetting_a_conversation_forgets_its_memories_for_good(
+    db_session: AsyncSession,
+) -> None:
+    learner = await _learner(db_session)
+    conversation = Conversation(learner_id=learner.id)
+    db_session.add(conversation)
+    await db_session.flush()
+    learned = await _memory(db_session, learner, conversation, "Studies in the mornings")
+    written = await _memory(db_session, learner, None, "Prefers worked examples")
+    cid, learned_id, written_id = conversation.id, learned.id, written.id
+    await db_session.commit()
+
+    await removal.delete_conversation(db_session, learner.id, cid, forget=True)
+
+    learned = await db_session.get(Memory, learned_id, populate_existing=True)
+    written = await db_session.get(Memory, written_id, populate_existing=True)
+    assert learned is not None and learned.status == MemoryStatus.DELETED
+    assert written is not None and written.status == MemoryStatus.CURRENT, (
+        "a memory the learner wrote has no origin and is never swept"
+    )
+
+
+async def test_forget_by_origin_works_after_the_conversation_is_gone(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    conversation = Conversation(learner_id=api_learner.id, title="Chem help")
+    db_session.add(conversation)
+    await db_session.flush()
+    memory = await _memory(db_session, api_learner, conversation, "Studies in the mornings")
+    cid, mid = conversation.id, memory.id
+    await db_session.commit()
+
+    listed = (await api_client.get(f"{API}/memory")).json()
+    assert listed[0]["origin_title"] == "Chem help" and listed[0]["origin_live"] is True
+    await api_client.delete(f"{API}/conversations/{cid}")
+    listed = (await api_client.get(f"{API}/memory")).json()
+    assert listed[0]["origin_live"] is False and listed[0]["origin_conversation_id"] == str(cid)
+
+    r = await api_client.post(f"{API}/memory/forget-origin/{cid}")
+    assert r.status_code == 200 and r.json() == {"forgotten": 1}
+    again = await api_client.post(f"{API}/memory/forget-origin/{cid}")
+    assert again.json() == {"forgotten": 0}
+    gone = await db_session.get(Memory, mid, populate_existing=True)
+    assert gone is not None and gone.status == MemoryStatus.DELETED
+
+
+async def test_forgetting_clears_the_profile_watermark(db_session: AsyncSession) -> None:
+    from app.models.profile import LearnerProfile
+
+    learner = await _learner(db_session)
+    conversation = Conversation(learner_id=learner.id)
+    db_session.add(conversation)
+    db_session.add(
+        LearnerProfile(
+            learner_id=learner.id, evidence_watermark=datetime.now(UTC).replace(tzinfo=None)
+        )
+    )
+    await db_session.flush()
+    await _memory(db_session, learner, conversation, "Studies in the mornings")
+    cid = conversation.id
+    await db_session.commit()
+
+    await removal.forget_conversation_memories(db_session, learner.id, cid)
+
+    profile = await db_session.scalar(
+        select(LearnerProfile)
+        .where(LearnerProfile.learner_id == learner.id)
+        .execution_options(populate_existing=True)
+    )
+    assert profile is not None and profile.evidence_watermark is None
+
+
+async def test_forgetting_leaves_mastery_alone(db_session: AsyncSession) -> None:
+    from app.models.learning import LearningEvent
+
+    learner = await _learner(db_session)
+    conversation = Conversation(learner_id=learner.id)
+    db_session.add(conversation)
+    db_session.add(LearningEvent(learner_id=learner.id, event_type="answer", payload={}))
+    await db_session.flush()
+    await _memory(db_session, learner, conversation, "Studies in the mornings")
+    cid = conversation.id
+    await db_session.commit()
+
+    await removal.delete_conversation(db_session, learner.id, cid, forget=True)
+
+    count = await db_session.scalar(
+        select(func.count())
+        .select_from(LearningEvent)
+        .where(LearningEvent.learner_id == learner.id)
+    )
+    assert count == 1

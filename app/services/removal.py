@@ -237,7 +237,7 @@ async def delete_source(
 async def delete_conversation(
     session: AsyncSession, learner_id: uuid.UUID, conversation_id: uuid.UUID, *, forget: bool
 ) -> Impact | None:
-    """Delete a conversation now; its memories keep their origin.
+    """Delete a conversation now. With ``forget``, the memories it taught are forgotten too.
 
     Messages and turns cascade; ``LLMCall.conversation_id`` is SET NULL, so the cost log
     survives by design; memories keep ``origin_conversation_id`` for a later forget.
@@ -246,6 +246,32 @@ async def delete_conversation(
     if conversation is None:
         return None
     impact = await _conversation_impact(session, conversation)
+    if forget:
+        await session.execute(
+            update(Memory)
+            .where(Memory.id.in_(_memories_from(learner_id, conversation_id)))
+            .values(status=MemoryStatus.DELETED)
+        )
+        await _clear_profile_watermark(session, learner_id)
     await session.execute(delete(Conversation).where(Conversation.id == conversation_id))
     await session.commit()
     return impact
+
+
+async def forget_conversation_memories(
+    session: AsyncSession, learner_id: uuid.UUID, conversation_id: uuid.UUID
+) -> int:
+    """Forget what a conversation taught — live, archived or already deleted (S42, V11).
+
+    The existing soft delete, so re-extraction recognises each fact and does not bring it back.
+    Memories the learner wrote themselves have no origin and are never touched. Idempotent: a
+    second call finds nothing current and returns 0.
+    """
+    ids = list((await session.scalars(_memories_from(learner_id, conversation_id))).all())
+    if ids:
+        await session.execute(
+            update(Memory).where(Memory.id.in_(ids)).values(status=MemoryStatus.DELETED)
+        )
+        await _clear_profile_watermark(session, learner_id)
+    await session.commit()
+    return len(ids)

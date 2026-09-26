@@ -17,6 +17,15 @@ class MemoryRead(BaseModel):
     content: str
     conversation_id: uuid.UUID | None
     created_at: datetime
+    # Where it was learned (S42): the conversation id even after that conversation is deleted,
+    # its title while it exists, and whether it still does.
+    origin_conversation_id: uuid.UUID | None = None
+    origin_title: str | None = None
+    origin_live: bool = False
+
+
+class ForgetOriginRead(BaseModel):
+    forgotten: int
 
 
 class MemoryCorrection(BaseModel):

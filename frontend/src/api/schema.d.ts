@@ -1077,6 +1077,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/memory/forget-origin/{conversation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Forget Origin
+         * @description Forget every memory learned in one conversation, even one already deleted (S42).
+         */
+        post: operations["forget_origin_api_v1_memory_forget_origin__conversation_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/memory/{memory_id}": {
         parameters: {
             query?: never;
@@ -2730,6 +2750,11 @@ export interface components {
             /** Prereq Subject Name */
             prereq_subject_name: string;
         };
+        /** ForgetOriginRead */
+        ForgetOriginRead: {
+            /** Forgotten */
+            forgotten: number;
+        };
         /**
          * GenerateRequest
          * @description Generate content for a KC. With ``type`` omitted, the default block set is assembled.
@@ -3444,6 +3469,15 @@ export interface components {
             id: string;
             /** Kind */
             kind: string;
+            /** Origin Conversation Id */
+            origin_conversation_id?: string | null;
+            /**
+             * Origin Live
+             * @default false
+             */
+            origin_live: boolean;
+            /** Origin Title */
+            origin_title?: string | null;
         };
         /**
          * MessagePage
@@ -5929,6 +5963,37 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    forget_origin_api_v1_memory_forget_origin__conversation_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ForgetOriginRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
             };
         };
     };
