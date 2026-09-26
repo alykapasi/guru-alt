@@ -121,6 +121,11 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   a frozen snapshot an administrator approved; it never makes the original public, and a subject
   built from the learner's uploads can never be published at all. See
   [docs/RUNBOOK.md](docs/RUNBOOK.md) §12.
+- **One source scope, one grounding policy** (S26/S28) — `resolve_scope` in `app/rag/scope.py`
+  decides what any generation may read (a subject's own sources; untagged ones only if the
+  subject opts in; a General chat reads none), and `app/services/grounding.py` decides what the
+  tutor is told, including sources-only and "nothing matched". The coverage label on a reply is
+  derived from what was offered and cited, never from the model's own account.
 - **A self-rating is not evidence of ability** (S56) — the server decides whether a score was
   judged or self-reported, and a self-rating moves the review schedule only. Mastery is the
   conservative estimate `ability − 2·uncertainty ≥ 0.5` on measured evidence (V02); achievement
