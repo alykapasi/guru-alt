@@ -20,7 +20,7 @@ async def main() -> None:
     settings = get_settings()
     async with SessionFactory() as session:
         report = await ingestion.reconcile_stranded(session, _enqueue_ingestion, settings=settings)
-    print(f"requeued={report.requeued} abandoned={report.abandoned}")
+    print(f"requeued={report.requeued} abandoned={report.abandoned} recovered={report.recovered}")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ import asyncio
 import hashlib
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -24,10 +24,11 @@ from pathlib import Path
 from pydantic import BaseModel
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.core.config import Settings, get_settings
 from app.llm import LLMClient
-from app.models.source import Source, SourceKind, SourceStatus
+from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.rag import pipeline
 from app.rag import simhash as simhash_mod
 from app.rag.demux import MediaDemuxer
@@ -382,6 +383,7 @@ class ReconcileReport:
 
     requeued: int
     abandoned: int
+    recovered: int = 0
 
 
 async def reconcile_stranded(
@@ -447,10 +449,13 @@ async def reconcile_stranded(
             .limit(settings.ingest_reconcile_batch)
         )
     ).all()
+    # Duplicates whose original stopped standing in (S77): released here and requeued with the
+    # rest, so every way an original can go away is caught, including ones nothing reacts to.
+    recovered = await release_duplicates(session, await stranded_duplicates(session))
     await session.commit()
 
     requeued = 0
-    for source_id in stranded:
+    for source_id in [*stranded, *recovered]:
         try:
             await enqueue(source_id)
             requeued += 1
@@ -458,9 +463,94 @@ async def reconcile_stranded(
             # The queue is still down. The row stays exactly as it is, so the next sweep
             # finds it again — that is the whole point of reconciling from durable state.
             logger.warning("could not re-enqueue stranded source %s", source_id, exc_info=True)
-    if requeued or abandoned:
-        logger.info("ingestion reconcile: requeued=%d abandoned=%d", requeued, abandoned)
-    return ReconcileReport(requeued=requeued, abandoned=abandoned)
+    if requeued or abandoned or recovered:
+        logger.info(
+            "ingestion reconcile: requeued=%d abandoned=%d recovered=%d",
+            requeued,
+            abandoned,
+            len(recovered),
+        )
+    return ReconcileReport(requeued=requeued, abandoned=abandoned, recovered=len(recovered))
+
+
+def _chunkless_done():
+    """A DONE file source with no current chunks — by construction a text duplicate (S77).
+
+    Files only: web ingestion is off, so a released legacy URL source could only fail.
+    """
+    has_chunks = (
+        select(Chunk.id).where(Chunk.source_id == Source.id, Chunk.superseded_at.is_(None)).exists()
+    )
+    return and_(Source.status == SourceStatus.DONE, Source.kind == SourceKind.FILE, ~has_chunks)
+
+
+async def stranded_duplicates(
+    session: AsyncSession, *, learner_id: uuid.UUID | None = None
+) -> list[uuid.UUID]:
+    """Duplicates whose original no longer stands in for them (S77).
+
+    Healthy only while the original exists, is DONE, shares the learner, subject and topic, and
+    still has current chunks. Moved, deleted, failed, or emptied — any of those and the duplicate
+    grounds nothing while looking finished.
+    """
+    original = aliased(Source)
+    original_has_chunks = (
+        select(Chunk.id)
+        .where(Chunk.source_id == original.id, Chunk.superseded_at.is_(None))
+        .exists()
+    )
+    healthy = (
+        select(original.id)
+        .where(
+            original.id == Source.duplicate_of_id,
+            original.status == SourceStatus.DONE,
+            original.learner_id == Source.learner_id,
+            original.subject_id.is_not_distinct_from(Source.subject_id),
+            original.topic_id.is_not_distinct_from(Source.topic_id),
+            original_has_chunks,
+        )
+        .exists()
+    )
+    stmt = select(Source.id).where(_chunkless_done(), ~healthy).order_by(Source.updated_at)
+    if learner_id is not None:
+        stmt = stmt.where(Source.learner_id == learner_id)
+    return list((await session.scalars(stmt)).all())
+
+
+async def release_duplicates(
+    session: AsyncSession, source_ids: Sequence[uuid.UUID]
+) -> list[uuid.UUID]:
+    """Put chunkless DONE sources back in the queue's reach, to re-ingest from their own file.
+
+    Flushes, does not commit, does not enqueue: the caller dispatches the returned ids after its
+    own commit, or leaves them for the reconcile sweep, which requeues stale PENDING sources. A
+    source that is not a chunkless DONE source is skipped, which is what makes a second release
+    before the worker runs a no-op.
+    """
+    if not source_ids:
+        return []
+    ids = list(
+        (
+            await session.scalars(
+                select(Source.id).where(Source.id.in_(source_ids), _chunkless_done())
+            )
+        ).all()
+    )
+    if ids:
+        await session.execute(
+            update(Source)
+            .where(Source.id.in_(ids))
+            .values(
+                status=SourceStatus.PENDING,
+                duplicate_of_id=None,
+                attempts=0,
+                error=None,
+                lease_expires_at=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        await session.flush()
+    return ids
 
 
 async def reset_for_reingest(session: AsyncSession, source_id: uuid.UUID) -> Source | None:
