@@ -126,6 +126,11 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   subject opts in; a General chat reads none), and `app/services/grounding.py` decides what the
   tutor is told, including sources-only and "nothing matched". The coverage label on a reply is
   derived from what was offered and cited, never from the model's own account.
+- **A citation outlives a re-ingest** (S29/S50) — re-ingesting supersedes chunks rather than
+  deleting them when something cites them, and re-processing a finished source is the
+  learner's confirmed decision. `uv run poe reindex` re-embeds in place (ids kept) and only
+  re-extracts when asked; staleness is read from the chunks, so a run resumes by running again.
+  See [docs/RUNBOOK.md](docs/RUNBOOK.md) §15.
 - **A self-rating is not evidence of ability** (S56) — the server decides whether a score was
   judged or self-reported, and a self-rating moves the review schedule only. Mastery is the
   conservative estimate `ability − 2·uncertainty ≥ 0.5` on measured evidence (V02); achievement
