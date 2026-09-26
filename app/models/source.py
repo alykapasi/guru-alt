@@ -73,6 +73,12 @@ class Source(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # learner's own sources, which is tens of rows; a cross-learner search would need LSH
     # banding, and cross-learner similarity is not something a learner may observe anyway.
     simhash: Mapped[str | None] = mapped_column(default=None)
+    # The source this one is a text duplicate of (S77): same learner, same scope, same text,
+    # so it was not chunked and the original answers for it. SET NULL on delete, so an original
+    # that goes away leaves a mark the recovery sweep can find rather than a dangling id in meta.
+    duplicate_of_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("sources.id", ondelete="SET NULL"), default=None, index=True
+    )
     content_type: Mapped[str | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(index=True, default=SourceStatus.PENDING)
     error: Mapped[str | None] = mapped_column(Text, default=None)

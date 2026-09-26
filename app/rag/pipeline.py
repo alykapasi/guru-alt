@@ -212,7 +212,7 @@ async def run(
     if twin is not None:
         # Already embedded, under this learner's own scope. Chunking it again would pay for a
         # second copy and then let the two crowd each other out of every grounding window.
-        source.meta = {**source.meta, "duplicate_of": str(twin.id)}
+        source.duplicate_of_id = twin.id
         log.info("pipeline.duplicate_text", source_id=str(source.id), duplicate_of=str(twin.id))
         await session.flush()
         return 0

@@ -313,3 +313,44 @@ async def test_chunks_that_predate_versions_come_through_as_version_one_and_curr
             assert row["text"] == "old text"
         finally:
             await conn.close()
+
+
+async def test_duplicates_recorded_in_meta_get_the_column_backfilled() -> None:
+    """0065 (S77): the relation moves from meta into a foreign key. An original that still
+    exists is linked; one that is gone backfills to NULL, which is what lets the sweep find it."""
+    async with database_at("0064_chunk_versions") as connect:
+        conn = await connect()
+        try:
+            learner_id = uuid.uuid4()
+            original, linked, orphan = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "reader"
+            )
+            for sid, meta in (
+                (original, "{}"),
+                (linked, f'{{"duplicate_of": "{original}"}}'),
+                (orphan, f'{{"duplicate_of": "{uuid.uuid4()}"}}'),
+            ):
+                await conn.execute(
+                    "INSERT INTO sources (id, learner_id, kind, origin, status, meta, attempts) "
+                    "VALUES ($1, $2, 'file', 'x.txt', 'done', $3::jsonb, 0)",
+                    sid,
+                    learner_id,
+                    meta,
+                )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0065_source_duplicate_of")
+
+        conn = await connect()
+        try:
+            rows = {
+                r["id"]: r["duplicate_of_id"]
+                for r in await conn.fetch("SELECT id, duplicate_of_id FROM sources")
+            }
+            assert rows[linked] == original
+            assert rows[orphan] is None
+            assert rows[original] is None
+        finally:
+            await conn.close()

@@ -3846,6 +3846,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Duplicate Of Id */
+            duplicate_of_id?: string | null;
             /** Error */
             error: string | null;
             /**

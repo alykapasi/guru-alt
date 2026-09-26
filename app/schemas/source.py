@@ -37,6 +37,7 @@ class SourceRead(BaseModel):
     error: str | None
     subject_id: uuid.UUID | None
     topic_id: uuid.UUID | None
+    duplicate_of_id: uuid.UUID | None = None
     created_at: datetime
 
 
