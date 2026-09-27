@@ -15,7 +15,7 @@ leaving it to be documented.
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, false
+from sqlalchemy import DateTime, false, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -54,3 +54,6 @@ class Learner(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     deletion_due_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None, index=True
     )
+    # The learner's switch for memory (S43). Off: nothing new is learned from their
+    # conversations, by the scheduler or on request; what is already remembered stays usable.
+    remember_conversations: Mapped[bool] = mapped_column(server_default=true(), default=True)

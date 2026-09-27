@@ -262,3 +262,23 @@ async def test_latest_evidence_is_none_for_a_learner_with_no_history(
 ) -> None:
     learner = await _learner(db_session)
     assert await profile_svc.latest_evidence_at(db_session, learner.id) is None
+
+
+async def test_an_admin_visit_message_is_not_new_evidence(db_session: AsyncSession) -> None:
+    """S43: an admin visit made the profile look stale and paid for a recompute that could
+    not change anything, since the estimators already ignore those messages."""
+    learner = await _learner(db_session)
+    conv = await _conversation(db_session, learner)
+    await _say(db_session, conv, "mine", at=_t(0))
+    db_session.add(
+        Message(
+            conversation_id=conv.id,
+            role="user",
+            content="typed by an administrator",
+            created_at=_t(10),
+            admin_actor_id=uuid.uuid4(),
+        )
+    )
+    await db_session.commit()
+
+    assert await profile_svc.latest_evidence_at(db_session, learner.id) == _t(0)

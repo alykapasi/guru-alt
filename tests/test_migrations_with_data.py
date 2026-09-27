@@ -512,3 +512,36 @@ async def test_existing_forgotten_memories_stay_learner_wide() -> None:
             assert rows == {deleted_id: "learner", current_id: None}
         finally:
             await conn.close()
+
+
+async def test_refresh_scheduling_columns_default_sensibly() -> None:
+    """0070 (S43): existing learners keep memory on; nothing starts claimed."""
+    async with database_at("0069_memory_forgotten_scope") as connect:
+        conn = await connect()
+        try:
+            learner_id, conversation_id = uuid.uuid4(), uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "sched"
+            )
+            await conn.execute(
+                "INSERT INTO conversations (id, learner_id, kind, phase) "
+                "VALUES ($1, $2, 'chat', 'chatting')",
+                conversation_id,
+                learner_id,
+            )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0070_refresh_scheduling")
+
+        conn = await connect()
+        try:
+            remember = await conn.fetchval(
+                "SELECT remember_conversations FROM learners WHERE id = $1", learner_id
+            )
+            attempted = await conn.fetchval(
+                "SELECT memory_attempted_at FROM conversations WHERE id = $1", conversation_id
+            )
+            assert remember is True and attempted is None
+        finally:
+            await conn.close()

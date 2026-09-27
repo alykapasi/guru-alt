@@ -36,6 +36,9 @@ class LearnerProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # that silently stopped updating is indistinguishable from one nothing has changed for.
     refreshed_at: Mapped[datetime | None] = mapped_column(default=None)
     last_error: Mapped[str | None] = mapped_column(Text, default=None)
+    # The scheduler's claim on this learner's refresh (S43): set when a pass queues it,
+    # cleared when it succeeds. A failed run is retried after a delay, not every pass.
+    refresh_attempted_at: Mapped[datetime | None] = mapped_column(default=None)
 
 
 class ProfileDimension(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -59,3 +62,6 @@ class ProfileDimension(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     uncertainty: Mapped[float] = mapped_column(default=1.0)
     kind: Mapped[str] = mapped_column()  # "trait" | "state"
     source: Mapped[str] = mapped_column()  # "behavioral" | "self_report"
+    # What a model-backed estimator last judged (S43): the same fingerprint means the same
+    # answer, so no model call.
+    input_fingerprint: Mapped[str | None] = mapped_column(Text, default=None)

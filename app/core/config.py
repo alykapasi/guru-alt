@@ -400,6 +400,18 @@ class Settings(BaseSettings):
     # skipped as a near-duplicate if its cosine distance to an existing same-(learner, kind)
     # memory is at or below this threshold. How many memories a tutor turn retrieves for context.
     memory_extraction_window: int = 20
+    # Refresh scheduling (S43). The worker looks for conversations and learners that have gone
+    # quiet with unprocessed evidence every `refresh_poll_interval_seconds` (0 disables it),
+    # claims at most `refresh_batch_size` of each per pass, and retries a failed item after
+    # `refresh_retry_minutes`. `refresh_stuck_hours` is when a due item raises an alert. The
+    # profile reads only the most recent events/messages. All uncalibrated.
+    refresh_poll_interval_seconds: int = 300
+    memory_quiet_minutes: int = 20
+    refresh_retry_minutes: int = 60
+    refresh_batch_size: int = 50
+    refresh_stuck_hours: int = 6
+    profile_event_window: int = 2000
+    profile_message_window: int = 500
     memory_dedup_max_distance: float = 0.05
     # Beyond the duplicate radius, how close an existing memory must be to be judged as
     # possibly the same fact or one this replaces (S42). Uncalibrated.

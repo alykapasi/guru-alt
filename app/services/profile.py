@@ -115,6 +115,7 @@ async def latest_evidence_at(session: AsyncSession, learner_id: uuid.UUID) -> da
     evidence for a recompute that provably cannot produce a different answer — a full pass
     over DIMENSION_SPECS, model-backed classifier included, plus ``_revise_lesson_plans``,
     per review batch (S56). Self-rating asks for a review, not for a re-read of the learner.
+    Admin-visit messages are excluded like everywhere else the learner's evidence is read (S43).
     """
     newest_event = await session.scalar(
         select(func.max(LearningEvent.created_at)).where(
@@ -125,7 +126,12 @@ async def latest_evidence_at(session: AsyncSession, learner_id: uuid.UUID) -> da
     newest_message = await session.scalar(
         select(func.max(Message.created_at))
         .join(Conversation, Message.conversation_id == Conversation.id)
-        .where(Conversation.learner_id == learner_id, Message.role == "user")
+        .where(
+            Conversation.learner_id == learner_id,
+            Message.role == "user",
+            Message.admin_actor_id.is_(None),
+            Message.admin_action_id.is_(None),
+        )
     )
     stamps = [s for s in (newest_event, newest_message) if s is not None]
     return max(stamps) if stamps else None

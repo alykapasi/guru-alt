@@ -139,6 +139,9 @@ class Conversation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # had the middle silently skipped — and one that grew by nothing paid a model call to
     # re-read what it had already extracted (S43). Same cursor idea as Note's watermarks (S38).
     memory_watermark: Mapped[datetime | None] = mapped_column(default=None)
+    # The scheduler's claim on this conversation's write-back (S43): set when a pass queues
+    # it, cleared when it succeeds. A failed run is retried after a delay, not every pass.
+    memory_attempted_at: Mapped[datetime | None] = mapped_column(default=None)
     # Out of the way and read-only, fully reversible (S61, V11); its memories stay current.
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
