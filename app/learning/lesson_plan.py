@@ -463,8 +463,8 @@ def scaffolding_from_profile(values: Mapping[str, Any]) -> ScaffoldingHints:
 
     # No reading-level hint. It was a readability score of the learner's own chat messages,
     # used to instruct generation to write at that level — so short, casual questions asked a
-    # tutor to simplify its explanations (S44). Presentation level belongs to an explicit
-    # learner preference, which does not exist yet; an unjustified inference is worse than none.
+    # tutor to simplify its explanations (S44). Presentation level is the learner's explicit
+    # ``explanation_level`` setting instead (S02); an unjustified inference is worse than none.
     return ScaffoldingHints(
         target_difficulty=target_difficulty,
         hint_density=hint_density,

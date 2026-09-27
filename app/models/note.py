@@ -47,7 +47,8 @@ class Note(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     messages_watermark: Mapped[datetime] = mapped_column(default=WATERMARK_EPOCH)
     events_watermark: Mapped[datetime] = mapped_column(default=WATERMARK_EPOCH)
     # Explicit learner format choice (outline|narrative|mnemonic|worked_examples);
-    # NULL = auto (cascade: learned note_format dimension -> heuristic -> outline).
+    # NULL = auto (cascade: the learner's note_format setting (S02) -> learned note_format
+    # dimension -> heuristic -> outline).
     format: Mapped[str | None] = mapped_column(default=None)
     revision_ordinal: Mapped[int] = mapped_column(default=0)
 

@@ -49,8 +49,11 @@ Only these catalog values ever reach a prompt; nothing free-text.
   subjects, cascade; NULL = global), `key text`, `value text`, `created_at`, `updated_at`.
   Unique on `(learner_id, subject_id, key)` with NULLs not distinct (Postgres 15+
   `NULLS NOT DISTINCT`), so there is one global row per key.
-- A row exists only for an explicit choice. Setting a key to its default (`auto`, or `guided`
-  for guidance) deletes the row at that level.
+- A row exists only for an explicit choice. Globally, the catalog default (`auto`, or `guided`
+  for guidance) needs no row. A subject stores whatever it is given, the default included:
+  "guided here" or "adapt to me here" while the global setting says otherwise is a real choice
+  (amended after the final review — deleting on the default made it impossible, and per-subject
+  guided worked before this slice). Clearing a level (`null`) deletes its row.
 - Backfill: every `lesson_plans` row whose `guidance` is not `guided` becomes a subject
   override `(learner, subject, 'guidance', value)`. Plans on the default need no row: they
   resolve to `guided` either way. The old column cannot tell a plan explicitly switched back
@@ -73,7 +76,8 @@ fail a turn.
 ### Where each preference takes effect
 
 Applied when instructions are assembled, so a change works on the next turn or generation with
-no plan rebuild.
+no plan rebuild — except inside a guided-practice question, whose prompt is fixed when the
+question starts; there the change applies from the next question.
 
 - **Tutor, all three modes** (`app/services/learner_context.py`): `gather` reads
   `effective(learner, conversation.subject_id)`; `LearnerContext` carries it. `compose` adds a
@@ -101,8 +105,8 @@ no plan rebuild.
 - `GET /preferences?subject_id=` → every catalog key: `key`, `value`, `source`, `options`,
   `global_value` (the global/default value, when reading a subject), and `inferred` (the
   profile's current value for `hints`, `pace`, `note_format`, else null).
-- `PUT /preferences/{key}` body `{value, subject_id?}` → the same entry for that key. The
-  default value deletes the row at that level.
+- `PUT /preferences/{key}` body `{value, subject_id?}` → the same entry for that key. `value:
+  null` clears that level; "Use my default" sends it.
 - 422: unknown key, or a value outside that key's options. 404: a subject the learner cannot see
   (`is_visible_to`; curated subjects are allowed). An administrator's visit is sudo, not
   read-only (workstream 1): it may read and write preferences like any learner route, and the
@@ -122,8 +126,8 @@ no plan rebuild.
 
 - Migration: a non-default plan guidance becomes a subject override; a default plan resolves
   to guided.
-- Resolution: subject over global over default; setting the default deletes the row; unknown
-  keys/values ignored.
+- Resolution: subject over global over default; a subject can pin the default against a
+  different global; `null` clears a level; unknown keys/values ignored.
 - API: 422 cases; 404 for another learner's private subject; a write during an admin visit
   audited; visibility sweep coverage for `subject_id`.
 - Consumers: the composed tutor prompt carries a pinned level and pace; pinned hints replace
