@@ -136,6 +136,12 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   immediate after an impact report of what stays; forget removes only what was derived — lessons
   built on a source, memories learned in a conversation — never answers or mastery.
   `app/services/removal.py` is the one place that decides what derives from what.
+- **Deleting an account is a state, then an erase** (S61; V12) — access ends at the request
+  and every session is revoked; signing in again within seven days reaches only the recovery
+  routes (`AccountHolder`); then a worker erases every store and the identity provider's copy.
+  What the object store or provider refuses becomes a `pending_erasures` row retried until done.
+  Diagnostic rows keep nothing pointing at a learner past 30 days. See
+  [docs/RUNBOOK.md](docs/RUNBOOK.md) §16.
 - **A self-rating is not evidence of ability** (S56) — the server decides whether a score was
   judged or self-reported, and a self-rating moves the review schedule only. Mastery is the
   conservative estimate `ability − 2·uncertainty ≥ 0.5` on measured evidence (V02); achievement

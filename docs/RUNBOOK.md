@@ -839,3 +839,51 @@ display math are no longer cut mid-block. Every source ingested before it is lis
 re-extract; run `uv run poe reindex --apply --reextract` when ready. The reconcile sweep
 (`uv run poe reconcile-ingestion`) also releases stranded duplicates and reports them as
 `recovered`.
+
+## 16. Account deletion and retention (S61)
+
+Deleting an account is a state, then an erase (V12).
+
+1. **Request.** `DELETE /api/v1/me` sets `learners.deletion_requested_at` and
+   `deletion_due_at` (now + `GURU_ACCOUNT_RECOVERY_DAYS`, default 7) and revokes every session.
+   Repeating it keeps the due date. `?now=true` erases in the same call.
+2. **Pending.** Signing in again works, but every route answers 403
+   `{"code": "deletion_pending"}` except the recovery routes: `/auth/me`, `/auth/logout(-all)`,
+   `GET /me/deletion`, `POST /me/deletion/restore`, `POST /me/deletion/erase`, `GET /me/export`
+   and `GET /me/export/sources/{id}/file`. The app shows the recovery screen. An administrator's
+   visit is gated the same way. A suspended account is still refused at sign-in.
+3. **Erase.** The worker erases each account past its due date: every store per `RETENTION`
+   (`GET /api/v1/me/retention`), then the identity provider's user (Clerk; "not found" counts as
+   done).
+
+Worker loops (interval 0 disables one):
+
+| Loop | Setting | Default | Does |
+| --- | --- | --- | --- |
+| Erase due accounts | `GURU_ACCOUNT_ERASE_INTERVAL_SECONDS` | 300 | Erases accounts whose `deletion_due_at` has passed; re-reads each under a row lock, so a restore wins. |
+| Retry erasures | `GURU_ERASURE_RETRY_INTERVAL_SECONDS` | 300 | Retries `pending_erasures` rows that are due. |
+| Expire diagnostics | `GURU_DIAGNOSTIC_EXPIRY_INTERVAL_SECONDS` | 3600 | Past `GURU_DIAGNOSTIC_RETENTION_DAYS` (default 30): drops learner and conversation ids from `llm_calls` and `decision_calls`, deletes finished turns, and deletes alert history except each alert's newest row. |
+
+**Pending erasures.** A blob key the object store refused, or a provider user it could not
+delete, becomes a `pending_erasures` row (`kind` = `blob` | `identity`, `target`, `attempts`,
+`last_error`, `next_attempt_at`). It names no learner, so it outlives the account. Each failure
+backs off `min(2^attempts minutes, 1 day)`; a success deletes the row. A blob someone has
+uploaded again since is left in place and the row is dropped. Deleting a single source queues
+its file the same way.
+
+**`erasures_stuck`** fires while any row has `attempts >= ALERT_STUCK_ERASURE_ATTEMPTS`
+(default 10). Read the row's `last_error`:
+
+```sql
+SELECT kind, target, attempts, last_error, next_attempt_at FROM pending_erasures
+ORDER BY attempts DESC;
+```
+
+Fix the store or provider credentials; the next retry clears it. Never delete a row by hand
+unless the object is confirmed gone.
+
+**Backups.** `GURU_DIAGNOSTIC_RETENTION_DAYS` is also the target window for backups once workstream 7
+creates them: a backup older than it can still hold an erased account.
+
+Learning history, notes, memories, sources, content and audit records are never expired; they
+live until the account is deleted.
