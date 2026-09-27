@@ -136,6 +136,8 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   immediate after an impact report of what stays; forget removes only what was derived — lessons
   built on a source, memories learned in a conversation — never answers or mastery.
   `app/services/removal.py` is the one place that decides what derives from what.
+  Forgetting a conversation suppresses its facts only from that conversation; a replaced memory
+  is an explicit judgement (`app/memory/supersession.py`), shown and undoable.
 - **Deleting an account is a state, then an erase** (S61; V12) — access ends at the request
   and every session is revoked; signing in again within seven days reaches only the recovery
   routes (`AccountHolder`); then a worker erases every store and the identity provider's copy.
