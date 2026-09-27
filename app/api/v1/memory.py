@@ -14,7 +14,14 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentLearner, LLMClientDep, MemoryWriteBackEnqueuerDep, SessionDep
 from app.models.chat import Conversation
-from app.schemas.memory import ForgetOriginRead, MemoryCorrection, MemoryRead, WriteBackAck
+from app.models.memory import Memory
+from app.schemas.memory import (
+    ForgetOriginRead,
+    MemoryCorrection,
+    MemoryRead,
+    ReplacedRead,
+    WriteBackAck,
+)
 from app.services import chat as chat_svc
 from app.services import memory as svc
 from app.services import removal
@@ -58,15 +65,21 @@ async def list_memory(
             )
         ).all()
     }
+    replaced = await svc.replaced_by(session, [m.id for m in memories])
     return [
         MemoryRead.model_validate(m).model_copy(
             update={
                 "origin_title": live.get(m.origin_conversation_id),
                 "origin_live": m.origin_conversation_id in live,
+                "replaced": _replaced(replaced.get(m.id)),
             }
         )
         for m in memories
     ]
+
+
+def _replaced(memory: Memory | None) -> ReplacedRead | None:
+    return ReplacedRead(id=memory.id, content=memory.content) if memory is not None else None
 
 
 @router.post("/memory/forget-origin/{conversation_id}", response_model=ForgetOriginRead)
@@ -93,7 +106,25 @@ async def correct_memory(
     corrected = await svc.correct_memory(session, llm, learner.id, memory_id, content=body.content)
     if corrected is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "memory not found")
-    return corrected
+    replaced = await svc.replaced_by(session, [corrected.id])
+    return MemoryRead.model_validate(corrected).model_copy(
+        update={"replaced": _replaced(replaced.get(corrected.id))}
+    )
+
+
+@router.post("/memory/{memory_id}/undo-replacement", response_model=MemoryRead)
+async def undo_replacement(memory_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+    """Put back what this memory replaced — for when a replacement was wrong (S42)."""
+    try:
+        restored = await svc.undo_replacement(session, learner.id, memory_id)
+    except svc.NotAReplacement as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "not_a_replacement", "message": "This memory did not replace anything."},
+        ) from exc
+    if restored is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "memory not found")
+    return restored
 
 
 @router.delete("/memory/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)

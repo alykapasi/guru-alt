@@ -1228,6 +1228,26 @@ export interface paths {
         patch: operations["correct_memory_api_v1_memory__memory_id__patch"];
         trace?: never;
     };
+    "/api/v1/memory/{memory_id}/undo-replacement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Undo Replacement
+         * @description Put back what this memory replaced — for when a replacement was wrong (S42).
+         */
+        post: operations["undo_replacement_api_v1_memory__memory_id__undo_replacement_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/onboarding/curriculum": {
         parameters: {
             query?: never;
@@ -3667,6 +3687,7 @@ export interface components {
             origin_live: boolean;
             /** Origin Title */
             origin_title?: string | null;
+            replaced?: components["schemas"]["ReplacedRead"] | null;
         };
         /**
          * MessagePage
@@ -4062,6 +4083,19 @@ export interface components {
             };
             /** Notes */
             notes: string[];
+        };
+        /**
+         * ReplacedRead
+         * @description The memory a current one replaced (S42) — shown so a wrong replacement can be undone.
+         */
+        ReplacedRead: {
+            /** Content */
+            content: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
         };
         /** RetentionPolicyRead */
         RetentionPolicyRead: {
@@ -6383,6 +6417,37 @@ export interface operations {
                 "application/json": components["schemas"]["MemoryCorrection"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    undo_replacement_api_v1_memory__memory_id__undo_replacement_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

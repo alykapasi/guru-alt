@@ -250,6 +250,56 @@ async def _suppressed(
     return row is not None and row[0] <= max_distance
 
 
+class NotAReplacement(Exception):
+    """Undo asked of a memory that replaced nothing still restorable."""
+
+
+async def replaced_by(session: AsyncSession, ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, Memory]:
+    """For each id, the superseded memory it most recently replaced (if any)."""
+    if not ids:
+        return {}
+    rows = (
+        await session.scalars(
+            select(Memory)
+            .where(Memory.superseded_by_id.in_(ids), Memory.status == MemoryStatus.SUPERSEDED)
+            .order_by(Memory.created_at.desc())
+        )
+    ).all()
+    found: dict[uuid.UUID, Memory] = {}
+    for row in rows:
+        assert row.superseded_by_id is not None
+        found.setdefault(row.superseded_by_id, row)
+    return found
+
+
+async def undo_replacement(
+    session: AsyncSession, learner_id: uuid.UUID, memory_id: uuid.UUID
+) -> Memory | None:
+    """Put back what ``memory_id`` replaced; retire ``memory_id`` without forgetting it (S42).
+
+    ``None`` when the id is not this learner's. ``NotAReplacement`` when it is not current, or
+    nothing it replaced is still superseded by it — the old row was since corrected, forgotten
+    or already restored. Nothing is suppressed: the retired statement, said again, is judged
+    afresh.
+    """
+    memory = await session.get(Memory, memory_id, with_for_update=True)
+    if memory is None or memory.learner_id != learner_id:
+        return None
+    if memory.status != MemoryStatus.CURRENT:
+        raise NotAReplacement(str(memory_id))
+    old = (await replaced_by(session, [memory_id])).get(memory_id)
+    if old is None:
+        raise NotAReplacement(str(memory_id))
+    old.status = MemoryStatus.CURRENT
+    old.superseded_by_id = None
+    await session.flush()
+    memory.status = MemoryStatus.SUPERSEDED
+    memory.superseded_by_id = old.id
+    await session.commit()
+    await session.refresh(old)
+    return old
+
+
 async def _unprocessed_messages(
     session: AsyncSession,
     conversation_id: uuid.UUID,

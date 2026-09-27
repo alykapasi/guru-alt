@@ -7,6 +7,13 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class ReplacedRead(BaseModel):
+    """The memory a current one replaced (S42) — shown so a wrong replacement can be undone."""
+
+    id: uuid.UUID
+    content: str
+
+
 class MemoryRead(BaseModel):
     """A stored memory as exposed to the learner — not the raw embedding."""
 
@@ -22,6 +29,8 @@ class MemoryRead(BaseModel):
     origin_conversation_id: uuid.UUID | None = None
     origin_title: str | None = None
     origin_live: bool = False
+    # What this memory replaced, if anything (S42).
+    replaced: ReplacedRead | None = None
 
 
 class ForgetOriginRead(BaseModel):

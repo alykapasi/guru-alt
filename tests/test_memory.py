@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_memory_write_back_enqueuer
+from app.core.config import get_settings
 from app.llm.registry import fake_llm_client
 from app.main import app
 from app.models.chat import Conversation, LLMCall, Message
@@ -523,3 +524,38 @@ async def test_an_unchanged_correction_writes_nothing(db_session: AsyncSession) 
     )
     await db_session.refresh(original)
     assert original.status == MemoryStatus.CURRENT
+
+
+async def test_the_list_says_what_a_memory_replaced_and_undo_works_over_the_route(
+    api_client, db_session, api_learner
+) -> None:
+    old = Memory(
+        embedding_space=FAKE_SPACE,
+        learner_id=api_learner.id,
+        kind="preference",
+        content="Studies in the mornings.",
+        embedding=[0.1] * get_settings().embed_dim,
+    )
+    new = Memory(
+        embedding_space=FAKE_SPACE,
+        learner_id=api_learner.id,
+        kind="preference",
+        content="Studies in the evenings now.",
+        embedding=[0.2] * get_settings().embed_dim,
+    )
+    db_session.add_all([old, new])
+    await db_session.flush()
+    old.status, old.superseded_by_id = MemoryStatus.SUPERSEDED, new.id
+    await db_session.flush()
+
+    listed = (await api_client.get(f"{API}/memory")).json()
+    [entry] = [m for m in listed if m["id"] == str(new.id)]
+    assert entry["replaced"] == {"id": str(old.id), "content": "Studies in the mornings."}
+
+    r = await api_client.post(f"{API}/memory/{new.id}/undo-replacement")
+    assert r.status_code == 200 and r.json()["id"] == str(old.id)
+    again = await api_client.post(f"{API}/memory/{new.id}/undo-replacement")
+    assert again.status_code == 409 and again.json()["detail"]["code"] == "not_a_replacement"
+    assert (
+        await api_client.post(f"{API}/memory/{uuid.uuid4()}/undo-replacement")
+    ).status_code == 404

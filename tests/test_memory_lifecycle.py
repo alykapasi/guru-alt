@@ -429,3 +429,86 @@ async def test_forget_everything_widens_a_conversation_forget(db_session: AsyncS
     assert (
         await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=second.id) == []
     )
+
+
+# --- undo a replacement --------------------------------------------------------------------
+
+
+async def _replaced_pair(db_session: AsyncSession, learner: Learner) -> tuple[uuid.UUID, uuid.UUID]:
+    """(old id, new id) after "evenings" replaced "mornings"."""
+    first = await _conversation(db_session, learner, "I study in the mornings.")
+    [old] = await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=first.id)
+    second = await _conversation(db_session, learner, "Evenings now.")
+    with _everything_is_equivalent():
+        [new] = await svc.write_back(
+            db_session, _extract_then_judge(EVENINGS, UPDATES_FIRST), conversation_id=second.id
+        )
+    return old.id, new.id
+
+
+async def test_undo_restores_the_old_memory_and_retires_the_new(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    old_id, new_id = await _replaced_pair(db_session, learner)
+
+    restored = await svc.undo_replacement(db_session, learner.id, new_id)
+
+    assert restored is not None and restored.id == old_id
+    old = await db_session.get(Memory, old_id, populate_existing=True)
+    new = await db_session.get(Memory, new_id, populate_existing=True)
+    assert old is not None and old.status == MemoryStatus.CURRENT and old.superseded_by_id is None
+    assert new is not None and new.status == MemoryStatus.SUPERSEDED
+    assert new.superseded_by_id == old_id and new.forgotten_scope is None
+
+
+async def test_after_undo_the_statement_is_judged_afresh(db_session: AsyncSession) -> None:
+    """Review focus 5: undo forgets nothing, so the statement is not suppressed."""
+    learner = await _learner(db_session)
+    _old_id, new_id = await _replaced_pair(db_session, learner)
+    await svc.undo_replacement(db_session, learner.id, new_id)
+
+    third = await _conversation(db_session, learner, "Evenings, as I said.")
+    with _everything_is_equivalent():
+        created = await svc.write_back(
+            db_session, _extract_then_judge(EVENINGS, COEXISTS_FIRST), conversation_id=third.id
+        )
+    assert [m.content for m in created] == ["Studies in the evenings now."]
+
+
+async def test_undo_refuses_what_is_not_a_replacement(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    first = await _conversation(db_session, learner, "I study in the mornings.")
+    [only] = await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=first.id)
+    with pytest.raises(svc.NotAReplacement):
+        await svc.undo_replacement(db_session, learner.id, only.id)
+    assert await svc.undo_replacement(db_session, uuid.uuid4(), only.id) is None
+
+
+async def test_undo_refuses_once_the_old_memory_has_changed(db_session: AsyncSession) -> None:
+    """Review focus 2: the old row was forgotten since — nothing to restore."""
+    learner = await _learner(db_session)
+    old_id, new_id = await _replaced_pair(db_session, learner)
+    old = await db_session.get(Memory, old_id, populate_existing=True)
+    assert old is not None
+    old.status = MemoryStatus.DELETED
+    old.forgotten_scope = "learner"
+    await db_session.commit()
+
+    with pytest.raises(svc.NotAReplacement):
+        await svc.undo_replacement(db_session, learner.id, new_id)
+
+
+async def test_undo_reverts_a_correction(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    first = await _conversation(db_session, learner, "I study in the mornings.")
+    [original] = await svc.write_back(
+        db_session, fake_llm_client(MORNINGS), conversation_id=first.id
+    )
+    original_id = original.id
+    corrected = await svc.correct_memory(
+        db_session, fake_llm_client(), learner.id, original_id, content="Studies at night."
+    )
+    assert corrected is not None
+
+    restored = await svc.undo_replacement(db_session, learner.id, corrected.id)
+
+    assert restored is not None and restored.id == original_id
