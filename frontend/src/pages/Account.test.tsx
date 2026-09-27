@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 const request = vi.fn();
 vi.mock("../api/hooks", () => ({
   useRequestDeletion: () => ({ mutate: request, isPending: false, error: null }),
+  useExportFiles: () => ({ data: [] }),
 }));
 vi.mock("../auth/session", () => ({ useSignOutEverywhere: () => async () => {} }));
 

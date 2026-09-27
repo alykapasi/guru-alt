@@ -1,12 +1,14 @@
 import { useState } from "react";
-import { API_BASE_URL } from "../api/client";
 import { useEraseAccount, useRestoreAccount } from "../api/hooks";
 import { useSignOutEverywhere } from "../auth/session";
+import { YourData } from "../components/account/YourData";
 
 /** A pending-deletion account (S61, V12): the one screen it reaches until restored or erased.
  *
  * Erasing signs out of Clerk as well as Guru: the account is gone, and a Clerk session left
- * standing would only try to exchange for it again. */
+ * standing would only try to exchange for it again. Signing out without deciding is offered
+ * too: on a shared computer, a session left on this screen lets the next person restore or
+ * erase the account. */
 export function Recovery({ dueAt }: { dueAt: string }) {
   const restore = useRestoreAccount();
   const erase = useEraseAccount();
@@ -29,9 +31,7 @@ export function Recovery({ dueAt }: { dueAt: string }) {
         >
           Restore my account
         </button>
-        <a className="link text-body" href={`${API_BASE_URL}/api/v1/me/export`}>
-          Download your data (JSON, with a link to each uploaded file)
-        </a>
+        <YourData />
         {confirming ? (
           <div className="flex items-center gap-2">
             <button
@@ -59,6 +59,9 @@ export function Recovery({ dueAt }: { dueAt: string }) {
             Erase now
           </button>
         )}
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void signOut()}>
+          Sign out
+        </button>
         {(restore.error || erase.error) && (
           <p className="text-caption text-error">Something went wrong. Please try again.</p>
         )}

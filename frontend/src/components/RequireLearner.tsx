@@ -27,7 +27,12 @@ export function RequireLearner() {
   if (learner.deletion_due_at) {
     // A pending-deletion account (S61) reaches one screen until it is restored or erased; the
     // API refuses it everywhere else.
-    return <Recovery dueAt={learner.deletion_due_at} />;
+    return (
+      <>
+        {clerkEnabled && <ClerkSessionWatcher />}
+        <Recovery dueAt={learner.deletion_due_at} />
+      </>
+    );
   }
   return (
     <>

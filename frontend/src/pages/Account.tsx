@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { UserRound } from "lucide-react";
-import { API_BASE_URL } from "../api/client";
 import { useRequestDeletion } from "../api/hooks";
 import { useSignOutEverywhere } from "../auth/session";
+import { YourData } from "../components/account/YourData";
 
 /** The learner's account: take their data, or delete it (S61, V12).
  *
@@ -29,11 +29,9 @@ export function Account() {
       <section className="flex flex-col gap-2">
         <h2 className="text-h2">Your data</h2>
         <p className="text-body text-base-content/70">
-          Everything Guru holds about you, as JSON, with a link to each file you uploaded.
+          Everything Guru holds about you, as JSON, and each file you uploaded.
         </p>
-        <a className="link text-body" href={`${API_BASE_URL}/api/v1/me/export`}>
-          Download your data
-        </a>
+        <YourData />
       </section>
 
       <section className="flex flex-col gap-2">

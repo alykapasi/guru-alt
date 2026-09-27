@@ -792,3 +792,16 @@ export function useEraseAccount() {
     onSuccess: () => void queryClient.invalidateQueries(),
   });
 }
+
+/** Every file the learner uploaded, with its download path (S61). Reachable while the account
+ * is pending deletion, so the recovery screen can offer each one. */
+export function useExportFiles() {
+  return useQuery({
+    queryKey: ["me", "export", "files"],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/me/export/files");
+      if (error) throw error;
+      return data;
+    },
+  });
+}
