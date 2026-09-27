@@ -348,3 +348,56 @@ def test_a_remembered_fact_reaches_every_mode_fenced_as_data() -> None:
 
 def test_no_memories_means_no_memory_block() -> None:
     assert learner_context.memory_note([]) is None
+
+
+def _plan_with_hints() -> PlanGroundingContext:
+    return PlanGroundingContext(
+        subject_name="Subj",
+        kc_id=uuid.uuid4(),
+        kc_name="KCNAME",
+        step_type="new",
+        target_difficulty=None,
+        hint_density="high",
+        preferred_item_type=None,
+    )
+
+
+def test_pinned_settings_reach_the_prompt_and_pinned_hints_replace_the_inferred() -> None:
+    context = LearnerContext(
+        goal=None,
+        plan=_plan_with_hints(),
+        memories=[],
+        preferences={"explanation_level": "introductory", "pace": "brisk", "hints": "fewer"},
+    )
+    system = learner_context.compose("BASE", context)
+    assert "introductory level" in system
+    assert "brisk pace" in system
+    assert "fewer hints" in system.lower()
+    assert "Hint density: high" not in system, "the learner's setting pins hints"
+
+
+def test_adapt_to_me_leaves_the_prompt_as_it_was() -> None:
+    auto = {"explanation_level": "auto", "pace": "auto", "hints": "auto"}
+    with_auto = LearnerContext(goal=None, plan=_plan_with_hints(), memories=[], preferences=auto)
+    without = LearnerContext(goal=None, plan=_plan_with_hints(), memories=[])
+    assert learner_context.compose("BASE", with_auto) == learner_context.compose("BASE", without)
+    assert "Hint density: high" in learner_context.compose("BASE", with_auto)
+
+
+async def test_a_changed_setting_reaches_the_next_turn(db_session: AsyncSession) -> None:
+    """Read at assembly time: nothing cached between turns keeps the old setting."""
+    from app.services import preferences
+
+    learner, conversation, _kc = await _learner_with_everything(db_session)
+    llm = fake_llm_client()
+    before = await learner_context.gather(
+        db_session, llm, learner_id=learner.id, conversation=conversation, query="q"
+    )
+    await preferences.set_preference(
+        db_session, learner.id, "explanation_level", "advanced", subject_id=conversation.subject_id
+    )
+    after = await learner_context.gather(
+        db_session, llm, learner_id=learner.id, conversation=conversation, query="q"
+    )
+    assert "advanced level" not in learner_context.compose("B", before)
+    assert "advanced level" in learner_context.compose("B", after)

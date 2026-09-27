@@ -671,3 +671,30 @@ async def test_the_api_says_the_sources_do_not_cover_the_concept(
 
     assert response.status_code == 422
     assert response.json()["detail"] == "Your sources for this subject don't cover this concept."
+
+
+async def test_a_pinned_explanation_level_shapes_the_lesson_and_its_cache_key(
+    db_session: AsyncSession,
+) -> None:
+    """A block cached at another level is never served: the level is in the system prompt,
+    and the cache key covers the rendered system prompt (S02)."""
+    from app.models.knowledge import Topic
+    from app.services import preferences
+
+    learner = await _learner(db_session)
+    kc = await _kc(db_session)
+    await _seed_grounding(db_session, learner)
+    learner_id, kc_id = learner.id, kc.id
+    subject_id = await db_session.scalar(select(Topic.subject_id).where(Topic.id == kc.topic_id))
+
+    first = await svc.generate_block(
+        db_session, _client(), learner_id=learner_id, kc_id=kc_id, block_type=ContentType.LESSON
+    )
+    await preferences.set_preference(
+        db_session, learner_id, "explanation_level", "introductory", subject_id=subject_id
+    )
+    second = await svc.generate_block(
+        db_session, _client(), learner_id=learner_id, kc_id=kc_id, block_type=ContentType.LESSON
+    )
+
+    assert first.cache_key != second.cache_key

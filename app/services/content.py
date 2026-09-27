@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import citation_support
+from app.learning.preferences import EXPLANATION_INSTRUCTIONS
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
 from app.llm.registry import ModelSpec
 from app.models.content import ContentBlock, ContentType
@@ -36,6 +37,7 @@ from app.rag.extraction_quality import reading_note
 from app.rag.retrieval import RetrievalHit
 from app.rag.scope import resolve_scope
 from app.services import grounding as grounding_policy
+from app.services import preferences as preferences_svc
 from app.services.llm_log import log_llm_call
 
 GROUNDING_K = 6
@@ -156,6 +158,11 @@ async def generate_block(
             system = f"{system} {grounding_policy.READING_NOTE_RULE}"
     else:
         system = _UNGROUNDED_SYSTEM_PROMPT.format(guidance=_GUIDANCE[block_type])
+    # The learner's explanation level for this subject (S02). Part of the system prompt, so the
+    # cache key — which covers the rendered prompt — separates blocks written at other levels.
+    level = (await preferences_svc.values_for(session, learner_id, subject_id))["explanation_level"]
+    if level in EXPLANATION_INSTRUCTIONS:
+        system = f"{system} {EXPLANATION_INSTRUCTIONS[level]}"
     user = _build_prompt(kc, grounding)
     cache_key = _cache_key(
         learner_id,
