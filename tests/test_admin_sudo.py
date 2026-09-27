@@ -220,3 +220,16 @@ async def test_a_visit_may_set_a_preference_and_it_is_audited(
         a["method"] == "PUT" and "/preferences/" in a["route"] and a["status_code"] == 200
         for a in log.json()
     )
+
+
+async def test_pausing_memory_during_a_visit_is_recorded(
+    admin_client: AsyncClient, anon_client: AsyncClient, api_learner: Learner
+) -> None:
+    _, visit = await _visit(admin_client, api_learner)
+    anon_client.headers["authorization"] = f"Bearer {visit['token']}"
+    r = await anon_client.put("/api/v1/me/memory-setting", json={"remember": False})
+    assert r.status_code == 200, r.text
+    log = await admin_client.get(
+        f"/api/v1/admin/impersonations/{visit['impersonation']['id']}/actions"
+    )
+    assert any(a["route"] == "/api/v1/me/memory-setting" for a in log.json())

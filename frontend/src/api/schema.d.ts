@@ -1140,6 +1140,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/memory-setting": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Memory Setting */
+        get: operations["memory_setting_api_v1_me_memory_setting_get"];
+        /**
+         * Set Memory Setting
+         * @description Pause or resume memory (S43). Pausing stops learning; what is remembered stays.
+         */
+        put: operations["set_memory_setting_api_v1_me_memory_setting_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/retention": {
         parameters: {
             query?: never;
@@ -3688,6 +3709,14 @@ export interface components {
             /** Origin Title */
             origin_title?: string | null;
             replaced?: components["schemas"]["ReplacedRead"] | null;
+        };
+        /**
+         * MemorySetting
+         * @description Whether Guru learns new things from this learner's conversations (S43).
+         */
+        MemorySetting: {
+            /** Remember */
+            remember: boolean;
         };
         /**
          * MessagePage
@@ -6261,6 +6290,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    memory_setting_api_v1_me_memory_setting_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemorySetting"];
+                };
+            };
+        };
+    };
+    set_memory_setting_api_v1_me_memory_setting_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemorySetting"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemorySetting"];
                 };
             };
             /** @description Validation Error */

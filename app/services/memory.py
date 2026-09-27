@@ -29,6 +29,7 @@ from app.llm.embedding_space import current_space, exact_cosine_distance
 from app.memory import supersession
 from app.memory.extraction import EXTRACTION_ROLE, ExtractedMemory, extract_memories
 from app.models.chat import Conversation, Message
+from app.models.learner import Learner
 from app.models.memory import ForgetScope, Memory, MemoryKind, MemoryStatus
 from app.services.llm_log import log_llm_call
 from app.services.turn_common import to_chat_messages
@@ -44,10 +45,20 @@ async def write_back(
     same-``(learner_id, kind)`` memory within ``memory_dedup_max_distance`` is skipped for free.
     One with current neighbours within ``memory_related_max_distance`` is judged same / updates /
     coexists in one FAST call per run (S42); doubt means coexists, so nothing true is retired on
-    a guess.
+    a guess. Nothing is learned while the learner has memory paused (S43).
     """
     conversation = await session.get(Conversation, conversation_id)
     if conversation is None:
+        return []
+    learner = await session.get(Learner, conversation.learner_id)
+    if (
+        learner is None
+        or not learner.remember_conversations
+        or learner.deletion_requested_at is not None
+        or learner.suspended_at is not None
+    ):
+        # Paused (S43), or the account closed or was suspended after this was queued: no model
+        # call and nothing learned. What is already remembered is untouched.
         return []
 
     settings = get_settings()
@@ -60,10 +71,15 @@ async def write_back(
     if not window:
         # Nothing new since the last run. Returning here is the difference between a repeated
         # write-back being free and it costing a FAST call to rediscover it had nothing to do.
+        conversation.memory_attempted_at = None
+        await session.commit()
         return []
     # Advance to what this run actually read, not to "now": a message written while extraction
     # is in flight must still be picked up by the next run rather than stepped over.
     conversation.memory_watermark = window[-1].created_at
+    # Done with this claim (S43): a backlog bigger than the window stays due and is picked up
+    # on the next pass, not after the delay meant for failures.
+    conversation.memory_attempted_at = None
     extracted, usage = await extract_memories(llm, to_chat_messages(window))
     if usage.total_tokens:
         await log_llm_call(

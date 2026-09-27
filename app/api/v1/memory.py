@@ -14,11 +14,13 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentLearner, LLMClientDep, MemoryWriteBackEnqueuerDep, SessionDep
 from app.models.chat import Conversation
+from app.models.learner import Learner
 from app.models.memory import Memory
 from app.schemas.memory import (
     ForgetOriginRead,
     MemoryCorrection,
     MemoryRead,
+    MemorySetting,
     ReplacedRead,
     WriteBackAck,
 )
@@ -43,8 +45,29 @@ async def write_back(
     conversation = await chat_svc.get_conversation(session, conversation_id, learner_id=learner.id)
     if conversation is None or conversation.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    if not learner.remember_conversations:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "memory_paused", "message": "Memory is paused for this account."},
+        )
     await enqueue(conversation_id)
     return WriteBackAck()
+
+
+@router.get("/me/memory-setting", response_model=MemorySetting)
+async def memory_setting(learner: CurrentLearner):
+    return MemorySetting(remember=learner.remember_conversations)
+
+
+@router.put("/me/memory-setting", response_model=MemorySetting)
+async def set_memory_setting(body: MemorySetting, session: SessionDep, learner: CurrentLearner):
+    """Pause or resume memory (S43). Pausing stops learning; what is remembered stays."""
+    row = await session.get(Learner, learner.id)
+    assert row is not None
+    row.remember_conversations = body.remember
+    await session.commit()
+    await session.refresh(row)  # `updated_at` is set by the database
+    return MemorySetting(remember=row.remember_conversations)
 
 
 @router.get("/memory", response_model=list[MemoryRead])

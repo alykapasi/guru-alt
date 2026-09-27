@@ -54,3 +54,9 @@ class WriteBackAck(BaseModel):
     synchronously; see ``GET /memory`` once the job has run."""
 
     status: Literal["queued"] = "queued"
+
+
+class MemorySetting(BaseModel):
+    """Whether Guru learns new things from this learner's conversations (S43)."""
+
+    remember: bool
