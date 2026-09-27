@@ -27,6 +27,7 @@ from app.models.learning import LearningEvent
 from app.models.note import WATERMARK_EPOCH, Note, NoteRender, NoteRevision
 from app.models.profile import ProfileDimension
 from app.services import knowledge as knowledge_svc
+from app.services import preferences as preferences_svc
 from app.services.llm_log import log_llm_call
 
 log = structlog.get_logger(__name__)
@@ -92,22 +93,29 @@ async def _dimension_value(session: AsyncSession, learner_id: uuid.UUID, key: st
     return dim.value if dim is not None else None
 
 
-async def _format_inputs(session: AsyncSession, learner_id: uuid.UUID) -> tuple[object, object]:
-    """The two learner-global profile values the format cascade reads.
+async def _format_inputs(
+    session: AsyncSession, learner_id: uuid.UUID, subject_id: uuid.UUID
+) -> tuple[object, object, object]:
+    """The subject-wide values the format cascade reads: the learner's setting (S02), the
+    learned dimension, and the conceptual-error share.
 
     Split out so a caller handling many topics fetches them once rather than once per topic —
-    they cannot differ between topics (S62).
+    they cannot differ between topics of one subject (S62).
     """
+    preferred = (await preferences_svc.values_for(session, learner_id, subject_id))["note_format"]
     learned = await _dimension_value(session, learner_id, "note_format")
     errors = await _dimension_value(session, learner_id, "error_type")
-    return learned, errors.get("conceptual", 0) if isinstance(errors, dict) else None
+    return preferred, learned, errors.get("conceptual", 0) if isinstance(errors, dict) else None
 
 
-def _format_from(note: Note | None, learned: object, conceptual: object) -> str:
-    """The cascade itself, over values already in hand: explicit choice > learned dimension >
-    heuristic > outline."""
+def _format_from(note: Note | None, preferred: object, learned: object, conceptual: object) -> str:
+    """The cascade itself, over values already in hand: the note's own choice > the learner's
+    setting > learned dimension > heuristic > outline."""
     if note is not None and note.format:
         return note.format
+    # "auto" is not a format, so an unset setting falls through.
+    if isinstance(preferred, str) and preferred in FORMATS:
+        return preferred
     if isinstance(learned, str) and learned in FORMATS:
         return learned
     # Heuristic: a majority-conceptual error profile benefits from example-led notes.
@@ -116,11 +124,13 @@ def _format_from(note: Note | None, learned: object, conceptual: object) -> str:
     return FALLBACK_FORMAT
 
 
-async def effective_format(session: AsyncSession, learner_id: uuid.UUID, note: Note | None) -> str:
-    """The cascade: explicit choice > learned note_format dimension > heuristic > outline."""
+async def effective_format(
+    session: AsyncSession, learner_id: uuid.UUID, topic: Topic, note: Note | None
+) -> str:
+    """The cascade: the note's own choice > setting > learned dimension > heuristic > outline."""
     if note is not None and note.format:
         return note.format
-    return _format_from(note, *await _format_inputs(session, learner_id))
+    return _format_from(note, *await _format_inputs(session, learner_id, topic.subject_id))
 
 
 def _cursors(note: Note | None) -> tuple[datetime, datetime]:
@@ -207,7 +217,7 @@ def _compose(authored: str | None, generated: str) -> str:
 async def _view(
     session: AsyncSession, learner_id: uuid.UUID, topic: Topic, note: Note | None
 ) -> NoteView:
-    fmt = await effective_format(session, learner_id, note)
+    fmt = await effective_format(session, learner_id, topic, note)
     content = None
     if note is not None and note.revision_ordinal > 0:
         render_row = await _current_render(session, note, fmt)
@@ -474,7 +484,7 @@ async def refresh_note(
     await _require_visible_topic(session, learner_id, topic)
     note = await get_note(session, learner_id, topic.id)
     base_revision = note.revision_ordinal if note is not None else None
-    fmt = await effective_format(session, learner_id, note)
+    fmt = await effective_format(session, learner_id, topic, note)
     messages_watermark, events_watermark = _cursors(note)
 
     if not await _has_new_activity(
@@ -483,7 +493,7 @@ async def refresh_note(
         # Render-only heal (render missing for a current substrate), or nothing to do.
         if note is not None and note.revision_ordinal > 0:
             note = await _locked_note(session, note)
-            fmt = await effective_format(session, learner_id, note)
+            fmt = await effective_format(session, learner_id, topic, note)
             if await _current_render(session, note, fmt) is None:
                 await _render_and_cache(session, llm, learner_id, note, fmt)
                 await session.commit()
@@ -515,7 +525,7 @@ async def refresh_note(
             # The result was based on an old revision. Keep both activity cursors
             # pending for a new catch-up, and show the edit/restore that won.
             return await _view(session, learner_id, topic, note)
-        fmt = await effective_format(session, learner_id, note)
+        fmt = await effective_format(session, learner_id, topic, note)
 
     if result is None:
         # Parse failure or learner-atom violation: keep everything, stay stale, retry later.
@@ -583,7 +593,7 @@ async def absorb_edit(
     assert note is not None
     if expected_revision_ordinal is not None and note.revision_ordinal != expected_revision_ordinal:
         raise RevisionConflict(note.revision_ordinal)
-    fmt = await effective_format(session, learner_id, note)
+    fmt = await effective_format(session, learner_id, topic, note)
     if include_generated or note.learner_authored_md is None:
         note.authored_baseline = {a["id"]: a["md"] for a in note.substrate}
     note.learner_authored_md = content_md
@@ -619,7 +629,7 @@ async def set_format(
     else:
         note = await _locked_note(session, note)
     note.format = note_format
-    fmt = await effective_format(session, learner_id, note)
+    fmt = await effective_format(session, learner_id, topic, note)
     if note.revision_ordinal > 0 and await _current_render(session, note, fmt) is None:
         await _render_and_cache(session, llm, learner_id, note, fmt)
     await session.commit()
@@ -694,7 +704,7 @@ async def restore_revision(
     note.learner_authored_md = revision.learner_authored_md
     note.authored_baseline = revision.authored_baseline
     await _commit_new_revision(session, note, revision.substrate, "restore")
-    fmt = await effective_format(session, learner_id, note)
+    fmt = await effective_format(session, learner_id, topic, note)
     await _render_and_cache(session, llm, learner_id, note, fmt)
     await session.commit()
     await session.refresh(note)  # note was updated; onupdate=func.now() expired updated_at
@@ -736,7 +746,9 @@ async def notes_index(
             )
         ).all()
     }
-    learned_format, conceptual_share = await _format_inputs(session, learner_id)
+    preferred_format, learned_format, conceptual_share = await _format_inputs(
+        session, learner_id, subject_id
+    )
     latest_event = {
         topic_id: at
         for topic_id, at in (
@@ -772,7 +784,7 @@ async def notes_index(
     entries: list[dict] = []
     for topic in topics:
         note = notes.get(topic.id)
-        fmt = _format_from(note, learned_format, conceptual_share)
+        fmt = _format_from(note, preferred_format, learned_format, conceptual_share)
         messages_watermark, events_watermark = _cursors(note)
         has_note = note is not None and note.revision_ordinal > 0
         stale = (latest_event.get(topic.id) or EPOCH) > events_watermark or (

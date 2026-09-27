@@ -781,3 +781,38 @@ async def test_provider_outage_during_catchup_preserves_exact_authored_note(
     assert view.revision_ordinal == 2
     source = await notes_svc.revision_source(db_session, learner.id, topic, 2)
     assert source == (typed, typed)
+
+
+async def test_the_learners_setting_sits_between_the_note_and_the_inference(
+    db_session: AsyncSession,
+) -> None:
+    """The note's own format > the learner's setting (S02) > the inferred format."""
+    from app.services import preferences
+
+    learner, topic, kc = await _seed(db_session)
+    learner_id = learner.id
+    db_session.add(
+        ProfileDimension(
+            learner_id=learner_id,
+            key="note_format",
+            value="mnemonic",
+            uncertainty=0.2,
+            kind="trait",
+            source="behavioral",
+        )
+    )
+    await db_session.flush()
+    assert (await notes_svc.note_view(db_session, learner_id, topic)).effective_format == "mnemonic"
+
+    await preferences.set_preference(
+        db_session, learner_id, "note_format", "narrative", subject_id=topic.subject_id
+    )
+    assert (
+        await notes_svc.note_view(db_session, learner_id, topic)
+    ).effective_format == "narrative"
+
+    await _add_observation(db_session, learner, kc)
+    await notes_svc.refresh_note(db_session, _distill_then_render(ATOMS), learner_id, topic)
+    llm = fake_llm_client(script=[FakeTurn(text="worked render")])
+    view = await notes_svc.set_format(db_session, llm, learner_id, topic, "worked_examples")
+    assert view.effective_format == "worked_examples"

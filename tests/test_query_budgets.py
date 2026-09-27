@@ -80,9 +80,10 @@ async def test_the_notes_index_does_not_query_per_topic(db_session: AsyncSession
     assert len(large_count) == len(small_count), (
         f"query count grew with the graph\nsmall: {small_count}\nlarge: {large_count}"
     )
-    # One constant lookup authorizes the subject before any private topic names are returned.
-    # The budget still proves graph size cannot add queries.
-    assert len(small_count) <= 8, small_count
+    # One constant lookup authorizes the subject before any private topic names are returned,
+    # and one reads the learner's note-format setting for the subject (S02). The budget still
+    # proves graph size cannot add queries.
+    assert len(small_count) <= 9, small_count
 
 
 async def test_a_subject_rollup_does_not_query_per_topic(db_session: AsyncSession) -> None:
