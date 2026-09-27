@@ -1426,7 +1426,7 @@ export interface paths {
         get?: never;
         /**
          * Set Preference
-         * @description Pin a setting globally or for one subject; the key's default clears that level.
+         * @description Pin a setting globally or for one subject; null clears that level.
          */
         put: operations["set_preference_api_v1_preferences__key__put"];
         post?: never;
@@ -3876,13 +3876,14 @@ export interface components {
         };
         /**
          * PreferenceSubmit
-         * @description Pin a setting at one level; the key's default clears that level.
+         * @description Pin a setting at one level, or clear that level with null (a subject then follows the
+         *     learner's default).
          */
         PreferenceSubmit: {
             /** Subject Id */
             subject_id?: string | null;
             /** Value */
-            value: string;
+            value: string | null;
         };
         /**
          * PrerequisiteCreate

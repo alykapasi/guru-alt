@@ -1191,14 +1191,9 @@ async def test_a_global_default_reaches_a_plan_with_no_subject_setting(
 
 
 async def test_detours_follow_the_setting_not_the_old_plan_column(db_session, api_learner) -> None:
-    """A global exploration default proposes the detour even though the plan row's own
-    ``guidance`` column still says guided — the column is no longer read (S02)."""
-    from app.services import preferences
-
-    await preferences.set_preference(
-        db_session, api_learner.id, "guidance", "exploration", subject_id=None
-    )
-    subject, prereq, _blocked = await _stuck_for(db_session, api_learner)
+    """An exploration setting for the subject proposes the detour even though the plan row's
+    own ``guidance`` column still says guided — the column is no longer read (S02)."""
+    subject, prereq, _blocked = await _stuck_for(db_session, api_learner, guidance="exploration")
 
     plan = await db_session.scalar(
         select(LessonPlan)

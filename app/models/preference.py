@@ -1,7 +1,8 @@
 """A learner's explicit settings (S02, V09): one row per choice, NULL subject = global.
 
-A row exists only for an explicit choice. Setting a key back to its catalog default deletes the
-row at that level, so "adapt to me" is the absence of a row rather than a stored value.
+A row exists only for an explicit choice. Globally, the catalog default needs no row; a subject
+row may hold the default too ("guided here", "adapt to me here"), because that differs from a
+global setting that says otherwise. Clearing a level deletes its row.
 """
 
 import uuid

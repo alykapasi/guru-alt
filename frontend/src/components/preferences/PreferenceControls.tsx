@@ -11,8 +11,6 @@ export function PreferenceControls({ subjectId }: { subjectId?: string }) {
     <div className="flex flex-col gap-3">
       {data.map((pref) => {
         const overridden = subjectId !== undefined && pref.source === "subject";
-        // The catalog default is always the first option ("auto", or "guided" for guidance).
-        const defaultValue = pref.options[0];
         return (
           <div key={pref.key} className="flex flex-col gap-1">
             <label className="text-body flex items-center justify-between gap-3">
@@ -45,7 +43,7 @@ export function PreferenceControls({ subjectId }: { subjectId?: string }) {
                   type="button"
                   className="link ml-1"
                   aria-label={`Use my default for ${pref.label}`}
-                  onClick={() => set.mutate({ key: pref.key, value: defaultValue })}
+                  onClick={() => set.mutate({ key: pref.key, value: null })}
                 >
                   Use my default
                 </button>

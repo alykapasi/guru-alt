@@ -21,7 +21,8 @@ class PreferenceRead(BaseModel):
 
 
 class PreferenceSubmit(BaseModel):
-    """Pin a setting at one level; the key's default clears that level."""
+    """Pin a setting at one level, or clear that level with null (a subject then follows the
+    learner's default)."""
 
-    value: str
+    value: str | None
     subject_id: uuid.UUID | None = None

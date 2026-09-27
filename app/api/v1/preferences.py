@@ -71,7 +71,7 @@ async def list_preferences(
 async def set_preference(
     key: str, data: PreferenceSubmit, session: SessionDep, learner: CurrentLearner
 ):
-    """Pin a setting globally or for one subject; the key's default clears that level."""
+    """Pin a setting globally or for one subject; null clears that level."""
     if data.subject_id is not None:
         await knowledge_svc.require_visible_subject(session, data.subject_id, learner.id)
     learner_id = learner.id

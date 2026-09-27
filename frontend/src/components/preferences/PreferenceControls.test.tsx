@@ -45,7 +45,7 @@ describe("PreferenceControls", () => {
     rows = [pace({ value: "unhurried", source: "subject", global_value: "brisk" })];
     rerender(<PreferenceControls subjectId="s1" />);
     fireEvent.click(screen.getByRole("button", { name: /Use my default for Pace/i }));
-    expect(setPref).toHaveBeenCalledWith({ key: "pace", value: "auto" });
+    expect(setPref).toHaveBeenCalledWith({ key: "pace", value: null });
   });
 
   it("explains what each guidance mode does", () => {

@@ -91,3 +91,19 @@ async def test_bad_keys_values_and_subjects_are_refused(
             f"{API}/preferences/pace", json={"value": "brisk", "subject_id": str(curated)}
         )
     ).status_code == 200
+
+
+async def test_null_clears_a_subject_override(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    subject_id = await _subject(db_session, api_learner)
+    await api_client.put(f"{API}/preferences/guidance", json={"value": "exploration"})
+    pinned = await api_client.put(
+        f"{API}/preferences/guidance", json={"value": "guided", "subject_id": str(subject_id)}
+    )
+    assert (pinned.json()["value"], pinned.json()["source"]) == ("guided", "subject")
+
+    cleared = await api_client.put(
+        f"{API}/preferences/guidance", json={"value": None, "subject_id": str(subject_id)}
+    )
+    assert (cleared.json()["value"], cleared.json()["source"]) == ("exploration", "global")

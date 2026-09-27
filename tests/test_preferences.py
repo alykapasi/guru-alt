@@ -59,7 +59,7 @@ async def test_subject_beats_global_beats_default(db_session: AsyncSession) -> N
     )
 
 
-async def test_the_default_value_deletes_but_an_equal_override_stays(
+async def test_an_equal_override_stays_pinned_when_the_default_moves(
     db_session: AsyncSession,
 ) -> None:
     learner = await _learner(db_session)
@@ -71,13 +71,61 @@ async def test_the_default_value_deletes_but_an_equal_override_stays(
     got = await preferences.effective(db_session, learner.id, subject_id)
     assert got["hints"] == preferences.Resolved("more", "subject"), "an override is pinned"
 
+
+async def test_a_subject_can_pin_the_default_against_a_different_global(
+    db_session: AsyncSession,
+) -> None:
+    """Global exploration, but guided for this one subject — and "adapt to me" for one subject
+    while the global pins hints. Before S02 a subject could choose guided whatever else did."""
+    learner = await _learner(db_session)
+    subject_id = await _subject(db_session, learner)
+    await preferences.set_preference(
+        db_session, learner.id, "guidance", "exploration", subject_id=None
+    )
+    await preferences.set_preference(db_session, learner.id, "hints", "fewer", subject_id=None)
+
+    await preferences.set_preference(
+        db_session, learner.id, "guidance", "guided", subject_id=subject_id
+    )
     await preferences.set_preference(db_session, learner.id, "hints", "auto", subject_id=subject_id)
+
+    got = await preferences.effective(db_session, learner.id, subject_id)
+    assert got["guidance"] == preferences.Resolved("guided", "subject")
+    assert got["hints"] == preferences.Resolved("auto", "subject")
+
+
+async def test_clearing_a_level_removes_only_that_level(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    subject_id = await _subject(db_session, learner)
+    await preferences.set_preference(db_session, learner.id, "pace", "brisk", subject_id=None)
+    await preferences.set_preference(
+        db_session, learner.id, "pace", "unhurried", subject_id=subject_id
+    )
+
+    await preferences.set_preference(db_session, learner.id, "pace", None, subject_id=subject_id)
+    assert (await preferences.effective(db_session, learner.id, subject_id))["pace"] == (
+        preferences.Resolved("brisk", "global")
+    )
+
+    await preferences.set_preference(db_session, learner.id, "pace", None, subject_id=None)
     rows = (
         await db_session.scalars(
             select(LearnerPreference).where(LearnerPreference.learner_id == learner.id)
         )
     ).all()
-    assert [(r.subject_id, r.value) for r in rows] == [(None, "fewer")]
+    assert rows == []
+
+
+async def test_the_global_default_value_needs_no_row(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    await preferences.set_preference(db_session, learner.id, "pace", "brisk", subject_id=None)
+    await preferences.set_preference(db_session, learner.id, "pace", "auto", subject_id=None)
+    rows = (
+        await db_session.scalars(
+            select(LearnerPreference).where(LearnerPreference.learner_id == learner.id)
+        )
+    ).all()
+    assert rows == []
 
 
 async def test_setting_twice_updates_the_one_row(db_session: AsyncSession) -> None:

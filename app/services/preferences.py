@@ -82,23 +82,27 @@ async def set_preference(
     session: AsyncSession,
     learner_id: uuid.UUID,
     key: str,
-    value: str,
+    value: str | None,
     *,
     subject_id: uuid.UUID | None,
 ) -> None:
-    """Record an explicit choice at one level, or clear it with the key's default. Commits.
+    """Record an explicit choice at one level, or clear that level with ``None``. Commits.
 
-    Only the catalog default deletes: an override equal to the global value is still an
-    override, so a later change of the global default does not move this subject.
+    A subject stores whatever it is given, the catalog default included: "guided here" or
+    "adapt to me here" while the global setting says otherwise is a real choice, and an
+    override equal to the global value stays pinned when the global value later moves. Only
+    the global level treats the catalog default as "no row", since nothing sits below it.
     """
-    if not is_valid(key, value):
-        raise InvalidPreference(f"{key}={value}")
     at_level = (
         LearnerPreference.subject_id.is_(None)
         if subject_id is None
         else LearnerPreference.subject_id == subject_id
     )
-    if value == CATALOG[key].default:
+    if value is not None and not is_valid(key, value):
+        raise InvalidPreference(f"{key}={value}")
+    if key not in CATALOG:
+        raise InvalidPreference(key)
+    if value is None or (subject_id is None and value == CATALOG[key].default):
         await session.execute(
             delete(LearnerPreference).where(
                 LearnerPreference.learner_id == learner_id, LearnerPreference.key == key, at_level
