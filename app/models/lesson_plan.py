@@ -68,8 +68,7 @@ class LessonPlan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # which is a revision rather than a new intention.
     goal_closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
-    # How much say the learner has over a prerequisite detour (S11): "guided" takes one as soon
-    # as it is triggered (today's behaviour); "exploration" only proposes one, and the learner
-    # accepts or skips it (app.learning.lesson_plan.decide_detour). Per-plan, not per-learner —
-    # it is a teaching-style choice about one subject, not an account-wide setting.
+    # No longer read (S02): guidance is a learner preference now, global with subject overrides
+    # (app.services.preferences), and migration 0068 copied every non-default value there. Kept
+    # until a cleanup migration drops it.
     guidance: Mapped[str] = mapped_column(Text, server_default="guided", default="guided")

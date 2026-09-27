@@ -31,6 +31,7 @@ from app.models.lesson_plan import LessonPlan
 from app.schemas.lesson_plan import GoalStatusRead, LessonPlanRead
 from app.services import concept_links as concept_links_svc
 from app.services import knowledge as knowledge_svc
+from app.services import preferences as preferences_svc
 from app.services import profile as profile_svc
 from app.services.llm_log import log_llm_call
 
@@ -203,7 +204,10 @@ async def plan_read(
         closed_at=plan.goal_closed_at,
         now=now,
     )
-    return LessonPlanRead.model_validate(plan).model_copy(update={"goal_status": status})
+    guidance = await preferences_svc.guidance_for(session, plan.learner_id, plan.subject_id)
+    return LessonPlanRead.model_validate(plan).model_copy(
+        update={"goal_status": status, "guidance": guidance}
+    )
 
 
 async def set_goal_closed(
@@ -455,11 +459,10 @@ async def generate_lesson_plan(
     kc_order = objective[: get_settings().lesson_plan_max_steps]
     bare_steps = engine.build_initial_steps(kc_order)
 
-    # Read before revising: a regenerate of an *existing* plan keeps its guidance setting
-    # rather than silently resetting a learner's exploration mode back to guided every time
-    # they change their goal (S24) — a brand-new plan has none yet, so it falls back to guided.
+    # The learner's setting for this subject, else their default (S02). Read from preferences,
+    # not the plan row, so a regenerate keeps it (S24) and a change of default reaches it.
     plan = await _get_plan(session, learner_id, subject_id)
-    guidance = cast("engine.Guidance", plan.guidance) if plan is not None else "guided"
+    guidance = await preferences_svc.guidance_for(session, learner_id, subject_id)
 
     mastered = await mastered_kc_ids(session, learner_id, kc_order)
     due_reviews = await _due_review_kc_ids(session, learner_id, all_kc_ids)
@@ -592,6 +595,7 @@ async def _apply_revision(
     learner's decision (a skip's own ``detour_outcome``), so reading "before" off it here would
     see the very outcome this call is supposed to be noticing as new.
     """
+    guidance = await preferences_svc.guidance_for(session, learner_id, plan.subject_id)
     open_detours_before = _open_detour_keys(plan.steps)
     if outcomes_before is None:
         outcomes_before = _closed_detours(plan.steps)
@@ -623,7 +627,7 @@ async def _apply_revision(
         external_detours=await _external_detours(
             session, learner_id=learner_id, subject_id=plan.subject_id, steps=plan.steps
         ),
-        guidance=cast("engine.Guidance", plan.guidance),
+        guidance=guidance,
         disproved_kc_ids=disproved,
         provisional_kc_ids=provisional,
         now=now,
@@ -643,7 +647,7 @@ async def _apply_revision(
             mastered_kc_ids=mastered,
             due_review_kc_ids=due_reviews,
             scaffolding=scaffolding,
-            guidance=cast("engine.Guidance", plan.guidance),
+            guidance=guidance,
             provisional_kc_ids=provisional,
             now=now,
             # Neither `detour` nor `external_detours` passed again: the first pass already
@@ -663,7 +667,7 @@ async def _apply_revision(
                 prereq_kc_id=detour.prereq_kc_id,
                 reason=detour.reason,
                 consecutive_failures=detour.consecutive_failures,
-                proposed=plan.guidance == "exploration",
+                proposed=guidance == "exploration",
             )
     # Every detour that closed just now — mastered, disproved, or skipped — is a decision
     # about the plan, not evidence about the learner (test_outcomes_are_decisions_not_evidence),
@@ -694,17 +698,19 @@ async def set_guidance(
     subject_id: uuid.UUID,
     guidance: engine.Guidance,
 ) -> LessonPlan | None:
-    """Set how much say the learner has over a prerequisite detour for this plan (S11).
+    """Set how much say the learner has over a prerequisite detour in this subject (S11).
 
-    Touches one column and nothing else — no step is rewritten, so an open proposal or an
-    already-taken detour is left exactly as it was (spec §2: switching modes mid-decision does
-    not retroactively rewrite it). The next revision reads the new mode.
+    Writes the learner's guidance preference for the subject (S02); the plan row's own column
+    is no longer read. No step is rewritten, so an open proposal or an already-taken detour is
+    left exactly as it was (switching modes mid-decision does not retroactively rewrite it).
+    The next revision reads the new mode.
     """
     plan = await _get_plan(session, learner_id, subject_id)
     if plan is None:
         return None
-    plan.guidance = guidance
-    await session.commit()
+    await preferences_svc.set_preference(
+        session, learner_id, "guidance", guidance, subject_id=subject_id
+    )
     await session.refresh(plan)
     return plan
 

@@ -19,6 +19,7 @@ from app.models.assessment import Item, ItemKC, ItemType
 from app.models.knowledge import KC, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
+from app.models.lesson_plan import LessonPlan
 from app.models.profile import ProfileDimension
 from app.schemas.assessment import AnswerSubmit
 from app.services import assessment as assessment_svc
@@ -1152,3 +1153,58 @@ async def test_deciding_without_a_plan_is_404(api_client, db_session, api_learne
         json={"decision": "skip"},
     )
     assert r.status_code == 404
+
+
+# --- guidance is a learner preference (S02) ------------------------------------------------
+
+
+async def test_the_guidance_endpoint_writes_the_subject_setting(
+    api_client, db_session, api_learner
+) -> None:
+    from app.services import preferences
+
+    subject = await _plan_for(db_session, api_learner)
+    subject_id = subject.id
+
+    r = await api_client.patch(
+        f"{API}/subjects/{subject_id}/lesson-plan/guidance", json={"guidance": "exploration"}
+    )
+
+    assert r.status_code == 200 and r.json()["guidance"] == "exploration"
+    got = await preferences.effective(db_session, api_learner.id, subject_id)
+    assert got["guidance"] == preferences.Resolved("exploration", "subject")
+
+
+async def test_a_global_default_reaches_a_plan_with_no_subject_setting(
+    api_client, db_session, api_learner
+) -> None:
+    from app.services import preferences
+
+    subject = await _plan_for(db_session, api_learner)
+    await preferences.set_preference(
+        db_session, api_learner.id, "guidance", "exploration", subject_id=None
+    )
+
+    r = await api_client.get(f"{API}/subjects/{subject.id}/lesson-plan")
+
+    assert r.json()["guidance"] == "exploration"
+
+
+async def test_detours_follow_the_setting_not_the_old_plan_column(db_session, api_learner) -> None:
+    """A global exploration default proposes the detour even though the plan row's own
+    ``guidance`` column still says guided — the column is no longer read (S02)."""
+    from app.services import preferences
+
+    await preferences.set_preference(
+        db_session, api_learner.id, "guidance", "exploration", subject_id=None
+    )
+    subject, prereq, _blocked = await _stuck_for(db_session, api_learner)
+
+    plan = await db_session.scalar(
+        select(LessonPlan)
+        .where(LessonPlan.learner_id == api_learner.id, LessonPlan.subject_id == subject.id)
+        .execution_options(populate_existing=True)
+    )
+    assert plan is not None and plan.guidance == "guided"
+    step = next(s for s in plan.steps if s["kc_id"] == str(prereq.id))
+    assert step["status"] == "proposed"
