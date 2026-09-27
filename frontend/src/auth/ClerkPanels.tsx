@@ -77,11 +77,9 @@ function ExchangeOrPanel({ panel }: { panel: React.ReactNode }) {
   const problem = useExchangeOnce();
   return (
     <div className="flex flex-col items-center">
-      {isSignedIn ? (
-        !problem && <p className="text-body text-base-content/70">Signing you in…</p>
-      ) : (
-        panel
-      )}
+      {isSignedIn
+        ? !problem && <p className="text-body text-base-content/70">Signing you in…</p>
+        : panel}
       {problem && <Problem>{problem}</Problem>}
     </div>
   );
