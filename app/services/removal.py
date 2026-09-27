@@ -11,9 +11,10 @@ What derives from what is decided in the provenance resolvers below and nowhere 
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import structlog
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat import Conversation, Message
@@ -120,12 +121,19 @@ def _replies_citing(learner_id: uuid.UUID, source_id: uuid.UUID):
     )
 
 
-def _memories_from(learner_id: uuid.UUID, conversation_id: uuid.UUID):
-    """Current memories learned in this conversation, live, archived or deleted."""
+def _memories_from(
+    learner_id: uuid.UUID, conversation_id: uuid.UUID, *, replaced_too: bool = False
+):
+    """Current memories learned in this conversation, live, archived or deleted.
+
+    ``replaced_too`` adds the ones since replaced (S42): they are shown under their replacement
+    and Undo can restore them, so forgetting the conversation has to reach them as well.
+    """
+    statuses = [MemoryStatus.CURRENT] + ([MemoryStatus.SUPERSEDED] if replaced_too else [])
     return select(Memory.id).where(
         Memory.learner_id == learner_id,
         Memory.origin_conversation_id == conversation_id,
-        Memory.status == MemoryStatus.CURRENT,
+        Memory.status.in_(statuses),
     )
 
 
@@ -263,7 +271,7 @@ async def delete_conversation(
     if forget:
         await session.execute(
             update(Memory)
-            .where(Memory.id.in_(_memories_from(learner_id, conversation_id)))
+            .where(Memory.id.in_(_memories_from(learner_id, conversation_id, replaced_too=True)))
             .values(status=MemoryStatus.DELETED, forgotten_scope=ForgetScope.CONVERSATION)
         )
         await _clear_profile_watermark(session, learner_id)
@@ -281,13 +289,14 @@ async def forget_conversation_memories(
     Memories the learner wrote themselves have no origin and are never touched. Idempotent: a
     second call finds nothing current and returns 0.
     """
-    ids = list((await session.scalars(_memories_from(learner_id, conversation_id))).all())
-    if ids:
-        await session.execute(
-            update(Memory)
-            .where(Memory.id.in_(ids))
-            .values(status=MemoryStatus.DELETED, forgotten_scope=ForgetScope.CONVERSATION)
-        )
+    current = await _count(session, _memories_from(learner_id, conversation_id))
+    result = await session.execute(
+        update(Memory)
+        .where(Memory.id.in_(_memories_from(learner_id, conversation_id, replaced_too=True)))
+        .values(status=MemoryStatus.DELETED, forgotten_scope=ForgetScope.CONVERSATION)
+    )
+    if cast("CursorResult[Any]", result).rowcount:
         await _clear_profile_watermark(session, learner_id)
     await session.commit()
-    return len(ids)
+    # What the learner could see: replaced memories were forgotten too, but never listed.
+    return current

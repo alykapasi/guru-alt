@@ -12,12 +12,13 @@ import uuid
 from typing import cast
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.llm import LLMClient, ModelRole
 from app.llm.providers.fake import FakeProvider, FakeTurn
-from app.llm.registry import fake_llm_client
+from app.llm.registry import ModelSpec, fake_llm_client
 from app.memory import retrieval
 from app.models.chat import Conversation, Message
 from app.models.learner import Learner
@@ -512,3 +513,109 @@ async def test_undo_reverts_a_correction(db_session: AsyncSession) -> None:
     restored = await svc.undo_replacement(db_session, learner.id, corrected.id)
 
     assert restored is not None and restored.id == original_id
+
+
+# --- final review fixes ---------------------------------------------------------------------
+
+
+class _ForgetsDuringTheJudgement(FakeProvider):
+    """Forgets a memory in another transaction's style (raw SQL, identity map untouched) while
+    the judge is thinking — the learner clicking Forget during a write-back."""
+
+    def __init__(self, session: AsyncSession, memory_id: uuid.UUID, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._session, self._memory_id = session, memory_id
+
+    async def complete(self, *, model, messages, system=None, max_tokens=1024, tools=None):
+        if self._call_index == 1:
+            await self._session.execute(
+                text(
+                    "UPDATE memories SET status = 'deleted', forgotten_scope = 'learner' "
+                    "WHERE id = :id"
+                ),
+                {"id": self._memory_id},
+            )
+        return await super().complete(
+            model=model, messages=messages, system=system, max_tokens=max_tokens, tools=tools
+        )
+
+
+async def test_a_forget_during_the_judgement_is_not_overwritten(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    first = await _conversation(db_session, learner, "I study in the mornings.")
+    [old] = await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=first.id)
+    old_id = old.id
+    second = await _conversation(db_session, learner, "Evenings now.")
+    provider = _ForgetsDuringTheJudgement(
+        db_session,
+        old_id,
+        script=[FakeTurn(text=EVENINGS), FakeTurn(text=UPDATES_FIRST)],
+    )
+    llm = LLMClient({"fake": provider}, {r: ModelSpec("fake", "fake-1") for r in ModelRole})
+
+    with _everything_is_equivalent():
+        [new] = await svc.write_back(db_session, llm, conversation_id=second.id)
+
+    forgotten = await db_session.get(Memory, old_id, populate_existing=True)
+    assert forgotten is not None and forgotten.status == MemoryStatus.DELETED
+    assert forgotten.superseded_by_id is None
+    assert new.status == MemoryStatus.CURRENT
+
+
+async def test_forgetting_a_conversation_forgets_what_it_taught_that_was_replaced(
+    db_session: AsyncSession,
+) -> None:
+    from app.services import removal
+
+    learner = await _learner(db_session)
+    old_id, new_id = await _replaced_pair(db_session, learner)
+    old = await db_session.get(Memory, old_id)
+    assert old is not None and old.origin_conversation_id is not None
+    origin = old.origin_conversation_id
+
+    await removal.forget_conversation_memories(db_session, learner.id, origin)
+
+    assert await svc.replaced_by(db_session, [new_id]) == {}
+    with pytest.raises(svc.NotAReplacement):
+        await svc.undo_replacement(db_session, learner.id, new_id)
+    old = await db_session.get(Memory, old_id, populate_existing=True)
+    assert old is not None and old.status == MemoryStatus.DELETED
+    assert old.forgotten_scope == "conversation"
+
+
+class _ForgetsDuringTheEmbedding(FakeProvider):
+    def __init__(self, session: AsyncSession, memory_id: uuid.UUID) -> None:
+        super().__init__()
+        self._session, self._memory_id = session, memory_id
+
+    async def embed(self, *, model, texts):
+        await self._session.execute(
+            text(
+                "UPDATE memories SET status = 'deleted', forgotten_scope = 'learner' WHERE id = :id"
+            ),
+            {"id": self._memory_id},
+        )
+        await self._session.commit()  # the other request's forget has landed
+        return await super().embed(model=model, texts=texts)
+
+
+async def test_a_forget_during_a_correction_is_not_overwritten(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    first = await _conversation(db_session, learner, "I study in the mornings.")
+    [original] = await svc.write_back(
+        db_session, fake_llm_client(MORNINGS), conversation_id=first.id
+    )
+    original_id, learner_id = original.id, learner.id
+    llm = LLMClient(
+        {"fake": _ForgetsDuringTheEmbedding(db_session, original_id)},
+        {r: ModelSpec("fake", "fake-1") for r in ModelRole},
+    )
+
+    corrected = await svc.correct_memory(
+        db_session, llm, learner_id, original_id, content="Studies at night."
+    )
+
+    assert corrected is None
+    row = await db_session.get(Memory, original_id, populate_existing=True)
+    assert row is not None and row.status == MemoryStatus.DELETED
+    assert await svc.list_memories(db_session, learner_id) == []

@@ -157,12 +157,11 @@ async def write_back(
             session.add(memory)
             created.append(memory)
             if judgement.verdict == "updates" and judgement.target is not None:
-                old = neighbours[judgement.target]
-                # Two candidates can name the same neighbour; only the first replaces it.
-                if old.status == MemoryStatus.CURRENT:
-                    await session.flush()
-                    old.status = MemoryStatus.SUPERSEDED
-                    old.superseded_by_id = memory.id
+                # Two candidates can name the same neighbour, and the learner can forget or
+                # correct it while the judge is thinking: only a still-current row is replaced.
+                # Otherwise the new memory simply coexists.
+                await session.flush()
+                await _supersede(session, neighbours[judgement.target].id, memory.id)
     await session.commit()
     return created
 
@@ -452,11 +451,28 @@ async def correct_memory(
     )
     session.add(replacement)
     await session.flush()
-    memory.status = MemoryStatus.SUPERSEDED
-    memory.superseded_by_id = replacement.id
+    if not await _supersede(session, memory.id, replacement.id):
+        # Forgotten or replaced while the correction was being embedded.
+        await session.rollback()
+        return None
     await session.commit()
     await session.refresh(replacement)
     return replacement
+
+
+async def _supersede(session: AsyncSession, old_id: uuid.UUID, new_id: uuid.UUID) -> bool:
+    """Mark ``old_id`` replaced by ``new_id`` — only if it is still current.
+
+    Conditional in the database, not on a copy read before a model call: a Forget that landed
+    meanwhile must stay a Forget, not become a replacement that Undo could bring back.
+    """
+    result = await session.execute(
+        update(Memory)
+        .where(Memory.id == old_id, Memory.status == MemoryStatus.CURRENT)
+        .values(status=MemoryStatus.SUPERSEDED, superseded_by_id=new_id)
+        .execution_options(synchronize_session="fetch")
+    )
+    return cast("CursorResult[Any]", result).rowcount == 1
 
 
 async def delete_memory(session: AsyncSession, learner_id: uuid.UUID, memory_id: uuid.UUID) -> bool:
