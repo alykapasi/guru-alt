@@ -26,7 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.llm import LLMClient, ModelRole
 from app.llm.embedding_space import current_space, exact_cosine_distance
-from app.memory.extraction import EXTRACTION_ROLE, extract_memories
+from app.memory import supersession
+from app.memory.extraction import EXTRACTION_ROLE, ExtractedMemory, extract_memories
 from app.models.chat import Conversation, Message
 from app.models.memory import Memory, MemoryKind, MemoryStatus
 from app.services.llm_log import log_llm_call
@@ -39,9 +40,11 @@ async def write_back(
     """Extract durable memories from ``conversation_id``'s recent history and persist them.
 
     Unknown/foreign ``conversation_id`` -> ``[]``, no crash (the queued task may run after the
-    conversation's owner state has changed). Near-duplicate candidates (cosine distance to an
-    existing same-``(learner_id, kind)`` memory at or below ``memory_dedup_max_distance``) are
-    skipped rather than persisted.
+    conversation's owner state has changed). A candidate identical to an existing
+    same-``(learner_id, kind)`` memory within ``memory_dedup_max_distance`` is skipped for free.
+    One with current neighbours within ``memory_related_max_distance`` is judged same / updates /
+    coexists in one FAST call per run (S42); doubt means coexists, so nothing true is retired on
+    a guess.
     """
     conversation = await session.get(Conversation, conversation_id)
     if conversation is None:
@@ -85,23 +88,20 @@ async def write_back(
             conversation_id=conversation_id,
         )
     created: list[Memory] = []
+    # Candidates the judge must decide: (item, embedding, neighbour rows).
+    pending: list[tuple[ExtractedMemory, list[float], list[Memory]]] = []
     for item, embedding in zip(extracted, embedded.vectors, strict=True):
-        # Two separate questions, deliberately not one nearest-row lookup. Superseded rows are
-        # excluded from both: one has already been replaced, so its replacement is the thing
-        # this should be compared against, and a superseded row that happens to sit closer
-        # would otherwise be answered for.
-        tombstone = await _nearest(
+        if await _suppressed(
             session,
             conversation.learner_id,
             item.kind,
             embedding,
+            conversation_id=conversation_id,
             max_distance=settings.memory_dedup_max_distance,
             space=space,
-            status=MemoryStatus.DELETED,
-        )
-        if tombstone is not None:
-            # The learner removed this. Re-extracting it from the same history is how a
-            # deleted memory used to come back; the tombstone is what stops that.
+        ):
+            # The learner forgot this. Re-extracting it is how a forgotten memory used to come
+            # back; the tombstone is what stops that (scoped, since S42 decision B).
             continue
         prior = await _nearest(
             session,
@@ -113,30 +113,124 @@ async def write_back(
             status=MemoryStatus.CURRENT,
         )
         if prior is not None and prior.content.strip() == item.content.strip():
-            continue  # genuinely nothing new
-        memory = Memory(
-            embedding_space=space,
-            learner_id=conversation.learner_id,
-            conversation_id=conversation_id,
-            origin_conversation_id=conversation_id,
-            kind=item.kind,
-            content=item.content,
-            embedding=embedding,
+            continue  # genuinely nothing new — no need to ask anyone
+        neighbours = (
+            []
+            if item.kind == MemoryKind.SUMMARY  # what was covered always coexists
+            else await _neighbours(
+                session,
+                conversation.learner_id,
+                item.kind,
+                embedding,
+                max_distance=settings.memory_related_max_distance,
+                space=space,
+            )
         )
-        # Autoflush (the default) makes this visible to the *next* item's dedup query below —
-        # intentional intra-batch dedup, not an accident. Don't collapse this into one batched
-        # check; that would silently disable it.
-        session.add(memory)
-        if prior is not None:
-            # Close but not identical: the learner said something that revises this. Skipping
-            # kept the *stale* entry and discarded the correction — precisely backwards. The
-            # link makes it a correction on the record rather than a silent overwrite.
-            await session.flush()
-            prior.status = MemoryStatus.SUPERSEDED
-            prior.superseded_by_id = memory.id
-        created.append(memory)
+        if not neighbours:
+            # Added now, so a later item in this batch sees it (autoflush makes it visible to
+            # the next query) — intra-batch dedup, deliberately not batched.
+            created.append(_new_memory(conversation, item, embedding, space))
+            session.add(created[-1])
+            continue
+        pending.append((item, embedding, neighbours))
+
+    if pending:
+        judgements, usage = await supersession.judge(
+            llm,
+            [
+                supersession.Candidate(item.content, [n.content for n in neighbours])
+                for item, _embedding, neighbours in pending
+            ],
+        )
+        if usage.total_tokens:
+            await log_llm_call(
+                learner_id=conversation.learner_id,
+                role=supersession.JUDGE_ROLE.value,
+                spec=llm.spec(supersession.JUDGE_ROLE),
+                usage=usage,
+                conversation_id=conversation_id,
+            )
+        for (item, embedding, neighbours), judgement in zip(pending, judgements, strict=True):
+            if judgement.verdict == "same":
+                continue
+            memory = _new_memory(conversation, item, embedding, space)
+            session.add(memory)
+            created.append(memory)
+            if judgement.verdict == "updates" and judgement.target is not None:
+                old = neighbours[judgement.target]
+                # Two candidates can name the same neighbour; only the first replaces it.
+                if old.status == MemoryStatus.CURRENT:
+                    await session.flush()
+                    old.status = MemoryStatus.SUPERSEDED
+                    old.superseded_by_id = memory.id
     await session.commit()
     return created
+
+
+def _new_memory(
+    conversation: Conversation, item: ExtractedMemory, embedding: list[float], space: str
+) -> Memory:
+    return Memory(
+        embedding_space=space,
+        learner_id=conversation.learner_id,
+        conversation_id=conversation.id,
+        origin_conversation_id=conversation.id,
+        kind=item.kind,
+        content=item.content,
+        embedding=embedding,
+    )
+
+
+async def _neighbours(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    kind: MemoryKind,
+    embedding: list[float],
+    *,
+    max_distance: float,
+    space: str,
+    limit: int = 3,
+) -> list[Memory]:
+    """The learner's current memories of ``kind`` close enough to be about the same thing,
+    nearest first — what the judge compares a candidate against."""
+    distance = exact_cosine_distance(Memory.embedding, embedding)
+    rows = (
+        await session.execute(
+            select(Memory, distance.label("distance"))
+            .where(
+                Memory.learner_id == learner_id,
+                Memory.kind == kind,
+                Memory.embedding_space == space,
+                Memory.status == MemoryStatus.CURRENT,
+            )
+            .order_by(distance)
+            .limit(limit)
+        )
+    ).all()
+    return [memory for memory, dist in rows if dist <= max_distance]
+
+
+async def _suppressed(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    kind: MemoryKind,
+    embedding: list[float],
+    *,
+    conversation_id: uuid.UUID,
+    max_distance: float,
+    space: str,
+) -> bool:
+    """Whether a forgotten memory stops this one being stored."""
+    tombstone = await _nearest(
+        session,
+        learner_id,
+        kind,
+        embedding,
+        max_distance=max_distance,
+        space=space,
+        status=MemoryStatus.DELETED,
+    )
+    return tombstone is not None
 
 
 async def _unprocessed_messages(

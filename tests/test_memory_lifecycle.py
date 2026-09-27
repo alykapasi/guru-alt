@@ -9,12 +9,14 @@ memories had all of them injected into every turn regardless of the question.
 
 import contextlib
 import uuid
+from typing import cast
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.llm.providers.fake import FakeProvider, FakeTurn
 from app.llm.registry import fake_llm_client
 from app.memory import retrieval
 from app.models.chat import Conversation, Message
@@ -25,6 +27,17 @@ from tests.embedding import FAKE_SPACE
 
 MORNINGS = '{"memories": [{"kind": "preference", "content": "Studies in the mornings."}]}'
 EVENINGS = '{"memories": [{"kind": "preference", "content": "Studies in the evenings now."}]}'
+UPDATES_FIRST = '{"verdicts": [{"candidate": 1, "verdict": "updates", "replaces": 1}]}'
+COEXISTS_FIRST = '{"verdicts": [{"candidate": 1, "verdict": "coexists"}]}'
+SAME_FIRST = '{"verdicts": [{"candidate": 1, "verdict": "same"}]}'
+
+
+def _extract_then_judge(extracted: str, verdicts: str):
+    return fake_llm_client(script=[FakeTurn(text=extracted), FakeTurn(text=verdicts)])
+
+
+def _calls(llm) -> int:
+    return len(cast(FakeProvider, llm._providers["fake"]).prompts_sent)
 
 
 async def _learner(session: AsyncSession) -> Learner:
@@ -65,7 +78,7 @@ def _everything_is_equivalent():
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
             "app.services.memory.get_settings",
-            lambda: Settings(memory_dedup_max_distance=2.0),
+            lambda: Settings(memory_dedup_max_distance=2.0, memory_related_max_distance=2.0),
         )
         yield
 
@@ -93,7 +106,7 @@ async def test_a_correction_replaces_the_entry_it_contradicts(db_session: AsyncS
 
     with _everything_is_equivalent():
         created = await svc.write_back(
-            db_session, fake_llm_client(EVENINGS), conversation_id=second.id
+            db_session, _extract_then_judge(EVENINGS, UPDATES_FIRST), conversation_id=second.id
         )
 
     assert [m.content for m in created] == ["Studies in the evenings now."]
@@ -110,7 +123,9 @@ async def test_the_superseded_entry_is_kept_and_points_at_its_replacement(
     await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=first.id)
     second = await _conversation(db_session, learner, "Actually I study evenings now.")
     with _everything_is_equivalent():
-        await svc.write_back(db_session, fake_llm_client(EVENINGS), conversation_id=second.id)
+        await svc.write_back(
+            db_session, _extract_then_judge(EVENINGS, UPDATES_FIRST), conversation_id=second.id
+        )
 
     rows = await _memories(db_session, learner.id)
 
@@ -225,3 +240,109 @@ async def test_a_memory_beyond_the_relevance_floor_is_not_injected(
         )
 
     assert hits == []
+
+
+# --- the judge decides (S42) ----------------------------------------------------------------
+
+
+async def test_coexisting_memories_both_stay(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    first = await _conversation(db_session, learner, "I study in the mornings.")
+    await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=first.id)
+    second = await _conversation(db_session, learner, "I also study on Sundays.")
+
+    with _everything_is_equivalent():
+        await svc.write_back(
+            db_session, _extract_then_judge(EVENINGS, COEXISTS_FIRST), conversation_id=second.id
+        )
+
+    assert len(await svc.list_memories(db_session, learner.id)) == 2
+
+
+async def test_a_rewording_is_skipped(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    first = await _conversation(db_session, learner, "I study in the mornings.")
+    await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=first.id)
+    second = await _conversation(db_session, learner, "Mornings are when I study.")
+
+    with _everything_is_equivalent():
+        created = await svc.write_back(
+            db_session, _extract_then_judge(EVENINGS, SAME_FIRST), conversation_id=second.id
+        )
+
+    assert created == [] and len(await svc.list_memories(db_session, learner.id)) == 1
+
+
+async def test_a_failed_judgement_keeps_both_and_still_advances(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    first = await _conversation(db_session, learner, "I study in the mornings.")
+    await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=first.id)
+    second = await _conversation(db_session, learner, "Evenings now.")
+    second_id = second.id
+
+    with _everything_is_equivalent():
+        await svc.write_back(
+            db_session, _extract_then_judge(EVENINGS, "garbage"), conversation_id=second_id
+        )
+
+    assert len(await svc.list_memories(db_session, learner.id)) == 2
+    conversation = await db_session.get(Conversation, second_id, populate_existing=True)
+    assert conversation is not None and conversation.memory_watermark is not None
+
+
+async def test_an_identical_duplicate_needs_no_judge(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    first = await _conversation(db_session, learner, "I study in the mornings.")
+    await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=first.id)
+    second = await _conversation(db_session, learner, "Mornings.")
+    llm = _extract_then_judge(MORNINGS, UPDATES_FIRST)
+
+    with _everything_is_equivalent():
+        await svc.write_back(db_session, llm, conversation_id=second.id)
+
+    assert _calls(llm) == 1, "only the extraction call"
+
+
+async def test_summaries_are_never_judged(db_session: AsyncSession) -> None:
+    summary = '{"memories": [{"kind": "summary", "content": "Covered vectors."}]}'
+    other = '{"memories": [{"kind": "summary", "content": "Covered forces."}]}'
+    learner = await _learner(db_session)
+    first = await _conversation(db_session, learner, "vectors")
+    await svc.write_back(db_session, fake_llm_client(summary), conversation_id=first.id)
+    second = await _conversation(db_session, learner, "forces")
+    llm = _extract_then_judge(other, UPDATES_FIRST)
+
+    with _everything_is_equivalent():
+        await svc.write_back(db_session, llm, conversation_id=second.id)
+
+    assert _calls(llm) == 1
+    assert len(await svc.list_memories(db_session, learner.id)) == 2
+
+
+async def test_two_candidates_naming_one_neighbour_supersede_it_once(
+    db_session: AsyncSession,
+) -> None:
+    """Review focus 1: a second "updates" for a row already superseded in this run is stored
+    as coexisting rather than superseding a non-current row."""
+    two = (
+        '{"memories": [{"kind": "preference", "content": "Evenings now."}, '
+        '{"kind": "preference", "content": "Late evenings, actually."}]}'
+    )
+    both_update = (
+        '{"verdicts": [{"candidate": 1, "verdict": "updates", "replaces": 1}, '
+        '{"candidate": 2, "verdict": "updates", "replaces": 1}]}'
+    )
+    learner = await _learner(db_session)
+    first = await _conversation(db_session, learner, "I study in the mornings.")
+    await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=first.id)
+    second = await _conversation(db_session, learner, "Evenings. No, late evenings.")
+
+    with _everything_is_equivalent():
+        await svc.write_back(
+            db_session, _extract_then_judge(two, both_update), conversation_id=second.id
+        )
+
+    rows = await _memories(db_session, learner.id)
+    superseded = [m for m in rows if m.status == MemoryStatus.SUPERSEDED]
+    assert len(superseded) == 1
+    assert len([m for m in rows if m.status == MemoryStatus.CURRENT]) == 2
