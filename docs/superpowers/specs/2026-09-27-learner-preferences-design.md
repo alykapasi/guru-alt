@@ -104,8 +104,9 @@ no plan rebuild.
 - `PUT /preferences/{key}` body `{value, subject_id?}` → the same entry for that key. The
   default value deletes the row at that level.
 - 422: unknown key, or a value outside that key's options. 404: a subject the learner cannot see
-  (`is_visible_to`; curated subjects are allowed). An administrator's visit may read; a write
-  is refused by the existing read-only rule for visits.
+  (`is_visible_to`; curated subjects are allowed). An administrator's visit is sudo, not
+  read-only (workstream 1): it may read and write preferences like any learner route, and the
+  write is recorded by the existing admin-action audit.
 
 ### Frontend
 
@@ -124,7 +125,7 @@ no plan rebuild.
 - Resolution: subject over global over default; setting the default deletes the row; unknown
   keys/values ignored.
 - API: 422 cases; 404 for another learner's private subject; a write during an admin visit
-  refused; visibility sweep coverage for `subject_id`.
+  audited; visibility sweep coverage for `subject_id`.
 - Consumers: the composed tutor prompt carries a pinned level and pace; pinned hints replace
   the inferred density and `auto` leaves it; a lesson prompt carries the level and its cache
   key changes; the note format order including a note's own format beating the preference;
