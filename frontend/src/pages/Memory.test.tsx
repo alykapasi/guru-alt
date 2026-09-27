@@ -171,3 +171,32 @@ describe("where a memory was learned", () => {
     expect(screen.queryByText(/^From/)).not.toBeInTheDocument();
   });
 });
+
+describe("a replacement that was wrong", () => {
+  it("shows what was replaced and puts it back on Undo", async () => {
+    const replacing = {
+      ...MEMORY,
+      id: "m-new",
+      content: "Studies in the evenings now",
+      replaced: { id: "m-old", content: "Studies in the mornings" },
+    };
+    const fetchMock = vi.fn((input: Request | string) => {
+      const request = input as Request;
+      if (request.method === "POST") {
+        return Promise.resolve(jsonResponse({ ...MEMORY, id: "m-old" }));
+      }
+      return Promise.resolve(jsonResponse([replacing]));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+
+    expect(await screen.findByText(/Replaced: Studies in the mornings/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Undo replacement/ }));
+
+    await waitFor(() => {
+      const posts = fetchMock.mock.calls.filter(([r]) => (r as Request).method === "POST");
+      expect(posts).toHaveLength(1);
+      expect((posts[0][0] as Request).url).toContain("/api/v1/memory/m-new/undo-replacement");
+    });
+  });
+});

@@ -4,6 +4,7 @@ import {
   useCorrectMemory,
   useForgetAllMemory,
   useForgetMemory,
+  useUndoReplacement,
   useForgetOrigin,
   useMemories,
 } from "../api/hooks";
@@ -74,6 +75,7 @@ function Row({ memory }: { memory: Memory }) {
   const [draft, setDraft] = useState(memory.content);
   const correct = useCorrectMemory();
   const forget = useForgetMemory();
+  const undo = useUndoReplacement();
 
   const save = () => {
     const next = draft.trim();
@@ -147,6 +149,25 @@ function Row({ memory }: { memory: Memory }) {
           )}
         </div>
       </div>
+      {memory.replaced && (
+        <p className="text-caption text-base-content/60 pl-24">
+          Replaced: {memory.replaced.content}{" "}
+          <button
+            type="button"
+            className="link"
+            disabled={undo.isPending}
+            onClick={() => undo.mutate(memory.id)}
+            aria-label={`Undo replacement of: ${memory.replaced.content}`}
+          >
+            Undo
+          </button>
+        </p>
+      )}
+      {undo.isError && (
+        <p className="text-caption text-error pl-24">
+          That can&apos;t be undone any more — the earlier memory changed since.
+        </p>
+      )}
       <Origin memory={memory} />
       {correct.isError && (
         <p className="text-caption text-error pl-24">

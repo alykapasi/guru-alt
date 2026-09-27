@@ -566,6 +566,24 @@ export function useForgetMemory() {
   });
 }
 
+/** Put back the memory this one replaced (S42) — for when an automatic replacement was
+ * wrong. Nothing is forgotten, so the retired statement can be learned again later. */
+export function useUndoReplacement() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { data, error } = await api.POST("/api/v1/memory/{memory_id}/undo-replacement", {
+        params: { path: { memory_id: id } },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memories"] });
+    },
+  });
+}
+
 // --- Concept links: cross-subject connections (S24) -------------------------
 
 /** Endorsed concept links this learner can act on (S24): undecided ones to accept or decline,
