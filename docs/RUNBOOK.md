@@ -849,9 +849,10 @@ Deleting an account is a state, then an erase (V12).
    Repeating it keeps the due date. `?now=true` erases in the same call.
 2. **Pending.** Signing in again works, but every route answers 403
    `{"code": "deletion_pending"}` except the recovery routes: `/auth/me`, `/auth/logout(-all)`,
-   `GET /me/deletion`, `POST /me/deletion/restore`, `POST /me/deletion/erase`, `GET /me/export`
-   and `GET /me/export/sources/{id}/file`. The app shows the recovery screen. An administrator's
-   visit is gated the same way. A suspended account is still refused at sign-in.
+   `GET /me/deletion`, `POST /me/deletion/restore`, `POST /me/deletion/erase`, `GET /me/export`,
+   `GET /me/export/files` and `GET /me/export/sources/{id}/file`. The app shows the recovery screen. An administrator's
+   visit is gated the same way, and a pending administrator loses the admin and ops routes (no
+   impersonation during the window). A suspended account is still refused at sign-in.
 3. **Erase.** The worker erases each account past its due date: every store per `RETENTION`
    (`GET /api/v1/me/retention`), then the identity provider's user (Clerk; "not found" counts as
    done).
@@ -871,7 +872,7 @@ backs off `min(2^attempts minutes, 1 day)`; a success deletes the row. A blob so
 uploaded again since is left in place and the row is dropped. Deleting a single source queues
 its file the same way.
 
-**`erasures_stuck`** fires while any row has `attempts >= ALERT_STUCK_ERASURE_ATTEMPTS`
+**`erasures_stuck`** fires while any row has `attempts >= GURU_ALERT_STUCK_ERASURE_ATTEMPTS`
 (default 10). Read the row's `last_error`:
 
 ```sql
