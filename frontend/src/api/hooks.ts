@@ -284,35 +284,6 @@ export function useGenerateLessonPlan(subjectId: string | undefined) {
     },
   });
 }
-
-/** Switches how much the planner may decide for the learner on its own (V07/S11): guided takes
- * detours on its own, exploration only offers them. Same cache-write as useGenerateLessonPlan —
- * the response is a full plan, so there is nothing to invalidate. */
-export function useSetGuidance(subjectId: string | undefined) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (guidance: "guided" | "exploration") => {
-      const { data, error } = await api.PATCH(
-        "/api/v1/subjects/{subject_id}/lesson-plan/guidance",
-        {
-          params: { path: { subject_id: subjectId! } },
-          body: { guidance },
-        },
-      );
-      if (error) throw error;
-      return data;
-    },
-    onSuccess: (data) => {
-      queryClient.setQueryData(["lesson-plan", subjectId], data);
-    },
-  });
-}
-
-/** A learner's answer to an offered detour — take it or skip it (S11). A 409 means the detour
- * closed before the decision landed (the blocker resolved itself, say); there is nothing to
- * patch onto a plan that no longer has that offer. React Query does not refetch after a failed
- * mutation, so the plan is invalidated on error — otherwise the stale offer stays on screen
- * with buttons that can only fail again. */
 export function useDecideDetour(subjectId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -802,6 +773,40 @@ export function useExportFiles() {
       const { data, error } = await api.GET("/api/v1/me/export/files");
       if (error) throw error;
       return data;
+    },
+  });
+}
+
+/** The learner's explicit settings (S02), resolved for one subject or globally, each with
+ * where it came from and what adaptation would choose. */
+export function usePreferences(subjectId?: string) {
+  return useQuery({
+    queryKey: ["preferences", subjectId ?? "global"],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/preferences", {
+        params: { query: subjectId ? { subject_id: subjectId } : {} },
+      });
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+export function useSetPreference(subjectId?: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ key, value }: { key: string; value: string }) => {
+      const { data, error } = await api.PUT("/api/v1/preferences/{key}", {
+        params: { path: { key } },
+        body: { value, subject_id: subjectId ?? null },
+      });
+      if (error) throw error;
+      return data;
+    },
+    // Every subject's view and the plan's guidance can change with one setting.
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["preferences"] });
+      void queryClient.invalidateQueries({ queryKey: ["lesson-plan"] });
     },
   });
 }

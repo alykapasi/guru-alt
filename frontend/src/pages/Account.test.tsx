@@ -5,6 +5,8 @@ const request = vi.fn();
 vi.mock("../api/hooks", () => ({
   useRequestDeletion: () => ({ mutate: request, isPending: false, error: null }),
   useExportFiles: () => ({ data: [] }),
+  usePreferences: () => ({ data: [] }),
+  useSetPreference: () => ({ mutate: vi.fn(), isPending: false, error: null }),
 }));
 vi.mock("../auth/session", () => ({ useSignOutEverywhere: () => async () => {} }));
 

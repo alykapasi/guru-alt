@@ -1,5 +1,6 @@
 import { RotateCcw, Sparkles } from "lucide-react";
-import { useProfile, useRefreshProfile, useResetDimension } from "../../api/hooks";
+import { usePreferences, useProfile, useRefreshProfile, useResetDimension } from "../../api/hooks";
+import { OVERRIDDEN_DIMENSIONS } from "../preferences/preferenceCopy";
 import { formatDimensionValue, humanizeKey } from "../../lib/profile";
 
 /** The learner profile — "how you learn," evidence-based behavioral dimensions, not VARK (see
@@ -14,6 +15,9 @@ export function ProfileSection() {
   const { data } = useProfile();
   const refresh = useRefreshProfile();
   const reset = useResetDimension();
+  const { data: preferences } = usePreferences();
+  // Settings the learner pinned (S02): the inferred dimensions behind them no longer steer.
+  const pinned = new Set((preferences ?? []).filter((p) => p.value !== "auto").map((p) => p.key));
 
   return (
     <div className="border-base-300 flex flex-col gap-4 rounded-box border p-6">
@@ -46,6 +50,11 @@ export function ProfileSection() {
                 </p>
                 {d.observation && (
                   <p className="text-caption text-base-content/40 mt-0.5">{d.observation}</p>
+                )}
+                {pinned.has(OVERRIDDEN_DIMENSIONS[d.key]) && (
+                  <p className="text-caption text-base-content/60 mt-0.5">
+                    Your setting overrides this
+                  </p>
                 )}
               </div>
               <button

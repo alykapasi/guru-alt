@@ -3,6 +3,7 @@ import { UserRound } from "lucide-react";
 import { useRequestDeletion } from "../api/hooks";
 import { useSignOutEverywhere } from "../auth/session";
 import { YourData } from "../components/account/YourData";
+import { PreferenceControls } from "../components/preferences/PreferenceControls";
 
 /** The learner's account: take their data, or delete it (S61, V12).
  *
@@ -32,6 +33,15 @@ export function Account() {
           Everything Guru holds about you, as JSON, and each file you uploaded.
         </p>
         <YourData />
+      </section>
+
+      <section className="flex flex-col gap-2">
+        <h2 className="text-h2">Preferences</h2>
+        <p className="text-body text-base-content/70">
+          How Guru teaches you everywhere. You can override any of these for a single subject from
+          its lesson plan.
+        </p>
+        <PreferenceControls />
       </section>
 
       <section className="flex flex-col gap-2">
