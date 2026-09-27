@@ -401,6 +401,9 @@ class Settings(BaseSettings):
     # memory is at or below this threshold. How many memories a tutor turn retrieves for context.
     memory_extraction_window: int = 20
     memory_dedup_max_distance: float = 0.05
+    # Beyond the duplicate radius, how close an existing memory must be to be judged as
+    # possibly the same fact or one this replaces (S42). Uncalibrated.
+    memory_related_max_distance: float = 0.25
     # Relevance floor for memory retrieval (S42). Without one, `limit` guarantees the nearest
     # memories come back whether or not any of them are about the question — a learner with
     # five memories had all five injected into every turn regardless of topic.
