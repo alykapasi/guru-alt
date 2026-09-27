@@ -58,6 +58,7 @@ def evaluate(
     spend: SpendWindow,
     settings: Settings,
     stuck_erasures: int = 0,
+    refresh_stuck: int = 0,
 ) -> AlertReport:
     """Every alert condition, against the thresholds in settings."""
     firing: list[Alert] = []
@@ -69,6 +70,7 @@ def evaluate(
         "leases_expired",
         "spend_over_budget",
         "erasures_stuck",
+        "refresh_stuck",
     ]
 
     failed = [dep.name for dep in readiness.dependencies if not dep.ok]
@@ -149,6 +151,19 @@ def evaluate(
                 f"{settings.alert_stuck_erasure_attempts}+ times",
                 action="Object storage or the identity provider keeps refusing deletes. Read "
                 "`pending_erasures.last_error`; the worker keeps retrying daily.",
+            )
+        )
+
+    if refresh_stuck > 0:
+        firing.append(
+            Alert(
+                name="refresh_stuck",
+                severity="warning",
+                detail=f"{refresh_stuck} conversation(s) or learner(s) due for over "
+                f"{settings.refresh_stuck_hours}h",
+                action="Memory write-back or profile refresh is not keeping up. Check the "
+                "worker is running and GURU_REFRESH_POLL_INTERVAL_SECONDS is not 0, then read "
+                "`learner_profiles.last_error` and the `memory.write_back_failed` log lines.",
             )
         )
 

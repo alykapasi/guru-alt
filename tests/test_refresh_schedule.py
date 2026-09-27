@@ -214,3 +214,91 @@ async def test_work_due_for_hours_counts_as_stuck(db_session: AsyncSession) -> N
 
     # One conversation and one learner have been due for over six hours; the fresh ones not.
     assert await sched.stuck(db_session, now=NOW, settings=settings) == 2
+
+
+# --- the worker pass -------------------------------------------------------------------------
+
+
+async def test_a_pass_queues_what_it_claimed(db_session: AsyncSession, monkeypatch) -> None:
+    import contextlib
+
+    from app.workers import tasks
+
+    learner = await _learner(db_session)
+    conversation = await _chat(db_session, learner, said=datetime(2000, 1, 1))
+    queued: list[tuple[str, str]] = []
+
+    class _Recorder:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def kiq(self, arg: str) -> None:
+            queued.append((self.name, arg))
+
+    @contextlib.asynccontextmanager
+    async def factory():
+        yield db_session
+
+    monkeypatch.setattr(tasks, "SessionFactory", factory)
+    monkeypatch.setattr(tasks, "memory_write_back_task", _Recorder("memory"))
+    monkeypatch.setattr(tasks, "profile_refresh_task", _Recorder("profile"))
+
+    await tasks._refresh_due_once()
+
+    assert ("memory", str(conversation.id)) in queued
+    assert ("profile", str(learner.id)) in queued
+
+    queued.clear()
+    await tasks._refresh_due_once()  # claimed a moment ago: nothing queued twice
+    assert ("memory", str(conversation.id)) not in queued
+
+
+async def test_the_profile_task_refreshes_an_active_learner_only(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    import contextlib
+
+    from app.llm.registry import fake_llm_client
+    from app.workers import tasks
+
+    active = await _learner(db_session)
+    await _chat(db_session, active, said=datetime(2000, 1, 1))
+    closing = await _learner(db_session, deletion_requested_at=datetime.now(UTC))
+    await _chat(db_session, closing, said=datetime(2000, 1, 1))
+
+    @contextlib.asynccontextmanager
+    async def factory():
+        yield db_session
+
+    monkeypatch.setattr(tasks, "SessionFactory", factory)
+    monkeypatch.setattr(tasks, "build_llm_client", lambda _settings: fake_llm_client("{}"))
+
+    await tasks._profile_refresh_task(str(active.id))
+    await tasks._profile_refresh_task(str(closing.id))
+
+    refreshed = await db_session.scalar(
+        select(LearnerProfile.refreshed_at).where(LearnerProfile.learner_id == active.id)
+    )
+    untouched = await db_session.scalar(
+        select(LearnerProfile.refreshed_at).where(LearnerProfile.learner_id == closing.id)
+    )
+    assert refreshed is not None and untouched is None
+
+
+def test_refresh_stuck_fires_only_when_something_is_stuck() -> None:
+    from app.core.alerts import evaluate
+    from tests.test_ops_signals import _backlog, _ready, _spend
+
+    def names(stuck: int) -> list[str]:
+        report = evaluate(
+            readiness=_ready(),
+            backlog=_backlog(),
+            spend=_spend(),
+            settings=Settings(),
+            refresh_stuck=stuck,
+        )
+        assert "refresh_stuck" in report.checked
+        return [a.name for a in report.firing]
+
+    assert "refresh_stuck" in names(3)
+    assert "refresh_stuck" not in names(0)

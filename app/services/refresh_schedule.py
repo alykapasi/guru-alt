@@ -13,7 +13,7 @@ the job clears the stamp when it succeeds, and a failure waits ``refresh_retry_m
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, func, or_, select, union_all, update
@@ -25,6 +25,11 @@ from app.models.chat import Conversation, Message
 from app.models.learner import Learner
 from app.models.learning import LearningEvent
 from app.models.profile import LearnerProfile
+
+
+def utcnow() -> datetime:
+    """Now, in the naive UTC these tables store."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 @dataclass(frozen=True)

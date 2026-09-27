@@ -282,7 +282,7 @@ def test_a_healthy_deployment_fires_nothing_and_still_says_what_it_checked() -> 
     """A silent report has to be distinguishable from checks that never ran."""
     report = evaluate(readiness=_ready(), backlog=_backlog(), spend=_spend(), settings=Settings())
     assert report.firing == []
-    assert len(report.checked) == 7
+    assert len(report.checked) == 8
 
 
 def test_a_dead_dependency_is_critical_and_names_it() -> None:

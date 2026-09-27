@@ -20,15 +20,17 @@ from app.core.db import SessionFactory
 from app.core.identity import build_identity_provider
 from app.core.readiness import readiness
 from app.llm import build_llm_client
+from app.models.learner import Learner
 from app.models.source import Source
 from app.rag import pipeline
 from app.rag.demux import build_demuxer
 from app.rag.transcription import build_transcriber
-from app.services import alert_history, ingestion
+from app.services import alert_history, ingestion, refresh_schedule
 from app.services import auth as auth_svc
 from app.services import checkpoints as checkpoints_svc
 from app.services import concept_links as concept_links_svc
 from app.services import memory as memory_svc
+from app.services import profile as profile_svc
 from app.services import retention as retention_svc
 from app.services.ingestion import backlog
 from app.services.spend import window as spend_window
@@ -57,11 +59,27 @@ async def _ingest_source_task(source_id: str) -> None:
 
 
 async def _memory_write_back_task(conversation_id: str) -> None:
-    """Extract and persist durable memories from one conversation (enqueued on-demand)."""
+    """Extract and persist durable memories from one conversation (on request, or queued by the
+    refresh sweep when it goes quiet — S43)."""
     settings = get_settings()
     llm = build_llm_client(settings)
     async with SessionFactory() as session:
-        await memory_svc.write_back(session, llm, conversation_id=uuid.UUID(conversation_id))
+        try:
+            await memory_svc.write_back(session, llm, conversation_id=uuid.UUID(conversation_id))
+        except Exception:
+            logger.exception("memory.write_back_failed conversation=%s", conversation_id)
+            raise
+
+
+async def _profile_refresh_task(learner_id: str) -> None:
+    """Refresh one learner's profile (queued by the refresh sweep, S43)."""
+    settings = get_settings()
+    llm = build_llm_client(settings)
+    async with SessionFactory() as session:
+        learner = await session.get(Learner, uuid.UUID(learner_id))
+        if learner is None or learner.deletion_requested_at or learner.suspended_at:
+            return  # closed or suspended since it was queued: no model call
+        await profile_svc.refresh_profile(session, learner.id, llm)
 
 
 async def _judge_concept_links_task(learner_id: str) -> None:
@@ -178,6 +196,24 @@ async def _purge_checkpoints_once() -> None:
         logger.info("discarded %d abandoned checkpoint thread(s)", discarded)
 
 
+async def _refresh_due_once() -> None:
+    """Queue write-back and profile refresh for whatever has gone quiet (S43)."""
+    async with SessionFactory() as session:
+        claimed = await refresh_schedule.claim_due(
+            session, now=refresh_schedule.utcnow(), settings=get_settings()
+        )
+    for conversation_id in claimed.conversations:
+        await memory_write_back_task.kiq(str(conversation_id))
+    for learner_id in claimed.learners:
+        await profile_refresh_task.kiq(str(learner_id))
+    if claimed.conversations or claimed.learners:
+        logger.info(
+            "queued %d write-back(s) and %d profile refresh(es)",
+            len(claimed.conversations),
+            len(claimed.learners),
+        )
+
+
 async def _alerts_once() -> None:
     """Evaluate every alert condition and record what changed (P11).
 
@@ -200,6 +236,9 @@ async def _alerts_once() -> None:
             settings=settings,
             stuck_erasures=await retention_svc.stuck_erasures(
                 session, attempts=settings.alert_stuck_erasure_attempts
+            ),
+            refresh_stuck=await refresh_schedule.stuck(
+                session, now=refresh_schedule.utcnow(), settings=settings
             ),
         )
         changed = await alert_history.record(session, report)
@@ -358,6 +397,27 @@ async def _stop_checkpoint_purge(state: TaskiqState) -> None:
     await checkpointing.stop()
 
 
+async def _refresh_due_loop(interval: int) -> None:
+    """Sweep for quiet work forever, surviving its own failures like the reconciler above."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await _refresh_due_once()
+        except Exception:
+            logger.exception("refresh sweep failed; will retry")
+
+
+async def _start_refresh_due(state: TaskiqState) -> None:
+    interval = get_settings().refresh_poll_interval_seconds
+    if interval <= 0:
+        return
+    state.refresh_due = asyncio.create_task(_refresh_due_loop(interval))
+
+
+async def _stop_refresh_due(state: TaskiqState) -> None:
+    await _cancel(getattr(state, "refresh_due", None))
+
+
 async def _cancel(task: asyncio.Task | None) -> None:
     if task is None:
         return
@@ -378,6 +438,7 @@ async def _cancel(task: asyncio.Task | None) -> None:
 ingest_source_task = broker.task(_ingest_source_task)
 retag_source_task = broker.task(_retag_source_task)
 memory_write_back_task = broker.task(_memory_write_back_task)
+profile_refresh_task = broker.task(_profile_refresh_task)
 judge_concept_links_task = broker.task(_judge_concept_links_task)
 
 
@@ -397,3 +458,5 @@ broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_checkpoint_purge)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_checkpoint_purge)
 broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_alerts)
 broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_alerts)
+broker.add_event_handler(TaskiqEvents.WORKER_STARTUP, _start_refresh_due)
+broker.add_event_handler(TaskiqEvents.WORKER_SHUTDOWN, _stop_refresh_due)
