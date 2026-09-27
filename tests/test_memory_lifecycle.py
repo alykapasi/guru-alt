@@ -346,3 +346,86 @@ async def test_two_candidates_naming_one_neighbour_supersede_it_once(
     superseded = [m for m in rows if m.status == MemoryStatus.SUPERSEDED]
     assert len(superseded) == 1
     assert len([m for m in rows if m.status == MemoryStatus.CURRENT]) == 2
+
+
+# --- forget scope (S42 decision B) ---------------------------------------------------------
+
+
+async def test_forgetting_a_conversation_suppresses_only_that_conversation(
+    db_session: AsyncSession,
+) -> None:
+    from app.services import removal
+
+    learner = await _learner(db_session)
+    first = await _conversation(db_session, learner, "I study in the mornings.")
+    first_id = first.id
+    await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=first_id)
+    await removal.forget_conversation_memories(db_session, learner.id, first_id)
+
+    # The same conversation says it again: still suppressed.
+    db_session.add(Message(conversation_id=first_id, role="user", content="Mornings, really."))
+    await db_session.commit()
+    assert (
+        await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=first_id) == []
+    )
+
+    # Another conversation teaches it: stored again.
+    second = await _conversation(db_session, learner, "I study in the mornings.")
+    created = await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=second.id)
+    assert [m.content for m in created] == ["Studies in the mornings."]
+
+
+async def test_a_single_forget_suppresses_everywhere(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    first = await _conversation(db_session, learner, "I study in the mornings.")
+    [memory] = await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=first.id)
+    await svc.delete_memory(db_session, learner.id, memory.id)
+
+    second = await _conversation(db_session, learner, "I study in the mornings.")
+    assert (
+        await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=second.id) == []
+    )
+
+
+async def test_a_learner_wide_tombstone_wins_over_a_conversation_one(
+    db_session: AsyncSession,
+) -> None:
+    """Review focus 3."""
+    from app.services import removal
+
+    learner = await _learner(db_session)
+    first = await _conversation(db_session, learner, "I study in the mornings.")
+    await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=first.id)
+    await removal.forget_conversation_memories(db_session, learner.id, first.id)
+    second = await _conversation(db_session, learner, "I study in the mornings.")
+    [again] = await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=second.id)
+    await svc.delete_memory(db_session, learner.id, again.id)
+
+    third = await _conversation(db_session, learner, "I study in the mornings.")
+    assert (
+        await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=third.id) == []
+    )
+
+
+async def test_forget_everything_is_learner_wide(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    first = await _conversation(db_session, learner, "I study in the mornings.")
+    await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=first.id)
+    await svc.delete_all_memories(db_session, learner.id)
+    rows = await _memories(db_session, learner.id)
+    assert {m.forgotten_scope for m in rows} == {"learner"}
+
+
+async def test_forget_everything_widens_a_conversation_forget(db_session: AsyncSession) -> None:
+    from app.services import removal
+
+    learner = await _learner(db_session)
+    first = await _conversation(db_session, learner, "I study in the mornings.")
+    await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=first.id)
+    await removal.forget_conversation_memories(db_session, learner.id, first.id)
+    await svc.delete_all_memories(db_session, learner.id)
+
+    second = await _conversation(db_session, learner, "I study in the mornings.")
+    assert (
+        await svc.write_back(db_session, fake_llm_client(MORNINGS), conversation_id=second.id) == []
+    )

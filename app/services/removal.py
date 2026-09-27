@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.chat import Conversation, Message
 from app.models.content import ContentBlock
 from app.models.erasure import ErasureKind
-from app.models.memory import Memory, MemoryStatus
+from app.models.memory import ForgetScope, Memory, MemoryStatus
 from app.models.profile import LearnerProfile
 from app.models.source import Source, SourceStatus
 from app.rag import pipeline
@@ -264,7 +264,7 @@ async def delete_conversation(
         await session.execute(
             update(Memory)
             .where(Memory.id.in_(_memories_from(learner_id, conversation_id)))
-            .values(status=MemoryStatus.DELETED)
+            .values(status=MemoryStatus.DELETED, forgotten_scope=ForgetScope.CONVERSATION)
         )
         await _clear_profile_watermark(session, learner_id)
     await session.execute(delete(Conversation).where(Conversation.id == conversation_id))
@@ -284,7 +284,9 @@ async def forget_conversation_memories(
     ids = list((await session.scalars(_memories_from(learner_id, conversation_id))).all())
     if ids:
         await session.execute(
-            update(Memory).where(Memory.id.in_(ids)).values(status=MemoryStatus.DELETED)
+            update(Memory)
+            .where(Memory.id.in_(ids))
+            .values(status=MemoryStatus.DELETED, forgotten_scope=ForgetScope.CONVERSATION)
         )
         await _clear_profile_watermark(session, learner_id)
     await session.commit()

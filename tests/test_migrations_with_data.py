@@ -475,3 +475,40 @@ async def test_an_exploration_plan_becomes_a_subject_override() -> None:
             ]
         finally:
             await conn.close()
+
+
+async def test_existing_forgotten_memories_stay_learner_wide() -> None:
+    """0069 (S42): how an old tombstone was made is unknown, so it keeps today's reach."""
+    async with database_at("0068_learner_preferences") as connect:
+        conn = await connect()
+        try:
+            learner_id, deleted_id, current_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "scope"
+            )
+            for memory_id, status in ((deleted_id, "deleted"), (current_id, "current")):
+                await conn.execute(
+                    "INSERT INTO memories (id, learner_id, kind, content, embedding, "
+                    "embedding_space, status) VALUES ($1, $2, 'fact', 'x', $3::vector, "
+                    "'fake:fake-1:x', $4)",
+                    memory_id,
+                    learner_id,
+                    "[" + ",".join(["0.1"] * get_settings().embed_dim) + "]",
+                    status,
+                )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0069_memory_forgotten_scope")
+
+        conn = await connect()
+        try:
+            rows = {
+                r["id"]: r["forgotten_scope"]
+                for r in await conn.fetch(
+                    "SELECT id, forgotten_scope FROM memories WHERE learner_id = $1", learner_id
+                )
+            }
+            assert rows == {deleted_id: "learner", current_id: None}
+        finally:
+            await conn.close()

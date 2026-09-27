@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, select, update
+from sqlalchemy import CursorResult, and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -29,7 +29,7 @@ from app.llm.embedding_space import current_space, exact_cosine_distance
 from app.memory import supersession
 from app.memory.extraction import EXTRACTION_ROLE, ExtractedMemory, extract_memories
 from app.models.chat import Conversation, Message
-from app.models.memory import Memory, MemoryKind, MemoryStatus
+from app.models.memory import ForgetScope, Memory, MemoryKind, MemoryStatus
 from app.services.llm_log import log_llm_call
 from app.services.turn_common import to_chat_messages
 
@@ -220,17 +220,34 @@ async def _suppressed(
     max_distance: float,
     space: str,
 ) -> bool:
-    """Whether a forgotten memory stops this one being stored."""
-    tombstone = await _nearest(
-        session,
-        learner_id,
-        kind,
-        embedding,
-        max_distance=max_distance,
-        space=space,
-        status=MemoryStatus.DELETED,
-    )
-    return tombstone is not None
+    """Whether a forgotten memory stops this one being stored.
+
+    A learner-wide tombstone suppresses everywhere; a conversation-scoped one only re-extraction
+    from the conversation it was learned in (decision B).
+    """
+    distance = exact_cosine_distance(Memory.embedding, embedding)
+    row = (
+        await session.execute(
+            select(distance.label("distance"))
+            .where(
+                Memory.learner_id == learner_id,
+                Memory.kind == kind,
+                Memory.embedding_space == space,
+                Memory.status == MemoryStatus.DELETED,
+                or_(
+                    Memory.forgotten_scope.is_(None),  # defensive: pre-0069 shape
+                    Memory.forgotten_scope == ForgetScope.LEARNER,
+                    and_(
+                        Memory.forgotten_scope == ForgetScope.CONVERSATION,
+                        Memory.origin_conversation_id == conversation_id,
+                    ),
+                ),
+            )
+            .order_by(distance)
+            .limit(1)
+        )
+    ).first()
+    return row is not None and row[0] <= max_distance
 
 
 async def _unprocessed_messages(
@@ -405,6 +422,7 @@ async def delete_memory(session: AsyncSession, learner_id: uuid.UUID, memory_id:
     if memory.status == MemoryStatus.DELETED:
         return False
     memory.status = MemoryStatus.DELETED
+    memory.forgotten_scope = ForgetScope.LEARNER
     await session.commit()
     return True
 
@@ -422,7 +440,17 @@ async def delete_all_memories(session: AsyncSession, learner_id: uuid.UUID) -> i
     result = await session.execute(
         update(Memory)
         .where(Memory.learner_id == learner_id, Memory.status != MemoryStatus.DELETED)
-        .values(status=MemoryStatus.DELETED)
+        .values(status=MemoryStatus.DELETED, forgotten_scope=ForgetScope.LEARNER)
+    )
+    # What was forgotten with one conversation is now forgotten everywhere too.
+    await session.execute(
+        update(Memory)
+        .where(
+            Memory.learner_id == learner_id,
+            Memory.status == MemoryStatus.DELETED,
+            Memory.forgotten_scope != ForgetScope.LEARNER,
+        )
+        .values(forgotten_scope=ForgetScope.LEARNER)
     )
     await session.commit()
     return cast("CursorResult[Any]", result).rowcount
