@@ -23,6 +23,8 @@ against a schema it does not have.
 Besides ingestion, the worker runs periodic sweeps: ingestion reconciliation, session and
 checkpoint purges, alert polling, and — for account deletion and retention (S61) — erasing
 accounts past their recovery window, retrying refused erasures, and expiring diagnostic data.
+It also queues memory write-back and profile refresh for conversations and learners that have
+gone quiet (S43; [RUNBOOK §17](RUNBOOK.md#17-refresh-scheduling-s43)).
 Each has an interval setting where 0 disables it; the retention three are in
 [RUNBOOK §16](RUNBOOK.md#16-account-deletion-and-retention-s61).
 
@@ -125,7 +127,7 @@ off the endpoint answers 404, because a capability nobody enabled should not ann
 
 | Property | What it means |
 | --- | --- |
-| Read-only | Any request other than `GET`, `HEAD` or `OPTIONS` answers 403. That holds only while reads are reads: the review queue generates items on a GET, so a visit gets the queue without them, and a new GET that writes would need the same. Support needs to *see* the account; writing as somebody else puts evidence in their record that they did not create, and no amount of audit makes that recoverable. |
+| Audited sudo | A visit can act as the learner. Every write is recorded in `admin_actions` (route, status, when) against the visit and its reason, is included in the learner's own export, and is refused once the originating administrator is no longer authorized. What a visit writes is attributed to it: its chat messages carry the administrator, its graded answers are `admin_observation` events, and neither counts as the learner's own evidence. |
 | Never an administrator | The visit is refused by the admin and operator gates even when the target learner is themselves an administrator — otherwise it is a way to launder one administrator's actions through another's name. |
 | Time-boxed | `GURU_IMPERSONATION_TTL_MINUTES` (default 15), on the visit's own clock. Your own session is untouched throughout, so ending a visit cannot sign you out. |
 | Recorded first | The audit row is written in the same transaction that issues the token. There is no path that grants access and then fails to log it. |
@@ -191,6 +193,7 @@ its bill is high would be the wrong response to the right signal.
 | `leases_expired` | warning | Claimed sources with a lapsed lease, at or past `GURU_ALERT_EXPIRED_LEASES`. Persisting means the reconciler is not running. |
 | `spend_over_budget` | warning | Window spend past `GURU_SPEND_BUDGET_USD`. A runaway is usually one loop, not general growth. |
 | `erasures_stuck` | warning | A file delete or identity-provider delete has been refused `GURU_ALERT_STUCK_ERASURE_ATTEMPTS`+ times (default 10). Read `pending_erasures.last_error`; see [RUNBOOK §16](RUNBOOK.md#16-account-deletion-and-retention-s61). |
+| `refresh_stuck` | warning | A conversation or learner has had unprocessed evidence for over `GURU_REFRESH_STUCK_HOURS` (default 6). Check the worker and `GURU_REFRESH_POLL_INTERVAL_SECONDS`, then `learner_profiles.last_error` and `memory.write_back_failed` logs; see [RUNBOOK §17](RUNBOOK.md#17-refresh-scheduling-s43). |
 
 Point any HTTP poller at it and alert on `firing`. Nothing about which alerting system you use
 has to be decided for the thresholds to live in one place and be tested.

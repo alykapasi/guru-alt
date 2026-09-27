@@ -150,6 +150,11 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   instructions are assembled, so a change reaches the next turn (in guided practice, the next
   question). Inferred values are still
   computed and shown beside the setting; only catalog strings ever reach a prompt.
+- **Background work runs when things go quiet** (S43) — memory write-back and profile refresh
+  are queued by a worker sweep (`app/services/refresh_schedule.py`) for conversations and
+  learners with unread evidence and no activity for 20 minutes; due-ness is derived from the
+  data, so backlogs catch up by themselves. The profile reads a recency window, and a
+  model-backed estimator pays only when its input changed. Learners can pause memory.
 - **A self-rating is not evidence of ability** (S56) — the server decides whether a score was
   judged or self-reported, and a self-rating moves the review schedule only. Mastery is the
   conservative estimate `ability − 2·uncertainty ≥ 0.5` on measured evidence (V02); achievement

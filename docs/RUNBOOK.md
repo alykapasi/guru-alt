@@ -888,3 +888,33 @@ creates them: a backup older than it can still hold an erased account.
 
 Learning history, notes, memories, sources, content and audit records are never expired; they
 live until the account is deleted.
+
+## 17. Refresh scheduling (S43)
+
+Memory write-back and profile refresh run on their own when things go quiet.
+
+- **The sweep.** Every `GURU_REFRESH_POLL_INTERVAL_SECONDS` (default 300; `0` turns it off) the
+  worker claims up to `GURU_REFRESH_BATCH_SIZE` (50) of each, oldest first:
+  - conversations with learner messages newer than `memory_watermark` and no message for
+    `GURU_MEMORY_QUIET_MINUTES` (20) → `memory_write_back_task`;
+  - learners whose newest graded answer or own message is newer than
+    `learner_profiles.evidence_watermark` and at least 20 minutes old → `profile_refresh_task`.
+  Paused memory (`learners.remember_conversations = false`), archived conversations, and
+  accounts pending deletion or suspended are skipped. Administrator messages never make
+  anything due.
+- **Backlogs catch up by themselves.** "Due" is read from the data on every pass, so after a
+  worker outage the next passes work through what is owed, 50 at a time.
+- **Claims.** `conversations.memory_attempted_at` / `learner_profiles.refresh_attempted_at` are
+  set when a pass queues the work and cleared when it succeeds. A failed item is retried after
+  `GURU_REFRESH_RETRY_MINUTES` (60), not every pass.
+- **Cost.** The profile reads the newest `GURU_PROFILE_EVENT_WINDOW` (2000) events and
+  `GURU_PROFILE_MESSAGE_WINDOW` (500) messages. A model-backed dimension whose input
+  fingerprint (`profile_dimensions.input_fingerprint`) is unchanged keeps its value with no call.
+- **Forcing one learner.** As that learner, `POST /api/v1/profile/refresh?force=true` ignores the
+  watermark and the fingerprints (use it after changing an estimator).
+- **`refresh_stuck`.** Something has been due for over `GURU_REFRESH_STUCK_HOURS` (6). Check the
+  worker is running and the interval is not 0, then read `learner_profiles.last_error` and the
+  `memory.write_back_failed` log lines (conversation id only, never content).
+- **Pausing memory** is the learner's choice (Account → Preferences). Nothing new is learned,
+  by the sweep or on request (the write-back endpoint answers 409 `memory_paused`); existing
+  memories stay in use until forgotten.
