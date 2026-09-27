@@ -32,6 +32,9 @@ export function ProfileSection() {
           Refresh
         </button>
       </div>
+      <p className="text-caption text-base-content/60">
+        Read from your most recent answers and messages.
+      </p>
       {!data || data.dimensions.length === 0 ? (
         <p className="text-caption text-base-content/50">
           Nothing learned about how you learn yet — practice a bit, then refresh.

@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { Memory } from "./Memory";
 
 /** The point of this page is that a learner can disagree with the system about themselves.
@@ -19,9 +20,11 @@ const MEMORY = {
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={client}>
-      <Memory />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <Memory />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -198,5 +201,24 @@ describe("a replacement that was wrong", () => {
       expect(posts).toHaveLength(1);
       expect((posts[0][0] as Request).url).toContain("/api/v1/memory/m-new/undo-replacement");
     });
+  });
+});
+
+describe("while memory is paused", () => {
+  it("says nothing new is being learned and links to the switch", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: Request | string) => {
+        const url = typeof input === "string" ? input : input.url;
+        if (url.includes("/me/memory-setting")) {
+          return Promise.resolve(jsonResponse({ remember: false }));
+        }
+        return Promise.resolve(jsonResponse([MEMORY]));
+      }),
+    );
+    renderPage();
+
+    expect(await screen.findByText(/Memory is paused/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Account/ })).toHaveAttribute("href", "/account");
   });
 });

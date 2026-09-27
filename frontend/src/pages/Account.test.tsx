@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
 const request = vi.fn();
+const setMemory = vi.hoisted(() => vi.fn());
 vi.mock("../api/hooks", () => ({
+  useMemorySetting: () => ({ data: { remember: true } }),
+  useSetMemorySetting: () => ({ mutate: setMemory, isPending: false }),
   useRequestDeletion: () => ({ mutate: request, isPending: false, error: null }),
   useExportFiles: () => ({ data: [] }),
   usePreferences: () => ({ data: [] }),
@@ -29,5 +32,13 @@ describe("Account", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete account…" }));
     fireEvent.click(screen.getByRole("button", { name: "Erase now instead" }));
     expect(request).toHaveBeenCalledWith({ now: true }, expect.anything());
+  });
+
+  it("lets the learner pause memory", () => {
+    render(<Account />);
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: /Remember things from my conversations/ }),
+    );
+    expect(setMemory).toHaveBeenCalledWith(false);
   });
 });

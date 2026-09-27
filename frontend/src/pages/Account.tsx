@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { UserRound } from "lucide-react";
-import { useRequestDeletion } from "../api/hooks";
+import { useMemorySetting, useRequestDeletion, useSetMemorySetting } from "../api/hooks";
 import { useSignOutEverywhere } from "../auth/session";
 import { YourData } from "../components/account/YourData";
 import { PreferenceControls } from "../components/preferences/PreferenceControls";
@@ -42,6 +42,7 @@ export function Account() {
           its lesson plan.
         </p>
         <PreferenceControls />
+        <MemorySwitch />
       </section>
 
       <section className="flex flex-col gap-2">
@@ -92,5 +93,31 @@ export function Account() {
         )}
       </section>
     </div>
+  );
+}
+
+/** Memory is not a teaching setting and has no per-subject override (S43). Pausing stops
+ * learning; what is already remembered stays until it is forgotten. */
+function MemorySwitch() {
+  const { data } = useMemorySetting();
+  const set = useSetMemorySetting();
+  const remember = data?.remember ?? true;
+  return (
+    <label className="flex items-start gap-3 pt-2">
+      <input
+        type="checkbox"
+        className="toggle toggle-sm mt-1"
+        checked={remember}
+        disabled={set.isPending}
+        onChange={(e) => set.mutate(e.target.checked)}
+      />
+      <span className="flex flex-col">
+        <span className="text-body">Remember things from my conversations</span>
+        <span className="text-caption text-base-content/60">
+          When this is off, Guru stops learning new things about you. What it already remembers
+          stays until you forget it on the Memory page.
+        </span>
+      </span>
+    </label>
   );
 }

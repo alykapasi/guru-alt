@@ -584,6 +584,34 @@ export function useUndoReplacement() {
   });
 }
 
+/** Whether Guru learns new things from this learner's conversations (S43). */
+export function useMemorySetting() {
+  return useQuery({
+    queryKey: ["memory-setting"],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/me/memory-setting");
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+export function useSetMemorySetting() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (remember: boolean) => {
+      const { data, error } = await api.PUT("/api/v1/me/memory-setting", {
+        body: { remember },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-setting"] });
+    },
+  });
+}
+
 // --- Concept links: cross-subject connections (S24) -------------------------
 
 /** Endorsed concept links this learner can act on (S24): undecided ones to accept or decline,

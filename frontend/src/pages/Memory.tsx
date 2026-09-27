@@ -1,9 +1,11 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Brain, Check, Pencil, Trash2, X } from "lucide-react";
 import {
   useCorrectMemory,
   useForgetAllMemory,
   useForgetMemory,
+  useMemorySetting,
   useUndoReplacement,
   useForgetOrigin,
   useMemories,
@@ -180,6 +182,7 @@ function Row({ memory }: { memory: Memory }) {
 
 export function Memory() {
   const { data, isLoading } = useMemories();
+  const { data: setting } = useMemorySetting();
   const forgetAll = useForgetAllMemory();
   const [confirming, setConfirming] = useState(false);
 
@@ -196,6 +199,17 @@ export function Memory() {
           the old conclusion from the same conversation.
         </p>
       </header>
+
+      {setting?.remember === false && (
+        <p className="alert alert-info text-body">
+          Memory is paused — Guru isn&apos;t learning anything new from your conversations. Turn it
+          back on in{" "}
+          <Link to="/account" className="link">
+            Account
+          </Link>
+          .
+        </p>
+      )}
 
       {isLoading ? (
         <p className="text-caption text-base-content/50">Loading…</p>
