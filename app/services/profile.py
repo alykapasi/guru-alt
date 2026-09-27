@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.learning.profile_estimators import (
     DIMENSION_SPECS,
     PROFILE_LLM_ROLE,
@@ -33,33 +34,35 @@ from app.services.llm_log import log_llm_call
 
 
 async def _load_events(session: AsyncSession, learner_id: uuid.UUID) -> list[LearningEvent]:
-    return list(
-        (
-            await session.scalars(
-                select(LearningEvent)
-                .where(LearningEvent.learner_id == learner_id)
-                .order_by(LearningEvent.created_at)
-            )
-        ).all()
-    )
+    """The learner's most recent events, oldest first (S43: a window, not the whole history)."""
+    rows = (
+        await session.scalars(
+            select(LearningEvent)
+            .where(LearningEvent.learner_id == learner_id)
+            .order_by(LearningEvent.created_at.desc(), LearningEvent.id.desc())
+            .limit(get_settings().profile_event_window)
+        )
+    ).all()
+    return list(reversed(rows))
 
 
 async def _load_own_messages(session: AsyncSession, learner_id: uuid.UUID) -> list[Message]:
-    return list(
-        (
-            await session.scalars(
-                select(Message)
-                .join(Conversation, Message.conversation_id == Conversation.id)
-                .where(
-                    Conversation.learner_id == learner_id,
-                    Message.role == "user",
-                    Message.admin_actor_id.is_(None),
-                    Message.admin_action_id.is_(None),
-                )
-                .order_by(Message.created_at)
+    """The learner's most recent own messages, oldest first (S43: a window)."""
+    rows = (
+        await session.scalars(
+            select(Message)
+            .join(Conversation, Message.conversation_id == Conversation.id)
+            .where(
+                Conversation.learner_id == learner_id,
+                Message.role == "user",
+                Message.admin_actor_id.is_(None),
+                Message.admin_action_id.is_(None),
             )
-        ).all()
-    )
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(get_settings().profile_message_window)
+        )
+    ).all()
+    return list(reversed(rows))
 
 
 async def _ensure_profile(session: AsyncSession, learner_id: uuid.UUID) -> LearnerProfile:
@@ -78,6 +81,7 @@ async def _upsert_dimension(
     learner_id: uuid.UUID,
     spec: DimensionSpec,
     result: DimensionEstimate,
+    fingerprint: str | None,
 ) -> None:
     dim = await session.scalar(
         select(ProfileDimension).where(
@@ -93,6 +97,7 @@ async def _upsert_dimension(
                 uncertainty=result.uncertainty,
                 kind=spec.kind,
                 source=spec.source,
+                input_fingerprint=fingerprint,
             )
         )
         return
@@ -100,6 +105,7 @@ async def _upsert_dimension(
     dim.uncertainty = result.uncertainty
     dim.kind = spec.kind
     dim.source = spec.source
+    dim.input_fingerprint = fingerprint
 
 
 async def latest_evidence_at(session: AsyncSession, learner_id: uuid.UUID) -> datetime | None:
@@ -151,9 +157,10 @@ async def refresh_profile(
     anyway, which is what you want after the estimators themselves change — the cursor tracks
     the *evidence*, and cannot know the code that reads it moved.
 
-    The recompute still reads the learner's whole history. Making the estimators themselves
-    incremental is a different and much larger change (S62 owns the growth question); what is
-    fixed here is paying for it when nothing has changed.
+    The recompute reads a recency window (``profile_event_window`` events and
+    ``profile_message_window`` messages), so its cost does not grow with the history, and a
+    model-backed dimension whose input fingerprint is unchanged keeps its value without a call
+    (S43). ``force`` ignores fingerprints too.
     """
     profile = await _ensure_profile(session, learner_id)
     newest = await latest_evidence_at(session, learner_id)
@@ -168,7 +175,20 @@ async def refresh_profile(
             messages=await _load_own_messages(session, learner_id),
             llm=llm,
         )
+        stored = {
+            key: fingerprint
+            for key, fingerprint in (
+                await session.execute(
+                    select(ProfileDimension.key, ProfileDimension.input_fingerprint).where(
+                        ProfileDimension.learner_id == learner_id
+                    )
+                )
+            ).all()
+        }
         for spec in DIMENSION_SPECS:
+            fingerprint = await spec.fingerprint(context) if spec.fingerprint else None
+            if not force and fingerprint is not None and stored.get(spec.key) == fingerprint:
+                continue  # the same input as last time: the stored answer stands, unpaid
             result, usage = await spec.estimate(context)
             if usage.total_tokens:
                 await log_llm_call(
@@ -178,7 +198,7 @@ async def refresh_profile(
                     usage=usage,
                 )
             if result is not None:
-                await _upsert_dimension(session, learner_id, spec, result)
+                await _upsert_dimension(session, learner_id, spec, result, fingerprint)
     except Exception as exc:
         # Record why, then re-raise. A profile that quietly stopped updating is
         # indistinguishable from one nothing has changed for, and the watermark deliberately
@@ -195,6 +215,7 @@ async def refresh_profile(
     profile.evidence_watermark = newest
     profile.refreshed_at = datetime.now(UTC).replace(tzinfo=None)
     profile.last_error = None
+    profile.refresh_attempted_at = None
     await session.commit()
     await _revise_lesson_plans(session, learner_id)
     return await get_snapshot(session, learner_id)

@@ -18,6 +18,7 @@ from app.core.config import Settings
 from app.llm.registry import fake_llm_client
 from app.models.chat import Conversation, LLMCall, Message
 from app.models.learner import Learner
+from app.models.learning import LearningEvent
 from app.models.memory import Memory
 from app.models.profile import LearnerProfile, ProfileDimension
 from app.services import memory as memory_svc
@@ -282,3 +283,100 @@ async def test_an_admin_visit_message_is_not_new_evidence(db_session: AsyncSessi
     await db_session.commit()
 
     assert await profile_svc.latest_evidence_at(db_session, learner.id) == _t(0)
+
+
+# --- the profile reads a window and pays only for changed input (S43) --------------------
+
+
+def _answer(learner_id: uuid.UUID, *, at: datetime, score: float = 1.0) -> LearningEvent:
+    return LearningEvent(
+        learner_id=learner_id,
+        event_type="observation",
+        payload={"score": score, "difficulty": 0.5, "latency_ms": 5000, "hints_used": 0},
+        created_at=at,
+    )
+
+
+async def test_new_evidence_the_model_would_not_see_costs_no_model_call(
+    db_session: AsyncSession,
+) -> None:
+    """Interests reads the learner's messages; a new correct answer changes none of them."""
+    learner = await _learner(db_session)
+    conv = await _conversation(db_session, learner)
+    await _say(db_session, conv, "I love astronomy and chess.", at=_t(0))
+    llm = fake_llm_client('{"interests": ["astronomy"]}')
+    await profile_svc.refresh_profile(db_session, learner.id, llm)
+    calls = await _llm_calls(db_session, learner.id)
+    assert calls >= 1  # interests ran
+
+    db_session.add(_answer(learner.id, at=_t(5)))
+    await db_session.commit()
+    await profile_svc.refresh_profile(db_session, learner.id, llm)
+
+    assert await _llm_calls(db_session, learner.id) == calls
+
+
+async def test_a_changed_sample_is_judged_again(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    conv = await _conversation(db_session, learner)
+    await _say(db_session, conv, "I love astronomy.", at=_t(0))
+    llm = fake_llm_client('{"interests": ["astronomy"]}')
+    await profile_svc.refresh_profile(db_session, learner.id, llm)
+    calls = await _llm_calls(db_session, learner.id)
+
+    await _say(db_session, conv, "Also chess, lately.", at=_t(5))
+    await profile_svc.refresh_profile(db_session, learner.id, llm)
+
+    assert await _llm_calls(db_session, learner.id) > calls
+
+
+async def test_force_judges_again_even_when_the_sample_is_unchanged(
+    db_session: AsyncSession,
+) -> None:
+    learner = await _learner(db_session)
+    conv = await _conversation(db_session, learner)
+    await _say(db_session, conv, "I love astronomy.", at=_t(0))
+    llm = fake_llm_client('{"interests": ["astronomy"]}')
+    await profile_svc.refresh_profile(db_session, learner.id, llm)
+    calls = await _llm_calls(db_session, learner.id)
+
+    await profile_svc.refresh_profile(db_session, learner.id, llm, force=True)
+
+    assert await _llm_calls(db_session, learner.id) > calls
+
+
+async def test_only_the_most_recent_evidence_is_read(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    learner = await _learner(db_session)
+    conv = await _conversation(db_session, learner)
+    for minute in range(5):
+        await _say(db_session, conv, f"message {minute}", at=_t(minute))
+        db_session.add(_answer(learner.id, at=_t(minute)))
+    await db_session.commit()
+    monkeypatch.setattr(
+        "app.services.profile.get_settings",
+        lambda: Settings(profile_event_window=2, profile_message_window=3),
+    )
+
+    events = await profile_svc._load_events(db_session, learner.id)
+    messages = await profile_svc._load_own_messages(db_session, learner.id)
+
+    assert [e.created_at for e in events] == [_t(3), _t(4)]
+    assert [m.content for m in messages] == ["message 2", "message 3", "message 4"]
+
+
+async def test_a_successful_refresh_releases_the_schedulers_claim(
+    db_session: AsyncSession,
+) -> None:
+    learner = await _learner(db_session)
+    conv = await _conversation(db_session, learner)
+    await _say(db_session, conv, "hello", at=_t(0))
+    profile = LearnerProfile(learner_id=learner.id, refresh_attempted_at=_t(1))
+    db_session.add(profile)
+    await db_session.commit()
+
+    await profile_svc.refresh_profile(db_session, learner.id, fake_llm_client("{}"))
+
+    await db_session.refresh(profile)
+    assert profile.refresh_attempted_at is None
