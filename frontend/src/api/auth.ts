@@ -87,7 +87,10 @@ export function useExchange() {
       }
       return data as CurrentLearner;
     },
-    onSuccess: () => queryClient.clear(),
+    // Reset, not clear: both drop whatever a previous account left cached, but `clear()` also
+    // detaches the mounted `/auth/me` observers, so the page that ran the exchange kept seeing
+    // "signed out" until a reload. Reset refetches what is on screen.
+    onSuccess: () => queryClient.resetQueries(),
   });
 }
 

@@ -17,6 +17,7 @@ const clerk = vi.hoisted(() => ({
   isSignedIn: true,
   getToken: vi.fn(async () => "clerk-token-abc"),
   signOut: vi.fn(async () => {}),
+  signInProps: null as Record<string, unknown> | null,
 }));
 
 vi.mock("@clerk/react", () => ({
@@ -26,7 +27,10 @@ vi.mock("@clerk/react", () => ({
     getToken: clerk.getToken,
   }),
   useClerk: () => ({ signOut: clerk.signOut }),
-  SignIn: () => <div>clerk sign-in panel</div>,
+  SignIn: (props: Record<string, unknown>) => {
+    clerk.signInProps = props;
+    return <div>clerk sign-in panel</div>;
+  },
   SignUp: () => <div>clerk sign-up panel</div>,
   UserButton: () => <div>clerk user button</div>,
 }));
@@ -34,6 +38,13 @@ vi.mock("@clerk/react", () => ({
 vi.mock("./mode", () => ({ clerkEnabled: true, CLERK_PUBLISHABLE_KEY: "pk_test_stub" }));
 
 const { ClerkSessionWatcher, ClerkSignInPanel } = await import("./ClerkPanels");
+const { useCurrentLearner } = await import("../api/auth");
+
+/** What the page around the panel sees — the sign-in page leaves as soon as this has a learner. */
+function WhoAmI() {
+  const { data } = useCurrentLearner();
+  return <p>{data ? `signed in as ${data.handle}` : "nobody"}</p>;
+}
 
 const LEARNER = {
   id: "l-1",
@@ -115,6 +126,19 @@ describe("the Clerk sign-in panel", () => {
     expect(exchangeCalls(fetchMock)).toHaveLength(1);
   });
 
+  it("tells the page it is signed in once the exchange succeeds, without a reload", async () => {
+    server({ exchange: { status: 200, body: LEARNER } });
+
+    renderPanel(
+      <>
+        <WhoAmI />
+        <ClerkSignInPanel />
+      </>,
+    );
+
+    expect(await screen.findByText("signed in as ada")).toBeInTheDocument();
+  });
+
   it("shows the server's reason and ends the Clerk session when Guru refuses the person", async () => {
     server({
       exchange: { status: 403, body: { detail: "Guru is invite-only. Ask an administrator." } },
@@ -140,6 +164,30 @@ describe("the Clerk sign-in panel", () => {
     expect(await screen.findByText("could not reach the identity provider")).toBeInTheDocument();
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(clerk.signOut).not.toHaveBeenCalled();
+  });
+
+  it("does not mount Clerk's panel once Clerk is signed in", async () => {
+    // Clerk's panel redirects a signed-in visitor away on mount, which unmounts the exchange
+    // before it runs — the page the person was sent to never had a Guru session to show.
+    server({ exchange: { status: 200, body: LEARNER } });
+
+    renderPanel(<ClerkSignInPanel />);
+
+    expect(await screen.findByText("Signing you in…")).toBeInTheDocument();
+    expect(screen.queryByText("clerk sign-in panel")).not.toBeInTheDocument();
+  });
+
+  it("sends Clerk back to this page after sign-in, where the exchange runs", () => {
+    clerk.isSignedIn = false;
+    server({ exchange: { status: 200, body: LEARNER } });
+
+    renderPanel(<ClerkSignInPanel />);
+
+    expect(screen.getByText("clerk sign-in panel")).toBeInTheDocument();
+    expect(clerk.signInProps).toMatchObject({
+      forceRedirectUrl: "/signin",
+      signUpForceRedirectUrl: "/sign-up",
+    });
   });
 
   it("does not exchange while Clerk is still loading", async () => {
