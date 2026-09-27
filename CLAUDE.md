@@ -142,6 +142,11 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   What the object store or provider refuses becomes a `pending_erasures` row retried until done.
   Diagnostic rows keep nothing pointing at a learner past 30 days. See
   [docs/RUNBOOK.md](docs/RUNBOOK.md) §16.
+- **An explicit setting pins; inference adapts only what is left to it** (S02; V09) — five
+  settings (guidance, explanation level, note format, hints, pace), global with subject
+  overrides, resolved in one place (`app/services/preferences.py`) and applied when
+  instructions are assembled, so a change reaches the next turn. Inferred values are still
+  computed and shown beside the setting; only catalog strings ever reach a prompt.
 - **A self-rating is not evidence of ability** (S56) — the server decides whether a score was
   judged or self-reported, and a self-rating moves the review schedule only. Mastery is the
   conservative estimate `ability − 2·uncertainty ≥ 0.5` on measured evidence (V02); achievement
