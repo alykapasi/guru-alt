@@ -43,6 +43,7 @@ from app.models.lesson_plan import LessonPlan
 from app.models.memory import Memory
 from app.models.note import Note, NoteRender, NoteRevision
 from app.models.ops import AlertTransition
+from app.models.preference import LearnerPreference
 from app.models.profile import LearnerProfile, ProfileDimension
 from app.models.publication import Publication
 from app.models.source import Chunk, Source
@@ -123,6 +124,11 @@ RETENTION: tuple[StoreRetention, ...] = (
         "Cascades from the learner. Note the asymmetry this resolves: deleting one "
         "*conversation* deliberately leaves its memories, because a durable fact outlives the "
         "conversation it was learned in. Deleting the learner does not.",
+    ),
+    StoreRetention(
+        "learner_preferences",
+        "deleted",
+        "Cascades from the learner; a subject override also goes with its subject (S02).",
     ),
     StoreRetention("learner_profiles", "deleted", "Cascades from the learner."),
     StoreRetention("profile_dimensions", "deleted", "Cascades from the learner."),
@@ -306,6 +312,7 @@ async def export_learner(session: AsyncSession, learner_id: uuid.UUID) -> dict[s
         "messages": await rows(Message, Message.conversation_id.in_(conversation_ids)),
         "turns": await rows(Turn, Turn.conversation_id.in_(conversation_ids)),
         "memories": await rows(Memory, Memory.learner_id == learner_id),
+        "preferences": await rows(LearnerPreference, LearnerPreference.learner_id == learner_id),
         "profile": await rows(LearnerProfile, LearnerProfile.learner_id == learner_id),
         "profile_dimensions": await rows(
             ProfileDimension, ProfileDimension.learner_id == learner_id

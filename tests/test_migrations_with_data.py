@@ -430,3 +430,48 @@ async def test_learners_arrive_active_across_the_deletion_migration() -> None:
             assert await conn.fetchval("SELECT count(*) FROM pending_erasures") == 0
         finally:
             await conn.close()
+
+
+async def test_an_exploration_plan_becomes_a_subject_override() -> None:
+    """0068 (S02): nobody's guidance changes because it moved to preferences."""
+    async with database_at("0067_account_deletion_erasures") as connect:
+        conn = await connect()
+        try:
+            learner_id, s1, s2 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "prefs"
+            )
+            for sid in (s1, s2):
+                await conn.execute(
+                    "INSERT INTO subjects (id, slug, name, owner_learner_id) VALUES ($1, $2, $2, $3)",
+                    sid,
+                    f"s-{sid.hex[:6]}",
+                    learner_id,
+                )
+            await conn.execute(
+                "INSERT INTO lesson_plans (id, learner_id, subject_id, guidance, pacing, example_tags, "
+                "steps, revision_pending, objective_kc_ids) VALUES "
+                "($1, $2, $3, 'exploration', 'standard', '[]', '[]', false, '[]'), "
+                "($4, $2, $5, 'guided', 'standard', '[]', '[]', false, '[]')",
+                uuid.uuid4(),
+                learner_id,
+                s1,
+                uuid.uuid4(),
+                s2,
+            )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0068_learner_preferences")
+
+        conn = await connect()
+        try:
+            rows = await conn.fetch(
+                "SELECT subject_id, key, value FROM learner_preferences WHERE learner_id = $1",
+                learner_id,
+            )
+            assert [(r["subject_id"], r["key"], r["value"]) for r in rows] == [
+                (s1, "guidance", "exploration")
+            ]
+        finally:
+            await conn.close()
