@@ -1396,6 +1396,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/preferences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Preferences
+         * @description Every setting, what it resolves to here, and where that came from.
+         */
+        get: operations["list_preferences_api_v1_preferences_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/preferences/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Preference
+         * @description Pin a setting globally or for one subject; the key's default clears that level.
+         */
+        put: operations["set_preference_api_v1_preferences__key__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/profile": {
         parameters: {
             query?: never;
@@ -3810,6 +3850,39 @@ export interface components {
             phase: string;
             /** Prompt */
             prompt: string | null;
+        };
+        /**
+         * PreferenceRead
+         * @description One setting: what it resolves to here, where that came from, and the alternatives.
+         */
+        PreferenceRead: {
+            /** Global Value */
+            global_value: string | null;
+            /** Inferred */
+            inferred: string | null;
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Options */
+            options: string[];
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "subject" | "global" | "default";
+            /** Value */
+            value: string;
+        };
+        /**
+         * PreferenceSubmit
+         * @description Pin a setting at one level; the key's default clears that level.
+         */
+        PreferenceSubmit: {
+            /** Subject Id */
+            subject_id?: string | null;
+            /** Value */
+            value: string;
         };
         /**
          * PrerequisiteCreate
@@ -6506,6 +6579,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SpendWindow"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_preferences_api_v1_preferences_get: {
+        parameters: {
+            query?: {
+                subject_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreferenceRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_preference_api_v1_preferences__key__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreferenceSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreferenceRead"];
                 };
             };
             /** @description Validation Error */
