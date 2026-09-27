@@ -96,8 +96,9 @@ export function Account() {
   );
 }
 
-/** Memory is not a teaching setting and has no per-subject override (S43). Pausing stops
- * learning; what is already remembered stays until it is forgotten. */
+/** Memory is not a teaching setting and has no per-subject override (S43). Pausing stops new
+ * memories, including later ones from what was said while paused; what is already remembered
+ * stays until it is forgotten. */
 function MemorySwitch() {
   const { data } = useMemorySetting();
   const set = useSetMemorySetting();
@@ -114,8 +115,10 @@ function MemorySwitch() {
       <span className="flex flex-col">
         <span className="text-body">Remember things from my conversations</span>
         <span className="text-caption text-base-content/60">
-          When this is off, Guru stops learning new things about you. What it already remembers
-          stays until you forget it on the Memory page.
+          When this is off, Guru won&apos;t save new memories from your conversations, and nothing
+          you say while it&apos;s off is saved later. What it already remembers stays until you
+          forget it on the Memory page. Your learner profile on the Dashboard is separate and still
+          reads your recent answers and messages.
         </span>
       </span>
     </label>

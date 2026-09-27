@@ -14,7 +14,6 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentLearner, LLMClientDep, MemoryWriteBackEnqueuerDep, SessionDep
 from app.models.chat import Conversation
-from app.models.learner import Learner
 from app.models.memory import Memory
 from app.schemas.memory import (
     ForgetOriginRead,
@@ -61,13 +60,8 @@ async def memory_setting(learner: CurrentLearner):
 
 @router.put("/me/memory-setting", response_model=MemorySetting)
 async def set_memory_setting(body: MemorySetting, session: SessionDep, learner: CurrentLearner):
-    """Pause or resume memory (S43). Pausing stops learning; what is remembered stays."""
-    row = await session.get(Learner, learner.id)
-    assert row is not None
-    row.remember_conversations = body.remember
-    await session.commit()
-    await session.refresh(row)  # `updated_at` is set by the database
-    return MemorySetting(remember=row.remember_conversations)
+    """Pause or resume memory (S43). Pausing stops new memories; what is remembered stays."""
+    return MemorySetting(remember=await svc.set_remember(session, learner.id, body.remember))
 
 
 @router.get("/memory", response_model=list[MemoryRead])

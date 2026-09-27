@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, and_, or_, select, update
+from sqlalchemy import CursorResult, and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -313,6 +313,39 @@ async def undo_replacement(
     await session.commit()
     await session.refresh(old)
     return old
+
+
+async def set_remember(session: AsyncSession, learner_id: uuid.UUID, remember: bool) -> bool:
+    """Pause or resume memory for a learner (S43); returns the setting now in force.
+
+    Resuming moves every conversation's cursor to its newest message, so what was said while
+    memory was paused is never learned from — turning it back on is not consent to go back and
+    read the pause.
+    """
+    learner = await session.get(Learner, learner_id)
+    assert learner is not None
+    if remember and not learner.remember_conversations:
+        newest = dict(
+            (
+                await session.execute(
+                    select(Message.conversation_id, func.max(Message.created_at))
+                    .join(Conversation, Message.conversation_id == Conversation.id)
+                    .where(Conversation.learner_id == learner_id)
+                    .group_by(Message.conversation_id)
+                )
+            )
+            .tuples()
+            .all()
+        )
+        conversations = await session.scalars(
+            select(Conversation).where(Conversation.id.in_(newest))
+        )
+        for conversation in conversations.all():
+            conversation.memory_watermark = newest[conversation.id]
+    learner.remember_conversations = remember
+    await session.commit()
+    await session.refresh(learner)  # `updated_at` is set by the database
+    return learner.remember_conversations
 
 
 async def _unprocessed_messages(

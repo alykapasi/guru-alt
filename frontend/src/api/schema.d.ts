@@ -1151,7 +1151,7 @@ export interface paths {
         get: operations["memory_setting_api_v1_me_memory_setting_get"];
         /**
          * Set Memory Setting
-         * @description Pause or resume memory (S43). Pausing stops learning; what is remembered stays.
+         * @description Pause or resume memory (S43). Pausing stops new memories; what is remembered stays.
          */
         put: operations["set_memory_setting_api_v1_me_memory_setting_put"];
         post?: never;

@@ -915,6 +915,8 @@ Memory write-back and profile refresh run on their own when things go quiet.
 - **`refresh_stuck`.** Something has been due for over `GURU_REFRESH_STUCK_HOURS` (6). Check the
   worker is running and the interval is not 0, then read `learner_profiles.last_error` and the
   `memory.write_back_failed` log lines (conversation id only, never content).
-- **Pausing memory** is the learner's choice (Account → Preferences). Nothing new is learned,
-  by the sweep or on request (the write-back endpoint answers 409 `memory_paused`); existing
-  memories stay in use until forgotten.
+- **Pausing memory** is the learner's choice (Account → Preferences). No new memories are
+  saved, by the sweep or on request (the write-back endpoint answers 409 `memory_paused`), and
+  resuming moves every conversation's `memory_watermark` to its newest message, so nothing said
+  while paused is ever extracted. Existing memories stay in use until forgotten. The switch is
+  about memories only: profile refresh still reads the learner's recent answers and messages.

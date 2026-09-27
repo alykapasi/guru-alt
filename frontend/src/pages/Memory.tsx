@@ -202,7 +202,7 @@ export function Memory() {
 
       {setting?.remember === false && (
         <p className="alert alert-info text-body">
-          Memory is paused — Guru isn&apos;t learning anything new from your conversations. Turn it
+          Memory is paused — Guru isn&apos;t saving new memories from your conversations. Turn it
           back on in{" "}
           <Link to="/account" className="link">
             Account

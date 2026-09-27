@@ -205,7 +205,7 @@ describe("a replacement that was wrong", () => {
 });
 
 describe("while memory is paused", () => {
-  it("says nothing new is being learned and links to the switch", async () => {
+  it("says no new memories are saved and links to the switch", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((input: Request | string) => {
@@ -218,7 +218,7 @@ describe("while memory is paused", () => {
     );
     renderPage();
 
-    expect(await screen.findByText(/Memory is paused/)).toBeInTheDocument();
+    expect(await screen.findByText(/isn.t saving new memories/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Account/ })).toHaveAttribute("href", "/account");
   });
 });

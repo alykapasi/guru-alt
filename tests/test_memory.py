@@ -657,3 +657,22 @@ async def test_the_setting_is_exported(api_client: AsyncClient) -> None:
     await api_client.put(f"{API}/me/memory-setting", json={"remember": False})
     exported = (await api_client.get(f"{API}/me/export")).json()
     assert exported["learner"]["remember_conversations"] is False
+
+
+async def test_what_was_said_while_paused_is_never_learned(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """Turning memory back on must not reach back into what was said while it was off."""
+    await api_client.put(f"{API}/me/memory-setting", json={"remember": False})
+    conv = Conversation(learner_id=api_learner.id)
+    db_session.add(conv)
+    await db_session.flush()
+    conv_id = conv.id
+    db_session.add(Message(conversation_id=conv_id, role="user", content="I have asthma."))
+    await db_session.commit()
+
+    await api_client.put(f"{API}/me/memory-setting", json={"remember": True})
+    llm = fake_llm_client('{"memories": [{"kind": "fact", "content": "Has asthma."}]}')
+
+    assert await svc.write_back(db_session, llm, conversation_id=conv_id) == []
+    assert cast(FakeProvider, llm._providers["fake"]).prompts_sent == []
