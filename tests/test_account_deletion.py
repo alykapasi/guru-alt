@@ -287,3 +287,88 @@ async def test_erase_now_from_an_active_account_is_one_call(
 
     assert r.status_code == 202 and r.json()["erased"] is True
     assert await db_session.get(Learner, learner_id, populate_existing=True) is None
+
+
+async def test_a_pending_administrator_is_no_administrator(
+    anon_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """An administrator who deleted their own account keeps no portal, no ops and no way to
+    impersonate anyone during the recovery window."""
+    from tests.conftest import sign_in
+
+    admin = Learner(handle=f"a-{uuid.uuid4().hex[:8]}", is_admin=True)
+    db_session.add(admin)
+    await db_session.flush()
+    await retention.request_deletion(db_session, admin.id, settings=get_settings())
+    await sign_in(anon_client, db_session, admin)
+
+    for path in (f"{API}/admin/learners", f"{API}/ops/spend"):
+        r = await anon_client.get(path)
+        assert r.status_code == 403, path
+        assert r.json()["detail"]["code"] == "deletion_pending", path
+
+
+async def test_one_failing_erase_does_not_hold_up_the_rest(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    settings = get_settings()
+    learners = [Learner(handle=f"e-{uuid.uuid4().hex[:8]}") for _ in range(2)]
+    db_session.add_all(learners)
+    await db_session.commit()
+    ids = [learner.id for learner in learners]
+    for learner_id in ids:
+        await retention.request_deletion(db_session, learner_id, settings=settings)
+    real = retention.erase_learner
+
+    async def flaky(session, blobstore, provider, learner_id):
+        if learner_id == ids[0]:
+            raise RuntimeError("database hiccup")
+        return await real(session, blobstore, provider, learner_id)
+
+    monkeypatch.setattr(retention, "erase_learner", flaky)
+
+    erased = await retention.erase_due(
+        db_session,
+        InMemoryBlobStore(),
+        FakeIdentityProvider(),
+        now=datetime.now(UTC) + timedelta(days=8),
+    )
+
+    assert erased == 1
+    assert await db_session.get(Learner, ids[1], populate_existing=True) is None
+    assert await db_session.get(Learner, ids[0], populate_existing=True) is not None
+
+
+async def test_a_pending_account_can_list_its_files_and_save_its_export(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """The recovery screen offers each upload as a link, not a path inside a JSON blob."""
+    from app.models.source import SourceKind
+    from app.services import ingestion
+    from tests.conftest import sign_in
+
+    store = InMemoryBlobStore()
+    source = await ingestion.create_source(
+        db_session,
+        store,
+        learner_id=api_learner.id,
+        kind=SourceKind.FILE,
+        origin="notes.txt",
+        content_type="text/plain",
+        data=b"Mine.",
+    )
+    source_id = source.id
+    await retention.request_deletion(db_session, api_learner.id, settings=get_settings())
+    await sign_in(api_client, db_session, api_learner)
+
+    files = await api_client.get(f"{API}/me/export/files")
+    assert files.status_code == 200
+    assert files.json() == [
+        {
+            "id": str(source_id),
+            "origin": "notes.txt",
+            "file_path": f"/api/v1/me/export/sources/{source_id}/file",
+        }
+    ]
+    export = await api_client.get(f"{API}/me/export")
+    assert export.headers["content-disposition"].startswith("attachment")

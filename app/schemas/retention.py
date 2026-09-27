@@ -41,3 +41,11 @@ class DeletionStatusRead(BaseModel):
     pending: bool
     requested_at: datetime | None
     due_at: datetime | None
+
+
+class ExportFileRead(BaseModel):
+    """One uploaded file, and where to download it (S61)."""
+
+    id: uuid.UUID
+    origin: str
+    file_path: str

@@ -1100,6 +1100,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/export/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Files
+         * @description Every file this learner uploaded, each with its download path (S61).
+         */
+        get: operations["export_files_api_v1_me_export_files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/export/sources/{source_id}/file": {
         parameters: {
             query?: never;
@@ -2826,6 +2846,21 @@ export interface components {
             updated_at: string;
             /** Value */
             value: unknown;
+        };
+        /**
+         * ExportFileRead
+         * @description One uploaded file, and where to download it (S61).
+         */
+        ExportFileRead: {
+            /** File Path */
+            file_path: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Origin */
+            origin: string;
         };
         /**
          * FailureKind
@@ -6075,9 +6110,27 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    export_files_api_v1_me_export_files_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportFileRead"][];
                 };
             };
         };

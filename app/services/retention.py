@@ -249,6 +249,24 @@ class DeletionReport:
         return not self.blobs_failed
 
 
+def file_path(source_id: Any) -> str:
+    """Where one uploaded file downloads from (``GET /me/export/sources/{id}/file``)."""
+    return f"/api/v1/me/export/sources/{source_id}/file"
+
+
+async def export_files(session: AsyncSession, learner_id: uuid.UUID) -> list[Source]:
+    """Every source of this learner's with stored bytes, archived ones included."""
+    return list(
+        (
+            await session.scalars(
+                select(Source)
+                .where(Source.learner_id == learner_id, Source.blob_key.is_not(None))
+                .order_by(Source.created_at)
+            )
+        ).all()
+    )
+
+
 async def export_learner(session: AsyncSession, learner_id: uuid.UUID) -> dict[str, Any]:
     """Everything the platform holds about one learner, as plain JSON-able data.
 
@@ -280,9 +298,7 @@ async def export_learner(session: AsyncSession, learner_id: uuid.UUID) -> dict[s
 
     sources = await rows(Source, Source.learner_id == learner_id)
     for entry in sources:
-        entry["file_path"] = (
-            f"/api/v1/me/export/sources/{entry['id']}/file" if entry.get("blob_key") else None
-        )
+        entry["file_path"] = file_path(entry["id"]) if entry.get("blob_key") else None
 
     return {
         "learner": _as_dict(learner),
@@ -507,7 +523,13 @@ async def erase_due(
         if learner is None or learner.deletion_due_at is None or learner.deletion_due_at > now:
             await session.rollback()
             continue
-        await erase_learner(session, blobstore, provider, learner_id)
+        try:
+            await erase_learner(session, blobstore, provider, learner_id)
+        except Exception:
+            # Logged and left for the next pass; the accounts after it are still erased.
+            await session.rollback()
+            log.exception("retention.erase_failed", learner_id=str(learner_id))
+            continue
         erased += 1
     return erased
 
@@ -516,7 +538,9 @@ _MAX_BACKOFF = timedelta(days=1)
 
 
 def _backoff(attempts: int) -> timedelta:
-    return min(timedelta(minutes=2**attempts), _MAX_BACKOFF)
+    # The exponent is capped before it is raised: 2**41 minutes does not fit a timedelta, and
+    # a refusal that has lasted that long must keep retrying daily, not crash the sweep.
+    return min(timedelta(minutes=2 ** min(attempts, 11)), _MAX_BACKOFF)
 
 
 async def retry_erasures(
@@ -545,23 +569,41 @@ async def retry_erasures(
     )
     resolved = 0
     for row in rows:
+        kind = row.kind
         try:
-            if row.kind == ErasureKind.BLOB:
-                await ingestion.unreference_blob(session, blobstore, row.target)
-            elif provider is None:
-                raise RuntimeError("no identity provider configured")
-            else:
-                await provider.delete_user(row.target)
-        except Exception as exc:
-            row.attempts += 1
-            row.last_error = str(exc)[:500]
-            row.next_attempt_at = now + _backoff(row.attempts)
-            await session.commit()
-            continue
-        await session.delete(row)
-        await session.commit()
-        resolved += 1
+            resolved += await _retry_one(session, blobstore, provider, row, now=now)
+        except Exception:
+            # One row that cannot even be recorded must not stop the rows behind it.
+            await session.rollback()
+            log.exception("retention.erasure_retry_failed", kind=kind)
     return resolved
+
+
+async def _retry_one(
+    session: AsyncSession,
+    blobstore: BlobStore,
+    provider: IdentityProvider | None,
+    row: PendingErasure,
+    *,
+    now: datetime,
+) -> int:
+    """Attempt one erasure: 1 and the row removed on success, 0 and a backoff on refusal."""
+    try:
+        if row.kind == ErasureKind.BLOB:
+            await ingestion.unreference_blob(session, blobstore, row.target)
+        elif provider is None:
+            raise RuntimeError("no identity provider configured")
+        else:
+            await provider.delete_user(row.target)
+    except Exception as exc:
+        row.attempts += 1
+        row.last_error = str(exc)[:500]
+        row.next_attempt_at = now + _backoff(row.attempts)
+        await session.commit()
+        return 0
+    await session.delete(row)
+    await session.commit()
+    return 1
 
 
 async def stuck_erasures(session: AsyncSession, *, attempts: int) -> int:

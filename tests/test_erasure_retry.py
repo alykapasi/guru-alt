@@ -120,3 +120,27 @@ async def test_stuck_erasures_raise_an_alert(db_session: AsyncSession) -> None:
 
     assert stuck >= 1
     assert "erasures_stuck" in [a.name for a in report.firing]
+
+
+async def test_a_long_refused_erasure_waits_a_day_and_holds_up_nothing(
+    db_session: AsyncSession,
+) -> None:
+    """After weeks of refusals the backoff stays at a day, and a row that keeps failing never
+    stops the rows behind it."""
+    store = _Refusing()
+    stuck, fine = f"blobs/{uuid.uuid4().hex}", f"blobs/{uuid.uuid4().hex}"
+    await retention.queue_erasure(db_session, ErasureKind.BLOB, stuck, "refused")
+    await retention.queue_erasure(db_session, ErasureKind.IDENTITY, fine, "refused")
+    row = await _row(db_session, "blob", stuck)
+    assert row is not None
+    row.attempts = 60
+    await db_session.commit()
+    provider = FakeIdentityProvider()
+    now = datetime.now(UTC) + timedelta(seconds=1)
+
+    resolved = await retention.retry_erasures(db_session, store, provider, now=now)
+
+    assert resolved == 1 and fine in provider.deleted
+    row = await _row(db_session, "blob", stuck)
+    assert row is not None and row.attempts == 61
+    assert row.next_attempt_at == now + timedelta(days=1)

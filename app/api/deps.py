@@ -217,16 +217,21 @@ async def get_current_learner(request: Request, who: Authenticated) -> Learner:
     A pending-deletion account is refused (S61): its sessions were revoked at the request, and
     a new one only reaches the recovery routes (``AccountHolder``).
     """
-    if who.learner.deletion_due_at is not None:
+    _refuse_pending(who.learner)
+    return who.learner
+
+
+def _refuse_pending(learner: Learner) -> None:
+    """403 for an account pending deletion (S61): it reaches only the recovery routes."""
+    if learner.deletion_due_at is not None:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             {
                 "code": "deletion_pending",
-                "due_at": who.learner.deletion_due_at.isoformat(),
+                "due_at": learner.deletion_due_at.isoformat(),
                 "message": "This account is scheduled for deletion.",
             },
         )
-    return who.learner
 
 
 CurrentLearner = Annotated[Learner, Depends(get_current_learner)]
@@ -265,6 +270,9 @@ async def get_current_admin(who: Authenticated) -> Learner:
     # rather than the enforcement point — see `app.services.auth.resolve_session`.
     if not who.learner.is_admin or who.learner.suspended_at is not None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not an administrator")
+    # An administrator who deleted their own account keeps no portal meanwhile (S61) — above
+    # all no impersonation, which would be a live session onto somebody else's account.
+    _refuse_pending(who.learner)
     return who.learner
 
 
@@ -315,6 +323,7 @@ async def require_operator(request: Request, session: SessionDep, settings: Sett
         or resolved.learner.suspended_at is not None
     ):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not an administrator")
+    _refuse_pending(resolved.learner)
 
 
 OperatorDep = Depends(require_operator)

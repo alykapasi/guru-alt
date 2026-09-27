@@ -9,6 +9,8 @@ import uuid
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Response, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 
 from app.api.deps import (
     AccountHolder,
@@ -23,6 +25,7 @@ from app.schemas.retention import (
     DeletionReportRead,
     DeletionRequestRead,
     DeletionStatusRead,
+    ExportFileRead,
     RetentionPolicyRead,
     StoreRetentionRead,
 )
@@ -47,13 +50,27 @@ async def retention_policy(_: CurrentLearner):
 
 
 @router.get("/me/export")
-async def export_me(session: SessionDep, learner: AccountHolder) -> dict:
+async def export_me(session: SessionDep, learner: AccountHolder) -> JSONResponse:
     """Everything held about this learner, as JSON. Each upload's bytes download separately,
     from the ``file_path`` on its source entry."""
     try:
-        return await svc.export_learner(session, learner.id)
+        exported = await svc.export_learner(session, learner.id)
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "learner not found") from exc
+    # An attachment, so a link to it saves a file rather than opening a wall of JSON.
+    return JSONResponse(
+        jsonable_encoder(exported),
+        headers={"Content-Disposition": 'attachment; filename="guru-export.json"'},
+    )
+
+
+@router.get("/me/export/files", response_model=list[ExportFileRead])
+async def export_files(session: SessionDep, learner: AccountHolder):
+    """Every file this learner uploaded, each with its download path (S61)."""
+    return [
+        ExportFileRead(id=source.id, origin=source.origin, file_path=svc.file_path(source.id))
+        for source in await svc.export_files(session, learner.id)
+    ]
 
 
 @router.get("/me/export/sources/{source_id}/file")
