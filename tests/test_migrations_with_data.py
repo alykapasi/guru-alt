@@ -545,3 +545,29 @@ async def test_refresh_scheduling_columns_default_sensibly() -> None:
             assert remember is True and attempted is None
         finally:
             await conn.close()
+
+
+async def test_existing_calls_become_settled_legacy_rows() -> None:
+    """0071 (S48): rows written before attribution existed are settled and unattributed."""
+    async with database_at("0070_refresh_scheduling") as connect:
+        conn = await connect()
+        try:
+            call_id = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO llm_calls (id, role, provider, model, input_tokens, output_tokens) "
+                "VALUES ($1, 'fast', 'fake', 'fake-1', 3, 4)",
+                call_id,
+            )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0071_call_accounting")
+
+        conn = await connect()
+        try:
+            row = await conn.fetchrow(
+                "SELECT feature, status, estimated FROM llm_calls WHERE id = $1", call_id
+            )
+            assert (row["feature"], row["status"], row["estimated"]) == ("legacy", "ok", False)
+        finally:
+            await conn.close()

@@ -182,6 +182,12 @@ class Settings(BaseSettings):
     # None = report spend but assert nothing about it.
     spend_window_hours: int = 24
     spend_budget_usd: float | None = None
+    # Recorded on every model call (S48) so a change in cost or quality can be tied to a
+    # release. Set by the deployment; "dev" otherwise.
+    app_version: str = "dev"
+    # How stale the deployment's spend total may be when the guard reads it (S47): summing the
+    # whole window on every call would cost more than the calls it protects.
+    spend_guard_cache_seconds: int = 30
 
     # Alert thresholds (S60). These are the numbers docs/OPERATIONS.md tells an operator to
     # watch, in the one place something can evaluate them.
