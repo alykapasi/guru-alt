@@ -33,7 +33,12 @@ async def ensure_criteria(
     the item as it was — it is then graded against the grader's fallback, as before — and a
     level that is not a band name leaves the difficulty alone.
     """
-    await session.refresh(item, ["rubric_id"], with_for_update=True)
+    # FOR NO KEY UPDATE, not FOR UPDATE: it still serializes two first attempts, but FOR UPDATE
+    # would also block the FOR KEY SHARE that Postgres takes to check a foreign key — and Jev's
+    # audit row (`decision_calls.item_id`) is inserted on another connection while this turn
+    # waits for it, so the turn would wait on itself. Difficulty is re-read with the rubric: an
+    # attempt that waited must grade at the level the winner rated, not the one it loaded.
+    await session.refresh(item, ["rubric_id", "difficulty"], with_for_update={"key_share": True})
     if item.rubric_id is not None:
         await session.refresh(item, ["rubric"])
         return item

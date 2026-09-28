@@ -4,7 +4,8 @@ import json
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select, update
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import declared_check, difficulty, item_generation, mastery
@@ -14,11 +15,13 @@ from app.llm.providers import FakeProvider
 from app.llm.providers.fake import FakeTurn
 from app.llm.registry import LLMClient, ModelSpec
 from app.llm.types import ModelRole
+from app.models.assessment import Item, Rubric
 from app.models.chat import Conversation, ConversationPhase
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearningEvent
 from app.services import chat as chat_svc
+from app.services import check_criteria
 
 ATTEMPT = '{"intent": "attempt"}'
 DEFERRAL = '{"intent": "deferral"}'
@@ -272,3 +275,49 @@ async def test_the_level_follows_the_learners_subject_estimate(
         db_session, learner_id=uuid.uuid4(), subject_id=uuid.uuid4()
     )
     assert f"Pitch any check at this level: {level} (" in note
+
+
+# --- the lock ---------------------------------------------------------------------------------
+
+
+async def test_the_lock_does_not_block_foreign_key_inserts(db_session) -> None:
+    """``FOR UPDATE`` conflicts with the ``FOR KEY SHARE`` Postgres takes to check a foreign key,
+    so Jev's own audit row (``decision_calls.item_id``), written on another connection while
+    this turn waits for it, would hang the turn. ``FOR NO KEY UPDATE`` still serializes two
+    first attempts and lets that insert through."""
+    learner, _kc, _conversation, item = await _declared(db_session)
+    statements: list[str] = []
+
+    def capture(_conn, _cursor, statement, *_args) -> None:
+        statements.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", capture)
+    try:
+        await check_criteria.ensure_criteria(db_session, _client(CRITERIA)[0], learner.id, item)
+    finally:
+        event.remove(Engine, "before_cursor_execute", capture)
+    locking = [s for s in statements if "FOR " in s and "UPDATE" in s]
+    assert locking and all("FOR NO KEY UPDATE" in s for s in locking)
+
+
+async def test_an_attempt_that_waited_takes_the_winners_rubric_and_level(db_session) -> None:
+    """Review focus 1: the second of two racing first attempts. Its item was loaded before the
+    winner committed, so both the rubric and the rated difficulty must be re-read."""
+    learner, kc, _conversation, item = await _declared(db_session)
+    rubric = Rubric(kc_id=kc.id, owner_learner_id=learner.id, criteria={"criteria": ["x"]})
+    db_session.add(rubric)
+    await db_session.flush()
+    await db_session.execute(
+        update(Item)
+        .where(Item.id == item.id)
+        .values(rubric_id=rubric.id, difficulty=1.0)
+        .execution_options(synchronize_session=False)
+    )
+    assert item.rubric_id is None  # the stale copy the loser holds
+    llm, provider = _client(CRITERIA)
+
+    await check_criteria.ensure_criteria(db_session, llm, learner.id, item)
+
+    assert provider.prompts_sent == []
+    assert item.rubric_id == rubric.id and item.rubric is not None
+    assert item.difficulty == 1.0
