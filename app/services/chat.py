@@ -35,6 +35,7 @@ from app.rag.scope import resolve_scope
 from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRef
 from app.schemas.chat import CheckResultRead
 from app.services import assessment as assessment_svc
+from app.services import check_criteria as check_criteria_svc
 from app.services import decisions as decisions_svc
 from app.services import knowledge as knowledge_svc
 from app.services import learner_context
@@ -332,6 +333,20 @@ async def _resolve_check(
         conversation.active_item_scaffolds += 1
         return item, None
 
+    if item.rubric_id is None:
+        # A check the tutor declared has no standard yet; write one now that it is being
+        # answered, from the question alone (S56). Failing to is not a reason to lose the
+        # answer — it is graded against the fallback, as before — but a refusal is: the turn
+        # is over budget, so nothing is recorded and the question stays open.
+        try:
+            item = await check_criteria_svc.ensure_criteria(session, llm, learner_id, item)
+        except BudgetExceeded:
+            return item, None
+        except Exception as exc:
+            log.warning(
+                "check.criteria_unavailable", item_id=str(item.id), error=type(exc).__name__
+            )
+
     # Read before grading: `answer_item` returns the posterior, and a posterior with nothing
     # to compare it against is not something a learner can act on.
     kc_ids = [link.kc_id for link in item.kc_links]
@@ -406,13 +421,12 @@ async def _materialise_declared_check(
 
     The item is authored **to the learner** (S33) rather than added to the shared bank. A
     question the tutor improvised for one conversation is not something other learners should
-    be assessed against — it has no reviewed rubric, no difficulty target, and no provenance
-    beyond one exchange. Scoping it means it can still be reused for *this* learner, which is
-    the right amount of permanence for it.
+    be assessed against — it has no reviewed rubric and no provenance beyond one exchange.
+    Scoping it means it can still be reused for *this* learner, which is the right amount of
+    permanence for it.
 
-    No rubric, so it is graded by ``grade_open``'s stated fallback. That is a real limitation
-    and it is the honest one: the alternative is a second model call to invent criteria for a
-    question that may never be answered.
+    No rubric yet: criteria and a rated difficulty are written on its first real attempt
+    (``app.services.check_criteria``, S56), so a question nobody answers costs nothing.
     """
     kcs = await knowledge_svc.list_kcs_for_subject(session, subject_id)
     index, _ = prereq_index.index_by_name([(str(kc.id), kc.name) for kc in kcs])
