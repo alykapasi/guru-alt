@@ -161,9 +161,14 @@ nothing is processed at all.
 | `failed` rising | Sources exhausting `ingest_max_attempts` | Read `sources.error`; these are parked, not retried. |
 
 `/api/v1/ops/spend` is the bill so far **and how long the models took**. Cost, tokens and
-timing are logged per call (`llm_calls`, tagged by role and model); this totals a window and
-splits it by role and by model. Set `GURU_SPEND_BUDGET_USD` and `GURU_SPEND_WINDOW_HOURS` to
-make it assert something.
+timing are recorded per call by the client (`llm_calls`, tagged by role, model and feature,
+failed and interrupted calls included); this totals a window and splits it by role, by model and
+by feature, with counts of failed, partial and estimated calls. `GURU_SPEND_BUDGET_USD` over
+`GURU_SPEND_WINDOW_HOURS` is a hard ceiling: background work stops at 90% of it and every paid
+call is refused at 100% (the guard reads a total cached for `GURU_SPEND_GUARD_CACHE_SECONDS`,
+default 30). Per-learner caps are `GURU_LEARNER_DAILY_COST_USD_LIMIT` and
+`GURU_LEARNER_DAILY_TOKEN_LIMIT`. Set `GURU_APP_VERSION` per release. See
+[RUNBOOK §18](RUNBOOK.md#18-spend-limits-s47-s48).
 
 > Two timings, and they are not interchangeable. `completion` is how long a non-streamed call
 > took end to end. `first_token` is how long a streamed call took to *start* — the tutoring
@@ -191,7 +196,9 @@ its bill is high would be the wrong response to the right signal.
 | `ingestion_stalled` | critical | Work waiting, nothing in flight — a dead consumer. |
 | `ingestion_backlog_ageing` | warning | Oldest pending source past `GURU_ALERT_PENDING_AGE_SECONDS`. Saturated if `processing` is at the cap; otherwise treat as stalled. |
 | `leases_expired` | warning | Claimed sources with a lapsed lease, at or past `GURU_ALERT_EXPIRED_LEASES`. Persisting means the reconciler is not running. |
-| `spend_over_budget` | warning | Window spend past `GURU_SPEND_BUDGET_USD`. A runaway is usually one loop, not general growth. |
+| `spend_over_budget` | warning | Window spend past `GURU_SPEND_BUDGET_USD`: every paid call is being refused until spend falls below it. Raise the budget or wait for the window to roll; a runaway is usually one loop, not general growth. |
+| `spend_near_budget` | warning | Window spend past 90% of `GURU_SPEND_BUDGET_USD`. Background work (memory write-back, profile refresh, concept links, reindex) is paused; live turns continue. |
+| `calls_pending_stale` | warning | A model call reserved over 15 minutes ago never settled — a process died mid-call. Check app and worker restarts; the row counts at its estimate until it leaves the window. |
 | `erasures_stuck` | warning | A file delete or identity-provider delete has been refused `GURU_ALERT_STUCK_ERASURE_ATTEMPTS`+ times (default 10). Read `pending_erasures.last_error`; see [RUNBOOK §16](RUNBOOK.md#16-account-deletion-and-retention-s61). |
 | `refresh_stuck` | warning | A conversation or learner has had unprocessed evidence for over `GURU_REFRESH_STUCK_HOURS` (default 6). Check the worker and `GURU_REFRESH_POLL_INTERVAL_SECONDS`, then `learner_profiles.last_error` and `memory.write_back_failed` logs; see [RUNBOOK §17](RUNBOOK.md#17-refresh-scheduling-s43). |
 

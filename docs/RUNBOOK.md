@@ -920,3 +920,45 @@ Memory write-back and profile refresh run on their own when things go quiet.
   resuming moves every conversation's `memory_watermark` to its newest message, so nothing said
   while paused is ever extracted. Existing memories stay in use until forgotten. The switch is
   about memories only: profile refresh still reads the learner's recent answers and messages.
+
+## 18. Spend limits (S47, S48)
+
+Every model call is recorded and admitted by `LLMClient` itself; no service logs a call by hand.
+
+- **The record.** Before a call, a `pending` row in `llm_calls` carrying a reserved estimate
+  (input ≈ characters ÷ 4, output = `max_tokens`, cost from the price table; `estimated = true`).
+  After it, the row is settled: `ok` with the provider's numbers; `failed` with `error_kind` (the
+  exception's class name, never its message) and the input estimate kept, since the provider may
+  have charged; `partial` for a stream closed before its last chunk, output estimated from the
+  text delivered. Each row names its `feature` (the service that paid, e.g. `chat_turn`,
+  `practice_grading`, `ingestion`, `profile_refresh`), the `request_id` of the API request that
+  made it, a `prompt_hash` of the system prompt and `app_version` (`GURU_APP_VERSION`, default
+  `dev` — set it per release so a change in cost or quality can be tied to one). A failed
+  accounting write is logged `llm.call_not_recorded` and never fails the call.
+- **Learner caps.** `GURU_LEARNER_DAILY_COST_USD_LIMIT` (5.0) and `GURU_LEARNER_DAILY_TOKEN_LIMIT`
+  (2,000,000), over the trailing 24 hours, `0` disabling either. Exact under concurrency:
+  admission and the pending row are one transaction holding an advisory lock on the learner, so
+  parallel calls see each other's reservations. A reservation counts at `max_tokens`, so a
+  learner near the cap can be refused a call that would in fact have been short. Calls during
+  an administrator's visit count against the visited learner.
+- **Deployment ceiling.** `GURU_SPEND_BUDGET_USD` over `GURU_SPEND_WINDOW_HOURS` (24), unset
+  meaning no ceiling. At 100% every paid call is refused. The total is cached per process for
+  `GURU_SPEND_GUARD_CACHE_SECONDS` (30), so the ceiling can be overshot by what is spent within
+  that long — a soft edge; the learner caps have none.
+- **Background work yields first.** Memory write-back, profile refresh, concept-link judging and
+  reindex stop at 90% of either learner cap and of the deployment budget; the refresh sweep
+  claims nothing while the deployment is past 90%. A learner's own turns continue.
+- **What a refusal looks like.** API routes answer 429
+  `{"detail": {"code": "budget_exceeded", "scope": "learner"|"deployment", "message": …}}`; a
+  turn refused part-way ends with an error event carrying the same message and the turn is
+  marked failed, so it can be retried; a refused upload fails with the message as its error; a
+  refused background task logs `budget.deferred task=…` at info and keeps its claim, so the sweep
+  retries it later.
+- **Reading it.** `/api/v1/ops/spend` and the Admin page break cost down by role, model and
+  feature, with counts of failed, partial and estimated calls. Estimated rows carry their
+  reservation, not the provider's numbers. Rows written before this change have feature
+  `legacy`; an `unattributed` row is a call reached through a path no service named — fix it
+  with `@metered(...)` on that service's entry function (`app/llm/attribution.py`).
+- **`calls_pending_stale`.** A row still `pending` after 15 minutes: a process died mid-call.
+  Check for app and worker restarts. The row keeps counting at its estimate until it leaves the
+  window; nothing needs cleaning up.

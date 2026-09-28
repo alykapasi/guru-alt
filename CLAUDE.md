@@ -155,6 +155,12 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   learners with unread evidence and no activity for 20 minutes; due-ness is derived from the
   data, so backlogs catch up by themselves. The profile reads a recency window, and a
   model-backed estimator pays only when its input changed. Learners can pause memory.
+- **Every paid call is recorded and admitted by the client** (S47, S48) — `LLMClient` writes a
+  `pending` row before each call and settles it (`ok`/`failed`/`partial`);
+  `app/services/spend_guard.py` refuses a call over the learner's daily caps (exact under
+  concurrency) or the deployment ceiling, and background work stops at 90%. Services say what
+  they are with `@metered(...)` (`app/llm/attribution.py`); nothing calls a logging function by
+  hand. See [docs/RUNBOOK.md](docs/RUNBOOK.md) §18.
 - **A self-rating is not evidence of ability** (S56) — the server decides whether a score was
   judged or self-reported, and a self-rating moves the review schedule only. Mastery is the
   conservative estimate `ability − 2·uncertainty ≥ 0.5` on measured evidence (V02); achievement
