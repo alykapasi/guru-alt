@@ -22,6 +22,7 @@ from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult, InvalidResponse
 from app.learning.turn_read import FULLY_CORRECT, INTENT, ReadContext
 from app.llm.attribution import metered
+from app.llm.meter import BudgetExceeded
 from app.llm.pricing import price_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
@@ -46,6 +47,7 @@ from app.services.turn_common import (
     add_message,
     build_check_result,
     extract_citations,
+    refusal_ends_turn,
     to_chat_messages,
 )
 
@@ -437,6 +439,7 @@ PAUSED_PRACTICE_NOTE = (
 
 
 @metered("chat_turn", learner="learner_id", conversation="conversation.id")
+@refusal_ends_turn
 async def run_tutor_turn(
     session: AsyncSession,
     llm: LLMClient,
@@ -588,6 +591,8 @@ async def run_tutor_turn(
             elif mode == "values":
                 reply = payload["reply"]  # ty: ignore[invalid-argument-type]
                 usage = payload["usage"]  # ty: ignore[invalid-argument-type]
+    except BudgetExceeded:
+        raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
         log.error("tutor.stream_failed", error=str(exc), model=spec.model)
         yield TurnEvent(type="error", detail="generation failed")

@@ -1,4 +1,4 @@
-import { apiFetch } from "./client";
+import { apiFetch, failureMessage } from "./client";
 
 export interface UsageEvent {
   input_tokens: number;
@@ -126,7 +126,8 @@ export async function* streamTurn(
     signal,
   });
   if (!res.ok || !res.body) {
-    throw new Error(`stream failed: ${res.status} ${res.statusText}`);
+    // A refused turn (S47: over a usage limit) carries a message written for the learner.
+    throw new Error(await failureMessage(res, `stream failed: ${res.status} ${res.statusText}`));
   }
 
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();

@@ -12,6 +12,7 @@ from app.agent.agentic import AgenticState, build_agentic_graph
 from app.agent.tools import CitationAccumulator, build_tools
 from app.core.config import get_settings
 from app.llm.attribution import metered
+from app.llm.meter import BudgetExceeded
 from app.llm.pricing import price_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, ToolCall, Usage
@@ -23,6 +24,7 @@ from app.services.turn_common import (
     TurnEvent,
     add_message,
     extract_citations,
+    refusal_ends_turn,
     to_chat_messages,
 )
 
@@ -35,6 +37,7 @@ AGENTIC_SYSTEM_PROMPT = (
 
 
 @metered("chat_turn", learner="learner_id", conversation="conversation.id")
+@refusal_ends_turn
 async def run_agentic_turn(
     session: AsyncSession,
     llm: LLMClient,
@@ -122,6 +125,8 @@ async def run_agentic_turn(
                 reply = payload["reply"]  # ty: ignore[invalid-argument-type]
                 usage = payload["usage"]  # ty: ignore[invalid-argument-type]
                 pending_tool_calls = payload["pending_tool_calls"]  # ty: ignore[invalid-argument-type]
+    except BudgetExceeded:
+        raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
         log.error("agentic.stream_failed", error=str(exc), model=spec.model)
         yield TurnEvent(type="error", detail="generation failed")

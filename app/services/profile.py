@@ -26,6 +26,7 @@ from app.learning.profile_estimators import (
 )
 from app.llm import LLMClient
 from app.llm.attribution import metered
+from app.llm.meter import BudgetExceeded
 from app.models.chat import Conversation, Message
 from app.models.learning import LearningEvent
 from app.models.lesson_plan import LessonPlan
@@ -192,6 +193,11 @@ async def refresh_profile(
             result, _usage = await spec.estimate(context)
             if result is not None:
                 await _upsert_dimension(session, learner_id, spec, result, fingerprint)
+    except BudgetExceeded:
+        # Refused, not broken (S47): nothing to record against the profile. Retried when the
+        # spend window allows, since the watermark has not moved.
+        await session.rollback()
+        raise
     except Exception as exc:
         # Record why, then re-raise. A profile that quietly stopped updating is
         # indistinguishable from one nothing has changed for, and the watermark deliberately

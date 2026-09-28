@@ -21,6 +21,7 @@ from app.core.identity import build_identity_provider
 from app.core.readiness import readiness
 from app.llm import build_llm_client
 from app.llm.attribution import attributed
+from app.llm.meter import BudgetExceeded
 from app.models.learner import Learner
 from app.models.source import Source
 from app.rag import pipeline
@@ -30,7 +31,7 @@ from app.services import (
     alert_history,
     ingestion,
     refresh_schedule,
-    spend_guard,  # noqa: F401  installs the spend guard on the meter (S47)
+    spend_guard,
 )
 from app.services import auth as auth_svc
 from app.services import checkpoints as checkpoints_svc
@@ -76,6 +77,10 @@ async def _memory_write_back_task(conversation_id: str) -> None:
                 await memory_svc.write_back(
                     session, llm, conversation_id=uuid.UUID(conversation_id)
                 )
+            except BudgetExceeded:
+                # Deferred, not failed (S47): the claim stays, so the sweep retries it later.
+                logger.info("budget.deferred task=memory_write_back")
+                return
             except Exception:
                 logger.exception("memory.write_back_failed conversation=%s", conversation_id)
                 raise
@@ -90,7 +95,10 @@ async def _profile_refresh_task(learner_id: str) -> None:
             learner = await session.get(Learner, uuid.UUID(learner_id))
             if learner is None or learner.deletion_requested_at or learner.suspended_at:
                 return  # closed or suspended since it was queued: no model call
-            await profile_svc.refresh_profile(session, learner.id, llm)
+            try:
+                await profile_svc.refresh_profile(session, learner.id, llm)
+            except BudgetExceeded:
+                logger.info("budget.deferred task=profile_refresh")
 
 
 async def _judge_concept_links_task(learner_id: str) -> None:
@@ -98,7 +106,10 @@ async def _judge_concept_links_task(learner_id: str) -> None:
     llm = build_llm_client(get_settings())
     with attributed(learner_id=uuid.UUID(learner_id), background=True):
         async with SessionFactory() as session:
-            await concept_links_svc.judge_pending(session, llm, uuid.UUID(learner_id))
+            try:
+                await concept_links_svc.judge_pending(session, llm, uuid.UUID(learner_id))
+            except BudgetExceeded:
+                logger.info("budget.deferred task=concept_links")
 
 
 async def _enqueue_ingestion(source_id: uuid.UUID) -> None:
@@ -210,6 +221,11 @@ async def _purge_checkpoints_once() -> None:
 
 async def _refresh_due_once() -> None:
     """Queue write-back and profile refresh for whatever has gone quiet (S43)."""
+    if await spend_guard.background_paused():
+        # The deployment is past 90% of its budget (S47): claim nothing, so nothing is marked
+        # attempted; everything due stays due for when spend falls back.
+        logger.info("budget.deferred task=refresh_due")
+        return
     async with SessionFactory() as session:
         claimed = await refresh_schedule.claim_due(
             session, now=refresh_schedule.utcnow(), settings=get_settings()

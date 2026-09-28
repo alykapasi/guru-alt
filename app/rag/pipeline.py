@@ -24,6 +24,7 @@ from app.learning.kc_tagging import load_candidate_kcs, tag_chunk
 from app.llm import EmbedResult, LLMClient, ModelRole, Usage
 from app.llm.attribution import metered
 from app.llm.embedding_space import current_space
+from app.llm.meter import BudgetExceeded
 from app.models.source import Chunk, ChunkKC, Source, SourceStatus
 from app.rag import extraction_quality, simhash, textnorm
 from app.rag.adapters import ExtractContext, select_adapter
@@ -93,6 +94,9 @@ async def embed_in_batches(
         # Cancellation is not a provider failure and must not be converted into one: swallowing
         # it here would break the job deadline `ingest_source` wraps this in.
         if isinstance(failure, asyncio.CancelledError):
+            raise failure
+        # Nor is a refusal (S47): its message is the learner's reason, and the source shows it.
+        if isinstance(failure, BudgetExceeded):
             raise failure
         raise PartialEmbedding(usage, failure) from failure
     return EmbedResult(vectors=[vector for batch in done for vector in batch.vectors], usage=usage)

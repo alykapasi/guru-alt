@@ -32,7 +32,6 @@ from app.api.deps import CurrentLearner, EngineDep, LLMClientDep, SessionDep, Se
 from app.core.config import get_settings
 from app.learning.conversation_evidence import TurnIntent
 from app.llm import LLMClient
-from app.llm.meter import BudgetExceeded
 from app.models.chat import Conversation, ConversationPhase, Message, TurnStatus
 from app.models.source import Source
 from app.schemas.chat import (
@@ -579,14 +578,9 @@ async def send_message(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
     _refuse_if_archived(conversation)
 
-    # An early refusal before a turn is claimed (S47); every call in the turn is admitted too.
-    try:
-        await spend_guard.check(session, learner.id)
-    except BudgetExceeded as exc:
-        raise HTTPException(
-            status.HTTP_429_TOO_MANY_REQUESTS,
-            {"code": "budget_exceeded", "scope": exc.scope, "message": exc.message},
-        ) from exc
+    # An early refusal before a turn is claimed (S47; 429 via the app's handler). Every call in
+    # the turn is admitted too.
+    await spend_guard.check(session, learner.id)
 
     # Before the claim, not after: reaping reads the claim as its liveness signal, so our own
     # would make this conversation's abandoned turns look alive.
