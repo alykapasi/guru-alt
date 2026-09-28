@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
 
+import anyio
 import structlog
 from sqlalchemy import update
 
@@ -91,29 +92,32 @@ async def open_call(
     estimate = _estimate(provider, model, input_chars=input_chars, max_output=max_output)
     row_id = uuid.uuid4()
     try:
-        async with accounting_session() as session:
-            if ADMIT is not None:
-                await ADMIT(session, who, estimate)
-            session.add(
-                LLMCall(
-                    id=row_id,
-                    learner_id=who.learner_id,
-                    conversation_id=who.conversation_id,
-                    role=role,
-                    provider=provider,
-                    model=model,
-                    input_tokens=estimate.input_tokens,
-                    output_tokens=estimate.output_tokens,
-                    cost_usd=estimate.cost_usd,
-                    feature=who.feature or "unattributed",
-                    request_id=who.request_id,
-                    status="pending",
-                    estimated=True,
-                    prompt_hash=_hash(system),
-                    app_version=get_settings().app_version,
+        # Shielded: a cancellation landing mid-transaction must not strand a reservation half
+        # written (see ``_update``). A cancelled caller then fails at its next await.
+        with anyio.CancelScope(shield=True):
+            async with accounting_session() as session:
+                if ADMIT is not None:
+                    await ADMIT(session, who, estimate)
+                session.add(
+                    LLMCall(
+                        id=row_id,
+                        learner_id=who.learner_id,
+                        conversation_id=who.conversation_id,
+                        role=role,
+                        provider=provider,
+                        model=model,
+                        input_tokens=estimate.input_tokens,
+                        output_tokens=estimate.output_tokens,
+                        cost_usd=estimate.cost_usd,
+                        feature=who.feature or "unattributed",
+                        request_id=who.request_id,
+                        status="pending",
+                        estimated=True,
+                        prompt_hash=_hash(system),
+                        app_version=get_settings().app_version,
+                    )
                 )
-            )
-            await session.commit()
+                await session.commit()
     except BudgetExceeded:
         raise
     except Exception as exc:  # bookkeeping must not become an outage
@@ -129,11 +133,16 @@ async def _update(reservation: Reservation, **values: object) -> None:
     if reservation.row_id is None:
         return
     try:
-        async with accounting_session() as session:
-            await session.execute(
-                update(LLMCall).where(LLMCall.id == reservation.row_id).values(**values)
-            )
-            await session.commit()
+        # Shielded: settling usually runs while the caller is being cancelled — Starlette cancels
+        # a response's task group when the client disconnects, and anyio then cancels every
+        # later await in that task. Unshielded, the row would stay pending: charged at its full
+        # reservation and reported as a process that died mid-call.
+        with anyio.CancelScope(shield=True):
+            async with accounting_session() as session:
+                await session.execute(
+                    update(LLMCall).where(LLMCall.id == reservation.row_id).values(**values)
+                )
+                await session.commit()
     except Exception as exc:
         log.error("llm.call_not_recorded", model=reservation.model, error=type(exc).__name__)
 

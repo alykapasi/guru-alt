@@ -258,3 +258,36 @@ async def test_a_broken_accounting_write_is_logged(db_session: AsyncSession) -> 
 
     events = [entry["event"] for entry in logs]
     assert "llm.call_not_recorded" in events and "llm.call" in events
+
+
+async def test_a_stream_cancelled_by_a_disconnect_is_still_settled(
+    db_session: AsyncSession,
+) -> None:
+    """Starlette cancels the response's task group when the client goes away, and anyio then
+    cancels every later await in that task — including the write that settles the row. A row
+    left pending would be charged at its full reservation and reported as a crashed process."""
+    import anyio
+
+    from app.llm.types import ChatChunk
+
+    class Slow(FakeProvider):
+        async def stream(self, **kwargs):
+            yield ChatChunk(text="one ")
+            await anyio.sleep(10)
+            yield ChatChunk(text="never")
+
+    learner_id = await _learner(db_session)
+    llm = _client(Slow())
+
+    async def consume() -> None:
+        async for _chunk in llm.stream(ModelRole.SMART, HELLO):
+            pass
+
+    with attributed(learner_id=learner_id, feature="chat_turn"):
+        async with anyio.create_task_group() as group:
+            group.start_soon(consume)
+            await anyio.sleep(0.2)
+            group.cancel_scope.cancel()
+
+    [row] = await _rows(db_session, learner_id)
+    assert row.status == "partial"
