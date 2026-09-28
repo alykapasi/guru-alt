@@ -53,6 +53,7 @@ from app.models.knowledge import KC, Subject, Topic
 from app.models.learning import LearnerKCState, LearningEvent
 from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRead, ItemRead
 from app.services import decisions as decisions_svc
+from app.services import grading_history
 from app.services import knowledge as knowledge_svc
 from app.services import lesson_plan as lesson_plan_svc
 
@@ -391,6 +392,11 @@ async def answer_item(
         ):
             raise InvalidResponse("attempt id belongs to another actor; submit a new attempt id")
     result = await _grade(session, learner_id, item, submission, llm=llm, read=read)
+    # What this grade was measured against, frozen (S56). Written on this session, so it
+    # commits with the observation or not at all.
+    grading = await grading_history.record(
+        session, learner_id, item, await _components_of(session, item), result
+    )
     observation = Observation(
         learner_id=learner_id,
         kc_weights=kc_weights,
@@ -414,6 +420,7 @@ async def answer_item(
         # cannot claim its self-rating was a demonstration.
         evidence_kind=result.evidence_kind,
         taught_first=taught_first,
+        grading=grading,
     )
     try:
         # Inside the guard, not before it: the tracer *flushes* the observation, so under a

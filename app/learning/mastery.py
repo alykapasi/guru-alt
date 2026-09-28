@@ -51,7 +51,7 @@ from app.models.learning import LearnerKCState, LearningEvent
 
 _SECONDS_PER_DAY = 86_400.0
 
-EVENT_SCHEMA_VERSION = 4
+EVENT_SCHEMA_VERSION = 5
 """Payload shape of an ``observation`` or ``self_report`` event.
 
 1 — score/difficulty/weight/credit and the grader's verdict.
@@ -65,6 +65,8 @@ EVENT_SCHEMA_VERSION = 4
     carries the rating and its FSRS outcome but no prior/posterior pair, because nothing about
     the ability estimate moved. Rows at versions 1-3 are all ``observation`` and are read as
     demonstrated, which is what they were recorded as.
+5 — adds ``grading``: which grader, and hashes of the item, rubric and prompt snapshots it used
+    (S56, ``grading_snapshots``). Absent on earlier rows, which cannot be re-graded.
 """
 
 SELF_REPORT_EVENT = "self_report"
@@ -149,6 +151,10 @@ class Observation(BaseModel):
     count as evidence exactly as before — but an answer given straight after being shown how
     is not the unaided demonstration that proves a prerequisite was never the gap. Only
     ``passed_since`` reads it; it is recorded in the payload only when true."""
+
+    grading: dict | None = None
+    """What graded this attempt (S56): grader, model, and hashes of the frozen item, rubric and
+    prompt in ``grading_snapshots``. Set by ``answer_item``; None for evidence it did not grade."""
 
     @field_validator("kc_weights")
     @classmethod
@@ -472,6 +478,7 @@ async def record_observation(
                         "hints_used": obs.hints_used,
                         "prior_attempts": obs.prior_attempts,
                         "item_id": str(obs.item_id) if obs.item_id else None,
+                        "grading": obs.grading,
                         "admin_actor_id": session.info["admin_actor_id"],
                         "admin_action_id": session.info.get("admin_action_id"),
                     },
@@ -533,6 +540,7 @@ async def record_observation(
                         "schema_version": EVENT_SCHEMA_VERSION,
                         "observed_at": now.isoformat(),
                         "due_at": state.due_at.isoformat() if state.due_at else None,
+                        "grading": obs.grading,
                         **_taught_first_payload(obs),
                     },
                 )
@@ -598,6 +606,7 @@ async def record_observation(
                     "prior_uncertainty": decayed.uncertainty,
                     "posterior_ability": post.ability,
                     "posterior_uncertainty": post.uncertainty,
+                    "grading": obs.grading,
                     **_taught_first_payload(obs),
                 },
             )

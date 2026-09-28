@@ -571,3 +571,14 @@ async def test_existing_calls_become_settled_legacy_rows() -> None:
             assert (row["feature"], row["status"], row["estimated"]) == ("legacy", "ok", False)
         finally:
             await conn.close()
+
+
+async def test_grading_snapshots_table_arrives_empty() -> None:
+    """0072 (S56): a new table; existing events are untouched and carry no grading block."""
+    async with database_at("0071_call_accounting") as connect:
+        await upgrade(SCRATCH, "0072_grading_snapshots")
+        conn = await connect()
+        try:
+            assert await conn.fetchval("SELECT count(*) FROM grading_snapshots") == 0
+        finally:
+            await conn.close()

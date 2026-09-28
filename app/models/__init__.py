@@ -10,6 +10,7 @@ from app.models.chat import Conversation, LLMCall, Message
 from app.models.content import ContentBlock, ContentType
 from app.models.decision import DecisionCall
 from app.models.erasure import ErasureKind, PendingErasure
+from app.models.grading import GradingSnapshot
 from app.models.knowledge import KC, ConceptLink, ConceptLinkDecision, KCEdge, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
@@ -35,6 +36,7 @@ __all__ = [
     "CurriculumProposal",
     "DecisionCall",
     "ErasureKind",
+    "GradingSnapshot",
     "Item",
     "ItemKC",
     "ItemOrigin",

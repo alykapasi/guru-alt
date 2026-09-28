@@ -37,6 +37,7 @@ from app.models.chat import Conversation, LLMCall, Message, Turn, TurnStatus
 from app.models.content import ContentBlock
 from app.models.decision import DecisionCall
 from app.models.erasure import ErasureKind, PendingErasure
+from app.models.grading import GradingSnapshot
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
 from app.models.lesson_plan import LessonPlan
@@ -134,6 +135,12 @@ RETENTION: tuple[StoreRetention, ...] = (
     StoreRetention("profile_dimensions", "deleted", "Cascades from the learner."),
     StoreRetention("learner_kc_state", "deleted", "Cascades from the learner."),
     StoreRetention("learning_events", "deleted", "Cascades from the learner."),
+    StoreRetention(
+        "grading_snapshots",
+        "deleted",
+        "Cascades from the learner. Frozen copies of the items, rubrics and prompts that graded"
+        " their answers (S56).",
+    ),
     StoreRetention("lesson_plans", "deleted", "Cascades from the learner."),
     StoreRetention("notes", "deleted", "Cascades from the learner; revisions and renders with it."),
     StoreRetention("note_revisions", "deleted", "Cascades from the note."),
@@ -319,6 +326,7 @@ async def export_learner(session: AsyncSession, learner_id: uuid.UUID) -> dict[s
         ),
         "kc_states": await rows(LearnerKCState, LearnerKCState.learner_id == learner_id),
         "learning_events": await rows(LearningEvent, LearningEvent.learner_id == learner_id),
+        "grading_snapshots": await rows(GradingSnapshot, GradingSnapshot.learner_id == learner_id),
         "lesson_plans": await rows(LessonPlan, LessonPlan.learner_id == learner_id),
         "notes": await rows(Note, Note.learner_id == learner_id),
         "note_revisions": await rows(NoteRevision, NoteRevision.note_id.in_(note_ids)),
