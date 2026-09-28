@@ -59,6 +59,13 @@ class Comparison:
 
 
 @dataclass(frozen=True)
+class Agreement:
+    compared: int
+    correct_agreement: float | None
+    mean_abs_score_diff: float | None
+
+
+@dataclass(frozen=True)
 class Report:
     compared: int
     failed: int
@@ -66,6 +73,9 @@ class Report:
     mean_abs_score_diff: float | None
     component_mean_abs_diff: float | None
     largest: list[Comparison]
+    by_grader: dict[str, Agreement]
+    """The same numbers per recorded grader: free auto re-grades almost always agree, so pooled
+    with the model's they would hide the disagreement a prompt or model change is measured by."""
 
 
 async def plan(
@@ -205,15 +215,17 @@ async def run(
 ) -> Report:
     compared: list[tuple[Candidate, GradeResult]] = []
     failed = 0
-    with attributed(feature="regrade", learner_id=None, conversation_id=None):
+    # Background work: it yields at the background share of the deployment ceiling (S47)
+    # rather than spending the last of it out from under learners' own turns.
+    with attributed(feature="regrade", learner_id=None, conversation_id=None, background=True):
         for c in found.candidates:
             try:
                 compared.append((c, await _regrade_one(llm, c, prompt)))
             except Exception:  # a refusal or provider failure is one failed comparison
                 failed += 1
     if not compared:
-        return Report(0, failed, None, None, None, [])
-    diffs = [abs(c.score - r.score) for c, r in compared]
+        return Report(0, failed, None, None, None, [], {})
+    overall = _agreement(compared)
     component_diffs = [
         abs(score - r.component_scores[uuid.UUID(kc)])
         for c, r in compared
@@ -221,15 +233,28 @@ async def run(
         if uuid.UUID(kc) in r.component_scores
     ]
     largest = sorted(compared, key=lambda pair: abs(pair[0].score - pair[1].score), reverse=True)
+    graders = sorted({c.grading["grader"] for c, _r in compared})
     return Report(
-        compared=len(compared),
+        compared=overall.compared,
         failed=failed,
-        correct_agreement=sum(c.correct == r.correct for c, r in compared) / len(compared),
-        mean_abs_score_diff=sum(diffs) / len(diffs),
+        correct_agreement=overall.correct_agreement,
+        mean_abs_score_diff=overall.mean_abs_score_diff,
         component_mean_abs_diff=(
             sum(component_diffs) / len(component_diffs) if component_diffs else None
         ),
         largest=[Comparison(c.event_id, c.score, r.score) for c, r in largest[:LARGEST]],
+        by_grader={
+            g: _agreement([(c, r) for c, r in compared if c.grading["grader"] == g])
+            for g in graders
+        },
+    )
+
+
+def _agreement(pairs: list[tuple[Candidate, GradeResult]]) -> Agreement:
+    return Agreement(
+        compared=len(pairs),
+        correct_agreement=sum(c.correct == r.correct for c, r in pairs) / len(pairs),
+        mean_abs_score_diff=sum(abs(c.score - r.score) for c, r in pairs) / len(pairs),
     )
 
 
@@ -240,6 +265,14 @@ def as_json(report: Report) -> dict:
         "correct_agreement": report.correct_agreement,
         "mean_abs_score_diff": report.mean_abs_score_diff,
         "component_mean_abs_diff": report.component_mean_abs_diff,
+        "by_grader": {
+            g: {
+                "compared": a.compared,
+                "correct_agreement": a.correct_agreement,
+                "mean_abs_score_diff": a.mean_abs_score_diff,
+            }
+            for g, a in report.by_grader.items()
+        },
         "largest": [
             {"event_id": str(c.event_id), "recorded": c.recorded, "regraded": c.regraded}
             for c in report.largest
@@ -263,6 +296,12 @@ def render(found: Plan, report: Report | None, cost: float | None) -> str:
         f"mean |score difference|: {_num(report.mean_abs_score_diff)}",
         f"per-component mean |difference|: {_num(report.component_mean_abs_diff)}",
     ]
+    lines += [
+        f"  {g}: {a.compared} compared, agreement {_pct(a.correct_agreement)}, "
+        f"mean |difference| {_num(a.mean_abs_score_diff)}"
+        for g, a in report.by_grader.items()
+    ]
+    lines.append("largest disagreements:")
     lines += [
         f"  {c.event_id}: recorded {c.recorded:.2f} → {c.regraded:.2f}" for c in report.largest
     ]

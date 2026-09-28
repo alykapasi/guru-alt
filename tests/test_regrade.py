@@ -9,7 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import rubric_grading
-from app.llm import LLMClient
+from app.llm import LLMClient, attribution
 from app.llm.meter import BudgetExceeded
 from app.llm.providers import FakeProvider
 from app.llm.registry import ModelSpec, fake_llm_client
@@ -203,3 +203,41 @@ async def test_the_report_holds_no_learner_text(db_session) -> None:
     report = await regrade.run(fake_llm_client(_grade(0.0)), found)
     assert "tip to tail" not in regrade.render(found, report, None)
     assert "tip to tail" not in json.dumps(regrade.as_json(report), default=str)
+
+
+async def test_a_regrade_run_is_background_work(db_session) -> None:
+    """It must yield at the background share of the ceiling, not spend learners' last 10%."""
+    seen = []
+
+    class Watching(FakeProvider):
+        async def complete(self, **kwargs):
+            seen.append(attribution.current())
+            return await super().complete(**kwargs)
+
+    learner, _kc, _item = await _graded(db_session)
+    found = await _plan(db_session, learner.id)
+    await regrade.run(_client(Watching(reply=_grade(1.0))), found)
+    [who] = seen
+    assert (who.feature, who.learner_id, who.background) == ("regrade", None, True)
+
+
+async def test_agreement_is_reported_per_grader(db_session) -> None:
+    """A pile of free MCQ agreements must not hide a rubric grader that disagrees."""
+    learner, _kc, _item = await _graded(db_session, score=1.0)
+    _mcq_learner, _kc2, mcq = await _setup(db_session, item_type=ItemType.MCQ)
+    await svc.answer_item(
+        db_session,
+        _mcq_learner.id,
+        mcq,
+        AnswerSubmit(response={"choice": 1}),
+        llm=fake_llm_client(),
+    )
+    found = await regrade.plan(
+        db_session, since=NOW - timedelta(days=1), until=NOW + timedelta(days=1)
+    )
+    ours = [c for c in found.candidates if c.learner_id in (learner.id, _mcq_learner.id)]
+    report = await regrade.run(fake_llm_client(_grade(0.0)), regrade.Plan(ours, 0, {}))
+
+    assert report.by_grader["rubric"].correct_agreement == 0.0
+    assert report.by_grader["auto"].correct_agreement == 1.0
+    assert "rubric: 1 compared" in regrade.render(found, report, None)
