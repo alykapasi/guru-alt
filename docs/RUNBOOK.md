@@ -991,11 +991,14 @@ change to the grading prompt or model can be measured against real answers befor
   rubric and Jev grades with the rubric model — `--prompt current` (default) or `recorded`
   for the snapshot's system prompt, `--model provider:model` to swap the grader. It prints and
   writes to `--out` (default `regrade-report.json`): agreement on `correct`, the mean absolute
-  score difference, the per-component mean difference where both sides scored components, and
-  the ten largest disagreements by event id. No learner text is in the report.
+  score difference, the per-component mean difference where both sides scored components, the
+  same agreement and difference per recorded grader (read the `rubric` and `jev` lines to judge
+  a prompt or model: free `auto` re-grades almost always agree and would flatter a pooled
+  number), and the ten largest disagreements by event id. No learner text is in the report.
 - **Cost and limits.** `--run` makes paid calls, attributed to feature `regrade` with no
-  learner: they count against the deployment ceiling (§18), never a learner's cap. A refused
-  or failed call is counted `failed` and the run continues.
+  learner: they count against the deployment ceiling (§18), never a learner's cap, and as
+  background work they are refused from 90% of it, leaving the rest to learners. A refused or
+  failed call is counted `failed` and the run continues.
 - **Never corrective.** A re-grade changes no score, event or mastery state.
 - **"Not re-gradable".** The event was written before schema v5 (no `grading` block; nothing
   is backfilled), has no stored response, or a snapshot it names is gone (erased with the
