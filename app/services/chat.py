@@ -15,7 +15,7 @@ from sqlalchemy.orm import selectinload
 
 from app.agent.tutor import TutorState, build_tutor_graph
 from app.core.config import get_settings
-from app.learning import declared_check, feedback, mastery
+from app.learning import declared_check, difficulty, feedback, mastery
 from app.learning import prerequisites as prereq_index
 from app.learning.conversation_evidence import TurnIntent
 from app.learning.diagnosis import FailureKind
@@ -445,6 +445,22 @@ async def _materialise_declared_check(
     )
 
 
+async def _declared_check_note(
+    session: AsyncSession, *, learner_id: uuid.UUID, subject_id: uuid.UUID
+) -> str:
+    """The invitation to declare a check, aimed at this learner (S56).
+
+    The component is not known until the tutor names it, so the aim is the practice target
+    for the learner's estimate over the whole subject — the same target plan-driven items use.
+    It steers; it is not recorded. What is recorded is the level the question is rated at when
+    it is first answered (``app.services.check_criteria``).
+    """
+    estimate = await mastery.rollup_subject(session, learner_id, subject_id)
+    return declared_check.instruction(
+        difficulty.describe(session_runner_svc.practice_target(estimate))
+    )
+
+
 PAUSED_PRACTICE_NOTE = (
     "The learner has paused a practice question to ask about something else. Answer what "
     "they asked. Do not pose a new question, and do not give away the answer to the paused "
@@ -562,7 +578,9 @@ async def run_tutor_turn(
         # resolve a component against, so inviting a declaration there is inviting one that is
         # always dropped. Not on a withdrawal turn either: the learner just declined a
         # question, and a declared one would hand them a fresh check in its place.
-        notes.append(declared_check.INSTRUCTION)
+        notes.append(
+            await _declared_check_note(session, learner_id=learner_id, subject_id=subject_id)
+        )
 
     hits = []
     grounding = None

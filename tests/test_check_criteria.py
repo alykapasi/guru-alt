@@ -7,7 +7,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.learning import declared_check, difficulty, item_generation
+from app.learning import declared_check, difficulty, item_generation, mastery
+from app.learning.tracer import Estimate
 from app.llm.meter import BudgetExceeded
 from app.llm.providers import FakeProvider
 from app.llm.providers.fake import FakeTurn
@@ -248,3 +249,26 @@ async def test_a_failed_criteria_call_still_grades(db_session) -> None:
         db_session, LLMClient({"fake": provider}, _specs()), learner, conversation
     )
     assert outcome is not None and item.rubric_id is None
+
+
+# --- aiming the tutor ------------------------------------------------------------------------
+
+
+def test_the_instruction_names_the_level() -> None:
+    note = declared_check.instruction("moderate (two or three steps)")
+    assert note.startswith(declared_check.INSTRUCTION)
+    assert note.endswith("Pitch any check at this level: moderate (two or three steps).")
+
+
+@pytest.mark.parametrize(("ability", "level"), [(-3.0, "introductory"), (3.0, "demanding")])
+async def test_the_level_follows_the_learners_subject_estimate(
+    db_session, monkeypatch, ability: float, level: str
+) -> None:
+    async def rollup(*_args, **_kwargs) -> Estimate:
+        return Estimate(ability=ability, uncertainty=0.5)
+
+    monkeypatch.setattr(mastery, "rollup_subject", rollup)
+    note = await chat_svc._declared_check_note(
+        db_session, learner_id=uuid.uuid4(), subject_id=uuid.uuid4()
+    )
+    assert f"Pitch any check at this level: {level} (" in note

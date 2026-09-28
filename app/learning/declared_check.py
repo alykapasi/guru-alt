@@ -46,6 +46,12 @@ INSTRUCTION = (
 )
 
 
+def instruction(level: str) -> str:
+    """``INSTRUCTION`` plus the level to pitch a check at (S56) — a band description from
+    ``app.learning.difficulty``, never a number: a model cannot act on a logit."""
+    return f"{INSTRUCTION} Pitch any check at this level: {level}."
+
+
 @dataclass(frozen=True)
 class DeclaredCheck:
     """A question the tutor asked for, and the component it says the question is about."""
