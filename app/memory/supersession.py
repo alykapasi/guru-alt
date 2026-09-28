@@ -20,6 +20,7 @@ import structlog
 
 from app.agent.untrusted import as_untrusted
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
+from app.llm.meter import BudgetExceeded
 
 log = structlog.get_logger(__name__)
 
@@ -70,6 +71,8 @@ async def judge(llm: LLMClient, candidates: Sequence[Candidate]) -> tuple[list[J
             system=_SYSTEM_PROMPT,
             max_tokens=64 + 48 * len(candidates),
         )
+    except BudgetExceeded:
+        raise  # refused, not "coexists": the write-back defers, keeping its watermark (S47)
     except Exception:
         log.warning("memory.supersession_judge_failed", exc_info=True)
         return [COEXISTS] * len(candidates), Usage()

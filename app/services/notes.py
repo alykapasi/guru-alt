@@ -21,6 +21,7 @@ from app.learning import mastery, note_distill
 from app.learning.note_distill import FALLBACK_FORMAT, FORMATS
 from app.llm import LLMClient
 from app.llm.attribution import metered
+from app.llm.meter import BudgetExceeded
 from app.models.assessment import Item
 from app.models.chat import Conversation, Message
 from app.models.knowledge import KC, Subject, Topic
@@ -221,7 +222,13 @@ async def _view(
     content = None
     if note is not None and note.revision_ordinal > 0:
         render_row = await _current_render(session, note, fmt)
-        content = render_row.content_md if render_row is not None else None
+        # No render kept for this revision and format (a refused render, S47, keeps none): the
+        # substrate is the note, so show its plain rendering rather than nothing.
+        content = (
+            render_row.content_md
+            if render_row is not None
+            else note_distill.mechanical_render(note.substrate)
+        )
         if note.learner_authored_md is not None:
             content = _compose(
                 note.learner_authored_md, _surrounding(note.substrate, note.authored_baseline)
@@ -422,12 +429,17 @@ async def _render_and_cache(
         await session.flush()
         return row
     content: str | None = None
+    refused = False
     try:
         content, _usage = await note_distill.render(
             llm,
             atoms=note.substrate,
             note_format=fmt,
         )
+    except BudgetExceeded:
+        # Over a usage limit (S47): show the readable fallback, but do not keep it — cached, it
+        # would outlive the limit and stand in for a real render of this revision for good.
+        refused = True
     except Exception as exc:
         # A provider outage must not cost the learner the revision this render belongs to.
         log.warning("notes.render_failed", note_id=str(note.id), error=str(exc))
@@ -436,6 +448,8 @@ async def _render_and_cache(
     render_row = NoteRender(
         note_id=note.id, revision_ordinal=note.revision_ordinal, format=fmt, content_md=content
     )
+    if refused:
+        return render_row
     session.add(render_row)
     await session.flush()
     return render_row
@@ -509,6 +523,8 @@ async def refresh_note(
             outcomes=gathered.outcomes,
             refs=gathered.refs,
         )
+    except BudgetExceeded:
+        raise  # the learner is told why (429), rather than shown the old note in silence
     except Exception as exc:
         log.warning("notes.distill_failed", topic_id=str(topic.id), error=str(exc))
         if note is not None:

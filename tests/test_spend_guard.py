@@ -326,3 +326,27 @@ async def test_the_sweep_claims_nothing_past_ninety_percent(
     monkeypatch.setattr(refresh_schedule, "claim_due", claim_due)
     await tasks._refresh_due_once()
     assert claims == []
+
+
+class _Refusing(FakeProvider):
+    async def complete(self, **kwargs):
+        raise BudgetExceeded("learner")
+
+
+def _refusing_client():
+    from app.llm import LLMClient
+    from app.llm.registry import ModelSpec
+
+    return LLMClient({"fake": _Refusing()}, {r: ModelSpec("fake", "fake-1") for r in ModelRole})
+
+
+async def test_judges_pass_a_refusal_through_rather_than_guessing() -> None:
+    """A refused judge is not an undecided or a "coexists" verdict: the work is deferred."""
+    from app.learning import link_judge
+    from app.memory import supersession
+
+    side = link_judge.Side(kc_name="a", description=None, topic_name="t", subject_name="s")
+    with pytest.raises(BudgetExceeded):
+        await link_judge.judge_pair(_refusing_client(), side, side)
+    with pytest.raises(BudgetExceeded):
+        await supersession.judge(_refusing_client(), [supersession.Candidate("x", ["y"])])
