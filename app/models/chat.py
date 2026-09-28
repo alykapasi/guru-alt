@@ -4,7 +4,16 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, false, func
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    false,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -227,6 +236,11 @@ class LLMCall(UUIDPrimaryKeyMixin, Base):
     """
 
     __tablename__ = "llm_calls"
+    # The per-learner sum the spend guard reads on every call, and stale-pending lookups (S47).
+    __table_args__ = (
+        Index("ix_llm_calls_learner_created", "learner_id", "created_at"),
+        Index("ix_llm_calls_status", "status"),
+    )
 
     learner_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("learners.id", ondelete="SET NULL"), index=True, default=None
@@ -254,15 +268,15 @@ class LLMCall(UUIDPrimaryKeyMixin, Base):
     # token, and neither does a streamed turn that only called a tool.
     first_token_ms: Mapped[int | None] = mapped_column(default=None)
     # What paid for it (S48): set by the service doing the work, via app.llm.attribution.
-    feature: Mapped[str] = mapped_column(server_default="legacy", default="unattributed")
-    request_id: Mapped[str | None] = mapped_column(default=None)
+    feature: Mapped[str] = mapped_column(Text, server_default="legacy", default="unattributed")
+    request_id: Mapped[str | None] = mapped_column(Text, default=None)
     # pending (reserved, not yet answered) | ok | failed | partial (stream closed early).
-    status: Mapped[str] = mapped_column(server_default="ok", default="ok")
-    error_kind: Mapped[str | None] = mapped_column(default=None)
+    status: Mapped[str] = mapped_column(Text, server_default="ok", default="ok")
+    error_kind: Mapped[str | None] = mapped_column(Text, default=None)
     # True while the tokens and cost are the reservation's estimate rather than the provider's.
     estimated: Mapped[bool] = mapped_column(server_default=false(), default=False)
-    prompt_hash: Mapped[str | None] = mapped_column(default=None)
-    app_version: Mapped[str | None] = mapped_column(default=None)
+    prompt_hash: Mapped[str | None] = mapped_column(Text, default=None)
+    app_version: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)
 
 
