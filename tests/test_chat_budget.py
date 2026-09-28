@@ -16,13 +16,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_app_settings, get_llm_client
 from app.core.config import Settings, get_settings
+from app.llm.meter import BudgetExceeded
 from app.llm.registry import fake_llm_client
 from app.main import app
 from app.models.chat import Conversation, LLMCall, Message
 from app.models.learner import Learner
 from app.schemas.chat import ChatTurnRequest
-from app.services import budget
 from app.services import chat as chat_svc
+from app.services import spend_guard
 
 API = "/api/v1"
 REPLY = "Let us explore this together."
@@ -145,33 +146,35 @@ async def test_spend_sums_what_the_accounting_log_recorded(db_session: AsyncSess
     await _record(db_session, learner, cost=0.25, tokens=1_000)
     await _record(db_session, learner, cost=0.75, tokens=2_000)
 
-    spend = await budget.spend_since(db_session, learner.id)
+    spend = await spend_guard.spend_since(db_session, learner.id)
     assert spend.cost_usd == pytest.approx(1.0)
     assert spend.tokens == 3_000
 
 
 async def test_an_unpriced_call_still_counts_against_the_token_ceiling(
-    db_session: AsyncSession,
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A cost-only budget would be silently unenforced for exactly the models we cannot price."""
     learner = await _learner(db_session)
     await _record(db_session, learner, cost=None, tokens=9_000)
 
-    spend = await budget.spend_since(db_session, learner.id)
+    spend = await spend_guard.spend_since(db_session, learner.id)
     assert spend.cost_usd == 0.0  # nothing known to add
     assert spend.tokens == 9_000
 
     settings = Settings(learner_daily_cost_usd_limit=100.0, learner_daily_token_limit=5_000)
-    with pytest.raises(budget.BudgetExceeded, match="token limit"):
-        await budget.require_budget(db_session, learner.id, settings)
+    monkeypatch.setattr(spend_guard, "get_settings", lambda: settings)
+    with pytest.raises(BudgetExceeded) as exc:
+        await spend_guard.check(db_session, learner.id)
+    assert exc.value.scope == "learner"
 
 
 async def test_spend_outside_the_window_does_not_count(db_session: AsyncSession) -> None:
     learner = await _learner(db_session)
     await _record(db_session, learner, cost=5.0, tokens=1_000)
 
-    recent = await budget.spend_since(db_session, learner.id, window=timedelta(hours=24))
-    ancient = await budget.spend_since(db_session, learner.id, window=timedelta(seconds=0))
+    recent = await spend_guard.spend_since(db_session, learner.id, window=timedelta(hours=24))
+    ancient = await spend_guard.spend_since(db_session, learner.id, window=timedelta(seconds=0))
     assert recent.tokens == 1_000
     assert ancient.tokens == 0
 
@@ -193,7 +196,7 @@ async def test_a_learner_over_the_ceiling_is_refused_the_turn(
         app.dependency_overrides.pop(get_app_settings, None)
 
     assert response.status_code == 429
-    assert "spend limit" in response.json()["detail"]
+    assert response.json()["detail"]["code"] == "budget_exceeded"
 
 
 async def test_a_learner_under_the_ceiling_is_allowed_through(

@@ -16,6 +16,7 @@ from app.core.logging import configure_logging
 from app.core.middleware import request_id_middleware
 from app.core.release import enforce_production_settings
 from app.services import decisions as decisions_svc
+from app.services import spend_guard  # noqa: F401  installs the spend guard on the meter (S47)
 from app.services.admin_audit import AdminAuditMiddleware
 from app.services.knowledge import NotVisible
 

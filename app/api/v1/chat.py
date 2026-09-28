@@ -32,6 +32,7 @@ from app.api.deps import CurrentLearner, EngineDep, LLMClientDep, SessionDep, Se
 from app.core.config import get_settings
 from app.learning.conversation_evidence import TurnIntent
 from app.llm import LLMClient
+from app.llm.meter import BudgetExceeded
 from app.models.chat import Conversation, ConversationPhase, Message, TurnStatus
 from app.models.source import Source
 from app.schemas.chat import (
@@ -46,11 +47,11 @@ from app.schemas.chat import (
 )
 from app.schemas.source import RemovalImpactRead
 from app.services import agentic as agentic_svc
-from app.services import budget, removal, turn_lock
 from app.services import chat as svc
 from app.services import knowledge as knowledge_svc
 from app.services import practice as practice_svc
 from app.services import refinement as refinement_svc
+from app.services import removal, spend_guard, turn_lock
 from app.services import turn as turn_svc
 from app.services import workflow as workflow_svc
 from app.services.assessment import item_to_read
@@ -578,10 +579,14 @@ async def send_message(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
     _refuse_if_archived(conversation)
 
+    # An early refusal before a turn is claimed (S47); every call in the turn is admitted too.
     try:
-        await budget.require_budget(session, learner.id, get_settings())
-    except budget.BudgetExceeded as exc:
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc)) from exc
+        await spend_guard.check(session, learner.id)
+    except BudgetExceeded as exc:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            {"code": "budget_exceeded", "scope": exc.scope, "message": exc.message},
+        ) from exc
 
     # Before the claim, not after: reaping reads the claim as its liveness signal, so our own
     # would make this conversation's abandoned turns look alive.

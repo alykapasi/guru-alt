@@ -39,7 +39,10 @@ from app.core.config import get_settings
 from app.core.db import get_session
 from app.main import app
 from app.models.learner import Learner
-from app.services import auth
+from app.services import (
+    auth,
+    spend_guard,  # noqa: F401  installs the spend guard on the meter (S47)
+)
 from app.services.decisions import DecisionPolicy, DecisionRuntime, set_runtime
 from app.services.llm_log import set_accounting_session_factory
 from app.storage import InMemoryBlobStore

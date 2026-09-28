@@ -26,7 +26,12 @@ from app.models.source import Source
 from app.rag import pipeline
 from app.rag.demux import build_demuxer
 from app.rag.transcription import build_transcriber
-from app.services import alert_history, ingestion, refresh_schedule
+from app.services import (
+    alert_history,
+    ingestion,
+    refresh_schedule,
+    spend_guard,  # noqa: F401  installs the spend guard on the meter (S47)
+)
 from app.services import auth as auth_svc
 from app.services import checkpoints as checkpoints_svc
 from app.services import concept_links as concept_links_svc
