@@ -1,8 +1,9 @@
 # Guru — Suggestions Tracker
 
-Last reviewed: 2026-09-26
+Last reviewed: 2026-09-28
 
-Repository snapshot: `a318a2f` (branch `fix/auth-ui`, PR #40, not yet merged to `main`)
+Repository snapshot: `f9fbed8` (`main`, after PR #43 merged: workstream 3 slices B–C, workstream 4,
+and workstream 5 slice A)
 
 ## Purpose and maintenance
 
@@ -91,17 +92,19 @@ under S18.
 
 ### 4. Durable learner work and controls
 
-| ID | Item | Status | Next step or closure | Evidence |
-| --- | --- | --- | --- | --- |
+Closed. S61 (archive, delete, forget, export, retention), S02 (explicit preferences), S42 (memory
+supersession) and S43 (refresh scheduling) are recorded under
+[completed work](#completed-and-consolidated-work), each with its deferred minors. One product
+question is open: [O07](#decisions-and-standing-direction).
 
 ### 5. Reliability and resource limits
 
 | ID | Item | Status | Next step or closure | Evidence |
 | --- | --- | --- | --- | --- |
 | S17 | Durable practice lifecycle and restart verification | Partial | PostgreSQL checkpoints, advisory locks, durable onboarding ownership, and revalidation exist. Move checkpoint schema setup into a controlled migration lifecycle, verify actual process restart/resume races, and reconcile expiry with V12's durable-work policy. Define safe onboarding cleanup and graph-state compatibility. Durability alerts already exist. | [Checkpoint setup](../app/agent/checkpointing.py), [lifecycle service](../app/services/checkpoints.py), [durability tests](../tests/test_durable_state.py), [lifecycle tests](../tests/test_checkpoint_lifecycle.py) |
-| S37 | Bounded, resumable ingestion | Partial | Visible jobs, leases, attempts, timeouts, and character/chunk caps exist. Make required concurrency ceilings strict, add per-job spend enforcement, and split long extraction/model work into short resumable stages. Share spend semantics with S47. | [Ingestion service](../app/services/ingestion.py), [pipeline](../app/rag/pipeline.py), [job tests](../tests/test_ingestion_jobs.py) |
+| S37 | Bounded, resumable ingestion | Partial | Visible jobs, leases, attempts, timeouts, and character/chunk caps exist. Every paid call in ingestion is now admitted against the learner's daily caps and the deployment ceiling, and a refused upload fails with the learner-facing reason (S47). Remaining: make required concurrency ceilings strict, a per-job spend ceiling if the daily caps prove too coarse, and split long extraction/model work into short resumable stages. | [Ingestion service](../app/services/ingestion.py), [pipeline](../app/rag/pipeline.py), [job tests](../tests/test_ingestion_jobs.py) |
 | S47 | Whole-request and spend budgets | Partial | Caps are enforced on every paid call: the learner's exactly (one transaction with an advisory lock admits the call and writes its reservation, so concurrent calls see each other), the deployment ceiling (`GURU_SPEND_BUDGET_USD`) from a 30-second cached total, and background work paused at 90% of either. A refusal answers 429 `budget_exceeded`, ends a turn with the reason, fails an upload with it, and defers a background task. Remaining: whole-request deadlines and cancellation (workstream 5 slice B). Actual alpha caps remain an operating decision. Deferred minors from the final review: the spend report calls a window over budget at `>` while the guard refuses at `>=`, so at exactly the budget `spend_near_budget` fires saying live turns continue; a failed deployment-total read aborts the admission transaction, so that one call proceeds unguarded and unrecorded; reservations ignore images and tool schemas (under-reserving vision and agentic calls near a cap); admission takes a lock and a sum even with both learner limits off; no two-connection test of the advisory lock. | [Spend guard](../app/services/spend_guard.py), [meter](../app/llm/meter.py), [guard tests](../tests/test_spend_guard.py), [budget tests](../tests/test_chat_budget.py), [RUNBOOK §18](RUNBOOK.md#18-spend-limits-s47-s48) |
-| S49 | Provider failure experience | Partial | Capability checks, SDK timeouts/retries, malformed-tool handling, and stream closure exist. Give learners predictable rate-limit and provider-unavailable responses with safe retry behavior; do not reimplement the compatibility contract. | [Registry](../app/llm/registry.py), [tool-use tests](../tests/test_llm_tool_use.py), [turn lifecycle](../app/services/turn.py) |
+| S49 | Provider failure experience | Partial | Capability checks, SDK timeouts/retries, malformed-tool handling, and stream closure exist; a spend refusal is already a predictable 429 `budget_exceeded` and a turn error with its reason (S47), and failed calls are recorded (S48). Give learners predictable provider rate-limit and provider-unavailable responses with safe retry behavior; do not reimplement the compatibility contract. | [Registry](../app/llm/registry.py), [tool-use tests](../tests/test_llm_tool_use.py), [turn lifecycle](../app/services/turn.py) |
 | S53 | Technical rendering edge cases and accessibility | Partial | Math, tables, code blocks, citations, and responsive panels exist. Check indented code against LaTeX normalization and verify keyboard/screen-reader use and panel layout in the browser. Syntax coloring and Markdown transformation of the learner's own messages are not required fixes. | [Rich text](../frontend/src/components/content/RichText.tsx), [rendering tests](../frontend/src/components/content/RichText.test.tsx), [browser tests](../frontend/e2e/) |
 | S62 | Measured long-history performance | Partial | Batched mastery/notes reads, query-count budgets, and transcript pagination exist. Measure representative long-history latency and message-page growth; make further aggregation changes only where measurements justify them. Incremental profile refresh was S43 (a recency window; true running aggregates only if measurements here call for them). | [Query budgets](../tests/test_query_budgets.py), [transcript queries](../app/services/chat.py), [history tests](../tests/test_chat_budget.py) |
 
@@ -240,6 +243,7 @@ repeated as unresolved questions here.
 | O04 | Resolved approach: calibration and grading reliability first; later educational-effect studies remain separate. |
 | O05 | Funding for broad free access remains open; no amount, source, or runway is committed. |
 | O06 | Institutional integration versus LMS remains deferred under S06. |
+| O07 | Open (raised 2026-09-27, S43): the learner's "Remember things from my conversations" switch stops new memories only; profile refresh still reads their recent answers and messages, and the Account copy says so. Decide whether pausing should also stop the profile reading messages. |
 
 Standing discussion IDs are retained compactly for continuity:
 
@@ -259,6 +263,19 @@ Standing discussion IDs are retained compactly for continuity:
 | D12 | Founder time is available; funding, runway, and commercial commitments remain unspecified. |
 
 ## Verification record and limitations
+
+### Workstream 4 slices C–E and workstream 5 slice A — 2026-09-28
+
+Run on `feat/s29-s50-versioned-sources` (PR #43, merged as `f9fbed8`), locally and in CI:
+
+- Backend: `poe check` **2477 passed, 10 skipped**; format check, `db-check` and API contract pass.
+  CI's first run failed `db-check` (the `LLMCall` model did not match migration 0071); fixed in
+  `48ac210`. `db-check` is not part of `poe check`, so run it after any model or migration change.
+- Frontend: **201 tests**, production build, and lint pass.
+- Each slice ended with a fresh whole-branch review; Critical and Important findings were fixed
+  test-first, and deferred minors are recorded on S02, S42, S43, S47 and S48.
+- Nothing here ran a worker process against the new sweeps, real providers, or browser journeys.
+  The spend guard's advisory lock was reasoned about, not tested across two connections.
 
 ### Workstream 3 slices B–C and workstream 4 slices A–B — 2026-09-27
 
