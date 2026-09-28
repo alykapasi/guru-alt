@@ -962,3 +962,41 @@ Every model call is recorded and admitted by `LLMClient` itself; no service logs
 - **`calls_pending_stale`.** A row still `pending` after 15 minutes: a process died mid-call.
   Check for app and worker restarts. The row keeps counting at its estimate until it leaves the
   window; nothing needs cleaning up.
+
+## 19. Grading provenance and re-grading (S56)
+
+Every graded answer says what it was measured against, so a past grade can be audited and a
+change to the grading prompt or model can be measured against real answers before it ships.
+
+- **The `grading` block.** Every `observation`, `self_report` and `admin_observation` event
+  written from `answer_item` (event schema v5) carries `payload["grading"]`: `grader` (`auto`
+  for deterministic grading, `self` for a flashcard rating, `rubric` for the rubric model,
+  `jev` for a live Jev pass that skipped it), the SHA-256 of the `item`, `rubric` and `prompt`
+  snapshots it used (`rubric`/`prompt` null where they do not apply), `model` as
+  `provider:model` (rubric grades only) and `app_version`.
+- **Reading a snapshot.** `SELECT kind, content FROM grading_snapshots WHERE learner_id = …
+  AND sha256 = …`. The item snapshot holds type, stem, answer key, difficulty and the
+  components graded; the rubric snapshot holds the criteria and the one component they were
+  applied to; the prompt snapshot holds the system prompt sent and `template_version`.
+  Snapshots are per learner, written once, and survive deleting the item or rubric; they go
+  with the account (export includes them, erasure cascades).
+- **When to bump `TEMPLATE_VERSION`.** `rubric_grading.TEMPLATE_VERSION` versions
+  `_build_prompt`, the code that turns question, rubric, components and response into the
+  user message. Bump it with any change there: the system prompt is stored, the template is
+  not, so a re-grade under a recorded prompt still builds its message with today's code.
+- **`uv run poe regrade`.** Selects graded attempts from the last `--since` days (default 7),
+  optionally one `--learner` or `--subject`, at most `--limit` (200), one per attempt. A dry
+  run (the default) prints how many are re-gradable by grader, how many are not, and the
+  estimated cost. `--run` re-grades them: auto grades with the deterministic grader (free),
+  rubric and Jev grades with the rubric model — `--prompt current` (default) or `recorded`
+  for the snapshot's system prompt, `--model provider:model` to swap the grader. It prints and
+  writes to `--out` (default `regrade-report.json`): agreement on `correct`, the mean absolute
+  score difference, the per-component mean difference where both sides scored components, and
+  the ten largest disagreements by event id. No learner text is in the report.
+- **Cost and limits.** `--run` makes paid calls, attributed to feature `regrade` with no
+  learner: they count against the deployment ceiling (§18), never a learner's cap. A refused
+  or failed call is counted `failed` and the run continues.
+- **Never corrective.** A re-grade changes no score, event or mastery state.
+- **"Not re-gradable".** The event was written before schema v5 (no `grading` block; nothing
+  is backfilled), has no stored response, or a snapshot it names is gone (erased with the
+  account). Self-ratings are not selected at all: there is nothing to re-judge.

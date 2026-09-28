@@ -161,6 +161,11 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   concurrency) or the deployment ceiling, and background work stops at 90%. Services say what
   they are with `@metered(...)` (`app/llm/attribution.py`); nothing calls a logging function by
   hand. See [docs/RUNBOOK.md](docs/RUNBOOK.md) §18.
+- **A grade says what measured it** (S56) — every graded event carries a `grading` block
+  (grader, model, and hashes of frozen item/rubric/prompt snapshots in `grading_snapshots`, per
+  learner, surviving item deletion); `uv run poe regrade` re-grades past answers under a current
+  or recorded grader and reports agreement, never changing a grade. See
+  [docs/RUNBOOK.md](docs/RUNBOOK.md) §19.
 - **A self-rating is not evidence of ability** (S56) — the server decides whether a score was
   judged or self-reported, and a self-rating moves the review schedule only. Mastery is the
   conservative estimate `ability − 2·uncertainty ≥ 0.5` on measured evidence (V02); achievement
