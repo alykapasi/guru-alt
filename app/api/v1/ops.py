@@ -23,7 +23,7 @@ from app.schemas.ops import AlertTransitionRead
 from app.services import alert_history, refresh_schedule
 from app.services import retention as retention_svc
 from app.services.ingestion import IngestionBacklog, backlog
-from app.services.spend import SpendWindow
+from app.services.spend import STALE_PENDING, SpendWindow, stale_pending
 from app.services.spend import window as spend_window
 
 router = APIRouter(tags=["ops"])
@@ -113,4 +113,5 @@ async def alerts(session: SessionDep, store: BlobStoreDep, settings: SettingsDep
         refresh_stuck=await refresh_schedule.stuck(
             session, now=refresh_schedule.utcnow(), settings=settings
         ),
+        stale_pending=await stale_pending(session, older_than=STALE_PENDING),
     )

@@ -4370,6 +4370,11 @@ export interface components {
         SpendWindow: {
             /** Budget Usd */
             budget_usd: number | null;
+            /**
+             * By Feature
+             * @default []
+             */
+            by_feature: components["schemas"]["SpendBucket"][];
             /** By Model */
             by_model: components["schemas"]["SpendBucket"][];
             /** By Role */
@@ -4379,13 +4384,33 @@ export interface components {
             completion: components["schemas"]["Latency"];
             /** Cost Usd */
             cost_usd: number;
+            /**
+             * Estimated Calls
+             * @default 0
+             */
+            estimated_calls: number;
+            /**
+             * Failed Calls
+             * @default 0
+             */
+            failed_calls: number;
             first_token: components["schemas"]["Latency"];
             /** Input Tokens */
             input_tokens: number;
+            /**
+             * Near Budget
+             * @default false
+             */
+            near_budget: boolean;
             /** Output Tokens */
             output_tokens: number;
             /** Over Budget */
             over_budget: boolean;
+            /**
+             * Partial Calls
+             * @default 0
+             */
+            partial_calls: number;
             /**
              * Since
              * Format: date-time

@@ -556,6 +556,32 @@ export function Admin() {
               </table>
             </div>
           </section>
+
+          <section className="flex flex-col gap-2">
+            <h2 className="text-h2">By feature</h2>
+            {/* What paid for it (S48). Failed and partial calls may still have been billed, and an
+                estimated row carries its reservation rather than the provider's numbers. */}
+            <p className="text-caption text-base-content/60">
+              Failed {spend.data.failed_calls} · partial {spend.data.partial_calls} · estimated{" "}
+              {spend.data.estimated_calls}
+            </p>
+            <div className="overflow-x-auto">
+              <table className="text-body w-full">
+                <thead className="text-caption text-base-content/50 text-left">
+                  <tr>
+                    <th className="pb-2 pr-4 font-normal">Feature</th>
+                    <th className="pb-2 pr-4 text-right font-normal">Calls</th>
+                    <th className="pb-2 pr-4 text-right font-normal">Cost</th>
+                    <th className="pb-2 pr-4 text-right font-normal">p95 completion</th>
+                    <th className="pb-2 text-right font-normal">p95 first token</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <BucketRows buckets={spend.data.by_feature} />
+                </tbody>
+              </table>
+            </div>
+          </section>
         </>
       )}
 

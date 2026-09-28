@@ -40,6 +40,7 @@ from app.services import memory as memory_svc
 from app.services import profile as profile_svc
 from app.services import retention as retention_svc
 from app.services.ingestion import backlog
+from app.services.spend import STALE_PENDING, stale_pending
 from app.services.spend import window as spend_window
 from app.storage import build_blob_store
 from app.workers.broker import broker
@@ -268,6 +269,7 @@ async def _alerts_once() -> None:
             refresh_stuck=await refresh_schedule.stuck(
                 session, now=refresh_schedule.utcnow(), settings=settings
             ),
+            stale_pending=await stale_pending(session, older_than=STALE_PENDING),
         )
         changed = await alert_history.record(session, report)
     for row in changed:
