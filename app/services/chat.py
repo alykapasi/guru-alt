@@ -21,6 +21,8 @@ from app.learning.conversation_evidence import TurnIntent
 from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult, InvalidResponse
 from app.learning.turn_read import FULLY_CORRECT, INTENT, ReadContext
+from app.llm.attribution import metered
+from app.llm.pricing import price_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.models.assessment import Item, ItemType
@@ -39,7 +41,6 @@ from app.services import session_runner as session_runner_svc
 from app.services.assessment import item_to_read
 from app.services.grounding import format_grounding
 from app.services.lesson_plan import PlanGroundingContext
-from app.services.llm_log import log_llm_call
 from app.services.turn_common import (
     TurnEvent,
     add_message,
@@ -435,6 +436,7 @@ PAUSED_PRACTICE_NOTE = (
 )
 
 
+@metered("chat_turn", learner="learner_id", conversation="conversation.id")
 async def run_tutor_turn(
     session: AsyncSession,
     llm: LLMClient,
@@ -618,13 +620,7 @@ async def run_tutor_turn(
         check_result=check_result,
         grounding_count=len(hits) if scope is not None else None,
     )
-    cost = await log_llm_call(
-        learner_id=learner_id,
-        conversation_id=conversation_id,
-        role=ModelRole.SMART.value,
-        spec=spec,
-        usage=usage,
-    )
+    cost = price_usd(spec.provider, spec.model, usage)  # the client recorded each call (S48)
     if practice_paused:
         conversation.practice_scaffolds += 1
     await session.commit()

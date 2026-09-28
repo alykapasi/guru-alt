@@ -163,7 +163,7 @@ async def test_start_persists_presentation_and_awaits_reply(db_session: AsyncSes
     assert [m.role for m in messages] == ["user", "assistant"]
     assert messages[1].content == PRESENT
 
-    calls = (await db_session.scalars(select(LLMCall))).all()
+    calls = (await db_session.scalars(select(LLMCall).where(LLMCall.role != "embed"))).all()
     assert len(calls) == 1
     assert calls[0].role == "smart"
 
@@ -230,7 +230,7 @@ async def test_resume_wrong_loops_and_persists_second_round(db_session: AsyncSes
     assert [m.role for m in messages] == ["user", "assistant", "user", "assistant"]
 
     # present (round 1) + grade's self-logged rubric call + respond (round 2's feedback).
-    calls = (await db_session.scalars(select(LLMCall))).all()
+    calls = (await db_session.scalars(select(LLMCall).where(LLMCall.role != "embed"))).all()
     assert len(calls) == 3
 
 
@@ -392,7 +392,7 @@ async def test_no_active_plan_step_yields_clean_error(db_session: AsyncSession) 
     events = await _drain(db_session, llm, conv, user_content="let's practice")
     assert [e.type for e in events] == ["error"]
 
-    assert (await db_session.scalars(select(LLMCall))).all() == []
+    assert (await db_session.scalars(select(LLMCall).where(LLMCall.role != "embed"))).all() == []
     # No graph checkpoint was ever created — later dispatch still sees this as fresh.
     assert await is_awaiting_reply(llm, db_session, conv.id, learner_id=conv.learner_id) is False
 
@@ -417,7 +417,10 @@ async def test_stream_failure_persists_user_only(db_session: AsyncSession) -> No
         await db_session.scalars(select(Message).where(Message.conversation_id == conv.id))
     ).all()
     assert [m.role for m in messages] == ["user"]
-    assert (await db_session.scalars(select(LLMCall))).all() == []
+    # The failed call is recorded too (S48): it may have been billed. Retrieval's embedding
+    # succeeded before it.
+    failed = await db_session.scalars(select(LLMCall.status).where(LLMCall.role != "embed"))
+    assert list(failed) == ["failed"]
 
 
 # --- HTTP-level: the router's dispatch to the workflow, and its priority over plain chat ---
@@ -720,7 +723,7 @@ async def test_a_re_asked_flashcard_adds_nothing_to_the_transcript(
     assert [m.role for m in after] == ["user", "assistant", "user"]
     assert [m.id for m in after[:2]] == [m.id for m in before]
     # present only: the re-ask called no model, so it is billed for none.
-    calls = (await db_session.scalars(select(LLMCall))).all()
+    calls = (await db_session.scalars(select(LLMCall).where(LLMCall.role != "embed"))).all()
     assert len(calls) == 1
 
 

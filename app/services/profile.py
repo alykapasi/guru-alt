@@ -20,17 +20,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.learning.profile_estimators import (
     DIMENSION_SPECS,
-    PROFILE_LLM_ROLE,
     DimensionEstimate,
     DimensionSpec,
     EstimatorContext,
 )
 from app.llm import LLMClient
+from app.llm.attribution import metered
 from app.models.chat import Conversation, Message
 from app.models.learning import LearningEvent
 from app.models.lesson_plan import LessonPlan
 from app.models.profile import LearnerProfile, ProfileDimension
-from app.services.llm_log import log_llm_call
 
 
 async def _load_events(session: AsyncSession, learner_id: uuid.UUID) -> list[LearningEvent]:
@@ -143,6 +142,7 @@ async def latest_evidence_at(session: AsyncSession, learner_id: uuid.UUID) -> da
     return max(stamps) if stamps else None
 
 
+@metered("profile_refresh", learner="learner_id")
 async def refresh_profile(
     session: AsyncSession, learner_id: uuid.UUID, llm: LLMClient, *, force: bool = False
 ) -> list[ProfileDimension]:
@@ -189,14 +189,7 @@ async def refresh_profile(
             fingerprint = await spec.fingerprint(context) if spec.fingerprint else None
             if not force and fingerprint is not None and stored.get(spec.key) == fingerprint:
                 continue  # the same input as last time: the stored answer stands, unpaid
-            result, usage = await spec.estimate(context)
-            if usage.total_tokens:
-                await log_llm_call(
-                    learner_id=learner_id,
-                    role=PROFILE_LLM_ROLE.value,
-                    spec=llm.spec(PROFILE_LLM_ROLE),
-                    usage=usage,
-                )
+            result, _usage = await spec.estimate(context)
             if result is not None:
                 await _upsert_dimension(session, learner_id, spec, result, fingerprint)
     except Exception as exc:

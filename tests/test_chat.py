@@ -138,8 +138,8 @@ async def test_chat_streams_and_persists(
     assert [m.role for m in messages] == ["user", "assistant"]
     assert messages[1].content == REPLY
 
-    # Token/cost logged for the call.
-    calls = (await db_session.scalars(select(LLMCall))).all()
+    # Token/cost logged for the call (retrieval's embedding is its own row).
+    calls = (await db_session.scalars(select(LLMCall).where(LLMCall.role != "embed"))).all()
     assert len(calls) == 1
     assert calls[0].role == "smart"
     assert calls[0].output_tokens == len(REPLY.split())

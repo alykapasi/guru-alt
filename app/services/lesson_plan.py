@@ -26,6 +26,7 @@ from app.learning import lesson_plan as engine
 from app.learning import mastery, prerequisites
 from app.learning.placement_inference import KCCandidate
 from app.llm import LLMClient
+from app.llm.attribution import metered
 from app.models.knowledge import KC, Subject, Topic
 from app.models.lesson_plan import LessonPlan
 from app.schemas.lesson_plan import GoalStatusRead, LessonPlanRead
@@ -33,7 +34,6 @@ from app.services import concept_links as concept_links_svc
 from app.services import knowledge as knowledge_svc
 from app.services import preferences as preferences_svc
 from app.services import profile as profile_svc
-from app.services.llm_log import log_llm_call
 
 log = structlog.get_logger(__name__)
 
@@ -378,6 +378,7 @@ async def _external_detours(
     return out
 
 
+@metered("lesson_plan", learner="learner_id")
 async def generate_lesson_plan(
     session: AsyncSession,
     llm: LLMClient,
@@ -397,14 +398,7 @@ async def generate_lesson_plan(
     target_ids = all_kc_ids
     if goal and kcs:
         candidates = [KCCandidate(id=kc.id, name=kc.name, description=kc.description) for kc in kcs]
-        selected, usage = await engine.select_objectives(llm, goal, candidates)
-        if usage.total_tokens:
-            await log_llm_call(
-                learner_id=learner_id,
-                role=engine.OBJECTIVE_ROLE.value,
-                spec=llm.spec(engine.OBJECTIVE_ROLE),
-                usage=usage,
-            )
+        selected, _usage = await engine.select_objectives(llm, goal, candidates)
         if selected:
             target_ids = set(selected)
 

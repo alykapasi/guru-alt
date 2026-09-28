@@ -166,7 +166,10 @@ async def test_stream_failure_persists_user_only(db_session: AsyncSession) -> No
         await db_session.scalars(select(Message).where(Message.conversation_id == conv.id))
     ).all()
     assert [m.role for m in messages] == ["user"]
-    assert (await db_session.scalars(select(LLMCall))).all() == []
+    # The failed call is recorded too (S48): it may have been billed. Retrieval's embedding
+    # succeeded before it.
+    failed = await db_session.scalars(select(LLMCall.status).where(LLMCall.role != "embed"))
+    assert list(failed) == ["failed"]
 
 
 # --- HTTP-level: the router's dispatch between the gate and plain chat ---
@@ -226,5 +229,5 @@ async def test_dispatch_gate_then_plain_chat(
     done = next(e for e in events if e["type"] == "done")
     assert done["usage"]["output_tokens"] == len(REPLY.split())
 
-    calls = (await db_session.scalars(select(LLMCall))).all()
+    calls = (await db_session.scalars(select(LLMCall).where(LLMCall.role != "embed"))).all()
     assert sorted(c.role for c in calls) == ["fast", "smart"]

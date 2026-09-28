@@ -25,16 +25,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.llm import LLMClient, ModelRole
+from app.llm.attribution import bind, metered
 from app.llm.embedding_space import current_space, exact_cosine_distance
 from app.memory import supersession
-from app.memory.extraction import EXTRACTION_ROLE, ExtractedMemory, extract_memories
+from app.memory.extraction import ExtractedMemory, extract_memories
 from app.models.chat import Conversation, Message
 from app.models.learner import Learner
 from app.models.memory import ForgetScope, Memory, MemoryKind, MemoryStatus
-from app.services.llm_log import log_llm_call
 from app.services.turn_common import to_chat_messages
 
 
+@metered("memory_write_back", conversation="conversation_id")
 async def write_back(
     session: AsyncSession, llm: LLMClient, *, conversation_id: uuid.UUID
 ) -> list[Memory]:
@@ -50,6 +51,8 @@ async def write_back(
     conversation = await session.get(Conversation, conversation_id)
     if conversation is None:
         return []
+    # The calls below are this learner's (S48); restored when ``metered`` exits.
+    bind(learner_id=conversation.learner_id)
     learner = await session.get(Learner, conversation.learner_id)
     if (
         learner is None
@@ -80,29 +83,13 @@ async def write_back(
     # Done with this claim (S43): a backlog bigger than the window stays due and is picked up
     # on the next pass, not after the delay meant for failures.
     conversation.memory_attempted_at = None
-    extracted, usage = await extract_memories(llm, to_chat_messages(window))
-    if usage.total_tokens:
-        await log_llm_call(
-            learner_id=conversation.learner_id,
-            role=EXTRACTION_ROLE.value,
-            spec=llm.spec(EXTRACTION_ROLE),
-            usage=usage,
-            conversation_id=conversation_id,
-        )
+    extracted, _usage = await extract_memories(llm, to_chat_messages(window))
     if not extracted:
         await session.commit()
         return []
 
     space = current_space(llm, dim=settings.embed_dim)
     embedded = await llm.embed(ModelRole.EMBED, [item.content for item in extracted])
-    if embedded.usage.total_tokens:
-        await log_llm_call(
-            learner_id=conversation.learner_id,
-            role=str(ModelRole.EMBED),
-            spec=llm.spec(ModelRole.EMBED),
-            usage=embedded.usage,
-            conversation_id=conversation_id,
-        )
     created: list[Memory] = []
     # Candidates the judge must decide: (item, embedding, neighbour rows).
     pending: list[tuple[ExtractedMemory, list[float], list[Memory]]] = []
@@ -151,21 +138,13 @@ async def write_back(
         pending.append((item, embedding, neighbours))
 
     if pending:
-        judgements, usage = await supersession.judge(
+        judgements, _usage = await supersession.judge(
             llm,
             [
                 supersession.Candidate(item.content, [n.content for n in neighbours])
                 for item, _embedding, neighbours in pending
             ],
         )
-        if usage.total_tokens:
-            await log_llm_call(
-                learner_id=conversation.learner_id,
-                role=supersession.JUDGE_ROLE.value,
-                spec=llm.spec(supersession.JUDGE_ROLE),
-                usage=usage,
-                conversation_id=conversation_id,
-            )
         for (item, embedding, neighbours), judgement in zip(pending, judgements, strict=True):
             if judgement.verdict == "same":
                 continue
@@ -434,6 +413,7 @@ async def list_memories(
     return result.all()
 
 
+@metered("memory_correction", learner="learner_id")
 async def correct_memory(
     session: AsyncSession,
     llm: LLMClient,
@@ -481,13 +461,6 @@ async def correct_memory(
     settings = get_settings()
     space = current_space(llm, dim=settings.embed_dim)
     embedded = await llm.embed(ModelRole.EMBED, [corrected])
-    if embedded.usage.total_tokens:
-        await log_llm_call(
-            learner_id=learner_id,
-            role=str(ModelRole.EMBED),
-            spec=llm.spec(ModelRole.EMBED),
-            usage=embedded.usage,
-        )
     replacement = Memory(
         learner_id=learner_id,
         # Provenance follows the correction: this came from the learner saying so, not from

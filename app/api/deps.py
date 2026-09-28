@@ -20,6 +20,7 @@ from app.core.config import Settings, get_settings
 from app.core.db import engine, get_session
 from app.core.identity import IdentityProvider, build_identity_provider
 from app.llm import LLMClient, build_llm_client
+from app.llm.attribution import bind
 from app.models.learner import Learner
 from app.services import auth
 from app.storage import BlobStore, build_blob_store
@@ -205,6 +206,9 @@ async def get_authenticated(
         from app.services.admin_audit import begin_action
 
         await begin_action(request, session, resolved)
+    # Every model call in this request is this learner's, a visiting administrator's included
+    # (S48). ``bind``, not a ``with``: a dependency returns before the endpoint runs.
+    bind(learner_id=resolved.learner.id)
     return resolved
 
 

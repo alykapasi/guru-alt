@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.learning import citation_support
 from app.learning.preferences import EXPLANATION_INSTRUCTIONS
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
+from app.llm.attribution import metered
 from app.llm.registry import ModelSpec
 from app.models.content import ContentBlock, ContentType
 from app.models.knowledge import KC, Topic
@@ -38,7 +39,6 @@ from app.rag.retrieval import RetrievalHit
 from app.rag.scope import resolve_scope
 from app.services import grounding as grounding_policy
 from app.services import preferences as preferences_svc
-from app.services.llm_log import log_llm_call
 
 GROUNDING_K = 6
 """How many chunks to retrieve as grounding for a block."""
@@ -116,6 +116,7 @@ class _GeneratedBlock(BaseModel):
     citations: list[int] = []
 
 
+@metered("lesson_generation", learner="learner_id")
 async def generate_block(
     session: AsyncSession,
     llm: LLMClient,
@@ -178,7 +179,7 @@ async def generate_block(
     if existing is not None:
         return existing
 
-    parsed, usage = await _generate(llm, role, system=system, user=user)
+    parsed, _usage = await _generate(llm, role, system=system, user=user)
     block = ContentBlock(
         learner_id=learner_id,
         kc_ids=[kc_id],
@@ -190,7 +191,6 @@ async def generate_block(
         grounding_count=len(grounding),
     )
     session.add(block)
-    await log_llm_call(learner_id=learner_id, role=str(role), spec=llm.spec(role), usage=usage)
     await session.commit()
     return block
 
@@ -230,6 +230,7 @@ async def _cited_passages(
     ]
 
 
+@metered("citation_check", learner="learner_id")
 async def check_block_citations(
     session: AsyncSession,
     llm: LLMClient,
@@ -253,14 +254,7 @@ async def check_block_citations(
         raise LookupError(f"content block {block_id} not found")
 
     passages = await _cited_passages(session, block)
-    report, usage = await citation_support.check_support(llm, body=block.body, passages=passages)
-    if usage.total_tokens:
-        await log_llm_call(
-            learner_id=learner_id,
-            role=str(citation_support.SUPPORT_ROLE),
-            spec=llm.spec(citation_support.SUPPORT_ROLE),
-            usage=usage,
-        )
+    report, _usage = await citation_support.check_support(llm, body=block.body, passages=passages)
     return report
 
 

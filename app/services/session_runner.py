@@ -40,12 +40,12 @@ from app.learning import difficulty, item_generation, mastery
 from app.learning.mastery import ReviewItem
 from app.learning.tracer import Estimate
 from app.llm import LLMClient
+from app.llm.attribution import metered
 from app.models.assessment import Item, ItemType
 from app.models.knowledge import KC
 from app.services import assessment as assessment_svc
 from app.services import lesson_plan as lesson_plan_svc
 from app.services.lesson_plan import PlanGroundingContext
-from app.services.llm_log import log_llm_call
 
 DEFAULT_GENERATED_TYPE = ItemType.SHORT
 """What gets generated when nothing has asked for a particular type (S09/S10).
@@ -118,7 +118,7 @@ async def item_for_kc(
     generator = item_generation.GENERATORS.get(default_type)
     if generator is None:
         return None  # a type nothing can generate is not a default anything can fall back to
-    return await _generate_and_log(
+    return await _generate_owned(
         session,
         llm,
         kc,
@@ -190,7 +190,7 @@ async def _fresh_or_generate(
         return item
     generator = item_generation.GENERATORS.get(item_type)
     if generator is not None:
-        generated = await _generate_and_log(
+        generated = await _generate_owned(
             session,
             llm,
             kc,
@@ -209,7 +209,8 @@ async def _fresh_or_generate(
     )
 
 
-async def _generate_and_log(
+@metered("item_generation", learner="learner_id")
+async def _generate_owned(
     session: AsyncSession,
     llm: LLMClient,
     kc: KC,
@@ -218,16 +219,9 @@ async def _generate_and_log(
     generator: item_generation.GeneratorFn,
     target_difficulty: float | None = None,
 ) -> Item | None:
-    item, usage = await generator(
+    item, _usage = await generator(
         session, llm, kc, owner_learner_id=learner_id, target_difficulty=target_difficulty
     )
-    if usage.total_tokens:
-        await log_llm_call(
-            learner_id=learner_id,
-            role=item_generation.GENERATION_ROLE.value,
-            spec=llm.spec(item_generation.GENERATION_ROLE),
-            usage=usage,
-        )
     return item
 
 

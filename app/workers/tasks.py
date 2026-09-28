@@ -20,6 +20,7 @@ from app.core.db import SessionFactory
 from app.core.identity import build_identity_provider
 from app.core.readiness import readiness
 from app.llm import build_llm_client
+from app.llm.attribution import attributed
 from app.models.learner import Learner
 from app.models.source import Source
 from app.rag import pipeline
@@ -63,30 +64,36 @@ async def _memory_write_back_task(conversation_id: str) -> None:
     refresh sweep when it goes quiet — S43)."""
     settings = get_settings()
     llm = build_llm_client(settings)
-    async with SessionFactory() as session:
-        try:
-            await memory_svc.write_back(session, llm, conversation_id=uuid.UUID(conversation_id))
-        except Exception:
-            logger.exception("memory.write_back_failed conversation=%s", conversation_id)
-            raise
+    # Background work (S47): paused before a learner's live turns are refused.
+    with attributed(conversation_id=uuid.UUID(conversation_id), background=True):
+        async with SessionFactory() as session:
+            try:
+                await memory_svc.write_back(
+                    session, llm, conversation_id=uuid.UUID(conversation_id)
+                )
+            except Exception:
+                logger.exception("memory.write_back_failed conversation=%s", conversation_id)
+                raise
 
 
 async def _profile_refresh_task(learner_id: str) -> None:
     """Refresh one learner's profile (queued by the refresh sweep, S43)."""
     settings = get_settings()
     llm = build_llm_client(settings)
-    async with SessionFactory() as session:
-        learner = await session.get(Learner, uuid.UUID(learner_id))
-        if learner is None or learner.deletion_requested_at or learner.suspended_at:
-            return  # closed or suspended since it was queued: no model call
-        await profile_svc.refresh_profile(session, learner.id, llm)
+    with attributed(learner_id=uuid.UUID(learner_id), background=True):
+        async with SessionFactory() as session:
+            learner = await session.get(Learner, uuid.UUID(learner_id))
+            if learner is None or learner.deletion_requested_at or learner.suspended_at:
+                return  # closed or suspended since it was queued: no model call
+            await profile_svc.refresh_profile(session, learner.id, llm)
 
 
 async def _judge_concept_links_task(learner_id: str) -> None:
     """Judge a learner's new concept-link candidates (enqueued when they commit a subject)."""
     llm = build_llm_client(get_settings())
-    async with SessionFactory() as session:
-        await concept_links_svc.judge_pending(session, llm, uuid.UUID(learner_id))
+    with attributed(learner_id=uuid.UUID(learner_id), background=True):
+        async with SessionFactory() as session:
+            await concept_links_svc.judge_pending(session, llm, uuid.UUID(learner_id))
 
 
 async def _enqueue_ingestion(source_id: uuid.UUID) -> None:

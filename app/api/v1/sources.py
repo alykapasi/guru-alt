@@ -17,6 +17,7 @@ from app.api.deps import (
     SessionDep,
     SettingsDep,
 )
+from app.llm.attribution import attributed
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.rag import retrieval
 from app.rag.retrieval import RetrievalHit
@@ -265,18 +266,19 @@ async def retrieve_chunks(
         await knowledge.require_visible_subject(session, data.subject_id, learner.id)
     if data.topic_id is not None:
         await knowledge.require_visible_topic(session, data.topic_id, learner.id)
-    return await retrieval.retrieve(
-        session,
-        llm,
-        data.query,
-        scope=SourceScope(
-            learner_id=learner.id,
-            subject_id=data.subject_id,
-            topic_id=data.topic_id,
-            source_ids=(data.source_id,) if data.source_id is not None else (),
-        ),
-        limit=data.limit,
-    )
+    with attributed(feature="retrieval"):  # the query's embedding (S48)
+        return await retrieval.retrieve(
+            session,
+            llm,
+            data.query,
+            scope=SourceScope(
+                learner_id=learner.id,
+                subject_id=data.subject_id,
+                topic_id=data.topic_id,
+                source_ids=(data.source_id,) if data.source_id is not None else (),
+            ),
+            limit=data.limit,
+        )
 
 
 @router.get("/sources/{source_id}/similar", response_model=list[SimilarSourceRead])

@@ -30,6 +30,7 @@ from app.learning.conversation_evidence import TurnIntent
 from app.learning.grading import GradeResult
 from app.learning.turn_read import FULLY_CORRECT, INTENT, ReadContext, TurnRead
 from app.llm import LLMClient
+from app.llm.attribution import metered
 from app.llm.decisions import (
     Answer,
     ChoiceAnswer,
@@ -39,7 +40,6 @@ from app.llm.decisions import (
     build_decision_client,
 )
 from app.services.decision_log import record_decision
-from app.services.llm_log import log_llm_call
 
 
 @dataclass(frozen=True)
@@ -184,21 +184,14 @@ async def _settle(
         await write()
 
 
+@metered("intent_check", learner="context.learner_id", conversation="context.conversation_id")
 async def _fast_intent(
     llm: LLMClient, *, question: str, message: str, context: ReadContext
 ) -> TurnIntent:
-    """Today's gate: the FAST classifier, with its call logged."""
-    intent, usage = await conversation_evidence.classify_intent(
+    """Today's gate: the FAST classifier, attributed to the intent check."""
+    intent, _usage = await conversation_evidence.classify_intent(
         llm, question=question, message=message
     )
-    if usage.input_tokens or usage.output_tokens:
-        await log_llm_call(
-            learner_id=context.learner_id,
-            conversation_id=context.conversation_id,
-            role=conversation_evidence.CHECK_ROLE.value,
-            spec=llm.spec(conversation_evidence.CHECK_ROLE),
-            usage=usage,
-        )
     return intent
 
 

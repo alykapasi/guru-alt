@@ -18,8 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.learning import mastery, note_distill
-from app.learning.note_distill import FALLBACK_FORMAT, FORMATS, NOTES_ROLE
+from app.learning.note_distill import FALLBACK_FORMAT, FORMATS
 from app.llm import LLMClient
+from app.llm.attribution import metered
 from app.models.assessment import Item
 from app.models.chat import Conversation, Message
 from app.models.knowledge import KC, Subject, Topic
@@ -28,7 +29,6 @@ from app.models.note import WATERMARK_EPOCH, Note, NoteRender, NoteRevision
 from app.models.profile import ProfileDimension
 from app.services import knowledge as knowledge_svc
 from app.services import preferences as preferences_svc
-from app.services.llm_log import log_llm_call
 
 log = structlog.get_logger(__name__)
 
@@ -398,6 +398,7 @@ async def _topic_context(session: AsyncSession, topic: Topic) -> note_distill.To
     )
 
 
+@metered("note_distillation", learner="learner_id")
 async def _render_and_cache(
     session: AsyncSession, llm: LLMClient, learner_id: uuid.UUID, note: Note, fmt: str
 ) -> NoteRender:
@@ -422,13 +423,10 @@ async def _render_and_cache(
         return row
     content: str | None = None
     try:
-        content, usage = await note_distill.render(
+        content, _usage = await note_distill.render(
             llm,
             atoms=note.substrate,
             note_format=fmt,
-        )
-        await log_llm_call(
-            learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
         )
     except Exception as exc:
         # A provider outage must not cost the learner the revision this render belongs to.
@@ -477,6 +475,7 @@ async def _commit_new_revision(
     await session.flush()
 
 
+@metered("note_distillation", learner="learner_id")
 async def refresh_note(
     session: AsyncSession, llm: LLMClient, learner_id: uuid.UUID, topic: Topic
 ) -> NoteView:
@@ -502,16 +501,13 @@ async def refresh_note(
     gathered = await _gather(session, learner_id, topic, messages_watermark, events_watermark)
     atoms = note.substrate if note is not None else []
     try:
-        result, usage = await note_distill.distill(
+        result, _usage = await note_distill.distill(
             llm,
             topic=await _topic_context(session, topic),
             atoms=atoms,
             transcript=gathered.transcript,
             outcomes=gathered.outcomes,
             refs=gathered.refs,
-        )
-        await log_llm_call(
-            learner_id=learner_id, role=str(NOTES_ROLE), spec=llm.spec(NOTES_ROLE), usage=usage
         )
     except Exception as exc:
         log.warning("notes.distill_failed", topic_id=str(topic.id), error=str(exc))

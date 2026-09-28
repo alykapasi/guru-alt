@@ -47,3 +47,40 @@ async def test_metered_wraps_an_async_generator() -> None:
 
     assert [e async for e in events()] == ["goal_refinement", "goal_refinement"]
     assert current().feature is None
+
+
+async def test_each_request_records_its_own_learner(
+    api_client, anon_client, db_session, api_learner
+) -> None:
+    """``bind`` in the auth dependency must not leak from one request into the next."""
+    from sqlalchemy import select
+
+    from app.api.deps import get_llm_client
+    from app.llm.registry import fake_llm_client
+    from app.main import app
+    from app.models.chat import LLMCall
+    from app.models.learner import Learner
+    from tests.conftest import sign_in
+
+    app.dependency_overrides[get_llm_client] = lambda: fake_llm_client()
+
+    other = Learner(handle=f"other-{uuid.uuid4().hex[:8]}")
+    db_session.add(other)
+    await db_session.flush()
+    await sign_in(anon_client, db_session, other)
+
+    for client in (api_client, anon_client, api_client):
+        r = await client.post("/api/v1/retrieve", json={"query": "mitochondria"})
+        assert r.status_code == 200
+
+    rows = (
+        await db_session.execute(
+            select(LLMCall.learner_id, LLMCall.feature, LLMCall.request_id).order_by(
+                LLMCall.created_at
+            )
+        )
+    ).all()
+    me = api_learner.id
+    assert [r.learner_id for r in rows] == [me, other.id, me]
+    assert {r.feature for r in rows} == {"retrieval"}
+    assert len({r.request_id for r in rows}) == 3

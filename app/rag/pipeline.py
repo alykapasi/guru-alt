@@ -20,8 +20,9 @@ from sqlalchemy import ARRAY, String, bindparam, delete, func, select, text, upd
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.learning.kc_tagging import TAGGING_ROLE, load_candidate_kcs, tag_chunk
+from app.learning.kc_tagging import load_candidate_kcs, tag_chunk
 from app.llm import EmbedResult, LLMClient, ModelRole, Usage
+from app.llm.attribution import metered
 from app.llm.embedding_space import current_space
 from app.models.source import Chunk, ChunkKC, Source, SourceStatus
 from app.rag import extraction_quality, simhash, textnorm
@@ -30,7 +31,6 @@ from app.rag.chunking import chunk_units
 from app.rag.concurrency import gather_bounded, gather_bounded_settled
 from app.rag.demux import MediaDemuxer
 from app.rag.transcription import Transcriber
-from app.services.llm_log import log_llm_call
 from app.storage import BlobStore
 
 # Bumped whenever extraction or chunking changes in a way that changes chunk text (S50).
@@ -158,6 +158,7 @@ async def same_text_source(session: AsyncSession, source: Source) -> Source | No
     )
 
 
+@metered("ingestion", learner="source.learner_id")
 async def run(
     session: AsyncSession,
     blobstore: BlobStore,
@@ -234,38 +235,14 @@ async def run(
             f"{settings.ingest_max_chunks} per-job budget"
         )
 
-    # Log any model calls extraction made (vision-OCR).
-    for role, usage in ctx.usage_log:
-        await log_llm_call(
-            learner_id=source.learner_id, role=str(role), spec=llm.spec(role), usage=usage
-        )
-
-    try:
-        embedded = await embed_in_batches(
-            llm,
-            [c.text for c in chunks],
-            batch_size=settings.embed_batch_size,
-            concurrency=settings.embed_concurrency,
-        )
-    except PartialEmbedding as exc:
-        # Recorded before re-raising, on accounting's own transaction, so it survives the
-        # rollback that discards this source. The batches that completed were charged for
-        # whether or not anything is left to show for them.
-        if exc.usage.total_tokens:
-            await log_llm_call(
-                learner_id=source.learner_id,
-                role=str(ModelRole.EMBED),
-                spec=llm.spec(ModelRole.EMBED),
-                usage=exc.usage,
-            )
-        raise
-    if embedded.usage.total_tokens:
-        await log_llm_call(
-            learner_id=source.learner_id,
-            role=str(ModelRole.EMBED),
-            spec=llm.spec(ModelRole.EMBED),
-            usage=embedded.usage,
-        )
+    # Every batch is recorded by the client as it completes, on accounting's own transaction,
+    # so a partial embedding's charged batches survive the rollback that discards this source.
+    embedded = await embed_in_batches(
+        llm,
+        [c.text for c in chunks],
+        batch_size=settings.embed_batch_size,
+        concurrency=settings.embed_concurrency,
+    )
 
     # Replace the prior chunks, keeping any a citation still points at (S29).
     await supersede_chunks(session, source)
@@ -353,6 +330,7 @@ async def supersede_chunks(session: AsyncSession, source: Source) -> tuple[int, 
     return len(cited), len(uncited)
 
 
+@metered("ingestion", learner="source.learner_id")
 async def _tag_chunks(
     session: AsyncSession,
     llm: LLMClient,
@@ -375,16 +353,9 @@ async def _tag_chunks(
         ],
         settings.kc_tag_concurrency,
     )
-    for row, (tags, usage) in zip(rows, results, strict=True):
+    for row, (tags, _usage) in zip(rows, results, strict=True):
         for tag in tags:
             session.add(ChunkKC(chunk_id=row.id, kc_id=tag.kc_id, confidence=tag.confidence))
-        if usage.input_tokens or usage.output_tokens:
-            await log_llm_call(
-                learner_id=source.learner_id,
-                role=str(TAGGING_ROLE),
-                spec=llm.spec(TAGGING_ROLE),
-                usage=usage,
-            )
     await session.flush()
 
 

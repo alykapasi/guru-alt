@@ -35,9 +35,9 @@ from app.learning.grading import (
 )
 from app.learning.item_presentation import public_presentation
 from app.learning.mastery import Observation
-from app.learning.rubric_grading import GRADING_ROLE
 from app.learning.turn_read import ReadContext, TurnRead
 from app.llm import LLMClient
+from app.llm.attribution import metered
 from app.models.assessment import (
     AUTO_GRADABLE,
     RUBRIC_GRADABLE,
@@ -55,7 +55,6 @@ from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRead, ItemRea
 from app.services import decisions as decisions_svc
 from app.services import knowledge as knowledge_svc
 from app.services import lesson_plan as lesson_plan_svc
-from app.services.llm_log import log_llm_call
 
 log = structlog.get_logger(__name__)
 
@@ -615,6 +614,7 @@ async def _components_of(session: AsyncSession, item: Item) -> list[rubric_gradi
     ]
 
 
+@metered("practice_grading", learner="learner_id")
 async def _grade(
     session: AsyncSession,
     learner_id: uuid.UUID,
@@ -624,7 +624,7 @@ async def _grade(
     llm: LLMClient,
     read: TurnRead | None = None,
 ) -> GradeResult:
-    """Route to deterministic or LLM rubric grading. Logs the call on the rubric path."""
+    """Route to deterministic or LLM rubric grading (the client records the rubric call)."""
     item_type = ItemType(item.item_type)
     if item_type in AUTO_GRADABLE:
         return auto_grade(item_type, item.answer_key or {}, submission.response)
@@ -633,20 +633,13 @@ async def _grade(
     if item_type in RUBRIC_GRADABLE:
 
         async def smart() -> GradeResult:
-            result, usage = await rubric_grading.grade_open(
+            result, _usage = await rubric_grading.grade_open(
                 llm,
                 stem=item.stem,
                 response=submission.response,
                 rubric=item.rubric,
                 components=await _components_of(session, item),
             )
-            if usage.total_tokens:  # an empty response short-circuits with no model call
-                await log_llm_call(
-                    learner_id=learner_id,
-                    role=GRADING_ROLE.value,
-                    spec=llm.spec(GRADING_ROLE),
-                    usage=usage,
-                )
             return result
 
         return await decisions_svc.decide_grade(

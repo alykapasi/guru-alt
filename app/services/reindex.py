@@ -21,12 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.core.config import Settings
-from app.llm import LLMClient, ModelRole
+from app.llm import LLMClient
+from app.llm.attribution import metered
 from app.models.knowledge import Subject, Topic
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
-from app.rag.pipeline import PIPELINE_VERSION, PartialEmbedding, embed_in_batches
+from app.rag.pipeline import PIPELINE_VERSION, embed_in_batches
 from app.services import ingestion
-from app.services.llm_log import log_llm_call
 
 log = structlog.get_logger()
 
@@ -175,6 +175,7 @@ async def plan(
     )
 
 
+@metered("reindex", learner="stale.learner_id", background=True)
 async def _reembed(
     session: AsyncSession, llm: LLMClient, stale: StaleSource, *, space: str, settings: Settings
 ) -> None:
@@ -187,32 +188,16 @@ async def _reembed(
             )
         ).all()
     )
-    try:
-        embedded = await embed_in_batches(
-            llm,
-            [c.text for c in chunks],
-            batch_size=settings.embed_batch_size,
-            concurrency=settings.embed_concurrency,
-        )
-    except PartialEmbedding as exc:
-        if exc.usage.total_tokens:
-            await log_llm_call(
-                learner_id=stale.learner_id,
-                role=str(ModelRole.EMBED),
-                spec=llm.spec(ModelRole.EMBED),
-                usage=exc.usage,
-            )
-        raise
+    # Each batch is recorded by the client as it completes (S48), a partial run's included.
+    embedded = await embed_in_batches(
+        llm,
+        [c.text for c in chunks],
+        batch_size=settings.embed_batch_size,
+        concurrency=settings.embed_concurrency,
+    )
     for chunk, vector in zip(chunks, embedded.vectors, strict=True):
         chunk.embedding = vector
         chunk.embedding_space = space
-    if embedded.usage.total_tokens:
-        await log_llm_call(
-            learner_id=stale.learner_id,
-            role=str(ModelRole.EMBED),
-            spec=llm.spec(ModelRole.EMBED),
-            usage=embedded.usage,
-        )
     await session.commit()
 
 
