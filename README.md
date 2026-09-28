@@ -1,367 +1,251 @@
 # Guru
 
-**An AI-first personalized learning platform** whose promise is *durable* learning — knowledge that
-sticks. Guru adapts content, pacing, scaffolding, and assessment to each learner, with a hierarchical
-knowledge graph, a continuous mastery model, and an evidence-based learner profile at its core.
+[![CI](https://github.com/alykapasi/guru-alt/actions/workflows/ci.yml/badge.svg)](https://github.com/alykapasi/guru-alt/actions/workflows/ci.yml)
+![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue)
+![React 19](https://img.shields.io/badge/react-19-61dafb)
 
-> **Design docs (read these to understand the project):**
-> [docs/MASTERPLAN.md](docs/MASTERPLAN.md) (vision + architecture) ·
-> [docs/ROADMAP.md](docs/ROADMAP.md) (phased plan + what's landed) ·
-> [docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md) (engineering detail) ·
-> [docs/RUNBOOK.md](docs/RUNBOOK.md) (how to develop against it) ·
-> [docs/OPERATIONS.md](docs/OPERATIONS.md) (how to deploy, monitor, and recover it).
+**An AI-first personalized learning platform built for *durable* learning — knowledge that sticks.**
 
-> **Current v0 direction:** [docs/V0_DECISIONS.md](docs/V0_DECISIONS.md) records the accepted
-> invited-alpha decisions, remaining delivery work, and unresolved operating configuration.
+Guru builds a knowledge graph for whatever you want to learn, measures what you actually know
+concept by concept, schedules reviews before you forget, and tutors you from your own material.
+Content, pacing, scaffolding and assessment adapt to each learner — and every adaptation is backed by
+evidence the learner can inspect.
 
-Note: "alt" is a version suffix for the current build, not part of the product name.
+*"alt" is a version suffix for the current build, not part of the product name.*
+
+---
+
+## How it works
+
+- **Knowledge graph.** Every subject is a hierarchy of Subject → Topic → Knowledge Component (KC),
+  with prerequisites between KCs.
+- **Continuous mastery model.** A dynamic Elo/IRT tracer keeps an ability *and* an uncertainty per
+  KC, rolled up into topic and subject scores. Partial credit counts; a KC is mastered only when the
+  conservative estimate `ability − 2·uncertainty ≥ 0.5` holds on measured evidence.
+- **Retention.** FSRS schedules reviews independently of ability. A flashcard self-rating moves the
+  schedule, never the mastery estimate.
+- **LLM rubric grading.** Free-text answers are graded against a rubric, so partial understanding
+  feeds the tracer instead of being rounded to right/wrong.
+- **Adaptive lesson plans.** A policy picks the next KC from mastery, prerequisites and goals, and
+  proposes prerequisite detours the learner can take, skip, or disprove.
+- **Learner profile.** Behaviour-derived dimensions of *how* someone learns (not VARK), plus explicit
+  settings that always win over inference.
+- **Grounded tutoring.** Chat, agentic and guided-practice modes answer from the learner's own
+  uploads — documents, scans, audio and video — with citations and an honest coverage label.
+
+The full rationale is in [docs/MASTERPLAN.md](docs/MASTERPLAN.md) §4.
 
 ---
 
 ## Status
 
-**Phases 0–8 are complete; Phase 10 (identity, admin portal, private ownership) has landed;
-Phase 9 (experiment & evaluation suite) is in progress.** See
-[docs/ROADMAP.md](docs/ROADMAP.md) for the per-phase landed-notes.
+Invited-alpha build, heading toward independent use by invited adults after founder testing. The
+roadmap's Phases 0–8 are complete, Phase 9 (evaluation suite) is in progress, and the v0 delivery
+sequence in [docs/V0_DECISIONS.md](docs/V0_DECISIONS.md) is being worked through.
 
 | Area | State |
 | ---- | ----- |
-| Domain core + knowledge graph (Subject → Topic → KC) | ✅ Phase 1 |
-| LLM abstraction + model-role registry + tutor chat | ✅ Phase 2 |
-| Knowledge tracer (continuous Elo/IRT) + assessment + FSRS | ✅ Phase 3 |
-| Multimodal ingestion (docs/OCR/ASR/web) + RAG | ✅ Phase 4 |
-| Orchestration, lesson-plan policy, placement, profile, memory | ✅ Phase 5 |
-| Agentic tools + workflow mode | ✅ Phase 6 |
-| Frontend MVP (React + Vite) | ✅ Phase 7 |
-| Notes (durable learning artifact) | ✅ Phase 8 |
-| Eval sweeps + MLflow (9a) · real-data datasets (9b) · DSPy optimization (9c) | 🚧 Phase 9 |
-| Hosted identity (Clerk) · invitations · suspension | ✅ S21 — no deployment has yet been pointed at a real Clerk application |
-| Private curriculum ownership + reviewed publication | ✅ S25 |
-| Alpha admin portal + audited sudo | Implemented; default-off operational switch; further hardening remains |
+| Knowledge graph · tracer · FSRS · rubric grading · lesson-plan policy | ✅ Built |
+| Multimodal ingestion (docs · vision OCR · Whisper ASR) + hybrid RAG | ✅ Built — URL import and web access are disabled for v0 |
+| Tutoring: chat · agentic tools · guided-practice workflow (LangGraph) | ✅ Built |
+| React frontend: chat, lessons, dashboard, uploads, notes, memory, account | ✅ Built |
+| Notes with format projections and revision history | ✅ Built |
+| Hosted identity (Clerk), invitations, suspension, audited admin visits | ✅ Built — verified against a Clerk dev instance, not yet a production deployment |
+| Private ownership + reviewed publication of subjects | ✅ Built |
+| Goals, guidance and detours; self-rating ≠ evidence; cross-subject links | ✅ Built — thresholds not yet calibrated |
+| Source scope + sources-only mode; versioned re-ingestion that keeps citations | ✅ Built |
+| Archive / delete / forget; account deletion with a 7-day recovery window | ✅ Built |
+| Metered LLM calls with per-learner and deployment spend caps | ✅ Built |
+| Explicit learner preferences (global + per subject) | ✅ Built |
+| Evaluation: sweeps + MLflow, real-data datasets, DSPy compilation | 🚧 In progress |
+| Production deployment, mail, calibration | ☐ Open |
 
-**Identity is hosted; authorization is Guru's.** Clerk owns passwords, recovery mail, verification
-and social sign-in — Guru stores none of it, and one module imports the SDK. A Clerk token is
-exchanged once at `POST /api/v1/auth/exchange` for the opaque session cookie Guru already used, so
-nothing downstream knows Clerk exists. Guru keeps the decisions that are its own: who may enroll,
-who is an administrator, whose account is suspended, and who looked at whose data. A
-development-only sign-in endpoint remains for local work, and production refuses to boot while it
-is enabled. Production mail and the remaining operational work are still required before the
-invited-alpha target is complete.
-
-Authenticated alpha administrators can make short-lived, reason-required account visits with broad
-account access when `GURU_IMPERSONATION_ENABLED=true` (default: false). Visits and individual actions
-are audited. Admin practice remains distinct from learner ability/retention evidence, and admin chat
-history is labeled and excluded from inferred learner profile/memory updates.
-
-**Learner material is private by default.** Every subject is either one learner's own or curated
-for everyone, and `is_visible_to` / `is_writable_by` in `app/services/knowledge.py` are the whole
-authorization model for the graph — there are no roles beyond the single `is_admin` tier. Sharing
-is a request, an administrator's review of a frozen snapshot, and an immutable copy: it never makes
-the original public, and a subject built from the learner's own uploads cannot be published at all.
-
----
-
-## What's built
-
-- **Learning engine** — a hierarchical knowledge graph; a continuous **Elo/IRT knowledge tracer**
-  with per-KC ability + uncertainty rolled up into subject scores; **FSRS** scheduling for retention;
-  LLM rubric grading for partial credit; an adaptive lesson-plan policy; and a behavior-derived
-  **learner profile** (how they learn, not VARK).
-- **Tutoring** in three composable modes — chat, agentic (tool-calling), and a fixed guided-practice
-  workflow — all as LangGraph graphs.
-- **Multimodal ingestion** — documents, vision-LLM OCR, Whisper ASR (audio/video) →
-  normalize → chunk → embed → store with provenance, then hybrid retrieval (vector + full-text +
-  metadata). Per-chunk KC auto-tagging scopes chunks to the graph. URL imports and tutor web access
-  are disabled in v0; previously stored material remains available.
-- **Notes** — per-learner, per-topic artifacts that grow as the learner studies, with format
-  projections (outline / narrative / mnemonic / worked-examples) and full revision history.
-- **Identity and access** — hosted sign-in through Clerk, invitation-controlled enrollment,
-  account suspension and reinstatement, and short-lived reason-required administrator visits, all
-  audited at both ends.
-- **Private ownership and reviewed publication** — learner-owned subjects, topics, KCs, items and
-  content are visible only to their owner; publishing takes a frozen snapshot through an
-  administrator's review into an immutable, anonymous copy in the shared catalog.
-- **Evaluation suite** — a golden/live eval harness, a config-sweep + ablation runner with MLflow
-  tracking, real-data dataset mining, and DSPy prompt compilation with measured deltas.
-- **Versioned API and React frontend** covering sign-in, chat, lessons/sessions, dashboard,
-  uploads, notes, and learner memory.
+Per-phase detail lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
 ## Architecture
 
-Layered FastAPI backend. The load-bearing rule: **application code references LLMs by *role*, never
-by model name, and never calls a provider SDK directly.**
+A layered FastAPI backend with a React + Vite frontend. The rule that holds it together:
+**application code asks for an LLM by *role*, never by model name, and never imports a provider
+SDK.**
 
 ```text
-API routers  →  services  →  { learning engine · agent graphs · rag · memory }  →  llm registry  →  provider
+React app ─► API routers ─► services ─► { learning engine · agent graphs · rag · memory } ─► llm roles ─► provider
+                                   │
+                                   └─► taskiq worker (Redis): ingestion, memory write-back, erasure
 ```
-
-Key seams (each swappable without touching callers):
 
 | Seam | What it hides |
 | ---- | ------------- |
-| `app/llm/` **model-role registry** | `FAST` / `SMART` / `GENIUS` / `VISION` / `EMBED` → `(provider, model)` per env. Providers: Ollama (dev), OpenRouter / Anthropic (prod), `FakeProvider` (tests). Every call is token/cost logged, tagged by role + model. |
-| `app/learning/` **`KnowledgeTracer`** | The mastery estimator. Continuous Elo/IRT today; the KC-tagged event log earns a DKT upgrade later without a rewrite. |
-| `app/prompts/` **`RoleLM`** | The *only* bridge from DSPy to the role registry — DSPy never reaches a provider or litellm. |
-| `app/rag/` **`Transcriber` / `Demuxer`** | ASR and video demux, so CI runs offline against fakes. |
-| `app/storage/` **blob store** | S3-compatible object storage (RustFS in dev). |
-| `app/workers/` **taskiq broker** | Redis queue in dev/prod, in-memory for tests. |
-| `app/core/identity.py` **identity provider** | The only module that imports the Clerk SDK. A proven identity is exchanged once for Guru's own session, so no router, service or graph knows who proved it; tests run against a fake. |
-| `get_current_learner` | Resolves a real session token to its learner; refuses unauthenticated requests. |
+| `app/llm/` — model-role registry | `FAST` / `SMART` / `GENIUS` / `VISION` / `EMBED` → `(provider, model)` per environment. Ollama in dev, OpenRouter or Anthropic in prod, a `FakeProvider` in tests. Every call is recorded and admitted against spend caps. |
+| `app/learning/` — `KnowledgeTracer` | The mastery estimator. Continuous Elo/IRT today; the KC-tagged event log is what a later DKT model trains on. |
+| `app/core/identity.py` — identity provider | The only module that imports Clerk. A Clerk token is exchanged once for Guru's own session cookie, so nothing downstream knows who proved the identity. |
+| `app/services/knowledge.py` — visibility | `is_visible_to` / `is_writable_by` are the whole authorization model for the graph. |
+| `app/rag/scope.py` + `app/services/grounding.py` | What any generation may read, and what the tutor is told about it. |
+| `app/services/removal.py` | The one place that decides what derives from what, for archive, delete and forget. |
+| `app/llm/decisions.py` — Jev | Typed first-pass judgements (TypeSafe) in front of the FAST gate and SMART grader; each is off, shadow or live on its own. |
+| `app/prompts/` — `RoleLM` | The only bridge from DSPy to the role registry. |
+| `app/storage/` · `app/workers/` | S3-compatible blob store (RustFS in dev) · taskiq broker (in-memory in tests). |
+
+Engineering detail: [docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md).
 
 ---
 
-## Tech Stack
+## Tech stack
 
-- **Backend:** Python 3.13 · FastAPI · Uvicorn · Pydantic v2 · async SQLAlchemy 2.0 · taskiq (Redis)
-- **Database:** PostgreSQL 17 + pgvector (HNSW) + pg_trgm/GIN, via Alembic migrations
-- **AI / LLM:** provider-agnostic layer addressed **by role** (Ollama dev · OpenRouter/Anthropic
-  prod) · LangGraph orchestration · DSPy prompt optimization · FSRS scheduling · MLflow eval tracking
-- **Storage:** S3-compatible object storage (RustFS in dev) · faster-whisper ASR (optional extra) ·
-  PyMuPDF / python-docx / python-pptx / trafilatura for ingestion
-- **Tooling:** [uv](https://docs.astral.sh/uv/) (packaging) · ruff (lint/format) · ty (types) ·
-  beartype (runtime types) · pytest · poethepoet (task runner) · pre-commit
-- **Frontend:** React 19 · TypeScript · Vite · React Router
-
----
-
-## Prerequisites
-
-- **Python 3.13+**
-- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- **Docker + Docker Compose** — Postgres, Redis, RustFS
-- **[Ollama](https://ollama.com/)** — the dev default for every model role (chat works offline)
-- *Optional:* **ffmpeg/ffprobe** on `PATH` for video ingestion · the `asr` extra for audio
-  transcription (`uv sync --extra asr`)
+- **Backend:** Python 3.13 · FastAPI · Pydantic v2 · async SQLAlchemy 2.0 · Alembic · taskiq + Redis
+- **Data:** PostgreSQL 17 + pgvector (HNSW) + pg_trgm/GIN + full-text search · S3-compatible storage
+- **AI:** role-addressed LLM layer · LangGraph · DSPy · FSRS · faster-whisper · MLflow
+- **Frontend:** React 19 · TypeScript · Vite · React Router · TanStack Query · Clerk
+- **Tooling:** uv · ruff · ty · beartype · pytest · poethepoet · pre-commit · Playwright
 
 ---
 
 ## Quickstart
 
+**Prerequisites:** Python 3.13+, [uv](https://docs.astral.sh/uv/), Docker, Node 20.19+, and
+[Ollama](https://ollama.com/) (the dev default for every model role). Optional: `ffmpeg` for video
+ingestion and `uv sync --extra asr` for audio transcription.
+
 ```bash
-# 1. Install dependencies (creates the .venv automatically)
-uv sync
-
-# 2. Create your local env file
-cp .env.example .env
-
-# 3. Start Postgres (pgvector) + Redis + RustFS
-docker compose up -d
-
-# 4. Apply database migrations (enables vector + pg_trgm, etc.)
-uv run poe db-upgrade
-
-# 5. Pull the dev models Ollama serves for each role
+uv sync                                   # backend dependencies
+cp .env.example .env                      # local settings; every field has a dev default
+docker compose up -d                      # Postgres (pgvector) · Redis · RustFS
+uv run poe db-upgrade                     # apply migrations
 ollama pull llama3.2 && ollama pull llama3.2-vision && ollama pull nomic-embed-text
-
-# 6. Run the dev server
-uv run poe dev
-
-# 7. (Recommended) install git pre-commit hooks
-uv run poe hooks-install
+uv run poe hooks-install                  # optional: git pre-commit hooks
 ```
 
-The API is now at <http://localhost:8000> — health check at
-[`/health`](http://localhost:8000/health), interactive OpenAPI docs at
-[`/docs`](http://localhost:8000/docs).
-
-Background jobs (ingestion, memory write-back) need a worker in a second terminal:
+Then run three processes:
 
 ```bash
-uv run poe worker
+uv run poe dev                            # API → http://localhost:8000  (docs at /docs)
+uv run poe worker                         # background jobs: ingestion, memory, erasure
+cd frontend && npm install && npm run dev # app → http://localhost:5173
 ```
 
-And the frontend in a third:
+> **After every pull, run `uv run poe db-upgrade`.** A database behind the code fails at query
+> time. Sign-in and the worker are usually the first places it shows.
+>
+> Postgres is published on host port **5433** to avoid clashing with a local install.
+
+### Signing in locally
+
+The simplest way in is the **Development sign-in** button on the sign-in page of a dev build. It
+logs you in as a fixed dev learner while `GURU_DEV_AUTO_LOGIN` is on, which is the default.
+
+To use real sign-in, create a Clerk application and set `GURU_CLERK_SECRET_KEY` and
+`GURU_CLERK_JWT_KEY` in `.env`, and `VITE_CLERK_PUBLISHABLE_KEY` in `frontend/.env.local`. Guru is
+invite-only, so the first account has to be let in from the command line:
 
 ```bash
-cd frontend && npm install && npm run dev   # http://localhost:5173
+uv run poe invite you@example.com --no-send   # record an invitation for your address
+# sign in through the app, then:
+uv run poe grant-admin you@example.com        # make that account an administrator
 ```
 
-> **Note on ports:** Postgres is published on host port **5433** (not the default 5432) to avoid
-> clashing with a local Postgres. This matches `GURU_DATABASE_URL` in `.env.example`.
-
-For day-to-day operations — ingesting a document, running a sweep, compiling a prompt, and the
-common failure modes — see **[docs/RUNBOOK.md](docs/RUNBOOK.md)**.
+Everyone after that is invited from the admin portal. See [docs/RUNBOOK.md](docs/RUNBOOK.md) §11.
 
 ---
 
 ## Commands
 
-All backend tasks run through `poethepoet`. List them with `uv run poe --help`.
+Backend tasks run through poethepoet; `uv run poe --help` lists them all.
 
-**Develop**
+| Command | What it does |
+| ------- | ------------ |
+| `uv run poe check` | **The gate:** lint + type-check + tests. Every change leaves this green. |
+| `uv run poe test` / `test-watch` | Tests, on their own `_test` database |
+| `uv run poe db-upgrade` / `db-downgrade` | Apply / roll back one migration |
+| `uv run poe db-check` | Fail if a model has drifted from the migrations (CI runs this) |
+| `uv run poe lint` · `format` · `type-check` | ruff · ruff format · ty |
+| `uv run poe invite` · `grant-admin` | Bootstrap the first account |
+| `uv run poe reindex` | Re-embed sources in place; resumable |
+| `uv run poe backup-drill` | Dump, restore to a scratch DB, compare row counts |
+| `uv run poe eval` | Deterministic offline eval (grading + tracer suites) |
+| `uv run poe sweep <config.yaml>` ⚠️ | Prompt × model × config sweep, logged to MLflow |
+| `uv run poe compile-prompt <module>` ⚠️ | DSPy compile of a prompt module |
+| `uv run poe decision-report` | Read Jev's shadow decisions before switching one live |
 
-| Command | Description |
-| ------- | ----------- |
-| `uv run poe dev` | Start the FastAPI dev server (auto-reload) |
-| `uv run poe worker` | Start the taskiq worker (ingestion + memory jobs) |
-| `uv run poe db-upgrade` | Apply migrations (`alembic upgrade head`) |
-| `uv run poe db-downgrade` | Roll back one migration |
+⚠️ calls real models and costs money; none of these are part of `poe check`.
 
-**Verify**
-
-| Command | Description |
-| ------- | ----------- |
-| `uv run poe check` | **The green gate:** lint + type-check + test |
-| `uv run poe test` | Run the test suite (on its own `_test` database) |
-| `uv run poe test-watch` | Run tests fail-fast in watch mode |
-| `uv run poe test-db-init` | Create + migrate the test database (implied by `poe test`) |
-| `uv run poe db-check` | Fail if a model has drifted from the migrations |
-| `uv run poe backup-drill` | Dump, restore into a scratch database, compare every table's row count |
-| `uv run poe replay-check` | Verify a replayed learner history reproduces the stored state |
-| `uv run poe lint` | Lint with ruff |
-| `uv run poe format` | Auto-format with ruff |
-| `uv run poe format-check` | Check formatting without modifying |
-| `uv run poe type-check` | Type-check with ty |
-| `uv run poe hooks-install` | Install the git pre-commit hooks |
-| `uv run poe hooks` | Run all pre-commit hooks against the whole repo |
-
-**Evaluate**
-
-| Command | Description |
-| ------- | ----------- |
-| `uv run poe eval` | Deterministic offline eval (grading + tracer suites) — no model, free |
-| `uv run poe sweep <config.yaml>` | ⚠️ Run a prompt × model × config sweep, logged to MLflow |
-| `uv run poe sweep-report` | Leaderboard + pairwise ablation diff for a sweep |
-| `uv run poe build-calibration-dataset` | Mine the event log into a tracer-calibration dataset (needs a live DB; no model) |
-| `uv run poe compile-prompt kc_tagging` | ⚠️ BootstrapFewShot-compile a DSPy module |
-| `uv run poe prompt-report kc_tagging` | ⚠️ Baseline-vs-compiled delta on the held-out dev split |
-
-⚠️ = calls real models (costs money). None of these are part of `poe check`.
-
-**Frontend** (from `frontend/`)
-
-| Command | Description |
-| ------- | ----------- |
-| `npm run dev` | Vite dev server |
-| `npm run build` | Type-check + production build |
-| `npm run lint` | ESLint + Prettier check |
-| `npm run gen:api` | Regenerate API types from the running backend's OpenAPI schema |
+Frontend, from `frontend/`: `npm run dev` · `npm run build` (the type gate) · `npm run lint` ·
+`npm test` · `npm run e2e` (Playwright) · `npm run gen:api` (regenerate API types from the running backend).
 
 ---
 
 ## Configuration
 
-All settings are environment variables prefixed `GURU_` (see [`.env.example`](.env.example)), loaded
-via pydantic-settings into `app/core/config.py`. Every field has a working dev default.
-
-**Core**
-
-| Variable | Default | Purpose |
-| -------- | ------- | ------- |
-| `GURU_ENV` | `dev` | `dev` \| `test` \| `prod` (controls log style + runtime type-checking) |
-| `GURU_DATABASE_URL` | `postgresql+asyncpg://guru:guru@localhost:5433/guru` | Async Postgres URL |
-| `GURU_REDIS_URL` | `redis://localhost:6379/0` | Redis (job queue) |
-| `GURU_LOG_LEVEL` / `GURU_LOG_JSON` | `INFO` / `false` | Log level; `true` for JSON logs (prod) |
-| `GURU_CORS_ORIGINS` | `["http://localhost:5173"]` | Browser origins allowed to call the API |
-
-**Identity** — unset by default, which is the offline dev mode: no sign-in panel, and
-`POST /api/v1/auth/dev-login` issues a session with no credential. Production refuses to start in
-that mode.
+Settings are `GURU_`-prefixed environment variables loaded into
+[`app/core/config.py`](app/core/config.py); [`.env.example`](.env.example) documents every one.
+The ones you are most likely to touch:
 
 | Variable | Default | Purpose |
 | -------- | ------- | ------- |
-| `GURU_CLERK_SECRET_KEY` | *(empty)* | Clerk API key. Without it `/auth/exchange` and the invitation routes answer 503 |
-| `GURU_CLERK_JWT_KEY` | *(empty)* | The instance's JWKS public key, PEM-encoded. With it, verifying a token touches no network; without it a Clerk outage becomes a Guru outage |
-| `GURU_CLERK_AUTHORIZED_PARTIES` | *(empty)* | Whose tokens are accepted, checked against `azp`. Falls back to `GURU_CORS_ORIGINS` |
-| `GURU_CLERK_SIGN_UP_URL` | *(empty)* | Where an invitation link lands |
-| `GURU_DEV_AUTO_LOGIN` | `true` | Keeps `/auth/dev-login` alive. **Must be `false` in production** |
-
-**Models** — each role is a `provider:model` string. Providers: `ollama`, `openrouter`, `anthropic`.
-
-| Variable | Dev default | Notes |
-| -------- | ----------- | ----- |
-| `GURU_MODEL_FAST` | `ollama:llama3.2` | High-volume/cheap work (KC tagging, classification) |
-| `GURU_MODEL_SMART` | `ollama:llama3.2` | Default tutoring, grading, notes |
-| `GURU_MODEL_GENIUS` | `ollama:llama3.2` | Hardest reasoning |
-| `GURU_MODEL_VISION` | `ollama:llama3.2-vision` | **Must be multimodal** (OCR of scanned pages/frames) |
-| `GURU_MODEL_EMBED` | `ollama:nomic-embed-text` | Embeddings; `GURU_EMBED_DIM` (768) must match |
-| `GURU_OPENROUTER_API_KEY` / `GURU_ANTHROPIC_API_KEY` | *(empty)* | Required only for cloud providers |
-
-> Changing the EMBED model's output dimension is a **schema migration** (the pgvector column is
-> fixed-width) — see the runbook.
-
-**Object storage** (`GURU_BLOB_*`) defaults to the RustFS compose service on `localhost:9000`.
-Ingestion, ASR, and tuning knobs (concurrency, batch sizes, confidence floors, round caps) are all
-in `app/core/config.py` with inline rationale.
-
-`.env` is git-ignored. Outside `prod`, beartype runtime type-checking is active across the `app`
-package.
+| `GURU_DATABASE_URL` | `postgresql+asyncpg://guru:guru@localhost:5433/guru` | Postgres |
+| `GURU_REDIS_URL` | `redis://localhost:6379/0` | Job queue |
+| `GURU_MODEL_FAST` · `_SMART` · `_GENIUS` | `ollama:llama3.2` | `provider:model` per role — `ollama`, `openrouter`, `anthropic` |
+| `GURU_MODEL_VISION` | `ollama:llama3.2-vision` | Must be multimodal (OCR) |
+| `GURU_MODEL_EMBED` | `ollama:nomic-embed-text` | Changing its dimension is a schema migration |
+| `GURU_OPENROUTER_API_KEY` · `GURU_ANTHROPIC_API_KEY` | — | Only for cloud providers |
+| `GURU_CLERK_SECRET_KEY` · `GURU_CLERK_JWT_KEY` | — | Hosted sign-in; unset means dev sign-in only |
+| `GURU_DEV_AUTO_LOGIN` | `true` | Must be `false` in production, which refuses to boot otherwise |
+| `GURU_IMPERSONATION_ENABLED` | `false` | Audited, reason-required administrator visits |
 
 ---
 
-## Testing & evaluation
+## Testing
 
-```bash
-uv run poe check         # lint + type-check + test — what CI runs, and the merge gate
-uv run poe test          # tests only
-```
+The suite runs **offline and deterministically**: LLM calls go through a `FakeProvider`; ASR, video
+demux and the job broker are faked; and tests use their own database, created and migrated by
+`poe test`. A few tests that exercise a real local model are opt-in with `GURU_LIVE_MODEL_TESTS=1`.
+The frontend has Vitest component tests and Playwright browser journeys.
 
-The suite runs **fully offline and deterministically**: LLM calls go through a `FakeProvider`, ASR
-and video demux through fakes, and the job broker in-memory. A handful of tests do call a real
-local model — the provider integration test, the eval rubric, vision OCR — and those are opt-in
-(`GURU_LIVE_MODEL_TESTS=1`), because a cold model turns a 25-second suite into a 20-minute one and
-makes it fail for reasons unrelated to the code. Integration tests use the Postgres started by
-`docker compose` — but on **their own database**, `<your db>_test`, created and migrated
-automatically by `poe test`. Tests assert on global rows (total LLM calls, event counts) and claim
-the fixed dev learner handle, so a dev server writing to the same database would fail them for
-reasons unrelated to the code. See `tests/testdb.py`.
+`tests/eval/` is the measurement layer: a golden/live harness, a sweep runner with MLflow tracking,
+datasets mined from the real event log, and DSPy compilation with measured deltas.
 
-Beyond the pass/fail suite, `tests/eval/` holds the measurement layer — a golden/live **harness**,
-the config **sweep** runner + MLflow tracking, real-data **datasets** mined from the event log, and
-DSPy **prompts** compilation. `poe eval` is deterministic and free; the sweep and DSPy compile/report
-call real models, so they stay manual and out of the gate. The runbook walks through each.
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs format, lint, type-check, tests
+and a migration check against a pgvector service on every push to `main` and every PR.
 
 ---
 
-## Quality & CI
-
-- **Pre-commit hooks** ([`.pre-commit-config.yaml`](.pre-commit-config.yaml)) run ruff (lint+format)
-  and ty on staged files, plus basic hygiene checks. Install with `uv run poe hooks-install`; run
-  everything with `uv run poe hooks`. They use the project's pinned tool versions via `uv run`.
-- **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs format-check, lint,
-  type-check, tests, and a migration-apply check against a pgvector service on every push to `main`
-  and every PR.
-
----
-
-## Project Structure
+## Project layout
 
 ```text
-guru-alt/
-├── app/
-│   ├── __init__.py        # enables beartype runtime checks (dev/test)
-│   ├── main.py            # FastAPI app: lifespan, middleware, /health
-│   ├── api/v1/            # 17 routers, 94 endpoints
-│   ├── core/              # config, db (engine/session/Base), logging, middleware
-│   ├── models/            # SQLAlchemy ORM models
-│   ├── schemas/           # Pydantic boundary schemas
-│   ├── services/          # business logic behind the routers
-│   ├── llm/               # provider-agnostic LLM + model-role registry
-│   ├── prompts/           # DSPy programs + RoleLM seam + compiled artifacts
-│   ├── agent/             # LangGraph graphs (tutor turn · refinement · workflow)
-│   ├── rag/               # multimodal ingestion + hybrid retrieval
-│   ├── learning/          # knowledge graph · tracer · FSRS · profile · lesson policy · notes
-│   ├── memory/            # persistent per-learner memory
-│   ├── storage/           # S3-compatible blob store
-│   └── workers/           # taskiq broker + job wrappers
-├── frontend/              # React 19 + TypeScript + Vite app
-├── db/migrations/         # Alembic (async); 0001 enables vector + pg_trgm
-├── tests/
-│   └── eval/              # harness · sweep runner · real-data datasets · DSPy compile/report
-├── docs/                  # MASTERPLAN · ROADMAP · TECHNICAL_DESIGN · RUNBOOK
-├── docker-compose.yml     # Postgres (pgvector) + Redis + RustFS
-├── pyproject.toml         # deps + poe tasks + tool config
-├── .pre-commit-config.yaml
-└── CLAUDE.md              # guidance for Claude Code
+app/
+  api/v1/      versioned routers
+  core/        config, db, identity, logging, middleware
+  models/      SQLAlchemy models        schemas/   Pydantic boundary types
+  services/    business logic behind the routers
+  learning/    graph · tracer · FSRS · profile · lesson policy · notes
+  agent/       LangGraph graphs          prompts/   DSPy programs + RoleLM
+  rag/         ingestion + retrieval     memory/    per-learner memory
+  llm/         role registry, providers, metering, Jev decisions
+  storage/     blob store                workers/   taskiq broker, jobs, CLI tasks
+frontend/      React 19 + TypeScript + Vite
+db/migrations/ Alembic
+tests/         pytest suite; tests/eval/ for measurement
+docs/          design, roadmap, runbook, operations
 ```
 
 ---
 
-## Development Philosophy
+## Documentation
 
-Pragmatic Programmer principles (DRY, YAGNI), conciseness and performance, plan-before-build with
-small verified increments, async-first, and type safety via Pydantic + beartype + ty. Heavy
-dependencies enter at the phase that needs them, behind thin seams. Every change should leave
-`uv run poe check` green.
+| Document | Read it for |
+| -------- | ----------- |
+| [MASTERPLAN](docs/MASTERPLAN.md) | Vision, the learning engine, domain model, key decisions and why |
+| [ROADMAP](docs/ROADMAP.md) | Phased plan and what landed in each phase |
+| [V0_DECISIONS](docs/V0_DECISIONS.md) | Accepted invited-alpha decisions and the remaining delivery work |
+| [TECHNICAL_DESIGN](docs/TECHNICAL_DESIGN.md) | LLM stack, orchestration, ingestion, tracer maths, testing |
+| [RUNBOOK](docs/RUNBOOK.md) | Developing against it: ingestion, sign-in, sweeps, common failures |
+| [OPERATIONS](docs/OPERATIONS.md) | Deploying, monitoring and recovering it |
+
+---
+
+## Principles
+
+Pragmatic Programmer (DRY, YAGNI), small verified increments, async throughout, and type safety at
+every layer — Pydantic at the boundaries, beartype at runtime, ty statically. Heavy dependencies
+arrive at the phase that needs them, behind thin seams.
