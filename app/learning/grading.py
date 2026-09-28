@@ -7,6 +7,7 @@ Every grading path ultimately feeds the tracer one ``Observation``.
 """
 
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -29,6 +30,20 @@ class InvalidResponse(ValueError):
     does not know the material, when in fact nothing was answered. Callers surface this as a
     client error instead of an observation.
     """
+
+
+Grader = Literal["auto", "self", "rubric", "jev"]
+
+
+class GradingProvenance(BaseModel):
+    """What produced a grade (S56): which grader, and for the rubric model, the system prompt it
+    was given, the version of the code that built its user message, and the model. Recorded so
+    a past grade can be read — and re-graded — against exactly what measured it."""
+
+    grader: Grader
+    system_prompt: str | None = None
+    template_version: int | None = None
+    model: str | None = None
 
 
 _RATING_SCORE: dict[int, float] = {1: 0.2, 2: 0.5, 3: 0.8, 4: 1.0}
@@ -58,14 +73,19 @@ class GradeResult(BaseModel):
     path here except ``grade_flashcard`` is one — and because the safe default for a caller
     that forgets is "this was real evidence", not "discard it"."""
 
+    provenance: GradingProvenance | None = None
+    """Set by every grading path (S56). None only for a result rebuilt from the event log."""
+
 
 def auto_grade(item_type: ItemType, answer_key: dict, response: dict) -> GradeResult:
     """Grade ``response`` against ``answer_key`` for an objective ``item_type``."""
     if item_type not in AUTO_GRADABLE:
         raise NotAutoGradable(f"{item_type} items are not auto-gradable")
     if item_type is ItemType.MCQ:
-        return _grade_mcq(answer_key, response)
-    return _grade_blanks(answer_key, response)
+        result = _grade_mcq(answer_key, response)
+    else:
+        result = _grade_blanks(answer_key, response)
+    return result.model_copy(update={"provenance": GradingProvenance(grader="auto")})
 
 
 def grade_flashcard(response: dict) -> GradeResult:
@@ -89,6 +109,7 @@ def grade_flashcard(response: dict) -> GradeResult:
         correct=score >= 0.75,
         detail={"rating": rating, "method": "self"},
         evidence_kind=EvidenceKind.SELF_REPORTED,
+        provenance=GradingProvenance(grader="self"),
     )
 
 

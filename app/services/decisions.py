@@ -27,7 +27,7 @@ from typing import Any
 from app.core.config import DecisionMode, Settings, get_settings
 from app.learning import conversation_evidence, turn_read
 from app.learning.conversation_evidence import TurnIntent
-from app.learning.grading import GradeResult
+from app.learning.grading import GradeResult, GradingProvenance
 from app.learning.turn_read import FULLY_CORRECT, INTENT, ReadContext, TurnRead
 from app.llm import LLMClient
 from app.llm.attribution import metered
@@ -272,7 +272,12 @@ async def decide_grade(
             )
             # No rationale, no diagnosis and no per-component scores: a correct answer has no
             # failure to diagnose, and every component takes the aggregate.
-            return GradeResult(score=1.0, correct=True, detail={"method": "decision"})
+            return GradeResult(
+                score=1.0,
+                correct=True,
+                detail={"method": "decision"},
+                provenance=GradingProvenance(grader="jev"),
+            )
     try:
         result = await smart()
     except Exception:
