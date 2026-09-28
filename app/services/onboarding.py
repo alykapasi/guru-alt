@@ -12,13 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.refinement import RefinementState, build_refinement_graph, refinement_config
 from app.learning.curriculum import CurriculumProposal, generate_curriculum
+from app.llm.attribution import metered
+from app.llm.meter import BudgetExceeded
 from app.llm.registry import LLMClient
-from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
+from app.llm.types import ChatMessage, ChatRole, Usage
 from app.rag import retrieval
 from app.rag.scope import SourceScope
 from app.services import onboarding_sessions
-from app.services.llm_log import log_llm_call
-from app.services.turn_common import TurnEvent
+from app.services.turn_common import TurnEvent, refusal_ends_turn
 
 log = structlog.get_logger(__name__)
 
@@ -30,6 +31,8 @@ ONBOARDING_SYSTEM_PROMPT = (
 )
 
 
+@metered("onboarding", learner="learner_id")
+@refusal_ends_turn
 async def run_goal_refinement_turn(
     llm: LLMClient,
     session_id: str,
@@ -94,20 +97,14 @@ async def run_goal_refinement_turn(
                 yield TurnEvent(type="token", text=payload["token"])  # ty: ignore[invalid-argument-type]
             elif mode == "values":
                 proposal = payload["proposal"]  # ty: ignore[invalid-argument-type]
+    except BudgetExceeded:
+        raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
         log.error("onboarding.refinement_failed", error=str(exc))
         yield TurnEvent(type="error", detail="generation failed")
         return
 
     snapshot = await graph.aget_state(config)
-    usage = snapshot.values["usage"]
-    if usage.total_tokens:
-        await log_llm_call(
-            learner_id=learner_id,
-            role=ModelRole.FAST.value,
-            spec=llm.spec(ModelRole.FAST),
-            usage=usage,
-        )
 
     if snapshot.next:
         # `propose` ran this call and paused awaiting the learner's reply — a new proposal to
@@ -123,6 +120,7 @@ async def run_goal_refinement_turn(
     )
 
 
+@metered("curriculum", learner="learner_id")
 async def generate_curriculum_for_onboarding(
     session: AsyncSession,
     llm: LLMClient,
@@ -167,12 +165,5 @@ async def generate_curriculum_for_onboarding(
             materials = excerpts[:10]  # Cap total excerpts
 
     grounded = materials is not None
-    proposal, usage = await generate_curriculum(llm, goal, materials)
-    if usage.total_tokens:
-        await log_llm_call(
-            learner_id=learner_id,
-            role=ModelRole.SMART.value,
-            spec=llm.spec(ModelRole.SMART),
-            usage=usage,
-        )
+    proposal, _usage = await generate_curriculum(llm, goal, materials)
     return proposal, grounded

@@ -11,17 +11,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.agentic import AgenticState, build_agentic_graph
 from app.agent.tools import CitationAccumulator, build_tools
 from app.core.config import get_settings
+from app.llm.attribution import metered
+from app.llm.meter import BudgetExceeded
+from app.llm.pricing import price_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, ToolCall, Usage
 from app.models.chat import Conversation, Message
 from app.rag.scope import resolve_scope
 from app.services import learner_context
 from app.services.grounding import policy_note
-from app.services.llm_log import log_llm_call
 from app.services.turn_common import (
     TurnEvent,
     add_message,
     extract_citations,
+    refusal_ends_turn,
     to_chat_messages,
 )
 
@@ -33,6 +36,8 @@ AGENTIC_SYSTEM_PROMPT = (
 )
 
 
+@metered("chat_turn", learner="learner_id", conversation="conversation.id")
+@refusal_ends_turn
 async def run_agentic_turn(
     session: AsyncSession,
     llm: LLMClient,
@@ -120,6 +125,8 @@ async def run_agentic_turn(
                 reply = payload["reply"]  # ty: ignore[invalid-argument-type]
                 usage = payload["usage"]  # ty: ignore[invalid-argument-type]
                 pending_tool_calls = payload["pending_tool_calls"]  # ty: ignore[invalid-argument-type]
+    except BudgetExceeded:
+        raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
         log.error("agentic.stream_failed", error=str(exc), model=spec.model)
         yield TurnEvent(type="error", detail="generation failed")
@@ -142,13 +149,7 @@ async def run_agentic_turn(
         # conversation, which has no library to have searched (S28).
         grounding_count=len(citation_acc.hits) if scope is not None else None,
     )
-    cost = await log_llm_call(
-        learner_id=learner_id,
-        conversation_id=conversation_id,
-        role=ModelRole.SMART.value,
-        spec=spec,
-        usage=usage,
-    )
+    cost = price_usd(spec.provider, spec.model, usage)  # the client recorded each call (S48)
     await session.commit()
     yield TurnEvent(
         type="done",

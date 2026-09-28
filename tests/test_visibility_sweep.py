@@ -604,6 +604,22 @@ CASES: list[Case] = [
         ),
     ),
     Case(
+        "GET",
+        "/api/v1/preferences",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.get(f"{API}/preferences", params={"subject_id": str(t.subject)}),
+    ),
+    Case(
+        "PUT",
+        "/api/v1/preferences/{key}",
+        "subject_id",
+        ("subject",),
+        lambda c, t, o: c.put(
+            f"{API}/preferences/pace", json={"value": "brisk", "subject_id": str(t.subject)}
+        ),
+    ),
+    Case(
         "PATCH",
         "/api/v1/subjects/{subject_id}/lesson-plan/guidance",
         "subject_id",

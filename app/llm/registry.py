@@ -5,10 +5,11 @@ to a `(provider, model)` from settings and dispatches. Swapping a model is a con
 """
 
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 
 from app.core.config import Settings
+from app.llm import meter
 from app.llm.base import LLMProvider
 from app.llm.providers import (
     AnthropicProvider,
@@ -17,7 +18,15 @@ from app.llm.providers import (
     OpenAICompatProvider,
     ShapedProvider,
 )
-from app.llm.types import ChatChunk, ChatMessage, ChatResponse, EmbedResult, ModelRole, ToolDef
+from app.llm.types import (
+    ChatChunk,
+    ChatMessage,
+    ChatResponse,
+    EmbedResult,
+    ModelRole,
+    ToolDef,
+    text_of,
+)
 
 
 class LLMConfigError(ValueError):
@@ -76,6 +85,10 @@ def _timed[T: (ChatResponse, EmbedResult)](result: T, started: float) -> T:
     )
 
 
+def _chars(system: str | None, messages: Sequence[ChatMessage]) -> int:
+    return len(system or "") + sum(len(text_of(m.content)) for m in messages)
+
+
 class LLMClient:
     def __init__(
         self,
@@ -97,10 +110,6 @@ class LLMClient:
         """
         return LLMClient(self._providers, {**self._roles, **overrides})
 
-    def _resolve(self, role: ModelRole) -> tuple[LLMProvider, str]:
-        spec = self._roles[role]
-        return self._providers[spec.provider], spec.model
-
     async def complete(
         self,
         role: ModelRole,
@@ -110,12 +119,31 @@ class LLMClient:
         max_tokens: int = 1024,
         tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
-        provider, model = self._resolve(role)
-        started = time.perf_counter()
-        response = await provider.complete(
-            model=model, messages=messages, system=system, max_tokens=max_tokens, tools=tools
+        spec = self._roles[role]
+        provider = self._providers[spec.provider]
+        reservation = await meter.open_call(
+            role.value,
+            spec.provider,
+            spec.model,
+            system=system,
+            input_chars=_chars(system, messages),
+            max_output=max_tokens,
         )
-        return _timed(response, started)
+        started = time.perf_counter()
+        try:
+            response = await provider.complete(
+                model=spec.model,
+                messages=messages,
+                system=system,
+                max_tokens=max_tokens,
+                tools=tools,
+            )
+        except BaseException as exc:
+            await meter.fail(reservation, exc)
+            raise
+        response = _timed(response, started)
+        await meter.settle(reservation, response.usage)
+        return response
 
     async def stream(
         self,
@@ -125,7 +153,7 @@ class LLMClient:
         system: str | None = None,
         max_tokens: int = 1024,
         tools: Sequence[ToolDef] | None = None,
-    ) -> AsyncIterator[ChatChunk]:
+    ) -> AsyncGenerator[ChatChunk]:
         """Stream a completion, timing how long the first token took to arrive (P10).
 
         Streaming was left untimed because a stream has no single end and one number would
@@ -142,31 +170,74 @@ class LLMClient:
         is. Measured here for the same reason completions are: this is the one place every
         call passes through, so no caller has to remember and none can measure a different
         span from the others.
+
+        Every stream is recorded (S48): a pending row before the first chunk, settled ``ok`` on
+        the terminal usage chunk, ``failed`` on an exception, and ``partial`` when the consumer
+        stops early — an abandoned stream was paid for too.
         """
-        provider, model = self._resolve(role)
+        spec = self._roles[role]
+        provider = self._providers[spec.provider]
+        reservation = await meter.open_call(
+            role.value,
+            spec.provider,
+            spec.model,
+            system=system,
+            input_chars=_chars(system, messages),
+            max_output=max_tokens,
+        )
         started = time.perf_counter()
         first_token_ms: int | None = None
-        async for chunk in provider.stream(
-            model=model, messages=messages, system=system, max_tokens=max_tokens, tools=tools
-        ):
-            if first_token_ms is None and chunk.text:
-                first_token_ms = int((time.perf_counter() - started) * 1000)
-            if chunk.usage is None:
-                yield chunk
-            else:
-                # The terminal chunk carries the usage that becomes the accounting row, so the
-                # measurement has to ride on that one or it never reaches `llm_calls`.
-                yield chunk.model_copy(
-                    update={
-                        "usage": chunk.usage.model_copy(update={"first_token_ms": first_token_ms})
-                    }
-                )
+        delivered = 0
+        closed = False
+        try:
+            async for chunk in provider.stream(
+                model=spec.model,
+                messages=messages,
+                system=system,
+                max_tokens=max_tokens,
+                tools=tools,
+            ):
+                if first_token_ms is None and chunk.text:
+                    first_token_ms = int((time.perf_counter() - started) * 1000)
+                delivered += len(chunk.text or "")
+                if chunk.usage is None:
+                    yield chunk
+                    continue
+                # The terminal chunk carries the usage that settles the row. Settled before it
+                # is yielded, so a consumer that stops right after still leaves an ok row.
+                usage = chunk.usage.model_copy(update={"first_token_ms": first_token_ms})
+                await meter.settle(reservation, usage)
+                closed = True
+                yield chunk.model_copy(update={"usage": usage})
+        except Exception as exc:
+            if not closed:
+                await meter.fail(reservation, exc)
+                closed = True
+            raise
+        finally:
+            if not closed:
+                await meter.partial(reservation, delivered)
 
     async def embed(self, role: ModelRole, texts: Sequence[str]) -> EmbedResult:
-        provider, model = self._resolve(role)
+        spec = self._roles[role]
+        provider = self._providers[spec.provider]
+        reservation = await meter.open_call(
+            role.value,
+            spec.provider,
+            spec.model,
+            system=None,
+            input_chars=sum(len(t) for t in texts),
+            max_output=0,
+        )
         started = time.perf_counter()
-        result = await provider.embed(model=model, texts=texts)
-        return _timed(result, started)
+        try:
+            result = await provider.embed(model=spec.model, texts=texts)
+        except BaseException as exc:
+            await meter.fail(reservation, exc)
+            raise
+        result = _timed(result, started)
+        await meter.settle(reservation, result.usage)
+        return result
 
 
 def build_llm_client(settings: Settings) -> LLMClient:

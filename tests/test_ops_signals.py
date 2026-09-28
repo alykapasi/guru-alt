@@ -282,7 +282,7 @@ def test_a_healthy_deployment_fires_nothing_and_still_says_what_it_checked() -> 
     """A silent report has to be distinguishable from checks that never ran."""
     report = evaluate(readiness=_ready(), backlog=_backlog(), spend=_spend(), settings=Settings())
     assert report.firing == []
-    assert len(report.checked) == 6
+    assert len(report.checked) == 10
 
 
 def test_a_dead_dependency_is_critical_and_names_it() -> None:
@@ -448,3 +448,65 @@ async def test_the_in_memory_store_answers_exists_for_a_key_it_holds() -> None:
     assert await store.exists("nothing/here") is False
     await store.put("something/here", b"x")
     assert await store.exists("something/here") is True
+
+
+async def test_spend_is_reported_by_feature_with_failures_counted(db_session) -> None:
+    from app.models.chat import LLMCall
+    from app.services import spend
+
+    for feature, status, cost in (
+        ("chat_turn", "ok", 0.5),
+        ("chat_turn", "failed", 0.1),
+        ("lesson_generation", "partial", None),
+    ):
+        db_session.add(
+            LLMCall(
+                role="smart",
+                provider="fake",
+                model="fake-1",
+                input_tokens=10,
+                output_tokens=5,
+                cost_usd=cost,
+                feature=feature,
+                status=status,
+                estimated=status != "ok",
+            )
+        )
+    await db_session.commit()
+
+    report = await spend.window(db_session, settings=Settings())
+
+    by = {b.name: b for b in report.by_feature}
+    assert by["chat_turn"].calls >= 2 and by["lesson_generation"].unpriced_calls >= 1
+    assert report.failed_calls >= 1 and report.partial_calls >= 1 and report.estimated_calls >= 2
+
+
+def test_near_budget_and_stale_pending_alerts() -> None:
+    from app.core.alerts import evaluate
+
+    near = _spend().model_copy(update={"near_budget": True})
+    report = evaluate(
+        readiness=_ready(), backlog=_backlog(), spend=near, settings=Settings(), stale_pending=2
+    )
+    names = [a.name for a in report.firing]
+    assert "spend_near_budget" in names and "calls_pending_stale" in names
+
+
+async def test_only_an_old_pending_call_is_stale(db_session: AsyncSession) -> None:
+    from app.services.spend import STALE_PENDING, stale_pending
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    for status, age in (("pending", 20), ("pending", 1), ("ok", 60)):
+        db_session.add(
+            LLMCall(
+                role="smart",
+                provider="fake",
+                model="fake-1",
+                status=status,
+                feature="chat_turn",
+                created_at=now - timedelta(minutes=age),
+            )
+        )
+    await db_session.flush()
+
+    assert await stale_pending(db_session, older_than=STALE_PENDING) == 1

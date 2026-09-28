@@ -678,12 +678,35 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Delete Conversation */
+        /**
+         * Delete Conversation
+         * @description Delete a conversation now (S61). With ``forget``, the memories it taught go too (V11).
+         */
         delete: operations["delete_conversation_api_v1_conversations__conversation_id__delete"];
         options?: never;
         head?: never;
         /** Update Conversation */
         patch: operations["update_conversation_api_v1_conversations__conversation_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archive Conversation
+         * @description Out of the list and read-only, reversibly (S61); its memories stay current.
+         */
+        post: operations["archive_conversation_api_v1_conversations__conversation_id__archive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/conversations/{conversation_id}/memory/write-back": {
@@ -764,6 +787,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/removal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Conversation Removal
+         * @description What deleting this conversation would keep, and what forgetting would also remove.
+         */
+        get: operations["conversation_removal_api_v1_conversations__conversation_id__removal_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/turns": {
         parameters: {
             query?: never;
@@ -781,6 +824,23 @@ export interface paths {
         get: operations["list_turns_api_v1_conversations__conversation_id__turns_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/unarchive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Unarchive Conversation */
+        post: operations["unarchive_conversation_api_v1_conversations__conversation_id__unarchive_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -941,13 +1001,79 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * Delete Me
-         * @description Erase this learner from every store.
+         * Request Delete Me
+         * @description Delete this account (V12): access ends now; it can be restored for the recovery window
+         *     by signing in again, then it is erased.
+         *
+         *     ``now`` erases in the same call, still by way of the request. It cannot be a second
+         *     request: the request revokes every session, the caller's included. A pending account that
+         *     signs in again erases through ``POST /me/deletion/erase``.
+         */
+        delete: operations["request_delete_me_api_v1_me_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/deletion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Deletion Status
+         * @description Whether this account is pending deletion, and when it will be erased.
+         */
+        get: operations["deletion_status_api_v1_me_deletion_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/deletion/erase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Erase Me
+         * @description Erase now, without waiting out the recovery window. Only for a pending account: an
+         *     active one asks for deletion first, so there is one way in to erasing.
          *
          *     Returns the report rather than 204: a deletion that could not remove every uploaded file
-         *     has to say so, because those keys can no longer be found by walking the database.
+         *     has to say so; those keys are queued and retried (``pending_erasures``).
          */
-        delete: operations["delete_me_api_v1_me_delete"];
+        post: operations["erase_me_api_v1_me_deletion_erase_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/deletion/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore Me
+         * @description Keep this account: cancel the pending deletion.
+         */
+        post: operations["restore_me_api_v1_me_deletion_restore_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -962,10 +1088,72 @@ export interface paths {
         };
         /**
          * Export Me
-         * @description Everything held about this learner, as JSON. Uploads appear as metadata, not bytes.
+         * @description Everything held about this learner, as JSON. Each upload's bytes download separately,
+         *     from the ``file_path`` on its source entry.
          */
         get: operations["export_me_api_v1_me_export_get"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/export/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Files
+         * @description Every file this learner uploaded, each with its download path (S61).
+         */
+        get: operations["export_files_api_v1_me_export_files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/export/sources/{source_id}/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Source File
+         * @description The file this learner uploaded, as they uploaded it (S61) — archived sources included.
+         */
+        get: operations["export_source_file_api_v1_me_export_sources__source_id__file_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/memory-setting": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Memory Setting */
+        get: operations["memory_setting_api_v1_me_memory_setting_get"];
+        /**
+         * Set Memory Setting
+         * @description Pause or resume memory (S43). Pausing stops new memories; what is remembered stays.
+         */
+        put: operations["set_memory_setting_api_v1_me_memory_setting_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1017,6 +1205,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/memory/forget-origin/{conversation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Forget Origin
+         * @description Forget every memory learned in one conversation, even one already deleted (S42).
+         */
+        post: operations["forget_origin_api_v1_memory_forget_origin__conversation_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/memory/{memory_id}": {
         parameters: {
             query?: never;
@@ -1039,6 +1247,26 @@ export interface paths {
          *     changes and a client holding the old one is holding a superseded row (see the service).
          */
         patch: operations["correct_memory_api_v1_memory__memory_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/memory/{memory_id}/undo-replacement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Undo Replacement
+         * @description Put back what this memory replaced — for when a replacement was wrong (S42).
+         */
+        post: operations["undo_replacement_api_v1_memory__memory_id__undo_replacement_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/onboarding/curriculum": {
@@ -1209,6 +1437,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/preferences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Preferences
+         * @description Every setting, what it resolves to here, and where that came from.
+         */
+        get: operations["list_preferences_api_v1_preferences_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/preferences/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Preference
+         * @description Pin a setting globally or for one subject; null clears that level.
+         */
+        put: operations["set_preference_api_v1_preferences__key__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/profile": {
         parameters: {
             query?: never;
@@ -1367,7 +1635,8 @@ export interface paths {
         /**
          * List Sources
          * @description List the learner's sources, optionally scoped to a subject — backs the conversation
-         *     creation modal's source picker (Phase 7).
+         *     creation modal's source picker (Phase 7). Archived sources are listed only with
+         *     ``archived=true`` (S61).
          */
         get: operations["list_sources_api_v1_sources_get"];
         put?: never;
@@ -1438,6 +1707,30 @@ export interface paths {
         get: operations["get_source_api_v1_sources__source_id__get"];
         put?: never;
         post?: never;
+        /**
+         * Delete Source
+         * @description Delete a source now (S61). With ``forget``, the lessons built on it go too (V11).
+         */
+        delete: operations["delete_source_api_v1_sources__source_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archive Source
+         * @description Out of the way and out of use, reversibly (S61): never retrieved while archived.
+         */
+        post: operations["archive_source_api_v1_sources__source_id__archive_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1461,6 +1754,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sources/{source_id}/removal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Source Removal
+         * @description What deleting this source would keep, and what forgetting would also remove.
+         */
+        get: operations["source_removal_api_v1_sources__source_id__removal_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sources/{source_id}/retry": {
         parameters: {
             query?: never;
@@ -1475,7 +1788,9 @@ export interface paths {
          * @description Re-run ingestion for a finished or failed source.
          *
          *     A completed source is deliberately not claimable by a job (S37), so re-ingesting one has
-         *     to be asked for. 409 while a claim is live rather than yanking work in flight.
+         *     to be asked for — and, since it replaces passages the learner's replies may cite, confirmed
+         *     (S29). A failed source has nothing to replace and retries directly. 409 while a claim is
+         *     live rather than yanking work in flight; the two 409s carry different codes.
          */
         post: operations["retry_source_api_v1_sources__source_id__retry_post"];
         delete?: never;
@@ -1505,6 +1820,23 @@ export interface paths {
         get: operations["similar_sources_api_v1_sources__source_id__similar_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/{source_id}/unarchive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Unarchive Source */
+        post: operations["unarchive_source_api_v1_sources__source_id__unarchive_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2257,6 +2589,13 @@ export interface components {
             provenance: {
                 [key: string]: unknown;
             };
+            /**
+             * Reading Note
+             * @description How this passage was read, when that should temper trust in it (S27).
+             */
+            readonly reading_note: string | null;
+            /** Superseded */
+            readonly superseded: boolean;
             /** Text */
             text: string;
         };
@@ -2394,6 +2733,8 @@ export interface components {
         ConversationRead: {
             /** Active Item Id */
             active_item_id: string | null;
+            /** Archived At */
+            archived_at?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -2472,6 +2813,31 @@ export interface components {
              * Format: uuid
              */
             learner_id: string;
+        };
+        /**
+         * DeletionRequestRead
+         * @description When a pending account will be erased, unless it is restored first (S61).
+         */
+        DeletionRequestRead: {
+            /**
+             * Due At
+             * Format: date-time
+             */
+            due_at: string;
+            /**
+             * Erased
+             * @default false
+             */
+            erased: boolean;
+        };
+        /** DeletionStatusRead */
+        DeletionStatusRead: {
+            /** Due At */
+            due_at: string | null;
+            /** Pending */
+            pending: boolean;
+            /** Requested At */
+            requested_at: string | null;
         };
         /** DependencyStatus */
         DependencyStatus: {
@@ -2563,6 +2929,21 @@ export interface components {
             value: unknown;
         };
         /**
+         * ExportFileRead
+         * @description One uploaded file, and where to download it (S61).
+         */
+        ExportFileRead: {
+            /** File Path */
+            file_path: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Origin */
+            origin: string;
+        };
+        /**
          * FailureKind
          * @description What went wrong, in the terms that change what should happen next.
          * @enum {string}
@@ -2596,6 +2977,11 @@ export interface components {
             prereq_subject_id: string;
             /** Prereq Subject Name */
             prereq_subject_name: string;
+        };
+        /** ForgetOriginRead */
+        ForgetOriginRead: {
+            /** Forgotten */
+            forgotten: number;
         };
         /**
          * GenerateRequest
@@ -3060,6 +3446,8 @@ export interface components {
          * @description The learner a session belongs to.
          */
         LearnerRead: {
+            /** Deletion Due At */
+            deletion_due_at?: string | null;
             /** Display Name */
             display_name: string | null;
             /** Email */
@@ -3311,6 +3699,24 @@ export interface components {
             id: string;
             /** Kind */
             kind: string;
+            /** Origin Conversation Id */
+            origin_conversation_id?: string | null;
+            /**
+             * Origin Live
+             * @default false
+             */
+            origin_live: boolean;
+            /** Origin Title */
+            origin_title?: string | null;
+            replaced?: components["schemas"]["ReplacedRead"] | null;
+        };
+        /**
+         * MemorySetting
+         * @description Whether Guru learns new things from this learner's conversations (S43).
+         */
+        MemorySetting: {
+            /** Remember */
+            remember: boolean;
         };
         /**
          * MessagePage
@@ -3496,6 +3902,40 @@ export interface components {
             prompt: string | null;
         };
         /**
+         * PreferenceRead
+         * @description One setting: what it resolves to here, where that came from, and the alternatives.
+         */
+        PreferenceRead: {
+            /** Global Value */
+            global_value: string | null;
+            /** Inferred */
+            inferred: string | null;
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Options */
+            options: string[];
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "subject" | "global" | "default";
+            /** Value */
+            value: string;
+        };
+        /**
+         * PreferenceSubmit
+         * @description Pin a setting at one level, or clear that level with null (a subject then follows the
+         *     learner's default).
+         */
+        PreferenceSubmit: {
+            /** Subject Id */
+            subject_id?: string | null;
+            /** Value */
+            value: string | null;
+        };
+        /**
          * PrerequisiteCreate
          * @description Declare that ``prereq_kc_id`` is a prerequisite of the KC in the path.
          */
@@ -3657,6 +4097,35 @@ export interface components {
             /** Note */
             note: string;
         };
+        /**
+         * RemovalImpactRead
+         * @description What removing a source or conversation keeps, and what "also forget" takes (S61, V11).
+         */
+        RemovalImpactRead: {
+            /** Forgettable */
+            forgettable: {
+                [key: string]: number;
+            };
+            /** Kept */
+            kept: {
+                [key: string]: number;
+            };
+            /** Notes */
+            notes: string[];
+        };
+        /**
+         * ReplacedRead
+         * @description The memory a current one replaced (S42) — shown so a wrong replacement can be undone.
+         */
+        ReplacedRead: {
+            /** Content */
+            content: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+        };
         /** RetentionPolicyRead */
         RetentionPolicyRead: {
             /** Stores */
@@ -3704,6 +4173,17 @@ export interface components {
             subject_id?: string | null;
             /** Topic Id */
             topic_id?: string | null;
+        };
+        /**
+         * RetryRequest
+         * @description Re-processing a finished source replaces its passages, so it has to be confirmed (S29).
+         */
+        RetryRequest: {
+            /**
+             * Confirm
+             * @default false
+             */
+            confirm: boolean;
         };
         /**
          * RevealRead
@@ -3824,6 +4304,8 @@ export interface components {
          * @description An ingestion source and its current status.
          */
         SourceRead: {
+            /** Archived At */
+            archived_at?: string | null;
             /** Content Type */
             content_type: string | null;
             /**
@@ -3831,6 +4313,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Duplicate Of Id */
+            duplicate_of_id?: string | null;
             /** Error */
             error: string | null;
             /**
@@ -3886,6 +4370,11 @@ export interface components {
         SpendWindow: {
             /** Budget Usd */
             budget_usd: number | null;
+            /**
+             * By Feature
+             * @default []
+             */
+            by_feature: components["schemas"]["SpendBucket"][];
             /** By Model */
             by_model: components["schemas"]["SpendBucket"][];
             /** By Role */
@@ -3895,13 +4384,33 @@ export interface components {
             completion: components["schemas"]["Latency"];
             /** Cost Usd */
             cost_usd: number;
+            /**
+             * Estimated Calls
+             * @default 0
+             */
+            estimated_calls: number;
+            /**
+             * Failed Calls
+             * @default 0
+             */
+            failed_calls: number;
             first_token: components["schemas"]["Latency"];
             /** Input Tokens */
             input_tokens: number;
+            /**
+             * Near Budget
+             * @default false
+             */
+            near_budget: boolean;
             /** Output Tokens */
             output_tokens: number;
             /** Over Budget */
             over_budget: boolean;
+            /**
+             * Partial Calls
+             * @default 0
+             */
+            partial_calls: number;
             /**
              * Since
              * Format: date-time
@@ -5040,7 +5549,9 @@ export interface operations {
     };
     list_conversations_api_v1_conversations_get: {
         parameters: {
-            query?: never;
+            query?: {
+                archived?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5054,6 +5565,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -5093,7 +5613,9 @@ export interface operations {
     };
     delete_conversation_api_v1_conversations__conversation_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                forget?: boolean;
+            };
             header?: never;
             path: {
                 conversation_id: string;
@@ -5103,11 +5625,13 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Successful Response */
-            204: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["RemovalImpactRead"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -5134,6 +5658,37 @@ export interface operations {
                 "application/json": components["schemas"]["ConversationUpdate"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_conversation_api_v1_conversations__conversation_id__archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -5290,6 +5845,37 @@ export interface operations {
             };
         };
     };
+    conversation_removal_api_v1_conversations__conversation_id__removal_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemovalImpactRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_turns_api_v1_conversations__conversation_id__turns_get: {
         parameters: {
             query?: {
@@ -5310,6 +5896,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TurnRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unarchive_conversation_api_v1_conversations__conversation_id__unarchive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationRead"];
                 };
             };
             /** @description Validation Error */
@@ -5549,7 +6166,58 @@ export interface operations {
             };
         };
     };
-    delete_me_api_v1_me_delete: {
+    request_delete_me_api_v1_me_delete: {
+        parameters: {
+            query?: {
+                now?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionRequestRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deletion_status_api_v1_me_deletion_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionStatusRead"];
+                };
+            };
+        };
+    };
+    erase_me_api_v1_me_deletion_erase_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -5569,6 +6237,26 @@ export interface operations {
             };
         };
     };
+    restore_me_api_v1_me_deletion_restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionStatusRead"];
+                };
+            };
+        };
+    };
     export_me_api_v1_me_export_get: {
         parameters: {
             query?: never;
@@ -5584,9 +6272,111 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    export_files_api_v1_me_export_files_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportFileRead"][];
+                };
+            };
+        };
+    };
+    export_source_file_api_v1_me_export_sources__source_id__file_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    memory_setting_api_v1_me_memory_setting_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemorySetting"];
+                };
+            };
+        };
+    };
+    set_memory_setting_api_v1_me_memory_setting_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemorySetting"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemorySetting"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -5660,6 +6450,37 @@ export interface operations {
             };
         };
     };
+    forget_origin_api_v1_memory_forget_origin__conversation_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ForgetOriginRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     delete_memory_api_v1_memory__memory_id__delete: {
         parameters: {
             query?: never;
@@ -5703,6 +6524,37 @@ export interface operations {
                 "application/json": components["schemas"]["MemoryCorrection"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    undo_replacement_api_v1_memory__memory_id__undo_replacement_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -5913,6 +6765,72 @@ export interface operations {
             };
         };
     };
+    list_preferences_api_v1_preferences_get: {
+        parameters: {
+            query?: {
+                subject_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreferenceRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_preference_api_v1_preferences__key__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreferenceSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreferenceRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_profile_api_v1_profile_get: {
         parameters: {
             query?: never;
@@ -6101,6 +7019,7 @@ export interface operations {
         parameters: {
             query?: {
                 subject_id?: string | null;
+                archived?: boolean;
             };
             header?: never;
             path?: never;
@@ -6225,6 +7144,70 @@ export interface operations {
             };
         };
     };
+    delete_source_api_v1_sources__source_id__delete: {
+        parameters: {
+            query?: {
+                forget?: boolean;
+            };
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemovalImpactRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_source_api_v1_sources__source_id__archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_source_chunks_api_v1_sources__source_id__chunks_get: {
         parameters: {
             query?: never;
@@ -6256,7 +7239,7 @@ export interface operations {
             };
         };
     };
-    retry_source_api_v1_sources__source_id__retry_post: {
+    source_removal_api_v1_sources__source_id__removal_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -6266,6 +7249,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemovalImpactRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_source_api_v1_sources__source_id__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RetryRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             202: {
@@ -6307,6 +7325,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SimilarSourceRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unarchive_source_api_v1_sources__source_id__unarchive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceRead"];
                 };
             };
             /** @description Validation Error */

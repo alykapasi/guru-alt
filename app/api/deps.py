@@ -20,6 +20,7 @@ from app.core.config import Settings, get_settings
 from app.core.db import engine, get_session
 from app.core.identity import IdentityProvider, build_identity_provider
 from app.llm import LLMClient, build_llm_client
+from app.llm.attribution import bind
 from app.models.learner import Learner
 from app.services import auth
 from app.storage import BlobStore, build_blob_store
@@ -205,6 +206,9 @@ async def get_authenticated(
         from app.services.admin_audit import begin_action
 
         await begin_action(request, session, resolved)
+    # Every model call in this request is this learner's, a visiting administrator's included
+    # (S48). ``bind``, not a ``with``: a dependency returns before the endpoint runs.
+    bind(learner_id=resolved.learner.id)
     return resolved
 
 
@@ -212,11 +216,42 @@ Authenticated = Annotated[auth.Authenticated, Depends(get_authenticated)]
 
 
 async def get_current_learner(request: Request, who: Authenticated) -> Learner:
-    """The effective learner; authenticated sudo requests already have durable audit intent."""
+    """The effective learner; authenticated sudo requests already have durable audit intent.
+
+    A pending-deletion account is refused (S61): its sessions were revoked at the request, and
+    a new one only reaches the recovery routes (``AccountHolder``).
+    """
+    _refuse_pending(who.learner)
     return who.learner
 
 
+def _refuse_pending(learner: Learner) -> None:
+    """403 for an account pending deletion (S61): it reaches only the recovery routes."""
+    if learner.deletion_due_at is not None:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            {
+                "code": "deletion_pending",
+                "due_at": learner.deletion_due_at.isoformat(),
+                "message": "This account is scheduled for deletion.",
+            },
+        )
+
+
 CurrentLearner = Annotated[Learner, Depends(get_current_learner)]
+
+
+async def get_account_holder(who: Authenticated) -> Learner:
+    """The learner, admitted even while their account is pending deletion (S61).
+
+    For the few routes a pending account must still reach: its status, restore, erase-now,
+    export, who-am-I and sign-out-everywhere. Everything else goes through
+    ``get_current_learner``, which refuses a pending account.
+    """
+    return who.learner
+
+
+AccountHolder = Annotated[Learner, Depends(get_account_holder)]
 
 
 async def get_current_admin(who: Authenticated) -> Learner:
@@ -239,6 +274,9 @@ async def get_current_admin(who: Authenticated) -> Learner:
     # rather than the enforcement point — see `app.services.auth.resolve_session`.
     if not who.learner.is_admin or who.learner.suspended_at is not None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not an administrator")
+    # An administrator who deleted their own account keeps no portal meanwhile (S61) — above
+    # all no impersonation, which would be a live session onto somebody else's account.
+    _refuse_pending(who.learner)
     return who.learner
 
 
@@ -289,6 +327,7 @@ async def require_operator(request: Request, session: SessionDep, settings: Sett
         or resolved.learner.suspended_at is not None
     ):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not an administrator")
+    _refuse_pending(resolved.learner)
 
 
 OperatorDep = Depends(require_operator)

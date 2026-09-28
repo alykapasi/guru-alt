@@ -1,8 +1,9 @@
 import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Check, Pencil, Trash2 } from "lucide-react";
-import { useDeleteConversation, useRenameConversation } from "../../api/hooks";
+import { Archive, ArchiveRestore, Pencil, Trash2 } from "lucide-react";
+import { useArchive, useRenameConversation } from "../../api/hooks";
 import type { components } from "../../api/schema";
+import { RemovalDialog } from "../removal/RemovalDialog";
 
 type Conversation = components["schemas"]["ConversationRead"];
 
@@ -13,15 +14,19 @@ function label(title: string | null, goal: string | null): string {
 export function ConversationRow({
   conversation,
   active,
+  archived = false,
 }: {
   conversation: Conversation;
   active: boolean;
+  /** A row of the Archived section: Unarchive instead of Archive (S61). */
+  archived?: boolean;
 }) {
   const navigate = useNavigate();
   const rename = useRenameConversation();
-  const del = useDeleteConversation();
+  const archive = useArchive("conversation");
   const [editing, setEditing] = useState(false);
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const name = label(conversation.title, conversation.goal);
   const inputRef = useRef<HTMLInputElement>(null);
 
   function startEditing() {
@@ -41,12 +46,9 @@ export function ConversationRow({
     setEditing(false);
   }
 
-  function confirmDelete() {
-    del.mutate(conversation.id, {
-      onSuccess: () => {
-        if (active) navigate("/app/chat");
-      },
-    });
+  function deleted() {
+    setRemoving(false);
+    if (active) navigate("/app/chat");
   }
 
   if (editing) {
@@ -71,7 +73,7 @@ export function ConversationRow({
   }
 
   return (
-    <div className="group relative" onMouseLeave={() => setConfirmingDelete(false)}>
+    <div className="group relative">
       <Link
         to={
           conversation.kind === "session"
@@ -84,7 +86,7 @@ export function ConversationRow({
             : "text-base-content/70 hover:bg-base-200 hover:text-base-content"
         }`}
       >
-        <span className="truncate">{label(conversation.title, conversation.goal)}</span>
+        <span className="truncate">{name}</span>
       </Link>
       <div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
         <button
@@ -100,20 +102,35 @@ export function ConversationRow({
         <button
           onClick={(e) => {
             e.preventDefault();
-            if (confirmingDelete) {
-              confirmDelete();
-            } else {
-              setConfirmingDelete(true);
-            }
+            archive.mutate({ id: conversation.id, archived: !archived });
           }}
-          aria-label={confirmingDelete ? "Confirm delete" : "Delete conversation"}
-          className={`rounded-field p-1.5 ${
-            confirmingDelete ? "bg-error/15 text-error" : "hover:bg-base-300"
-          }`}
+          disabled={archive.isPending}
+          aria-label={archived ? "Unarchive conversation" : "Archive conversation"}
+          className="hover:bg-base-300 rounded-field p-1.5"
         >
-          {confirmingDelete ? <Check size={13} /> : <Trash2 size={13} />}
+          {archived ? <ArchiveRestore size={13} /> : <Archive size={13} />}
+        </button>
+        <button
+          onClick={(e) => {
+            e.preventDefault();
+            setRemoving(true);
+          }}
+          aria-label="Delete conversation"
+          className="hover:bg-base-300 rounded-field p-1.5"
+        >
+          <Trash2 size={13} />
         </button>
       </div>
+      {removing && (
+        <RemovalDialog
+          kind="conversation"
+          id={conversation.id}
+          name={name}
+          open
+          onClose={() => setRemoving(false)}
+          onDeleted={deleted}
+        />
+      )}
     </div>
   );
 }

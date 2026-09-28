@@ -11,17 +11,20 @@ import asyncio
 import os
 import tempfile
 import time
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
 import structlog
-from sqlalchemy import delete, select
+from sqlalchemy import ARRAY, String, bindparam, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.learning.kc_tagging import TAGGING_ROLE, load_candidate_kcs, tag_chunk
+from app.learning.kc_tagging import load_candidate_kcs, tag_chunk
 from app.llm import EmbedResult, LLMClient, ModelRole, Usage
+from app.llm.attribution import metered
 from app.llm.embedding_space import current_space
+from app.llm.meter import BudgetExceeded
 from app.models.source import Chunk, ChunkKC, Source, SourceStatus
 from app.rag import extraction_quality, simhash, textnorm
 from app.rag.adapters import ExtractContext, select_adapter
@@ -29,8 +32,11 @@ from app.rag.chunking import chunk_units
 from app.rag.concurrency import gather_bounded, gather_bounded_settled
 from app.rag.demux import MediaDemuxer
 from app.rag.transcription import Transcriber
-from app.services.llm_log import log_llm_call
 from app.storage import BlobStore
+
+# Bumped whenever extraction or chunking changes in a way that changes chunk text (S50).
+# `poe reindex` compares every current chunk against it; see docs/RUNBOOK.md §15.
+PIPELINE_VERSION = 2  # 2: structure-aware chunking (S27)
 
 log = structlog.get_logger(__name__)
 
@@ -89,6 +95,9 @@ async def embed_in_batches(
         # it here would break the job deadline `ingest_source` wraps this in.
         if isinstance(failure, asyncio.CancelledError):
             raise failure
+        # Nor is a refusal (S47): its message is the learner's reason, and the source shows it.
+        if isinstance(failure, BudgetExceeded):
+            raise failure
         raise PartialEmbedding(usage, failure) from failure
     return EmbedResult(vectors=[vector for batch in done for vector in batch.vectors], usage=usage)
 
@@ -113,13 +122,18 @@ class TooManyChunks(IngestionError):
     """The source chunked into more pieces than one job is allowed to embed."""
 
 
-async def _same_text_source(session: AsyncSession, source: Source) -> Source | None:
+async def same_text_source(session: AsyncSession, source: Source) -> Source | None:
     """Another finished source of this learner, in this scope, that says the same thing.
 
     Scoped the same way the byte-level check is (see ``ingestion.find_duplicate``): the same
     book under two subjects is a real intent, and retrieval is subject-scoped so the copies
     never compete. Only ``DONE`` counts — a match with no chunks behind it would leave this
     source suppressed in favour of one that cannot answer anything.
+
+    For the same reason the match must have current chunks of its own. A twin that was itself
+    suppressed as a duplicate is DONE with none, and re-extracting the original would otherwise
+    defer to it — leaving the original's stale chunks in place and every reindex queueing it
+    again (S50).
     """
     if source.text_sha256 is None:
         return None
@@ -130,7 +144,12 @@ async def _same_text_source(session: AsyncSession, source: Source) -> Source | N
             Source.kind == source.kind,
             Source.text_sha256 == source.text_sha256,
             Source.status == SourceStatus.DONE,
+            # An archived source answers for nothing, so it is no one's twin (S61).
+            Source.archived_at.is_(None),
             Source.id != source.id,
+            select(Chunk.id)
+            .where(Chunk.source_id == Source.id, Chunk.superseded_at.is_(None))
+            .exists(),
             Source.subject_id.is_(None)
             if source.subject_id is None
             else Source.subject_id == source.subject_id,
@@ -143,6 +162,7 @@ async def _same_text_source(session: AsyncSession, source: Source) -> Source | N
     )
 
 
+@metered("ingestion", learner="source.learner_id")
 async def run(
     session: AsyncSession,
     blobstore: BlobStore,
@@ -195,14 +215,20 @@ async def run(
     canonical_text = textnorm.canonical("\n".join(unit.text for unit in units))
     source.text_sha256 = textnorm.digest(canonical_text)
     source.simhash = simhash.to_hex(simhash.simhash(canonical_text))
-    twin = await _same_text_source(session, source)
+    twin = await same_text_source(session, source)
     if twin is not None:
         # Already embedded, under this learner's own scope. Chunking it again would pay for a
         # second copy and then let the two crowd each other out of every grounding window.
-        source.meta = {**source.meta, "duplicate_of": str(twin.id)}
+        source.duplicate_of_id = twin.id
+        # Its own earlier chunks go too (cited ones kept as history): a source re-ingested into
+        # a scope where its twin already answers must stop answering itself, or both copies are
+        # retrieved — and a stale-version original would be queued by every reindex (S77, S50).
+        await supersede_chunks(session, source)
         log.info("pipeline.duplicate_text", source_id=str(source.id), duplicate_of=str(twin.id))
         await session.flush()
         return 0
+    # Answering for itself from here on, so no longer anyone's duplicate (S77).
+    source.duplicate_of_id = None
 
     chunks = chunk_units(units)
     if not chunks:
@@ -213,47 +239,24 @@ async def run(
             f"{settings.ingest_max_chunks} per-job budget"
         )
 
-    # Log any model calls extraction made (vision-OCR).
-    for role, usage in ctx.usage_log:
-        await log_llm_call(
-            learner_id=source.learner_id, role=str(role), spec=llm.spec(role), usage=usage
-        )
+    # Every batch is recorded by the client as it completes, on accounting's own transaction,
+    # so a partial embedding's charged batches survive the rollback that discards this source.
+    embedded = await embed_in_batches(
+        llm,
+        [c.text for c in chunks],
+        batch_size=settings.embed_batch_size,
+        concurrency=settings.embed_concurrency,
+    )
 
-    try:
-        embedded = await embed_in_batches(
-            llm,
-            [c.text for c in chunks],
-            batch_size=settings.embed_batch_size,
-            concurrency=settings.embed_concurrency,
-        )
-    except PartialEmbedding as exc:
-        # Recorded before re-raising, on accounting's own transaction, so it survives the
-        # rollback that discards this source. The batches that completed were charged for
-        # whether or not anything is left to show for them.
-        if exc.usage.total_tokens:
-            await log_llm_call(
-                learner_id=source.learner_id,
-                role=str(ModelRole.EMBED),
-                spec=llm.spec(ModelRole.EMBED),
-                usage=exc.usage,
-            )
-        raise
-    if embedded.usage.total_tokens:
-        await log_llm_call(
-            learner_id=source.learner_id,
-            role=str(ModelRole.EMBED),
-            spec=llm.spec(ModelRole.EMBED),
-            usage=embedded.usage,
-        )
-
-    # Idempotent: replace any prior chunks for this source (their KC tags cascade away with them).
-    await session.execute(delete(Chunk).where(Chunk.source_id == source.id))
+    # Replace the prior chunks, keeping any a citation still points at (S29).
+    await supersede_chunks(session, source)
     rows: list[Chunk] = []
     space = current_space(llm, dim=settings.embed_dim)
     for ordinal, (unit, vector) in enumerate(zip(chunks, embedded.vectors, strict=True)):
         row = Chunk(
             source_id=source.id,
             embedding_space=space,
+            pipeline_version=PIPELINE_VERSION,
             ordinal=ordinal,
             text=unit.text,
             embedding=vector,
@@ -279,6 +282,59 @@ async def run(
     return len(chunks)
 
 
+# Chunk ids a learner's own chat replies or lesson blocks cite. Scoped to the learner twice
+# over: a chunk is only ever cited in its owner's material, and the scope keeps the scan to
+# their rows rather than every message in the database.
+_CITED = text(
+    """
+    SELECT c->>'chunk_id' FROM messages m
+      JOIN conversations v ON v.id = m.conversation_id AND v.learner_id = :learner
+      CROSS JOIN LATERAL jsonb_array_elements(m.citations) AS c
+     WHERE c->>'chunk_id' = ANY(:ids)
+    UNION
+    SELECT c->>'chunk_id' FROM content_blocks b
+      CROSS JOIN LATERAL jsonb_array_elements(b.citations) AS c
+     WHERE b.learner_id = :learner AND c->>'chunk_id' = ANY(:ids)
+    """
+).bindparams(bindparam("ids", type_=ARRAY(String)))
+
+
+async def supersede_chunks(session: AsyncSession, source: Source) -> tuple[int, int]:
+    """Retire a source's current chunks before new ones are written (S29). Returns (kept, deleted).
+
+    A chunk something cites — a chat reply or a lesson block, only ever the owner's — is kept as
+    history: its text and locator stay so the citation still shows what it cited, while its
+    vector and concept tags go, because nothing will search or tag it again. Everything else is
+    deleted as before. Chunks superseded by an earlier re-ingest are left exactly as they are.
+    """
+    current = list(
+        (
+            await session.scalars(
+                select(Chunk.id).where(Chunk.source_id == source.id, Chunk.superseded_at.is_(None))
+            )
+        ).all()
+    )
+    if not current:
+        return 0, 0
+    rows = await session.execute(
+        _CITED, {"learner": source.learner_id, "ids": [str(i) for i in current]}
+    )
+    cited = {uuid.UUID(row[0]) for row in rows}
+    uncited = [i for i in current if i not in cited]
+    if uncited:
+        await session.execute(delete(Chunk).where(Chunk.id.in_(uncited)))
+    if cited:
+        await session.execute(delete(ChunkKC).where(ChunkKC.chunk_id.in_(cited)))
+        await session.execute(
+            update(Chunk)
+            .where(Chunk.id.in_(cited))
+            .values(superseded_at=func.now(), embedding=None)
+            .execution_options(synchronize_session=False)
+        )
+    return len(cited), len(uncited)
+
+
+@metered("ingestion", learner="source.learner_id")
 async def _tag_chunks(
     session: AsyncSession,
     llm: LLMClient,
@@ -301,16 +357,9 @@ async def _tag_chunks(
         ],
         settings.kc_tag_concurrency,
     )
-    for row, (tags, usage) in zip(rows, results, strict=True):
+    for row, (tags, _usage) in zip(rows, results, strict=True):
         for tag in tags:
             session.add(ChunkKC(chunk_id=row.id, kc_id=tag.kc_id, confidence=tag.confidence))
-        if usage.input_tokens or usage.output_tokens:
-            await log_llm_call(
-                learner_id=source.learner_id,
-                role=str(TAGGING_ROLE),
-                spec=llm.spec(TAGGING_ROLE),
-                usage=usage,
-            )
     await session.flush()
 
 
@@ -331,7 +380,9 @@ async def retag_source(
     rows = list(
         (
             await session.scalars(
-                select(Chunk).where(Chunk.source_id == source.id).order_by(Chunk.ordinal)
+                select(Chunk)
+                .where(Chunk.source_id == source.id, Chunk.superseded_at.is_(None))
+                .order_by(Chunk.ordinal)
             )
         ).all()
     )

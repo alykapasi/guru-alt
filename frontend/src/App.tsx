@@ -17,6 +17,7 @@ import { Uploads } from "./pages/Uploads";
 import { Notes } from "./pages/Notes";
 import { NoteView } from "./pages/NoteView";
 import { Memory } from "./pages/Memory";
+import { Account } from "./pages/Account";
 import { SubjectWizard } from "./pages/SubjectWizard";
 import { Admin } from "./pages/Admin";
 
@@ -60,6 +61,7 @@ function App() {
             <Route path="uploads" element={<Uploads />} />
             <Route path="notes" element={<Notes />} />
             <Route path="memory" element={<Memory />} />
+            <Route path="account" element={<Account />} />
             <Route path="notes/:topicId" element={<NoteView />} />
             <Route path="subjects/new" element={<SubjectWizard />} />
             {/* The operator's portal (P10). Guarded again inside the shell rather than

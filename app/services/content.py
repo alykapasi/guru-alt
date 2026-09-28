@@ -26,15 +26,19 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import citation_support
+from app.learning.preferences import EXPLANATION_INSTRUCTIONS
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
+from app.llm.attribution import metered
 from app.llm.registry import ModelSpec
 from app.models.content import ContentBlock, ContentType
 from app.models.knowledge import KC, Topic
 from app.models.source import Chunk
 from app.rag import retrieval
+from app.rag.extraction_quality import reading_note
 from app.rag.retrieval import RetrievalHit
 from app.rag.scope import resolve_scope
-from app.services.llm_log import log_llm_call
+from app.services import grounding as grounding_policy
+from app.services import preferences as preferences_svc
 
 GROUNDING_K = 6
 """How many chunks to retrieve as grounding for a block."""
@@ -112,6 +116,7 @@ class _GeneratedBlock(BaseModel):
     citations: list[int] = []
 
 
+@metered("lesson_generation", learner="learner_id")
 async def generate_block(
     session: AsyncSession,
     llm: LLMClient,
@@ -150,8 +155,15 @@ async def generate_block(
     if grounding:
         rule = _SOURCES_ONLY_RULE if scope.sources_only else _SUPPLEMENT_RULE
         system = _SYSTEM_PROMPT.format(guidance=_GUIDANCE[block_type], scope_rule=rule)
+        if any(reading_note(hit.provenance) for hit in grounding):
+            system = f"{system} {grounding_policy.READING_NOTE_RULE}"
     else:
         system = _UNGROUNDED_SYSTEM_PROMPT.format(guidance=_GUIDANCE[block_type])
+    # The learner's explanation level for this subject (S02). Part of the system prompt, so the
+    # cache key — which covers the rendered prompt — separates blocks written at other levels.
+    level = (await preferences_svc.values_for(session, learner_id, subject_id))["explanation_level"]
+    if level in EXPLANATION_INSTRUCTIONS:
+        system = f"{system} {EXPLANATION_INSTRUCTIONS[level]}"
     user = _build_prompt(kc, grounding)
     cache_key = _cache_key(
         learner_id,
@@ -167,7 +179,7 @@ async def generate_block(
     if existing is not None:
         return existing
 
-    parsed, usage = await _generate(llm, role, system=system, user=user)
+    parsed, _usage = await _generate(llm, role, system=system, user=user)
     block = ContentBlock(
         learner_id=learner_id,
         kc_ids=[kc_id],
@@ -179,7 +191,6 @@ async def generate_block(
         grounding_count=len(grounding),
     )
     session.add(block)
-    await log_llm_call(learner_id=learner_id, role=str(role), spec=llm.spec(role), usage=usage)
     await session.commit()
     return block
 
@@ -201,6 +212,25 @@ async def assemble(
     ]
 
 
+async def _cited_passages(
+    session: AsyncSession, block: ContentBlock
+) -> list[citation_support.CitedPassage]:
+    """The passages a block cites, in citation order, read by id — superseded ones included,
+    since a re-ingest keeps cited chunks as history precisely so this still works (S29). A
+    chunk that no longer exists at all drops out."""
+    ids = [uuid.UUID(c["chunk_id"]) for c in block.citations if c.get("chunk_id")]
+    rows = (
+        list((await session.scalars(select(Chunk).where(Chunk.id.in_(ids)))).all()) if ids else []
+    )
+    by_id = {chunk.id: chunk for chunk in rows}
+    return [
+        citation_support.CitedPassage(chunk_id=chunk.id, source_id=chunk.source_id, text=chunk.text)
+        for chunk in (by_id.get(i) for i in ids)
+        if chunk is not None
+    ]
+
+
+@metered("citation_check", learner="learner_id")
 async def check_block_citations(
     session: AsyncSession,
     llm: LLMClient,
@@ -223,25 +253,8 @@ async def check_block_citations(
     if block is None or block.learner_id != learner_id:
         raise LookupError(f"content block {block_id} not found")
 
-    ids = [uuid.UUID(c["chunk_id"]) for c in block.citations if c.get("chunk_id")]
-    rows = (
-        list((await session.scalars(select(Chunk).where(Chunk.id.in_(ids)))).all()) if ids else []
-    )
-    by_id = {chunk.id: chunk for chunk in rows}
-    passages = [
-        citation_support.CitedPassage(chunk_id=chunk.id, source_id=chunk.source_id, text=chunk.text)
-        for chunk in (by_id.get(i) for i in ids)
-        if chunk is not None
-    ]
-
-    report, usage = await citation_support.check_support(llm, body=block.body, passages=passages)
-    if usage.total_tokens:
-        await log_llm_call(
-            learner_id=learner_id,
-            role=str(citation_support.SUPPORT_ROLE),
-            spec=llm.spec(citation_support.SUPPORT_ROLE),
-            usage=usage,
-        )
+    passages = await _cited_passages(session, block)
+    report, _usage = await citation_support.check_support(llm, body=block.body, passages=passages)
     return report
 
 
@@ -295,7 +308,7 @@ def _build_prompt(kc: KC, grounding: list[RetrievalHit]) -> str:
     objective = _kc_query(kc)
     if not grounding:
         return f"Learning objective:\n{objective}"
-    context = "\n\n".join(f"[{i}] {hit.text}" for i, hit in enumerate(grounding))
+    context = "\n\n".join(grounding_policy.passage(i, hit) for i, hit in enumerate(grounding))
     return f"Learning objective:\n{objective}\n\nContext snippets:\n{context}"
 
 

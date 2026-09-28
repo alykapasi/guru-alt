@@ -64,26 +64,61 @@ function Problem({ children }: { children: string }) {
   );
 }
 
-export function ClerkSignInPanel() {
+/** Clerk's panel while signed out; the exchange's progress once Clerk says signed in.
+ *
+ * The exchange lives on this page, so both halves of the handoff have to keep the person here.
+ * Clerk's own default after signing in is `/`, where nothing exchanges — hence the forced
+ * redirects back to these routes. And Clerk's panel, mounted for someone Clerk already knows,
+ * redirects them away on mount, taking the exchange with it before it has run — hence not
+ * mounting it at all until a refusal has ended the Clerk session again.
+ */
+function ExchangeOrPanel({ panel }: { panel: React.ReactNode }) {
+  const { isSignedIn } = useAuth();
   const problem = useExchangeOnce();
   return (
     <div className="flex flex-col items-center">
-      {/* Themed in `clerk.css` against the `cl-*` classes, not through `appearance.elements`:
-          Clerk injects its stylesheet after ours, so class names handed to `appearance` land on
-          the elements and lose every tie on source order. */}
-      <SignIn routing="path" path="/signin" signUpUrl="/sign-up" fallback={<PanelSkeleton />} />
+      {isSignedIn
+        ? !problem && <p className="text-body text-base-content/70">Signing you in…</p>
+        : panel}
       {problem && <Problem>{problem}</Problem>}
     </div>
   );
 }
 
-export function ClerkSignUpPanel() {
-  const problem = useExchangeOnce();
+export function ClerkSignInPanel() {
   return (
-    <div className="flex flex-col items-center">
-      <SignUp routing="path" path="/sign-up" signInUrl="/signin" fallback={<PanelSkeleton />} />
-      {problem && <Problem>{problem}</Problem>}
-    </div>
+    <ExchangeOrPanel
+      panel={
+        // Themed in `clerk.css` against the `cl-*` classes, not through `appearance.elements`:
+        // Clerk injects its stylesheet after ours, so class names handed to `appearance` land
+        // on the elements and lose every tie on source order.
+        <SignIn
+          routing="path"
+          path="/signin"
+          signUpUrl="/sign-up"
+          forceRedirectUrl="/signin"
+          signUpForceRedirectUrl="/sign-up"
+          fallback={<PanelSkeleton />}
+        />
+      }
+    />
+  );
+}
+
+export function ClerkSignUpPanel() {
+  return (
+    <ExchangeOrPanel
+      panel={
+        <SignUp
+          routing="path"
+          path="/sign-up"
+          signInUrl="/signin"
+          forceRedirectUrl="/sign-up"
+          signInForceRedirectUrl="/signin"
+          fallback={<PanelSkeleton />}
+        />
+      }
+    />
   );
 }
 

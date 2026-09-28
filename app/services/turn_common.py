@@ -4,9 +4,10 @@ Split out from ``chat.py`` so ``refinement.py`` can reuse them without the two s
 modules importing each other.
 """
 
+import functools
 import re
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult
 from app.learning.mastery import Estimate
+from app.llm.meter import BudgetExceeded
 from app.llm.types import ChatMessage, ChatRole, Usage
 from app.models.chat import Message
 from app.models.knowledge import KC
@@ -106,6 +108,28 @@ class TurnEvent:
     # (S15). Set on "done". The tutor's reply already reflects the grade; this is the part the
     # learner can check it against, because a reply is not a record.
     check_result: CheckResultRead | None = None
+
+
+def refusal_ends_turn[**P](
+    turn: Callable[P, AsyncIterator[TurnEvent]],
+) -> Callable[P, AsyncIterator[TurnEvent]]:
+    """A paid call refused by the spend guard ends the turn with the reason (S47).
+
+    Any model call in a turn can be refused — the intent check, grading, a retrieval embedding,
+    the reply itself — and most happen before the turn's own ``try`` around generation, so the
+    refusal is caught here, around the whole turn, and becomes the error event the learner
+    reads instead of "generation failed".
+    """
+
+    @functools.wraps(turn)
+    async def guarded(*args: P.args, **kwargs: P.kwargs) -> AsyncIterator[TurnEvent]:
+        try:
+            async for event in turn(*args, **kwargs):
+                yield event
+        except BudgetExceeded as exc:
+            yield TurnEvent(type="error", detail=exc.message)
+
+    return guarded
 
 
 def build_check_result(

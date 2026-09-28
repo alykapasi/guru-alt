@@ -21,6 +21,9 @@ from app.learning.conversation_evidence import TurnIntent
 from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult, InvalidResponse
 from app.learning.turn_read import FULLY_CORRECT, INTENT, ReadContext
+from app.llm.attribution import metered
+from app.llm.meter import BudgetExceeded
+from app.llm.pricing import price_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.models.assessment import Item, ItemType
@@ -39,12 +42,12 @@ from app.services import session_runner as session_runner_svc
 from app.services.assessment import item_to_read
 from app.services.grounding import format_grounding
 from app.services.lesson_plan import PlanGroundingContext
-from app.services.llm_log import log_llm_call
 from app.services.turn_common import (
     TurnEvent,
     add_message,
     build_check_result,
     extract_citations,
+    refusal_ends_turn,
     to_chat_messages,
 )
 
@@ -186,20 +189,18 @@ async def update_conversation_title(
     return conversation
 
 
-async def delete_conversation(session: AsyncSession, conversation: Conversation) -> None:
-    # Messages cascade (Conversation.messages: cascade="all, delete-orphan" + FK ondelete
-    # CASCADE); LLMCall.conversation_id is ondelete SET NULL, so the cost/token audit log
-    # survives deletion by design.
-    await session.delete(conversation)
-    await session.commit()
-
-
 async def list_conversations(
-    session: AsyncSession, learner_id: uuid.UUID
+    session: AsyncSession, learner_id: uuid.UUID, *, archived: bool = False
 ) -> Sequence[Conversation]:
+    """Newest first; archived conversations only when ``archived`` (S61)."""
     result = await session.scalars(
         select(Conversation)
-        .where(Conversation.learner_id == learner_id)
+        .where(
+            Conversation.learner_id == learner_id,
+            Conversation.archived_at.is_not(None)
+            if archived
+            else Conversation.archived_at.is_(None),
+        )
         .order_by(Conversation.created_at.desc())
         .options(selectinload(Conversation.conversation_sources))
     )
@@ -437,6 +438,8 @@ PAUSED_PRACTICE_NOTE = (
 )
 
 
+@metered("chat_turn", learner="learner_id", conversation="conversation.id")
+@refusal_ends_turn
 async def run_tutor_turn(
     session: AsyncSession,
     llm: LLMClient,
@@ -588,6 +591,8 @@ async def run_tutor_turn(
             elif mode == "values":
                 reply = payload["reply"]  # ty: ignore[invalid-argument-type]
                 usage = payload["usage"]  # ty: ignore[invalid-argument-type]
+    except BudgetExceeded:
+        raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
         log.error("tutor.stream_failed", error=str(exc), model=spec.model)
         yield TurnEvent(type="error", detail="generation failed")
@@ -620,13 +625,7 @@ async def run_tutor_turn(
         check_result=check_result,
         grounding_count=len(hits) if scope is not None else None,
     )
-    cost = await log_llm_call(
-        learner_id=learner_id,
-        conversation_id=conversation_id,
-        role=ModelRole.SMART.value,
-        spec=spec,
-        usage=usage,
-    )
+    cost = price_usd(spec.provider, spec.model, usage)  # the client recorded each call (S48)
     if practice_paused:
         conversation.practice_scaffolds += 1
     await session.commit()

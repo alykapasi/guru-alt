@@ -57,6 +57,9 @@ def evaluate(
     backlog: IngestionBacklog,
     spend: SpendWindow,
     settings: Settings,
+    stuck_erasures: int = 0,
+    refresh_stuck: int = 0,
+    stale_pending: int = 0,
 ) -> AlertReport:
     """Every alert condition, against the thresholds in settings."""
     firing: list[Alert] = []
@@ -67,6 +70,10 @@ def evaluate(
         "ingestion_backlog_ageing",
         "leases_expired",
         "spend_over_budget",
+        "spend_near_budget",
+        "calls_pending_stale",
+        "erasures_stuck",
+        "refresh_stuck",
     ]
 
     failed = [dep.name for dep in readiness.dependencies if not dep.ok]
@@ -133,8 +140,57 @@ def evaluate(
                 + (
                     f" (plus {spend.unpriced_calls} unpriced calls)" if spend.unpriced_calls else ""
                 ),
-                action="Check /api/v1/ops/spend for which role and model. A runaway is usually "
-                "one loop, not general growth.",
+                action="Every paid call is being refused until spend falls below the budget. "
+                "Raise GURU_SPEND_BUDGET_USD or wait for the window to roll. Check "
+                "/api/v1/ops/spend for which feature and model: a runaway is usually one loop, "
+                "not general growth.",
+            )
+        )
+    if spend.near_budget and not spend.over_budget:
+        firing.append(
+            Alert(
+                name="spend_near_budget",
+                severity="warning",
+                detail=f"${spend.cost_usd:.2f} of ${spend.budget_usd or 0:.2f} "
+                f"in {spend.window_hours}h",
+                action="Background work (memory write-back, profile refresh, concept links, "
+                "reindex) is paused until spend falls below 90%. Live turns continue.",
+            )
+        )
+    if stale_pending > 0:
+        firing.append(
+            Alert(
+                name="calls_pending_stale",
+                severity="warning",
+                detail=f"{stale_pending} model call(s) reserved over 15 minutes ago and never "
+                "settled",
+                action="A process died mid-call. Check app and worker restarts. These count at "
+                "their estimate against spend until they leave the window.",
+            )
+        )
+
+    if stuck_erasures:
+        firing.append(
+            Alert(
+                name="erasures_stuck",
+                severity="warning",
+                detail=f"{stuck_erasures} erasure(s) refused "
+                f"{settings.alert_stuck_erasure_attempts}+ times",
+                action="Object storage or the identity provider keeps refusing deletes. Read "
+                "`pending_erasures.last_error`; the worker keeps retrying daily.",
+            )
+        )
+
+    if refresh_stuck > 0:
+        firing.append(
+            Alert(
+                name="refresh_stuck",
+                severity="warning",
+                detail=f"{refresh_stuck} conversation(s) or learner(s) due for over "
+                f"{settings.refresh_stuck_hours}h",
+                action="Memory write-back or profile refresh is not keeping up. Check the "
+                "worker is running and GURU_REFRESH_POLL_INTERVAL_SECONDS is not 0, then read "
+                "`learner_profiles.last_error` and the `memory.write_back_failed` log lines.",
             )
         )
 

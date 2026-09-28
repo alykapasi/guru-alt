@@ -182,6 +182,12 @@ class Settings(BaseSettings):
     # None = report spend but assert nothing about it.
     spend_window_hours: int = 24
     spend_budget_usd: float | None = None
+    # Recorded on every model call (S48) so a change in cost or quality can be tied to a
+    # release. Set by the deployment; "dev" otherwise.
+    app_version: str = "dev"
+    # How stale the deployment's spend total may be when the guard reads it (S47): summing the
+    # whole window on every call would cost more than the calls it protects.
+    spend_guard_cache_seconds: int = 30
 
     # Alert thresholds (S60). These are the numbers docs/OPERATIONS.md tells an operator to
     # watch, in the one place something can evaluate them.
@@ -196,6 +202,15 @@ class Settings(BaseSettings):
     # rather than days because the cost of being wrong is asymmetric — a pruned checkpoint
     # costs a learner their place in one paused exercise, and a kept one costs a row.
     checkpoint_retention_days: int = 30
+    # V12. How long a deleted account can still be restored by signing in, and how long
+    # diagnostic rows (model-call accounting, finished turns, alert history) keep anything that
+    # points at a learner. 0 disables a sweep's interval, as elsewhere.
+    account_recovery_days: int = 7
+    diagnostic_retention_days: int = 30
+    account_erase_interval_seconds: int = 300
+    erasure_retry_interval_seconds: int = 300
+    diagnostic_expiry_interval_seconds: int = 3600
+    alert_stuck_erasure_attempts: int = 10
     # 0 disables the sweep, like every other interval here.
     checkpoint_purge_interval_seconds: int = 6 * 3600
 
@@ -391,7 +406,22 @@ class Settings(BaseSettings):
     # skipped as a near-duplicate if its cosine distance to an existing same-(learner, kind)
     # memory is at or below this threshold. How many memories a tutor turn retrieves for context.
     memory_extraction_window: int = 20
+    # Refresh scheduling (S43). The worker looks for conversations and learners that have gone
+    # quiet with unprocessed evidence every `refresh_poll_interval_seconds` (0 disables it),
+    # claims at most `refresh_batch_size` of each per pass, and retries a failed item after
+    # `refresh_retry_minutes`. `refresh_stuck_hours` is when a due item raises an alert. The
+    # profile reads only the most recent events/messages. All uncalibrated.
+    refresh_poll_interval_seconds: int = 300
+    memory_quiet_minutes: int = 20
+    refresh_retry_minutes: int = 60
+    refresh_batch_size: int = 50
+    refresh_stuck_hours: int = 6
+    profile_event_window: int = 2000
+    profile_message_window: int = 500
     memory_dedup_max_distance: float = 0.05
+    # Beyond the duplicate radius, how close an existing memory must be to be judged as
+    # possibly the same fact or one this replaces (S42). Uncalibrated.
+    memory_related_max_distance: float = 0.25
     # Relevance floor for memory retrieval (S42). Without one, `limit` guarantees the nearest
     # memories come back whether or not any of them are about the question — a learner with
     # five memories had all five injected into every turn regardless of topic.

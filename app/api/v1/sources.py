@@ -2,10 +2,11 @@
 
 import tempfile
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Body, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import select
 
 from app.api.deps import (
@@ -16,19 +17,22 @@ from app.api.deps import (
     SessionDep,
     SettingsDep,
 )
-from app.models.source import Chunk, Source, SourceKind
+from app.llm.attribution import attributed
+from app.models.source import Chunk, Source, SourceKind, SourceStatus
 from app.rag import retrieval
 from app.rag.retrieval import RetrievalHit
 from app.rag.scope import SourceScope
 from app.schemas.source import (
     ChunkRead,
     LinkCreate,
+    RemovalImpactRead,
     RetrieveRequest,
+    RetryRequest,
     SimilarSourceRead,
     SourceRead,
 )
 from app.services import ingestion as svc
-from app.services import knowledge
+from app.services import knowledge, removal
 
 router = APIRouter(tags=["sources"])
 
@@ -117,6 +121,12 @@ async def link_source(
     raise HTTPException(status.HTTP_403_FORBIDDEN, svc.WEB_DISABLED_REASON)
 
 
+_CONFIRM_REQUIRED = (
+    "This source is already in your library. Re-processing it replaces its passages; older "
+    "replies will show their citations as an earlier version."
+)
+
+
 @router.post(
     "/sources/{source_id}/retry",
     response_model=SourceRead,
@@ -127,21 +137,41 @@ async def retry_source(
     session: SessionDep,
     learner: CurrentLearner,
     enqueue: IngestionEnqueuerDep,
+    data: Annotated[RetryRequest | None, Body()] = None,
 ):
     """Re-run ingestion for a finished or failed source.
 
     A completed source is deliberately not claimable by a job (S37), so re-ingesting one has
-    to be asked for. 409 while a claim is live rather than yanking work in flight.
+    to be asked for — and, since it replaces passages the learner's replies may cite, confirmed
+    (S29). A failed source has nothing to replace and retries directly. 409 while a claim is
+    live rather than yanking work in flight; the two 409s carry different codes.
     """
     source = await session.get(Source, source_id)
     if source is None or source.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    if source.kind == SourceKind.URL:
+        # Refused before any confirmation is asked for: there is nothing to confirm when the
+        # answer would be no regardless (v0 web policy).
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(svc.WebIngestionDisabled()))
+    if source.archived_at is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "archived", "message": "Unarchive this source to process it again."},
+        )
+    if source.status == SourceStatus.DONE and not (data is not None and data.confirm):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "confirm_required", "message": _CONFIRM_REQUIRED},
+        )
     try:
         reset = await svc.reset_for_reingest(session, source_id)
     except svc.WebIngestionDisabled as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     if reset is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "this source is being ingested right now")
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "ingesting", "message": "This source is being ingested right now."},
+        )
     await svc.dispatch(enqueue, reset.id)
     return reset
 
@@ -151,12 +181,17 @@ async def list_sources(
     session: SessionDep,
     learner: CurrentLearner,
     subject_id: Annotated[uuid.UUID | None, Query()] = None,
+    archived: Annotated[bool, Query()] = False,
 ):
     """List the learner's sources, optionally scoped to a subject — backs the conversation
-    creation modal's source picker (Phase 7)."""
+    creation modal's source picker (Phase 7). Archived sources are listed only with
+    ``archived=true`` (S61)."""
     if subject_id is not None:
         await knowledge.require_visible_subject(session, subject_id, learner.id)
-    stmt = select(Source).where(Source.learner_id == learner.id)
+    stmt = select(Source).where(
+        Source.learner_id == learner.id,
+        Source.archived_at.is_not(None) if archived else Source.archived_at.is_(None),
+    )
     if subject_id is not None:
         stmt = stmt.where(Source.subject_id == subject_id)
     sources = (await session.scalars(stmt.order_by(Source.created_at.desc()))).all()
@@ -171,6 +206,54 @@ async def get_source(source_id: uuid.UUID, session: SessionDep, learner: Current
     return source
 
 
+@router.post("/sources/{source_id}/archive", response_model=SourceRead)
+async def archive_source(source_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+    """Out of the way and out of use, reversibly (S61): never retrieved while archived."""
+    source = await removal.set_source_archived(session, learner.id, source_id, archived=True)
+    if source is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    return source
+
+
+@router.post("/sources/{source_id}/unarchive", response_model=SourceRead)
+async def unarchive_source(source_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+    source = await removal.set_source_archived(session, learner.id, source_id, archived=False)
+    if source is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    return source
+
+
+@router.get("/sources/{source_id}/removal", response_model=RemovalImpactRead)
+async def source_removal(source_id: uuid.UUID, session: SessionDep, learner: CurrentLearner):
+    """What deleting this source would keep, and what forgetting would also remove."""
+    impact = await removal.source_impact(session, learner.id, source_id)
+    if impact is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    return asdict(impact)
+
+
+@router.delete("/sources/{source_id}", response_model=RemovalImpactRead)
+async def delete_source(
+    source_id: uuid.UUID,
+    session: SessionDep,
+    learner: CurrentLearner,
+    blobstore: BlobStoreDep,
+    forget: Annotated[bool, Query()] = False,
+):
+    """Delete a source now (S61). With ``forget``, the lessons built on it go too (V11)."""
+    try:
+        impact = await removal.delete_source(
+            session, blobstore, learner.id, source_id, forget=forget
+        )
+    except removal.RemovalRefused as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, {"code": exc.code, "message": exc.message}
+        ) from exc
+    if impact is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    return asdict(impact)
+
+
 @router.post("/retrieve", response_model=list[RetrievalHit])
 async def retrieve_chunks(
     data: RetrieveRequest,
@@ -183,18 +266,19 @@ async def retrieve_chunks(
         await knowledge.require_visible_subject(session, data.subject_id, learner.id)
     if data.topic_id is not None:
         await knowledge.require_visible_topic(session, data.topic_id, learner.id)
-    return await retrieval.retrieve(
-        session,
-        llm,
-        data.query,
-        scope=SourceScope(
-            learner_id=learner.id,
-            subject_id=data.subject_id,
-            topic_id=data.topic_id,
-            source_ids=(data.source_id,) if data.source_id is not None else (),
-        ),
-        limit=data.limit,
-    )
+    with attributed(feature="retrieval"):  # the query's embedding (S48)
+        return await retrieval.retrieve(
+            session,
+            llm,
+            data.query,
+            scope=SourceScope(
+                learner_id=learner.id,
+                subject_id=data.subject_id,
+                topic_id=data.topic_id,
+                source_ids=(data.source_id,) if data.source_id is not None else (),
+            ),
+            limit=data.limit,
+        )
 
 
 @router.get("/sources/{source_id}/similar", response_model=list[SimilarSourceRead])
@@ -230,7 +314,9 @@ async def get_source_chunks(source_id: uuid.UUID, session: SessionDep, learner: 
         raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
     chunks = (
         await session.scalars(
-            select(Chunk).where(Chunk.source_id == source_id).order_by(Chunk.ordinal)
+            select(Chunk)
+            .where(Chunk.source_id == source_id, Chunk.superseded_at.is_(None))
+            .order_by(Chunk.ordinal)
         )
     ).all()
     return list(chunks)

@@ -811,3 +811,154 @@ tracker (S80), not enforced in code.
 - Rows: `decision_calls`.
 - Smoke test: `GURU_JEV_SMOKE=1 uv run pytest tests/test_decisions_live.py -v -s`. It is paid,
   so run it only on purpose.
+
+## 15. Reindexing sources (S29, S50)
+
+A chunk records the embedding space and the pipeline version that wrote it. `uv run poe reindex`
+compares both against the running configuration and lists what is stale; it changes nothing
+without `--apply`.
+
+1. `uv run poe reindex` — dry run. Read the four groups: re-embed (the embedding model changed),
+   re-extract (`PIPELINE_VERSION` in `app/rag/pipeline.py` was bumped), scope repair (legacy
+   subject/topic tags that disagree with the graph), and stranded duplicates (a text duplicate
+   whose original was deleted, moved, failed or emptied — S77).
+2. `uv run poe reindex --apply [--limit N]` — re-embeds in place, repairs scope, and releases
+   stranded duplicates (and any a scope repair strands) to re-ingest from their own files;
+   releasing is not counted against `--limit`. Re-embedding keeps chunk ids, so every
+   citation keeps resolving. Costs one embed per chunk; the dry run's chunk
+   count is the bill. Interrupting is safe: run it again and it continues.
+3. `uv run poe reindex --apply --reextract [--limit N]` — also re-ingests sources whose
+   extraction is stale, through the normal ingestion queue. This gives their chunks new ids;
+   chunks something cites are kept as "earlier version" history (S29), the rest are deleted.
+
+Bump `PIPELINE_VERSION` whenever a change to extraction or chunking changes chunk text. Do not
+bump it for changes that only affect tagging or metadata.
+
+`PIPELINE_VERSION` 2 is structure-aware chunking (S27): long code blocks, pipe tables and
+display math are no longer cut mid-block. Every source ingested before it is listed under
+re-extract; run `uv run poe reindex --apply --reextract` when ready. The reconcile sweep
+(`uv run poe reconcile-ingestion`) also releases stranded duplicates and reports them as
+`recovered`.
+
+## 16. Account deletion and retention (S61)
+
+Deleting an account is a state, then an erase (V12).
+
+1. **Request.** `DELETE /api/v1/me` sets `learners.deletion_requested_at` and
+   `deletion_due_at` (now + `GURU_ACCOUNT_RECOVERY_DAYS`, default 7) and revokes every session.
+   Repeating it keeps the due date. `?now=true` erases in the same call.
+2. **Pending.** Signing in again works, but every route answers 403
+   `{"code": "deletion_pending"}` except the recovery routes: `/auth/me`, `/auth/logout(-all)`,
+   `GET /me/deletion`, `POST /me/deletion/restore`, `POST /me/deletion/erase`, `GET /me/export`,
+   `GET /me/export/files` and `GET /me/export/sources/{id}/file`. The app shows the recovery screen. An administrator's
+   visit is gated the same way, and a pending administrator loses the admin and ops routes (no
+   impersonation during the window). A suspended account is still refused at sign-in.
+3. **Erase.** The worker erases each account past its due date: every store per `RETENTION`
+   (`GET /api/v1/me/retention`), then the identity provider's user (Clerk; "not found" counts as
+   done).
+
+Worker loops (interval 0 disables one):
+
+| Loop | Setting | Default | Does |
+| --- | --- | --- | --- |
+| Erase due accounts | `GURU_ACCOUNT_ERASE_INTERVAL_SECONDS` | 300 | Erases accounts whose `deletion_due_at` has passed; re-reads each under a row lock, so a restore wins. |
+| Retry erasures | `GURU_ERASURE_RETRY_INTERVAL_SECONDS` | 300 | Retries `pending_erasures` rows that are due. |
+| Expire diagnostics | `GURU_DIAGNOSTIC_EXPIRY_INTERVAL_SECONDS` | 3600 | Past `GURU_DIAGNOSTIC_RETENTION_DAYS` (default 30): drops learner and conversation ids from `llm_calls` and `decision_calls`, deletes finished turns, and deletes alert history except each alert's newest row. |
+
+**Pending erasures.** A blob key the object store refused, or a provider user it could not
+delete, becomes a `pending_erasures` row (`kind` = `blob` | `identity`, `target`, `attempts`,
+`last_error`, `next_attempt_at`). It names no learner, so it outlives the account. Each failure
+backs off `min(2^attempts minutes, 1 day)`; a success deletes the row. A blob someone has
+uploaded again since is left in place and the row is dropped. Deleting a single source queues
+its file the same way.
+
+**`erasures_stuck`** fires while any row has `attempts >= GURU_ALERT_STUCK_ERASURE_ATTEMPTS`
+(default 10). Read the row's `last_error`:
+
+```sql
+SELECT kind, target, attempts, last_error, next_attempt_at FROM pending_erasures
+ORDER BY attempts DESC;
+```
+
+Fix the store or provider credentials; the next retry clears it. Never delete a row by hand
+unless the object is confirmed gone.
+
+**Backups.** `GURU_DIAGNOSTIC_RETENTION_DAYS` is also the target window for backups once workstream 7
+creates them: a backup older than it can still hold an erased account.
+
+Learning history, notes, memories, sources, content and audit records are never expired; they
+live until the account is deleted.
+
+## 17. Refresh scheduling (S43)
+
+Memory write-back and profile refresh run on their own when things go quiet.
+
+- **The sweep.** Every `GURU_REFRESH_POLL_INTERVAL_SECONDS` (default 300; `0` turns it off) the
+  worker claims up to `GURU_REFRESH_BATCH_SIZE` (50) of each, oldest first:
+  - conversations with learner messages newer than `memory_watermark` and no message for
+    `GURU_MEMORY_QUIET_MINUTES` (20) → `memory_write_back_task`;
+  - learners whose newest graded answer or own message is newer than
+    `learner_profiles.evidence_watermark` and at least 20 minutes old → `profile_refresh_task`.
+  Paused memory (`learners.remember_conversations = false`), archived conversations, and
+  accounts pending deletion or suspended are skipped. Administrator messages never make
+  anything due.
+- **Backlogs catch up by themselves.** "Due" is read from the data on every pass, so after a
+  worker outage the next passes work through what is owed, 50 at a time.
+- **Claims.** `conversations.memory_attempted_at` / `learner_profiles.refresh_attempted_at` are
+  set when a pass queues the work and cleared when it succeeds. A failed item is retried after
+  `GURU_REFRESH_RETRY_MINUTES` (60), not every pass.
+- **Cost.** The profile reads the newest `GURU_PROFILE_EVENT_WINDOW` (2000) events and
+  `GURU_PROFILE_MESSAGE_WINDOW` (500) messages. A model-backed dimension whose input
+  fingerprint (`profile_dimensions.input_fingerprint`) is unchanged keeps its value with no call.
+- **Forcing one learner.** As that learner, `POST /api/v1/profile/refresh?force=true` ignores the
+  watermark and the fingerprints (use it after changing an estimator).
+- **`refresh_stuck`.** Something has been due for over `GURU_REFRESH_STUCK_HOURS` (6). Check the
+  worker is running and the interval is not 0, then read `learner_profiles.last_error` and the
+  `memory.write_back_failed` log lines (conversation id only, never content).
+- **Pausing memory** is the learner's choice (Account → Preferences). No new memories are
+  saved, by the sweep or on request (the write-back endpoint answers 409 `memory_paused`), and
+  resuming moves every conversation's `memory_watermark` to its newest message, so nothing said
+  while paused is ever extracted. Existing memories stay in use until forgotten. The switch is
+  about memories only: profile refresh still reads the learner's recent answers and messages.
+
+## 18. Spend limits (S47, S48)
+
+Every model call is recorded and admitted by `LLMClient` itself; no service logs a call by hand.
+
+- **The record.** Before a call, a `pending` row in `llm_calls` carrying a reserved estimate
+  (input ≈ characters ÷ 4, output = `max_tokens`, cost from the price table; `estimated = true`).
+  After it, the row is settled: `ok` with the provider's numbers; `failed` with `error_kind` (the
+  exception's class name, never its message) and the input estimate kept, since the provider may
+  have charged; `partial` for a stream closed before its last chunk, output estimated from the
+  text delivered. Each row names its `feature` (the service that paid, e.g. `chat_turn`,
+  `practice_grading`, `ingestion`, `profile_refresh`), the `request_id` of the API request that
+  made it, a `prompt_hash` of the system prompt and `app_version` (`GURU_APP_VERSION`, default
+  `dev` — set it per release so a change in cost or quality can be tied to one). A failed
+  accounting write is logged `llm.call_not_recorded` and never fails the call.
+- **Learner caps.** `GURU_LEARNER_DAILY_COST_USD_LIMIT` (5.0) and `GURU_LEARNER_DAILY_TOKEN_LIMIT`
+  (2,000,000), over the trailing 24 hours, `0` disabling either. Exact under concurrency:
+  admission and the pending row are one transaction holding an advisory lock on the learner, so
+  parallel calls see each other's reservations. A reservation counts at `max_tokens`, so a
+  learner near the cap can be refused a call that would in fact have been short. Calls during
+  an administrator's visit count against the visited learner.
+- **Deployment ceiling.** `GURU_SPEND_BUDGET_USD` over `GURU_SPEND_WINDOW_HOURS` (24), unset
+  meaning no ceiling. At 100% every paid call is refused. The total is cached per process for
+  `GURU_SPEND_GUARD_CACHE_SECONDS` (30), so the ceiling can be overshot by what is spent within
+  that long — a soft edge; the learner caps have none.
+- **Background work yields first.** Memory write-back, profile refresh, concept-link judging and
+  reindex stop at 90% of either learner cap and of the deployment budget; the refresh sweep
+  claims nothing while the deployment is past 90%. A learner's own turns continue.
+- **What a refusal looks like.** API routes answer 429
+  `{"detail": {"code": "budget_exceeded", "scope": "learner"|"deployment", "message": …}}`; a
+  turn refused part-way ends with an error event carrying the same message and the turn is
+  marked failed, so it can be retried; a refused upload fails with the message as its error; a
+  refused background task logs `budget.deferred task=…` at info and keeps its claim, so the sweep
+  retries it later.
+- **Reading it.** `/api/v1/ops/spend` and the Admin page break cost down by role, model and
+  feature, with counts of failed, partial and estimated calls. Estimated rows carry their
+  reservation, not the provider's numbers. Rows written before this change have feature
+  `legacy`; an `unattributed` row is a call reached through a path no service named — fix it
+  with `@metered(...)` on that service's entry function (`app/llm/attribution.py`).
+- **`calls_pending_stale`.** A row still `pending` after 15 minutes: a process died mid-call.
+  Check for app and worker restarts. The row keeps counting at its estimate until it leaves the
+  window; nothing needs cleaning up.

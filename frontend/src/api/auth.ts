@@ -17,6 +17,8 @@ export type CurrentLearner = {
   /** Whether to offer the operator's portal at all (P10). Not what authorizes it — the API
    * refuses a non-administrator whatever the browser renders. */
   is_admin: boolean;
+  /** Set while the account is pending deletion (S61): the app shows the recovery screen. */
+  deletion_due_at?: string | null;
 };
 
 export function useCurrentLearner() {
@@ -85,7 +87,10 @@ export function useExchange() {
       }
       return data as CurrentLearner;
     },
-    onSuccess: () => queryClient.clear(),
+    // Reset, not clear: both drop whatever a previous account left cached, but `clear()` also
+    // detaches the mounted `/auth/me` observers, so the page that ran the exchange kept seeing
+    // "signed out" until a reload. Reset refetches what is on screen.
+    onSuccess: () => queryClient.resetQueries(),
   });
 }
 

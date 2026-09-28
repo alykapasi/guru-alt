@@ -97,7 +97,7 @@ async def test_run_tutor_turn_persists_turn_and_logs_call(db_session: AsyncSessi
     assert messages[1].content == REPLY
     assert messages[1].model == "fake-1"
 
-    calls = (await db_session.scalars(select(LLMCall))).all()
+    calls = (await db_session.scalars(select(LLMCall).where(LLMCall.role != "embed"))).all()
     assert len(calls) == 1
     assert calls[0].role == "smart"
     assert calls[0].output_tokens == len(REPLY.split())
@@ -117,4 +117,7 @@ async def test_run_tutor_turn_stream_failure_persists_user_only(db_session: Asyn
         await db_session.scalars(select(Message).where(Message.conversation_id == conv.id))
     ).all()
     assert [m.role for m in messages] == ["user"]  # user persisted, no assistant
-    assert (await db_session.scalars(select(LLMCall))).all() == []
+    # The failed call is recorded too (S48): it may have been billed. Retrieval's embedding
+    # succeeded before it.
+    failed = await db_session.scalars(select(LLMCall.status).where(LLMCall.role != "embed"))
+    assert list(failed) == ["failed"]

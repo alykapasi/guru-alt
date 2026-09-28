@@ -17,10 +17,11 @@ in a test would mean rows referencing learners this transaction has not committe
 tests with no database at all — connections from the process-wide pool bound to a previous
 test's event loop. So it is redirected for every test: `accounting_default` sends it nowhere,
 and `db_session` upgrades it to a second session on the test's own connection, where foreign
-keys resolve and the rows roll back with everything else. `test_llm_log.py` covers the real
+keys resolve and the rows roll back with everything else. `test_meter.py` covers the real
 independent-connection behaviour directly.
 """
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -30,7 +31,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import NullPool
+from sqlalchemy import NullPool, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, create_async_engine
 
 from app.api.deps import get_concept_link_judge_enqueuer, get_engine
@@ -38,7 +39,10 @@ from app.core.config import get_settings
 from app.core.db import get_session
 from app.main import app
 from app.models.learner import Learner
-from app.services import auth
+from app.services import (
+    auth,
+    spend_guard,  # noqa: F401  installs the spend guard on the meter (S47)
+)
 from app.services.decisions import DecisionPolicy, DecisionRuntime, set_runtime
 from app.services.llm_log import set_accounting_session_factory
 from app.storage import InMemoryBlobStore
@@ -64,6 +68,9 @@ class _DiscardedAccounting:
         pass
 
     async def commit(self) -> None:
+        pass
+
+    async def execute(self, *args: object, **kwargs: object) -> None:
         pass
 
 
@@ -134,17 +141,24 @@ async def db_session(engine: AsyncEngine, accounting_default: None) -> AsyncIter
 
 @asynccontextmanager
 async def _accounting_on(connection: AsyncConnection) -> AsyncIterator[None]:
-    """Route `log_llm_call` to its own session on `connection` for the duration of a test."""
+    """Route accounting to its own session on `connection` for the duration of a test.
+
+    One connection runs one statement at a time, and the client records concurrent calls
+    concurrently (batched embeddings), so accounting sessions here take turns. Production's
+    sessions each have their own connection and need no such lock.
+    """
+    turn = asyncio.Lock()
 
     @asynccontextmanager
     async def factory() -> AsyncIterator[AsyncSession]:
-        session = AsyncSession(
-            bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint"
-        )
-        try:
-            yield session
-        finally:
-            await session.close()
+        async with turn:
+            session = AsyncSession(
+                bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint"
+            )
+            try:
+                yield session
+            finally:
+                await session.close()
 
     previous = set_accounting_session_factory(factory)
     try:
@@ -203,6 +217,25 @@ async def _app_client(db_session: AsyncSession, engine: AsyncEngine) -> AsyncIte
             yield client
     finally:
         app.dependency_overrides.clear()
+    # Reached only when the test itself passed.
+    await _no_unattributed_calls(db_session)
+
+
+async def _no_unattributed_calls(session: AsyncSession) -> None:
+    """S48: a paid call reached from an API request with no feature is an attribution gap."""
+    from app.models.chat import LLMCall
+
+    # Only calls made while serving a request: a test's own setup (seeding items, embedding
+    # fixtures) calls the client directly, outside any feature.
+    rows = (
+        await session.scalars(
+            select(LLMCall.role).where(
+                LLMCall.feature == "unattributed", LLMCall.request_id.is_not(None)
+            )
+        )
+    ).all()
+    if rows:
+        pytest.fail(f"{len(rows)} model call(s) recorded with no feature: {sorted(set(rows))}")
 
 
 @pytest_asyncio.fixture

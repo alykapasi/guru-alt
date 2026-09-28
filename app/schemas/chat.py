@@ -45,6 +45,7 @@ class ConversationRead(BaseModel):
     # live stream showed instead of guessing from the transcript's shape (S52).
     phase: str
     active_item_id: uuid.UUID | None
+    archived_at: datetime | None = None
     created_at: datetime
 
 

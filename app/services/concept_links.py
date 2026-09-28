@@ -22,9 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import link_judge, mastery
 from app.llm import LLMClient
+from app.llm.attribution import metered
 from app.models.knowledge import KC, ConceptLink, ConceptLinkDecision, KCEdge, Subject, Topic
 from app.schemas.concept_links import ConceptLinkReviewRead
-from app.services.llm_log import log_llm_call
 
 log = structlog.get_logger(__name__)
 
@@ -233,6 +233,7 @@ async def _write_verdict(
     return cast("CursorResult[Any]", result).rowcount == 1
 
 
+@metered("concept_links", learner="learner_id")
 async def judge_pending(session: AsyncSession, llm: LLMClient, learner_id: uuid.UUID) -> int:
     """Judge this learner's unjudged private candidates; return how many got a verdict.
 
@@ -265,14 +266,7 @@ async def judge_pending(session: AsyncSession, llm: LLMClient, learner_id: uuid.
         b = await _side(session, link.kc_b_id, visible_subjects)
         if a is None or b is None:
             continue
-        verdict, usage = await link_judge.judge_pair(llm, a, b)
-        if usage.input_tokens or usage.output_tokens:
-            await log_llm_call(
-                learner_id=learner_id,
-                role=link_judge.JUDGE_ROLE.value,
-                spec=llm.spec(link_judge.JUDGE_ROLE),
-                usage=usage,
-            )
+        verdict, _usage = await link_judge.judge_pair(llm, a, b)
         if verdict is None:
             log.warning("concept_links.judge_undecided", link_id=str(link.id))
             continue

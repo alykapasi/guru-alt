@@ -38,6 +38,11 @@ const SPEND = {
     },
   ],
   by_model: [],
+  by_feature: [],
+  failed_calls: 0,
+  partial_calls: 0,
+  estimated_calls: 0,
+  near_budget: false,
 };
 
 const LEARNERS = [
@@ -146,6 +151,21 @@ describe("the operator's portal", () => {
     renderPortal();
 
     expect(await screen.findByText(/floor rather than the figure/)).toBeInTheDocument();
+  });
+
+  it("shows cost by feature and how calls ended", async () => {
+    serve({
+      ...SPEND,
+      by_feature: [{ ...SPEND.by_role[0], name: "chat_turn" }],
+      failed_calls: 2,
+      partial_calls: 1,
+      estimated_calls: 3,
+    });
+    renderPortal();
+
+    expect(await screen.findByRole("heading", { name: "By feature" })).toBeInTheDocument();
+    expect(screen.getByText("chat_turn")).toBeInTheDocument();
+    expect(screen.getByText("Failed 2 · partial 1 · estimated 3")).toBeInTheDocument();
   });
 
   it("does not warn about a floor when everything had a price", async () => {

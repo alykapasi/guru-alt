@@ -80,9 +80,10 @@ async def test_the_notes_index_does_not_query_per_topic(db_session: AsyncSession
     assert len(large_count) == len(small_count), (
         f"query count grew with the graph\nsmall: {small_count}\nlarge: {large_count}"
     )
-    # One constant lookup authorizes the subject before any private topic names are returned.
-    # The budget still proves graph size cannot add queries.
-    assert len(small_count) <= 8, small_count
+    # One constant lookup authorizes the subject before any private topic names are returned,
+    # and one reads the learner's note-format setting for the subject (S02). The budget still
+    # proves graph size cannot add queries.
+    assert len(small_count) <= 9, small_count
 
 
 async def test_a_subject_rollup_does_not_query_per_topic(db_session: AsyncSession) -> None:
@@ -102,3 +103,46 @@ async def test_a_subject_rollup_does_not_query_per_topic(db_session: AsyncSessio
         f"query count grew with the graph\nsmall: {small_count}\nlarge: {large_count}"
     )
     assert len(small_count) <= 3, small_count
+
+
+async def test_profile_refresh_does_not_query_per_piece_of_evidence(
+    db_session: AsyncSession,
+) -> None:
+    """S43: the window bounds what is read; this bounds how many round trips reading it takes."""
+    from app.llm.registry import fake_llm_client
+    from app.models.chat import Conversation, Message
+    from app.models.learner import Learner
+    from app.models.learning import LearningEvent
+    from app.services import profile as profile_svc
+
+    async def learner_with(n: int) -> uuid.UUID:
+        learner = Learner(handle=f"q-{uuid.uuid4().hex[:8]}")
+        db_session.add(learner)
+        await db_session.flush()
+        conv = Conversation(learner_id=learner.id)
+        db_session.add(conv)
+        await db_session.flush()
+        for i in range(n):
+            db_session.add(Message(conversation_id=conv.id, role="user", content=f"m{i}"))
+            db_session.add(
+                LearningEvent(
+                    learner_id=learner.id,
+                    event_type="observation",
+                    payload={"score": 1.0, "difficulty": 0.5, "latency_ms": 4000, "hints_used": 0},
+                )
+            )
+        await db_session.commit()
+        return learner.id
+
+    llm = fake_llm_client("{}")
+    # Both big enough for every dimension that can be computed from this history: each
+    # dimension is one read and one write, bounded by the catalog; this is about evidence.
+    small, large = await learner_with(40), await learner_with(120)
+    with count_queries(db_session) as small_count:
+        await profile_svc.refresh_profile(db_session, small, llm)
+    with count_queries(db_session) as large_count:
+        await profile_svc.refresh_profile(db_session, large, llm)
+
+    assert len(large_count) == len(small_count), (
+        f"query count grew with the history\nsmall: {small_count}\nlarge: {large_count}"
+    )

@@ -17,12 +17,12 @@ workflow turn.
 import json
 import uuid
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -44,12 +44,13 @@ from app.schemas.chat import (
     PracticeStateRead,
     TurnRead,
 )
+from app.schemas.source import RemovalImpactRead
 from app.services import agentic as agentic_svc
-from app.services import budget, turn_lock
 from app.services import chat as svc
 from app.services import knowledge as knowledge_svc
 from app.services import practice as practice_svc
 from app.services import refinement as refinement_svc
+from app.services import removal, spend_guard, turn_lock
 from app.services import turn as turn_svc
 from app.services import workflow as workflow_svc
 from app.services.assessment import item_to_read
@@ -103,8 +104,46 @@ async def create_conversation(
 
 
 @router.get("/conversations", response_model=list[ConversationRead])
-async def list_conversations(session: SessionDep, learner: CurrentLearner):
-    return await svc.list_conversations(session, learner.id)
+async def list_conversations(
+    session: SessionDep,
+    learner: CurrentLearner,
+    archived: Annotated[bool, Query()] = False,
+):
+    return await svc.list_conversations(session, learner.id, archived=archived)
+
+
+def _refuse_if_archived(conversation: Conversation) -> None:
+    """An archived conversation is read-only until unarchived (S61)."""
+    if conversation.archived_at is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "archived", "message": "Unarchive this conversation to continue it."},
+        )
+
+
+@router.post("/conversations/{conversation_id}/archive", response_model=ConversationRead)
+async def archive_conversation(
+    conversation_id: uuid.UUID, session: SessionDep, learner: CurrentLearner
+):
+    """Out of the list and read-only, reversibly (S61); its memories stay current."""
+    conversation = await removal.set_conversation_archived(
+        session, learner.id, conversation_id, archived=True
+    )
+    if conversation is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    return conversation
+
+
+@router.post("/conversations/{conversation_id}/unarchive", response_model=ConversationRead)
+async def unarchive_conversation(
+    conversation_id: uuid.UUID, session: SessionDep, learner: CurrentLearner
+):
+    conversation = await removal.set_conversation_archived(
+        session, learner.id, conversation_id, archived=False
+    )
+    if conversation is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    return conversation
 
 
 @router.patch("/conversations/{conversation_id}", response_model=ConversationRead)
@@ -120,14 +159,29 @@ async def update_conversation(
     return await svc.update_conversation_title(session, conversation, data.title)
 
 
-@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_conversation(
+@router.get("/conversations/{conversation_id}/removal", response_model=RemovalImpactRead)
+async def conversation_removal(
     conversation_id: uuid.UUID, session: SessionDep, learner: CurrentLearner
 ):
-    conversation = await svc.get_conversation(session, conversation_id, learner_id=learner.id)
-    if conversation is None or conversation.learner_id != learner.id:
+    """What deleting this conversation would keep, and what forgetting would also remove."""
+    impact = await removal.conversation_impact(session, learner.id, conversation_id)
+    if impact is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
-    await svc.delete_conversation(session, conversation)
+    return asdict(impact)
+
+
+@router.delete("/conversations/{conversation_id}", response_model=RemovalImpactRead)
+async def delete_conversation(
+    conversation_id: uuid.UUID,
+    session: SessionDep,
+    learner: CurrentLearner,
+    forget: Annotated[bool, Query()] = False,
+):
+    """Delete a conversation now (S61). With ``forget``, the memories it taught go too (V11)."""
+    impact = await removal.delete_conversation(session, learner.id, conversation_id, forget=forget)
+    if impact is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    return asdict(impact)
 
 
 class MessagePage(BaseModel):
@@ -472,6 +526,7 @@ async def practice_action(
     conversation = await svc.get_conversation(session, conversation_id, learner_id=learner.id)
     if conversation is None or conversation.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    _refuse_if_archived(conversation)
     claim = await turn_lock.claim(db_engine, conversation_id)
     if claim is None:
         raise HTTPException(
@@ -521,11 +576,11 @@ async def send_message(
     conversation = await svc.get_conversation(session, conversation_id, learner_id=learner.id)
     if conversation is None or conversation.learner_id != learner.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    _refuse_if_archived(conversation)
 
-    try:
-        await budget.require_budget(session, learner.id, get_settings())
-    except budget.BudgetExceeded as exc:
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc)) from exc
+    # An early refusal before a turn is claimed (S47; 429 via the app's handler). Every call in
+    # the turn is admitted too.
+    await spend_guard.check(session, learner.id)
 
     # Before the claim, not after: reaping reads the claim as its liveness signal, so our own
     # would make this conversation's abandoned turns look alive.

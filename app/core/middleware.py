@@ -12,6 +12,8 @@ import structlog
 from starlette.requests import Request
 from starlette.responses import Response
 
+from app.llm.attribution import attributed
+
 REQUEST_ID_HEADER = "X-Request-ID"
 
 
@@ -24,7 +26,8 @@ async def request_id_middleware(
     structlog.contextvars.clear_contextvars()
     structlog.contextvars.bind_contextvars(request_id=request_id)
     try:
-        response = await call_next(request)
+        with attributed(request_id=request_id):  # recorded on every model call (S48)
+            response = await call_next(request)
     finally:
         structlog.contextvars.clear_contextvars()
     response.headers[REQUEST_ID_HEADER] = request_id

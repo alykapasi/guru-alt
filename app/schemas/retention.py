@@ -1,6 +1,7 @@
 """Request/response schemas for learner export and deletion (S61)."""
 
 import uuid
+from datetime import datetime
 
 from pydantic import BaseModel
 
@@ -26,3 +27,25 @@ class DeletionReportRead(BaseModel):
     items_deleted: int
     # False when object storage refused something. The database rows are gone either way.
     complete: bool
+
+
+class DeletionRequestRead(BaseModel):
+    """When a pending account will be erased, unless it is restored first (S61)."""
+
+    due_at: datetime
+    # True when the request asked to erase at once (``?now=true``) and it has been.
+    erased: bool = False
+
+
+class DeletionStatusRead(BaseModel):
+    pending: bool
+    requested_at: datetime | None
+    due_at: datetime | None
+
+
+class ExportFileRead(BaseModel):
+    """One uploaded file, and where to download it (S61)."""
+
+    id: uuid.UUID
+    origin: str
+    file_path: str

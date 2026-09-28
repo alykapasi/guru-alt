@@ -16,6 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent import checkpointing
 from app.agent.workflow import WorkflowState, build_workflow_graph, workflow_config
 from app.core.config import get_settings
+from app.llm.attribution import metered
+from app.llm.meter import BudgetExceeded
+from app.llm.pricing import price_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.models.assessment import Item
@@ -28,12 +31,12 @@ from app.services import assessment as assessment_svc
 from app.services import checkpoints, learner_context
 from app.services.assessment import item_to_read
 from app.services.grounding import format_grounding
-from app.services.llm_log import log_llm_call
 from app.services.session_runner import short_answer_item_for_kc
 from app.services.turn_common import (
     TurnEvent,
     add_message,
     extract_citations,
+    refusal_ends_turn,
 )
 
 log = structlog.get_logger(__name__)
@@ -134,6 +137,8 @@ async def paused_prompt(
     return snapshot.values["last_message"], item
 
 
+@metered("practice_turn", learner="learner_id", conversation="conversation.id")
+@refusal_ends_turn
 async def run_workflow_turn(
     session: AsyncSession,
     llm: LLMClient,
@@ -283,6 +288,8 @@ async def run_workflow_turn(
             elif mode == "values":
                 last_message = payload["last_message"]  # ty: ignore[invalid-argument-type]
                 usage = payload["usage"]  # ty: ignore[invalid-argument-type]
+    except BudgetExceeded:
+        raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
         log.error("workflow.stream_failed", error=str(exc), model=spec.model)
         yield TurnEvent(type="error", detail="generation failed")
@@ -322,19 +329,9 @@ async def run_workflow_turn(
             grounding_count=grounding_count,
         )
     # A round can end without calling a model at all: a flashcard answered in prose is sent
-    # straight back to be rated, presenting nothing new. Accounting records calls, so a round
-    # that made none writes no row (same guard as ``assessment._grade``'s short-circuit).
-    cost = (
-        await log_llm_call(
-            learner_id=learner_id,
-            conversation_id=conversation.id,
-            role=ModelRole.SMART.value,
-            spec=spec,
-            usage=usage,
-        )
-        if usage.total_tokens
-        else None
-    )
+    # straight back to be rated, presenting nothing new. It cost nothing to report. (The client
+    # recorded each call the round did make, S48.)
+    cost = price_usd(spec.provider, spec.model, usage) if usage.total_tokens else None
     await session.commit()
 
     if snapshot.next:

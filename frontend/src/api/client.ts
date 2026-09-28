@@ -59,3 +59,17 @@ export function apiFetch(path: string, init: RequestInit = {}): Promise<Response
     credentials: CREDENTIALS,
   });
 }
+
+/**
+ * The learner-facing message a refused request carries (S47: `{detail: {code, message}}`),
+ * or `fallback` when the body has none. Reads the body, so call it only on a failed response.
+ */
+export async function failureMessage(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = (await res.json()) as { detail?: { message?: string } | string };
+    if (typeof body.detail === "object" && body.detail?.message) return body.detail.message;
+  } catch {
+    // not JSON: the fallback stands
+  }
+  return fallback;
+}

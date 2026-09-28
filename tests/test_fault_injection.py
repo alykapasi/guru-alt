@@ -16,15 +16,14 @@ from typing import Any
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from structlog.testing import capture_logs
 
 from app.core.config import Settings, get_settings
 from app.llm import ModelRole
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
-from app.llm.types import Usage
 from app.models.chat import Conversation, Message
 from app.models.learner import Learner
 from app.models.source import Chunk, Source, SourceKind, SourceStatus
-from app.rag import pipeline
 from app.rag.pipeline import PartialEmbedding, embed_in_batches
 from app.services import blob_integrity, ingestion
 from app.services.chat import run_tutor_turn
@@ -162,36 +161,32 @@ async def test_a_failed_embedding_writes_no_chunks_at_all(db_session: AsyncSessi
 
 
 async def test_the_batches_already_billed_are_sent_to_accounting_before_the_failure_propagates(
-    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    db_session: AsyncSession,
 ) -> None:
     """A retry loop that spends real money and records none of it is invisible to the budget
     watch (P11): the source rolls back, the job runs again, and the provider's invoice grows
     while the account looks quiet.
 
-    Accounting is captured here rather than read back out of the database, because the suite's
-    fixture routes it onto the test's own connection — where ``ingest_source``'s rollback
-    discards it, which production's separate transaction would not. That the row survives a
-    rollback is ``test_llm_log`` 's property; that the usage gets there at all is this one's.
+    The client records each batch as it settles (S48). Read here from the ``llm.call`` log line
+    rather than the table, because the suite's fixture routes accounting onto the test's own
+    connection — where ``ingest_source``'s rollback discards it, which production's separate
+    transaction would not. That the row survives a rollback is ``test_meter``'s property; that
+    every billed batch gets there at all is this one's.
     """
     store = InMemoryBlobStore()
     source = await _uploaded(db_session, store)
     client, provider = _broken_embedder(on_call=3)
-    recorded: list[tuple[str, Usage]] = []
 
-    async def _record(*, role: str, usage: Usage, **_: Any) -> float | None:
-        recorded.append((role, usage))
-        return None
-
-    monkeypatch.setattr(pipeline, "log_llm_call", _record)
-
-    await ingestion.ingest_source(
-        db_session, store, client, source.id, settings=_one_chunk_per_batch()
-    )
+    with capture_logs() as logs:
+        await ingestion.ingest_source(
+            db_session, store, client, source.id, settings=_one_chunk_per_batch()
+        )
 
     assert provider.fired == 1, "the fault did not fire"
-    embeds = [usage for role, usage in recorded if role == str(ModelRole.EMBED)]
-    assert len(embeds) == 1
-    assert embeds[0].input_tokens == provider.billed.input_tokens > 0
+    calls = [e for e in logs if e["event"] == "llm.call"]
+    settled = [e for e in calls if e["status"] == "ok" and e["feature"] == "ingestion"]
+    assert sum(e["input_tokens"] for e in settled) == provider.billed.input_tokens > 0
+    assert [e["error_kind"] for e in calls if e["status"] == "failed"] == ["InjectedFault"]
 
 
 async def test_the_source_ingests_cleanly_once_the_provider_recovers(

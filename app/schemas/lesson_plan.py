@@ -103,7 +103,8 @@ class LessonPlanRead(BaseModel):
     goal: str | None
     pacing: str
     # How much say the learner has over a prerequisite detour (S11): "guided" (default) takes
-    # one on their behalf, "exploration" offers it first.
+    # one on their behalf, "exploration" offers it first. The learner's effective setting for
+    # this subject (S02), not a column of the plan.
     guidance: str
     example_tags: list[str]
     steps: list[LessonStepRead]

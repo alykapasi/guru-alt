@@ -18,26 +18,36 @@ retried; nothing the learner can still reach survives.
 """
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal, cast
 
 import structlog
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import CursorResult, Result, delete, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
+from app.core.config import Settings
+from app.core.identity import IdentityProvider
 from app.models.assessment import Item, Rubric
 from app.models.auth import AccountAction, AdminAction, Impersonation, Invitation
-from app.models.chat import Conversation, Message, Turn
+from app.models.chat import Conversation, LLMCall, Message, Turn, TurnStatus
 from app.models.content import ContentBlock
+from app.models.decision import DecisionCall
+from app.models.erasure import ErasureKind, PendingErasure
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState, LearningEvent
 from app.models.lesson_plan import LessonPlan
 from app.models.memory import Memory
 from app.models.note import Note, NoteRender, NoteRevision
+from app.models.ops import AlertTransition
+from app.models.preference import LearnerPreference
 from app.models.profile import LearnerProfile, ProfileDimension
 from app.models.publication import Publication
 from app.models.source import Chunk, Source
+from app.services import auth as auth_svc
 from app.services import ingestion
 from app.storage.base import BlobStore
 
@@ -95,7 +105,12 @@ RETENTION: tuple[StoreRetention, ...] = (
     ),
     StoreRetention("conversations", "deleted", "Cascades from the learner; messages with it."),
     StoreRetention("messages", "deleted", "Cascades from the conversation."),
-    StoreRetention("turns", "deleted", "Cascades from the conversation."),
+    StoreRetention(
+        "turns",
+        "deleted",
+        "Cascades from the conversation. Finished turns are also deleted after the diagnostic "
+        "window; the transcript is the durable copy.",
+    ),
     StoreRetention(
         "onboarding_sessions",
         "deleted",
@@ -109,6 +124,11 @@ RETENTION: tuple[StoreRetention, ...] = (
         "Cascades from the learner. Note the asymmetry this resolves: deleting one "
         "*conversation* deliberately leaves its memories, because a durable fact outlives the "
         "conversation it was learned in. Deleting the learner does not.",
+    ),
+    StoreRetention(
+        "learner_preferences",
+        "deleted",
+        "Cascades from the learner; a subject override also goes with its subject (S02).",
     ),
     StoreRetention("learner_profiles", "deleted", "Cascades from the learner."),
     StoreRetention("profile_dimensions", "deleted", "Cascades from the learner."),
@@ -146,7 +166,9 @@ RETENTION: tuple[StoreRetention, ...] = (
         "anonymised",
         "The learner id is dropped (SET NULL) and the row kept: token spend is the platform's "
         "own accounting, and it must still add up after an account is closed. It carries no "
-        "learner content — role, model, token counts, cost.",
+        "learner content — role, model, token counts, cost. After the diagnostic window (30 "
+        "days by default) the learner and conversation ids are dropped even for a live "
+        "account.",
     ),
     StoreRetention(
         "decision_calls",
@@ -155,7 +177,8 @@ RETENTION: tuple[StoreRetention, ...] = (
         "dropped (SET NULL) and the row kept, because it is evidence for whether Jev can "
         "replace a model call and that evidence must still add up after an account is closed. "
         "It carries no learner content — the question, the answer label or probability, and "
-        "the baseline the model would have given.",
+        "the baseline the model would have given. After the diagnostic window (30 days by "
+        "default) the learner and conversation ids are dropped even for a live account.",
     ),
     StoreRetention(
         "subjects/topics/kcs/kc_edges",
@@ -232,12 +255,29 @@ class DeletionReport:
         return not self.blobs_failed
 
 
+def file_path(source_id: Any) -> str:
+    """Where one uploaded file downloads from (``GET /me/export/sources/{id}/file``)."""
+    return f"/api/v1/me/export/sources/{source_id}/file"
+
+
+async def export_files(session: AsyncSession, learner_id: uuid.UUID) -> list[Source]:
+    """Every source of this learner's with stored bytes, archived ones included."""
+    return list(
+        (
+            await session.scalars(
+                select(Source)
+                .where(Source.learner_id == learner_id, Source.blob_key.is_not(None))
+                .order_by(Source.created_at)
+            )
+        ).all()
+    )
+
+
 async def export_learner(session: AsyncSession, learner_id: uuid.UUID) -> dict[str, Any]:
     """Everything the platform holds about one learner, as plain JSON-able data.
 
-    Metadata only for uploads: the export names each source and its blob key, not the bytes.
-    Shipping the raw files needs a packaging step (and, for anything large, a signed download)
-    that this does not attempt — what it does guarantee is that nothing is silently omitted,
+    Uploads are listed with a ``file_path`` each: the bytes download one file at a time rather
+    than packaged into this response. What it guarantees is that nothing is silently omitted,
     because the store list is the same :data:`RETENTION` the deletion walks.
     """
     learner = await session.get(Learner, learner_id)
@@ -262,12 +302,17 @@ async def export_learner(session: AsyncSession, learner_id: uuid.UUID) -> dict[s
         result = await session.scalars(select(model).where(where))
         return [_as_dict(row) for row in result.all()]
 
+    sources = await rows(Source, Source.learner_id == learner_id)
+    for entry in sources:
+        entry["file_path"] = file_path(entry["id"]) if entry.get("blob_key") else None
+
     return {
         "learner": _as_dict(learner),
         "conversations": await rows(Conversation, Conversation.learner_id == learner_id),
         "messages": await rows(Message, Message.conversation_id.in_(conversation_ids)),
         "turns": await rows(Turn, Turn.conversation_id.in_(conversation_ids)),
         "memories": await rows(Memory, Memory.learner_id == learner_id),
+        "preferences": await rows(LearnerPreference, LearnerPreference.learner_id == learner_id),
         "profile": await rows(LearnerProfile, LearnerProfile.learner_id == learner_id),
         "profile_dimensions": await rows(
             ProfileDimension, ProfileDimension.learner_id == learner_id
@@ -279,7 +324,7 @@ async def export_learner(session: AsyncSession, learner_id: uuid.UUID) -> dict[s
         "note_revisions": await rows(NoteRevision, NoteRevision.note_id.in_(note_ids)),
         "note_renders": await rows(NoteRender, NoteRender.note_id.in_(note_ids)),
         "content_blocks": await rows(ContentBlock, ContentBlock.learner_id == learner_id),
-        "sources": await rows(Source, Source.learner_id == learner_id),
+        "sources": sources,
         "chunks": await rows(Chunk, Chunk.source_id.in_(source_ids)),
         "authored_items": await rows(
             Item, or_(Item.author_learner_id == learner_id, Item.owner_learner_id == learner_id)
@@ -376,6 +421,276 @@ async def delete_learner(
         blobs_deleted=report.blobs_deleted,
         items_deleted=report.items_deleted,
     )
+    return report
+
+
+class NotPending(Exception):
+    """Restore or erase-now asked of an account that is not pending deletion."""
+
+
+async def request_deletion(
+    session: AsyncSession, learner_id: uuid.UUID, *, settings: Settings
+) -> Learner:
+    """Start the recovery window (V12): access ends now, the data stays until the due time.
+
+    Every session is revoked, so every device is signed out at once. Idempotent: asking again
+    while pending neither moves the due date nor extends the window.
+    """
+    learner = await session.get(Learner, learner_id, populate_existing=True, with_for_update=True)
+    if learner is None:
+        raise LookupError(str(learner_id))
+    if learner.deletion_due_at is None:
+        now = datetime.now(UTC)
+        learner.deletion_requested_at = now
+        learner.deletion_due_at = now + timedelta(days=settings.account_recovery_days)
+    await session.commit()  # before revoking: revoke_all commits its own transaction
+    await auth_svc.revoke_all(session, learner_id)
+    await session.refresh(learner)
+    return learner
+
+
+async def restore_account(session: AsyncSession, learner_id: uuid.UUID) -> Learner:
+    """End the recovery window early by keeping the account. ``NotPending`` if it is active."""
+    learner = await session.get(Learner, learner_id, populate_existing=True, with_for_update=True)
+    if learner is None:
+        raise LookupError(str(learner_id))
+    if learner.deletion_due_at is None:
+        raise NotPending(str(learner_id))
+    learner.deletion_requested_at = None
+    learner.deletion_due_at = None
+    await session.commit()
+    await session.refresh(learner)
+    return learner
+
+
+async def queue_erasure(session: AsyncSession, kind: ErasureKind, target: str, error: str) -> None:
+    """Record something that could not be erased, for the retry worker. Commits."""
+    await session.execute(
+        pg_insert(PendingErasure)
+        .values(id=uuid.uuid4(), kind=kind, target=target, last_error=error[:500])
+        .on_conflict_do_nothing(constraint="uq_pending_erasures_kind_target")
+    )
+    await session.commit()
+
+
+async def erase_learner(
+    session: AsyncSession,
+    blobstore: BlobStore,
+    provider: IdentityProvider | None,
+    learner_id: uuid.UUID,
+) -> DeletionReport:
+    """Erase the account now: every store per :data:`RETENTION`, then the provider's copy.
+
+    A refusal by the object store or the provider never undoes the database erase; it becomes a
+    pending erasure the worker retries until it succeeds.
+    """
+    learner = await session.get(Learner, learner_id)
+    subject = learner.auth_subject if learner is not None else None
+    report = await delete_learner(session, blobstore, learner_id)
+    for key in report.blobs_failed:
+        await queue_erasure(session, ErasureKind.BLOB, key, "refused at account erase")
+    if subject:
+        if provider is None:
+            await queue_erasure(session, ErasureKind.IDENTITY, subject, "no provider configured")
+        else:
+            try:
+                await provider.delete_user(subject)
+            except Exception as exc:
+                log.warning("retention.identity_not_deleted", learner_id=str(learner_id))
+                await queue_erasure(session, ErasureKind.IDENTITY, subject, str(exc))
+    return report
+
+
+async def erase_due(
+    session: AsyncSession,
+    blobstore: BlobStore,
+    provider: IdentityProvider | None,
+    *,
+    now: datetime,
+) -> int:
+    """Erase every account whose recovery window has passed. Returns how many.
+
+    Each candidate is re-read under a row lock: a learner who restored between the query and
+    the erase is no longer due and is skipped.
+    """
+    ids = list(
+        (
+            await session.scalars(
+                select(Learner.id).where(
+                    Learner.deletion_due_at.is_not(None), Learner.deletion_due_at <= now
+                )
+            )
+        ).all()
+    )
+    erased = 0
+    for learner_id in ids:
+        learner = await session.get(
+            Learner, learner_id, populate_existing=True, with_for_update=True
+        )
+        if learner is None or learner.deletion_due_at is None or learner.deletion_due_at > now:
+            await session.rollback()
+            continue
+        try:
+            await erase_learner(session, blobstore, provider, learner_id)
+        except Exception:
+            # Logged and left for the next pass; the accounts after it are still erased.
+            await session.rollback()
+            log.exception("retention.erase_failed", learner_id=str(learner_id))
+            continue
+        erased += 1
+    return erased
+
+
+_MAX_BACKOFF = timedelta(days=1)
+
+
+def _backoff(attempts: int) -> timedelta:
+    # The exponent is capped before it is raised: 2**41 minutes does not fit a timedelta, and
+    # a refusal that has lasted that long must keep retrying daily, not crash the sweep.
+    return min(timedelta(minutes=2 ** min(attempts, 11)), _MAX_BACKOFF)
+
+
+async def retry_erasures(
+    session: AsyncSession,
+    blobstore: BlobStore,
+    provider: IdentityProvider | None,
+    *,
+    now: datetime,
+) -> int:
+    """Try every due pending erasure once. Returns how many were resolved (row removed).
+
+    A blob is deleted only while nothing references its key again — bytes are
+    content-addressed, and a re-upload since the refusal makes them somebody's file; either way
+    the erasure is no longer owed. An identity already gone at the provider counts as done.
+    Failures back off exponentially to a day and keep retrying; ``stuck_erasures`` is what
+    makes a persistent one visible.
+    """
+    rows = list(
+        (
+            await session.scalars(
+                select(PendingErasure)
+                .where(PendingErasure.next_attempt_at <= now)
+                .order_by(PendingErasure.next_attempt_at)
+            )
+        ).all()
+    )
+    resolved = 0
+    for row in rows:
+        kind = row.kind
+        try:
+            resolved += await _retry_one(session, blobstore, provider, row, now=now)
+        except Exception:
+            # One row that cannot even be recorded must not stop the rows behind it.
+            await session.rollback()
+            log.exception("retention.erasure_retry_failed", kind=kind)
+    return resolved
+
+
+async def _retry_one(
+    session: AsyncSession,
+    blobstore: BlobStore,
+    provider: IdentityProvider | None,
+    row: PendingErasure,
+    *,
+    now: datetime,
+) -> int:
+    """Attempt one erasure: 1 and the row removed on success, 0 and a backoff on refusal."""
+    try:
+        if row.kind == ErasureKind.BLOB:
+            await ingestion.unreference_blob(session, blobstore, row.target)
+        elif provider is None:
+            raise RuntimeError("no identity provider configured")
+        else:
+            await provider.delete_user(row.target)
+    except Exception as exc:
+        row.attempts += 1
+        row.last_error = str(exc)[:500]
+        row.next_attempt_at = now + _backoff(row.attempts)
+        await session.commit()
+        return 0
+    await session.delete(row)
+    await session.commit()
+    return 1
+
+
+async def stuck_erasures(session: AsyncSession, *, attempts: int) -> int:
+    """How many pending erasures have been refused at least ``attempts`` times."""
+    count = await session.scalar(
+        select(func.count()).select_from(PendingErasure).where(PendingErasure.attempts >= attempts)
+    )
+    return count or 0
+
+
+async def _count(statement: Awaitable[Result[Any]]) -> int:
+    """How many rows an UPDATE or DELETE touched."""
+    return int(cast("CursorResult[Any]", await statement).rowcount)
+
+
+@dataclass
+class ExpiryReport:
+    calls_anonymised: int = 0
+    decisions_anonymised: int = 0
+    turns_deleted: int = 0
+    alerts_deleted: int = 0
+
+    @property
+    def changed(self) -> bool:
+        return any(
+            (
+                self.calls_anonymised,
+                self.decisions_anonymised,
+                self.turns_deleted,
+                self.alerts_deleted,
+            )
+        )
+
+
+async def expire_diagnostics(session: AsyncSession, *, older_than: timedelta) -> ExpiryReport:
+    """Apply the diagnostic window (V12) — selectively.
+
+    Accounting rows are anonymised, not deleted: spend totals and Jev's evidence must still
+    add up, and without a learner or conversation they point at nobody. Finished turns go —
+    their messages are the durable copy. Alert history goes except each condition's newest row,
+    which is its current state. Learning history, notes, memories, sources and audit records
+    are never touched here.
+    """
+    cutoff = func.now() - older_than
+    report = ExpiryReport()
+    for model in (LLMCall, DecisionCall):
+        anonymised = await _count(
+            session.execute(
+                update(model)
+                .where(
+                    model.created_at < cutoff,
+                    or_(model.learner_id.is_not(None), model.conversation_id.is_not(None)),
+                )
+                .values(learner_id=None, conversation_id=None)
+            )
+        )
+        if model is LLMCall:
+            report.calls_anonymised = anonymised
+        else:
+            report.decisions_anonymised = anonymised
+    report.turns_deleted = await _count(
+        session.execute(
+            delete(Turn).where(
+                Turn.created_at < cutoff,
+                Turn.status.in_([TurnStatus.COMPLETED, TurnStatus.FAILED, TurnStatus.CANCELLED]),
+            )
+        )
+    )
+    newer = aliased(AlertTransition)
+    has_newer = (
+        select(newer.id)
+        .where(newer.name == AlertTransition.name, newer.seq > AlertTransition.seq)
+        .exists()
+    )
+    report.alerts_deleted = await _count(
+        session.execute(
+            delete(AlertTransition).where(AlertTransition.created_at < cutoff, has_newer)
+        )
+    )
+    await session.commit()
     return report
 
 

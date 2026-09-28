@@ -139,7 +139,7 @@ async def test_the_same_book_in_two_dialects_is_embedded_once(db_session: AsyncS
     assert first.text_sha256 == second.text_sha256  # the same book
     assert await _chunks(db_session, first.id) >= 1
     assert await _chunks(db_session, second.id) == 0
-    assert second.meta["duplicate_of"] == str(first.id)
+    assert second.duplicate_of_id == first.id
     assert second.status == SourceStatus.DONE  # finished, not failed
 
 
@@ -154,7 +154,7 @@ async def test_a_different_book_is_still_embedded(db_session: AsyncSession) -> N
 
     assert first.text_sha256 != other.text_sha256
     assert await _chunks(db_session, other.id) >= 1
-    assert "duplicate_of" not in other.meta
+    assert other.duplicate_of_id is None
 
 
 async def test_another_learners_matching_book_is_not_suppressed(

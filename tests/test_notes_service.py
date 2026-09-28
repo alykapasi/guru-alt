@@ -5,12 +5,14 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.learning import mastery, note_distill
 from app.llm import LLMClient
+from app.llm.meter import BudgetExceeded
 from app.llm.providers.fake import FakeProvider, FakeTurn
 from app.llm.registry import ModelSpec, fake_llm_client
 from app.llm.types import ChatMessage, ChatResponse, ModelRole, ToolDef
@@ -781,3 +783,78 @@ async def test_provider_outage_during_catchup_preserves_exact_authored_note(
     assert view.revision_ordinal == 2
     source = await notes_svc.revision_source(db_session, learner.id, topic, 2)
     assert source == (typed, typed)
+
+
+async def test_the_learners_setting_sits_between_the_note_and_the_inference(
+    db_session: AsyncSession,
+) -> None:
+    """The note's own format > the learner's setting (S02) > the inferred format."""
+    from app.services import preferences
+
+    learner, topic, kc = await _seed(db_session)
+    learner_id = learner.id
+    db_session.add(
+        ProfileDimension(
+            learner_id=learner_id,
+            key="note_format",
+            value="mnemonic",
+            uncertainty=0.2,
+            kind="trait",
+            source="behavioral",
+        )
+    )
+    await db_session.flush()
+    assert (await notes_svc.note_view(db_session, learner_id, topic)).effective_format == "mnemonic"
+
+    await preferences.set_preference(
+        db_session, learner_id, "note_format", "narrative", subject_id=topic.subject_id
+    )
+    assert (
+        await notes_svc.note_view(db_session, learner_id, topic)
+    ).effective_format == "narrative"
+
+    await _add_observation(db_session, learner, kc)
+    await notes_svc.refresh_note(db_session, _distill_then_render(ATOMS), learner_id, topic)
+    llm = fake_llm_client(script=[FakeTurn(text="worked render")])
+    view = await notes_svc.set_format(db_session, llm, learner_id, topic, "worked_examples")
+    assert view.effective_format == "worked_examples"
+
+
+# --- a refused call (S47) --------------------------------------------------------------------
+
+
+class _RefusedRender(_BrokenRender):
+    """Distils normally, then the render is refused by the spend guard."""
+
+    async def complete(self, **kwargs) -> ChatResponse:
+        self._calls += 1
+        if self._calls > 1:
+            raise BudgetExceeded("learner")
+        return await FakeProvider.complete(self, **kwargs)
+
+
+async def test_a_refused_render_is_shown_but_not_kept(db_session: AsyncSession) -> None:
+    """The fallback is readable today; caching it would keep it after the limit resets."""
+    from app.models.note import NoteRender
+
+    learner, topic, kc = await _seed(db_session)
+    await _add_observation(db_session, learner, kc)
+
+    view = await notes_svc.refresh_note(
+        db_session, _client(_RefusedRender(ATOMS)), learner.id, topic
+    )
+
+    assert "Vectors add tip-to-tail." in (view.content_md or "")
+    assert (await db_session.scalars(select(NoteRender))).all() == []
+
+
+async def test_a_refused_distill_says_why(db_session: AsyncSession) -> None:
+    class Refused(FakeProvider):
+        async def complete(self, **kwargs) -> ChatResponse:
+            raise BudgetExceeded("learner")
+
+    learner, topic, kc = await _seed(db_session)
+    await _add_observation(db_session, learner, kc)
+
+    with pytest.raises(BudgetExceeded):
+        await notes_svc.refresh_note(db_session, _client(Refused()), learner.id, topic)

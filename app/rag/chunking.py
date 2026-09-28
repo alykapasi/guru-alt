@@ -19,18 +19,24 @@ noise into prose chunks and destroying the meaning of every code block. Noise ca
 structure that was flattened cannot be recovered. Blank lines are capped at one, which is what
 stops a PDF's vertical whitespace from eating the chunk budget.
 
-What this still does not do: it has no idea what any of the structure *means*. A markdown table
-and a code fence are both just lines to it, a fenced block longer than the window is still cut
-in half, and nothing marks a chunk as containing a table so that retrieval could treat it
-differently. This keeps the shape; reading the shape is a separate job nobody has done.
+**A block longer than a window is no longer cut in half (S27).** ``app.rag.structure`` finds
+fenced code, pipe tables and display math. One that fits a window stays in the prose stream,
+read with the sentence that introduces it. A longer one — the case that used to lose its header
+or its first line — becomes one chunk up to ``BLOCK_CAP_FACTOR`` windows, and beyond that is
+split at line breaks into parts that each repeat the table header, the fence, or the math
+delimiters. Its locator says ``structure`` and, when split, ``part``. Tab-separated tables are
+still not detected.
 """
 
 import re
 
 from app.rag.adapters.base import ExtractedUnit
+from app.rag.structure import Segment, segment
 
 DEFAULT_SIZE = 1000  # characters (~250 tokens)
 DEFAULT_OVERLAP = 150
+# How far past one window a structured block may run and still be kept as a single chunk.
+BLOCK_CAP_FACTOR = 4
 
 # Spaces and tabs, never a newline. Belt and braces rather than the mechanism: `normalize`
 # splits on newlines before this ever runs, so within a line `\s+` would behave identically
@@ -94,18 +100,103 @@ def normalize(text: str) -> str:
 def chunk_units(
     units: list[ExtractedUnit], *, size: int = DEFAULT_SIZE, overlap: int = DEFAULT_OVERLAP
 ) -> list[ExtractedUnit]:
-    """Subdivide each unit into overlapping windows, preserving + extending its locator."""
+    """Subdivide each unit into chunks, preserving + extending its locator.
+
+    Prose is windowed with overlap. A structured block longer than a window (S27) is one chunk
+    up to ``BLOCK_CAP_FACTOR * size`` and beyond that is split into self-contained parts.
+    """
+    cap = BLOCK_CAP_FACTOR * size
     out: list[ExtractedUnit] = []
     for unit in units:
-        for start, piece in _windows(normalize(unit.text), size=size, overlap=overlap):
-            out.append(
-                ExtractedUnit(
-                    text=piece,
-                    locator={**unit.locator, "char_start": start},
-                    method=unit.method,  # keep the unit's extraction method (e.g. OCR)
+        for seg in _runs(segment(normalize(unit.text)), size):
+            if seg.kind == "prose":
+                pieces = [
+                    (seg.start + start, piece, {})
+                    for start, piece in _windows(seg.text, size=size, overlap=overlap)
+                ]
+            else:
+                pieces = _block_pieces(seg, cap)
+            for start, piece, extra in pieces:
+                out.append(
+                    ExtractedUnit(
+                        text=piece,
+                        locator={**unit.locator, "char_start": start, **extra},
+                        method=unit.method,  # keep the unit's extraction method (e.g. OCR)
+                    )
                 )
-            )
     return out
+
+
+def _runs(segments: list[Segment], size: int) -> list[Segment]:
+    """Fold every block that fits a window back into the prose around it.
+
+    Only a block longer than a window is at risk of being cut, so only that one leaves the
+    prose stream. A short equation or a three-row table pulled out on its own would be a chunk
+    too small to retrieve on and separated from the sentence that says what it is.
+    """
+    out: list[Segment] = []
+    for seg in segments:
+        if seg.kind != "prose" and len(seg.text.strip("\n")) > size:
+            out.append(seg)
+        elif out and out[-1].kind == "prose":
+            out[-1] = Segment("prose", out[-1].text + seg.text, out[-1].start)
+        else:
+            out.append(Segment("prose", seg.text, seg.start))
+    return out
+
+
+def _block_pieces(seg: Segment, cap: int) -> list[tuple[int, str, dict]]:
+    """A block as one piece, or as self-contained parts when it is longer than ``cap``."""
+    text = seg.text.strip("\n")
+    if len(text) <= cap:
+        return [(seg.start, text, {"structure": seg.kind})]
+    head, tail, body = _frame(seg, text)
+    room = cap - len(head) - len(tail)
+    if room < cap // 2:  # a frame that would crowd out the content is not worth repeating
+        head, tail, body, room = "", "", text.split("\n"), cap
+    # Each line with its offset; a line longer than a part is cut hard, never dropped.
+    pieces: list[tuple[int, str]] = []
+    offset = seg.start + len(head)
+    for line in body:
+        for at in range(0, max(len(line), 1), room):
+            pieces.append((offset + at, line[at : at + room]))
+        offset += len(line) + 1
+    parts: list[list[tuple[int, str]]] = [[]]
+    used = 0
+    for piece in pieces:
+        cost = len(piece[1]) + (1 if parts[-1] else 0)
+        if parts[-1] and used + cost > room:
+            parts.append([])
+            cost = len(piece[1])
+            used = 0
+        parts[-1].append(piece)
+        used += cost
+    n = len(parts)
+    return [
+        (
+            part[0][0],
+            head + "\n".join(line for _, line in part) + tail,
+            {"structure": seg.kind, "part": f"{i}/{n}"},
+        )
+        for i, part in enumerate(parts, start=1)
+    ]
+
+
+def _frame(seg: Segment, text: str) -> tuple[str, str, list[str]]:
+    """The context every part repeats, and the lines between it.
+
+    An unclosed code or math block has no closing line to repeat, so its parts carry only the
+    opening one — a closing delimiter the document never had would misstate where it ends.
+    """
+    lines = text.split("\n")
+    if seg.kind == "table" and seg.header:
+        header_lines = seg.header.count("\n") + 1
+        return seg.header + "\n", "", lines[header_lines:]
+    if seg.kind in ("code", "math") and seg.open is not None and len(lines) >= 2:
+        if seg.close is not None:
+            return seg.open + "\n", "\n" + seg.close, lines[1:-1]
+        return seg.open + "\n", "", lines[1:]
+    return "", "", lines
 
 
 def _cut(text: str, start: int, end: int) -> int:

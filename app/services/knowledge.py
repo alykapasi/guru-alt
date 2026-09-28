@@ -8,7 +8,7 @@ the router to translate into 409s.
 import re
 import uuid
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import structlog
@@ -37,6 +37,9 @@ class CurriculumResult:
 
     subject: Subject
     reassigned_source_ids: list[uuid.UUID]
+    # Text duplicates the move stranded (S77), put back in the queue's reach; the caller
+    # dispatches them after the commit.
+    released_source_ids: list[uuid.UUID] = field(default_factory=list)
 
 
 # --- Helpers ----------------------------------------------------------------
@@ -382,12 +385,22 @@ async def create_subject_with_graph(
         # Sources genuinely moved into this subject, whatever the caller believed when it
         # passed `private_source_derived`. The server saw it happen, so the server sets it.
         subject.private_source_derived = True
+    # A moved source no longer shares a scope with its text duplicates, and a moved duplicate no
+    # longer shares one with its original (S77). Either way the duplicate grounds nothing, so it
+    # is released to re-ingest from its own file.
+    from app.services import ingestion  # ingestion imports this module
+
+    released = await ingestion.release_duplicates(
+        session, [*reassigned, *await ingestion.duplicates_of(session, reassigned)]
+    )
 
     # Single atomic commit
     await session.commit()
     # Refresh to get all relationships populated
     await session.refresh(subject)
-    return CurriculumResult(subject=subject, reassigned_source_ids=reassigned)
+    return CurriculumResult(
+        subject=subject, reassigned_source_ids=reassigned, released_source_ids=released
+    )
 
 
 class ScopeConflict(ValueError):

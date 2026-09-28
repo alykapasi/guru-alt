@@ -186,6 +186,24 @@ export function useSource(sourceId: string | undefined) {
   });
 }
 
+/** Retry a failed source, or re-process a finished one once the learner confirmed (S29). */
+export function useRetrySource() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ sourceId, confirm }: { sourceId: string; confirm: boolean }) => {
+      const { data, error } = await api.POST("/api/v1/sources/{source_id}/retry", {
+        params: { path: { source_id: sourceId } },
+        body: { confirm },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sources"] });
+    },
+  });
+}
+
 /** For the citation pane's click-through — fetched on demand, not preloaded. */
 export function useChunk(chunkId: string | undefined) {
   return useQuery({
@@ -211,21 +229,6 @@ export function useRenameConversation() {
       });
       if (error) throw error;
       return data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["conversations"] });
-    },
-  });
-}
-
-export function useDeleteConversation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (id: string) => {
-      const { error } = await api.DELETE("/api/v1/conversations/{conversation_id}", {
-        params: { path: { conversation_id: id } },
-      });
-      if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
@@ -273,29 +276,6 @@ export function useGenerateLessonPlan(subjectId: string | undefined) {
         params: { path: { subject_id: subjectId! } },
         body: { goal },
       });
-      if (error) throw error;
-      return data;
-    },
-    onSuccess: (data) => {
-      queryClient.setQueryData(["lesson-plan", subjectId], data);
-    },
-  });
-}
-
-/** Switches how much the planner may decide for the learner on its own (V07/S11): guided takes
- * detours on its own, exploration only offers them. Same cache-write as useGenerateLessonPlan —
- * the response is a full plan, so there is nothing to invalidate. */
-export function useSetGuidance(subjectId: string | undefined) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (guidance: "guided" | "exploration") => {
-      const { data, error } = await api.PATCH(
-        "/api/v1/subjects/{subject_id}/lesson-plan/guidance",
-        {
-          params: { path: { subject_id: subjectId! } },
-          body: { guidance },
-        },
-      );
       if (error) throw error;
       return data;
     },
@@ -586,6 +566,52 @@ export function useForgetMemory() {
   });
 }
 
+/** Put back the memory this one replaced (S42) — for when an automatic replacement was
+ * wrong. Nothing is forgotten, so the retired statement can be learned again later. */
+export function useUndoReplacement() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { data, error } = await api.POST("/api/v1/memory/{memory_id}/undo-replacement", {
+        params: { path: { memory_id: id } },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memories"] });
+    },
+  });
+}
+
+/** Whether Guru learns new things from this learner's conversations (S43). */
+export function useMemorySetting() {
+  return useQuery({
+    queryKey: ["memory-setting"],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/me/memory-setting");
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+export function useSetMemorySetting() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (remember: boolean) => {
+      const { data, error } = await api.PUT("/api/v1/me/memory-setting", {
+        body: { remember },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-setting"] });
+    },
+  });
+}
+
 // --- Concept links: cross-subject connections (S24) -------------------------
 
 /** Endorsed concept links this learner can act on (S24): undecided ones to accept or decline,
@@ -636,6 +662,204 @@ export function useForgetAllMemory() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["memories"] });
+    },
+  });
+}
+type RemovalKind = "source" | "conversation";
+
+/** Archived sources, for the Uploads page's Archived section (S61). */
+export function useArchivedSources() {
+  return useQuery({
+    queryKey: ["sources", "archived"],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/sources", {
+        params: { query: { archived: true } },
+      });
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+export function useArchivedConversations() {
+  return useQuery({
+    queryKey: ["conversations", "archived"],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/conversations", {
+        params: { query: { archived: true } },
+      });
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+/** Archive or unarchive; nothing is deleted either way (S61). */
+export function useArchive(kind: RemovalKind) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, archived }: { id: string; archived: boolean }) => {
+      const verb = archived ? "archive" : "unarchive";
+      const { error } =
+        kind === "source"
+          ? await api.POST(`/api/v1/sources/{source_id}/${verb}`, {
+              params: { path: { source_id: id } },
+            })
+          : await api.POST(`/api/v1/conversations/{conversation_id}/${verb}`, {
+              params: { path: { conversation_id: id } },
+            });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: [kind === "source" ? "sources" : "conversations"],
+      });
+    },
+  });
+}
+
+/** What deleting would keep and what forgetting would also remove — read before deleting. */
+export function useRemovalImpact(kind: RemovalKind, id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["removal", kind, id],
+    enabled,
+    queryFn: async () => {
+      const { data, error } =
+        kind === "source"
+          ? await api.GET("/api/v1/sources/{source_id}/removal", {
+              params: { path: { source_id: id } },
+            })
+          : await api.GET("/api/v1/conversations/{conversation_id}/removal", {
+              params: { path: { conversation_id: id } },
+            });
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+export function useRemove(kind: RemovalKind) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, forget }: { id: string; forget: boolean }) => {
+      const { data, error } =
+        kind === "source"
+          ? await api.DELETE("/api/v1/sources/{source_id}", {
+              params: { path: { source_id: id }, query: { forget } },
+            })
+          : await api.DELETE("/api/v1/conversations/{conversation_id}", {
+              params: { path: { conversation_id: id }, query: { forget } },
+            });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      for (const key of ["sources", "conversations", "memories", "removal"]) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    },
+  });
+}
+
+export function useForgetOrigin() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (conversationId: string) => {
+      const { data, error } = await api.POST("/api/v1/memory/forget-origin/{conversation_id}", {
+        params: { path: { conversation_id: conversationId } },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memories"] });
+    },
+  });
+}
+
+/** Account deletion (S61, V12): request, restore within the window, or erase now. All three
+ * change who the learner is, so they refresh every query. `now` erases in the same call — it
+ * cannot follow the request, which signs every session out, this one included. */
+export function useRequestDeletion() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ now = false }: { now?: boolean } = {}) => {
+      const { data, error } = await api.DELETE("/api/v1/me", { params: { query: { now } } });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => void queryClient.invalidateQueries(),
+  });
+}
+
+export function useRestoreAccount() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const { data, error } = await api.POST("/api/v1/me/deletion/restore");
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => void queryClient.invalidateQueries(),
+  });
+}
+
+export function useEraseAccount() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const { data, error } = await api.POST("/api/v1/me/deletion/erase");
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => void queryClient.invalidateQueries(),
+  });
+}
+
+/** Every file the learner uploaded, with its download path (S61). Reachable while the account
+ * is pending deletion, so the recovery screen can offer each one. */
+export function useExportFiles() {
+  return useQuery({
+    queryKey: ["me", "export", "files"],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/me/export/files");
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+/** The learner's explicit settings (S02), resolved for one subject or globally, each with
+ * where it came from and what adaptation would choose. */
+export function usePreferences(subjectId?: string) {
+  return useQuery({
+    queryKey: ["preferences", subjectId ?? "global"],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/preferences", {
+        params: { query: subjectId ? { subject_id: subjectId } : {} },
+      });
+      if (error) throw error;
+      return data;
+    },
+  });
+}
+
+export function useSetPreference(subjectId?: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    // `null` clears this level: a subject then follows the learner's default.
+    mutationFn: async ({ key, value }: { key: string; value: string | null }) => {
+      const { data, error } = await api.PUT("/api/v1/preferences/{key}", {
+        params: { path: { key } },
+        body: { value, subject_id: subjectId ?? null },
+      });
+      if (error) throw error;
+      return data;
+    },
+    // Every subject's view and the plan's guidance can change with one setting.
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["preferences"] });
+      void queryClient.invalidateQueries({ queryKey: ["lesson-plan"] });
     },
   });
 }

@@ -171,9 +171,11 @@ async def test_run_agentic_turn_persists_turn_and_logs_call(db_session: AsyncSes
     assert [m.role for m in messages] == ["user", "assistant"]
     assert messages[1].content == "here is your answer"
 
-    calls = (await db_session.scalars(select(LLMCall))).all()
-    assert len(calls) == 1  # one LLMCall per turn, usage summed across both call_model passes
-    assert calls[0].output_tokens == len("here is your answer".split())
+    # One row per model call (S48): the tool-calling pass and the answering pass. Retrieval's
+    # embedding is recorded too, as its own row.
+    calls = (await db_session.scalars(select(LLMCall).where(LLMCall.role == "smart"))).all()
+    assert len(calls) == 2
+    assert sum(c.output_tokens for c in calls) == len("here is your answer".split())
 
 
 async def test_run_agentic_turn_marks_done_as_capped_when_iterations_exhausted(

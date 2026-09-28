@@ -14,11 +14,12 @@ from langgraph.types import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.refinement import RefinementState, build_refinement_graph, refinement_config
+from app.llm.attribution import metered
+from app.llm.meter import BudgetExceeded
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.models.chat import Conversation
-from app.services.llm_log import log_llm_call
-from app.services.turn_common import TurnEvent, add_message
+from app.services.turn_common import TurnEvent, add_message, refusal_ends_turn
 
 log = structlog.get_logger(__name__)
 
@@ -41,6 +42,8 @@ async def is_awaiting_reply(llm: LLMClient, conversation_id: uuid.UUID) -> bool:
     return bool(snapshot.next)
 
 
+@metered("goal_refinement", learner="learner_id", conversation="conversation.id")
+@refusal_ends_turn
 async def run_refinement_turn(
     session: AsyncSession,
     llm: LLMClient,
@@ -85,7 +88,6 @@ async def run_refinement_turn(
 
     spec = llm.spec(ModelRole.FAST)
     proposal = ""
-    usage = Usage()
     try:
         async for mode, payload in graph.astream(
             run_input, config, stream_mode=["custom", "values"]
@@ -94,7 +96,8 @@ async def run_refinement_turn(
                 yield TurnEvent(type="token", text=payload["token"])  # ty: ignore[invalid-argument-type]
             elif mode == "values":
                 proposal = payload["proposal"]  # ty: ignore[invalid-argument-type]
-                usage = payload["usage"]  # ty: ignore[invalid-argument-type]
+    except BudgetExceeded:
+        raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
         log.error("refinement.stream_failed", error=str(exc), model=spec.model)
         yield TurnEvent(type="error", detail="generation failed")
@@ -107,13 +110,6 @@ async def run_refinement_turn(
         # `propose` never re-runs, so there's nothing new here — see the `else` branch.)
         await add_message(
             session, conversation.id, ChatRole.ASSISTANT.value, proposal, model=spec.model
-        )
-        await log_llm_call(
-            learner_id=learner_id,
-            conversation_id=conversation.id,
-            role=ModelRole.FAST.value,
-            spec=spec,
-            usage=usage,
         )
         await session.commit()
         round_no = snapshot.values["rounds"] + 1

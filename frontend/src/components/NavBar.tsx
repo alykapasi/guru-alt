@@ -9,6 +9,7 @@ import {
   MessageSquare,
   NotebookText,
   Upload,
+  UserRound,
 } from "lucide-react";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
@@ -24,6 +25,7 @@ const LINKS = [
   { to: "/app/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/app/uploads", label: "Uploads", icon: Upload },
   { to: "/app/memory", label: "Memory", icon: Brain },
+  { to: "/app/account", label: "Account", icon: UserRound },
 ];
 
 /** Offered only to an administrator (P10). Not a security decision — the API refuses a

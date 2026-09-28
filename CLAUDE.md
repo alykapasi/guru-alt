@@ -126,6 +126,41 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   subject opts in; a General chat reads none), and `app/services/grounding.py` decides what the
   tutor is told, including sources-only and "nothing matched". The coverage label on a reply is
   derived from what was offered and cited, never from the model's own account.
+- **A citation outlives a re-ingest** (S29/S50) — re-ingesting supersedes chunks rather than
+  deleting them when something cites them, and re-processing a finished source is the
+  learner's confirmed decision. `uv run poe reindex` re-embeds in place (ids kept) and only
+  re-extracts when asked; staleness is read from the chunks, so a run resumes by running again.
+  See [docs/RUNBOOK.md](docs/RUNBOOK.md) §15.
+- **Archive, delete and forget are three actions** (S61, S42; V11) — archive is reversible and
+  out of use (retrieval drops archived sources, archived conversations are read-only); delete is
+  immediate after an impact report of what stays; forget removes only what was derived — lessons
+  built on a source, memories learned in a conversation — never answers or mastery.
+  `app/services/removal.py` is the one place that decides what derives from what.
+  Forgetting a conversation suppresses its facts only from that conversation; a replaced memory
+  is an explicit judgement (`app/memory/supersession.py`), shown and undoable.
+- **Deleting an account is a state, then an erase** (S61; V12) — access ends at the request
+  and every session is revoked; signing in again within seven days reaches only the recovery
+  routes (`AccountHolder`); then a worker erases every store and the identity provider's copy.
+  What the object store or provider refuses becomes a `pending_erasures` row retried until done.
+  Diagnostic rows keep nothing pointing at a learner past 30 days. See
+  [docs/RUNBOOK.md](docs/RUNBOOK.md) §16.
+- **An explicit setting pins; inference adapts only what is left to it** (S02; V09) — five
+  settings (guidance, explanation level, note format, hints, pace), global with subject
+  overrides, resolved in one place (`app/services/preferences.py`) and applied when
+  instructions are assembled, so a change reaches the next turn (in guided practice, the next
+  question). Inferred values are still
+  computed and shown beside the setting; only catalog strings ever reach a prompt.
+- **Background work runs when things go quiet** (S43) — memory write-back and profile refresh
+  are queued by a worker sweep (`app/services/refresh_schedule.py`) for conversations and
+  learners with unread evidence and no activity for 20 minutes; due-ness is derived from the
+  data, so backlogs catch up by themselves. The profile reads a recency window, and a
+  model-backed estimator pays only when its input changed. Learners can pause memory.
+- **Every paid call is recorded and admitted by the client** (S47, S48) — `LLMClient` writes a
+  `pending` row before each call and settles it (`ok`/`failed`/`partial`);
+  `app/services/spend_guard.py` refuses a call over the learner's daily caps (exact under
+  concurrency) or the deployment ceiling, and background work stops at 90%. Services say what
+  they are with `@metered(...)` (`app/llm/attribution.py`); nothing calls a logging function by
+  hand. See [docs/RUNBOOK.md](docs/RUNBOOK.md) §18.
 - **A self-rating is not evidence of ability** (S56) — the server decides whether a score was
   judged or self-reported, and a self-rating moves the review schedule only. Mastery is the
   conservative estimate `ability − 2·uncertainty ≥ 0.5` on measured evidence (V02); achievement

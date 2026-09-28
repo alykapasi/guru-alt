@@ -1,6 +1,15 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Brain, Check, Pencil, Trash2, X } from "lucide-react";
-import { useCorrectMemory, useForgetAllMemory, useForgetMemory, useMemories } from "../api/hooks";
+import {
+  useCorrectMemory,
+  useForgetAllMemory,
+  useForgetMemory,
+  useMemorySetting,
+  useUndoReplacement,
+  useForgetOrigin,
+  useMemories,
+} from "../api/hooks";
 import type { components } from "../api/schema";
 
 type Memory = components["schemas"]["MemoryRead"];
@@ -16,6 +25,47 @@ type Memory = components["schemas"]["MemoryRead"];
  * extracted memory is that it is nearly right, and erasing it throws away the true part while
  * leaving the extractor free to derive the same mistake again from the same history. */
 
+/** Where a memory was learned (S42), and the means to forget everything learned there — which
+ * still works once that conversation is deleted, because the origin outlives it. */
+function Origin({ memory }: { memory: Memory }) {
+  const forgetOrigin = useForgetOrigin();
+  const [confirming, setConfirming] = useState(false);
+  const origin = memory.origin_conversation_id;
+  if (!origin) return null;
+  return (
+    <div className="text-caption text-base-content/50 flex items-center gap-2 pl-27">
+      <span>
+        {memory.origin_live
+          ? `From: ${memory.origin_title ?? "an untitled conversation"}`
+          : "From a deleted conversation"}
+      </span>
+      {confirming ? (
+        <>
+          <button
+            type="button"
+            className="btn btn-error btn-xs"
+            disabled={forgetOrigin.isPending}
+            onClick={() => forgetOrigin.mutate(origin, { onSuccess: () => setConfirming(false) })}
+          >
+            Yes, forget them
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs"
+            onClick={() => setConfirming(false)}
+          >
+            Keep
+          </button>
+        </>
+      ) : (
+        <button type="button" className="btn btn-ghost btn-xs" onClick={() => setConfirming(true)}>
+          Forget all from this conversation
+        </button>
+      )}
+    </div>
+  );
+}
+
 const KIND_COPY: Record<string, string> = {
   fact: "Fact",
   preference: "Preference",
@@ -27,6 +77,7 @@ function Row({ memory }: { memory: Memory }) {
   const [draft, setDraft] = useState(memory.content);
   const correct = useCorrectMemory();
   const forget = useForgetMemory();
+  const undo = useUndoReplacement();
 
   const save = () => {
     const next = draft.trim();
@@ -100,6 +151,26 @@ function Row({ memory }: { memory: Memory }) {
           )}
         </div>
       </div>
+      {memory.replaced && (
+        <p className="text-caption text-base-content/60 pl-24">
+          Replaced: {memory.replaced.content}{" "}
+          <button
+            type="button"
+            className="link"
+            disabled={undo.isPending}
+            onClick={() => undo.mutate(memory.id)}
+            aria-label={`Undo replacement of: ${memory.replaced.content}`}
+          >
+            Undo
+          </button>
+        </p>
+      )}
+      {undo.isError && (
+        <p className="text-caption text-error pl-24">
+          That can&apos;t be undone any more — the earlier memory changed since.
+        </p>
+      )}
+      <Origin memory={memory} />
       {correct.isError && (
         <p className="text-caption text-error pl-24">
           That correction didn&apos;t save. Try again.
@@ -111,6 +182,7 @@ function Row({ memory }: { memory: Memory }) {
 
 export function Memory() {
   const { data, isLoading } = useMemories();
+  const { data: setting } = useMemorySetting();
   const forgetAll = useForgetAllMemory();
   const [confirming, setConfirming] = useState(false);
 
@@ -127,6 +199,17 @@ export function Memory() {
           the old conclusion from the same conversation.
         </p>
       </header>
+
+      {setting?.remember === false && (
+        <p className="alert alert-info text-body">
+          Memory is paused — Guru isn&apos;t saving new memories from your conversations. Turn it
+          back on in{" "}
+          <Link to="/account" className="link">
+            Account
+          </Link>
+          .
+        </p>
+      )}
 
       {isLoading ? (
         <p className="text-caption text-base-content/50">Loading…</p>

@@ -14,15 +14,15 @@ from dataclasses import dataclass, field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import difficulty, item_generation, mastery
-from app.learning.placement_inference import INFERENCE_ROLE, KCCandidate, infer_levels
+from app.learning.placement_inference import KCCandidate, infer_levels
 from app.learning.tracer import Estimate
 from app.llm import LLMClient
+from app.llm.attribution import metered
 from app.models.assessment import Item
 from app.models.knowledge import KC, Subject
 from app.models.learning import LearnerKCState
 from app.services import assessment as assessment_svc
 from app.services import knowledge as knowledge_svc
-from app.services.llm_log import log_llm_call
 
 BACKGROUND_QUESTION = (
     "Before we dive in, tell me a bit about your background with {subject}: what have you "
@@ -46,6 +46,7 @@ class PlacementResult:
     light_test_items: list[Item] = field(default_factory=list)
 
 
+@metered("placement", learner="learner_id")
 async def run_placement(
     session: AsyncSession,
     llm: LLMClient,
@@ -62,14 +63,7 @@ async def run_placement(
         return PlacementResult()
 
     candidates = [KCCandidate(id=kc.id, name=kc.name, description=kc.description) for kc in kcs]
-    levels, infer_usage = await infer_levels(llm, background, candidates[:MAX_CANDIDATES])
-    if infer_usage.total_tokens:
-        await log_llm_call(
-            learner_id=learner_id,
-            role=INFERENCE_ROLE.value,
-            spec=llm.spec(INFERENCE_ROLE),
-            usage=infer_usage,
-        )
+    levels, _infer_usage = await infer_levels(llm, background, candidates[:MAX_CANDIDATES])
 
     # What the learner's own description implies, per KC — used twice below: to pitch the
     # light test, and then to seed. A KC the inference gave no evidence for falls back to the
@@ -97,16 +91,9 @@ async def run_placement(
             session, kc.id, learner_id=learner_id, target_difficulty=target
         )
         if item is None:
-            item, gen_usage = await item_generation.generate_mcq_item(
+            item, _gen_usage = await item_generation.generate_mcq_item(
                 session, llm, kc, owner_learner_id=learner_id, target_difficulty=target
             )
-            if gen_usage.total_tokens:
-                await log_llm_call(
-                    learner_id=learner_id,
-                    role=item_generation.GENERATION_ROLE.value,
-                    spec=llm.spec(item_generation.GENERATION_ROLE),
-                    usage=gen_usage,
-                )
         if item is not None:
             light_test_items.append(item)
 

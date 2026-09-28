@@ -244,28 +244,26 @@ def test_a_window_start_that_moves_back_still_moves_forward() -> None:
     assert pieces[-1].endswith("x")
 
 
-# --- the limits, stated and then exercised ----------------------------------------------------
+# --- the limits this section used to exercise, now lifted (S27) ------------------------------
 
 
-def test_a_block_longer_than_a_window_is_still_split_in_half() -> None:
-    """Stated in the module docstring and true: nothing here knows a fence from a paragraph,
-    so a code block longer than the window is cut like anything else. Keeping the shape is not
-    the same as understanding it."""
-    fenced = "```\n" + "\n".join(f"    step_{n}()" for n in range(300)) + "\n```"
+def test_a_fenced_block_longer_than_a_window_is_no_longer_cut_in_half() -> None:
+    """A code block longer than the window used to be cut like anything else, orphaning its
+    opening fence in the first chunk. It is now one chunk."""
+    fenced = "```\n" + "\n".join(f"    step_{n}()" for n in range(150)) + "\n```"
 
-    pieces = _one(fenced, size=DEFAULT_SIZE, overlap=DEFAULT_OVERLAP)
+    [piece] = chunk_units([ExtractedUnit(text=fenced)])
 
-    assert len(pieces) > 1
-    assert pieces[0].count("```") == 1, "the opening fence is orphaned in the first chunk"
+    assert piece.text.count("```") == 2
 
 
-def test_nothing_records_that_a_chunk_contains_a_table() -> None:
-    """Retrieval treats a table chunk exactly like prose, because nothing marks it. The shape
-    is preserved for whoever reads the text; no code downstream acts on it."""
-    units = chunk_units([ExtractedUnit(text=TABLE)])
+def test_a_table_chunk_says_it_is_a_table() -> None:
+    """Pipe tables only: the tab-separated ``TABLE`` above is still not detected."""
+    table = "| region | q1 |\n|---|---|\n" + "\n".join(f"| r{n} | {n} |" for n in range(120))
 
-    assert all("table" not in unit.locator for unit in units)
-    assert all(unit.locator.keys() <= {"char_start"} for unit in units)
+    units = chunk_units([ExtractedUnit(text=table)])
+
+    assert any(unit.locator.get("structure") == "table" for unit in units)
 
 
 def test_preserved_structure_does_not_read_as_extraction_damage() -> None:

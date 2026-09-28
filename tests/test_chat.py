@@ -138,8 +138,8 @@ async def test_chat_streams_and_persists(
     assert [m.role for m in messages] == ["user", "assistant"]
     assert messages[1].content == REPLY
 
-    # Token/cost logged for the call.
-    calls = (await db_session.scalars(select(LLMCall))).all()
+    # Token/cost logged for the call (retrieval's embedding is its own row).
+    calls = (await db_session.scalars(select(LLMCall).where(LLMCall.role != "embed"))).all()
     assert len(calls) == 1
     assert calls[0].role == "smart"
     assert calls[0].output_tokens == len(REPLY.split())
@@ -187,7 +187,7 @@ async def test_delete_conversation_cascades_messages(
     assert r.status_code == 200
 
     r = await api_client.delete(f"{API}/conversations/{conversation_id}")
-    assert r.status_code == 204
+    assert r.status_code == 200
 
     assert await db_session.get(Conversation, uuid.UUID(conversation_id)) is None
     remaining = (

@@ -146,4 +146,4 @@ async def test_the_endpoint_reports_and_changes_nothing(
     # Nothing was suppressed: both sources are still exactly as they were.
     await db_session.refresh(scan)
     assert scan.status == SourceStatus.DONE
-    assert "duplicate_of" not in scan.meta
+    assert scan.duplicate_of_id is None

@@ -54,6 +54,13 @@ class MemoryStatus(StrEnum):
     DELETED = "deleted"  # the learner removed it; it must not come back
 
 
+class ForgetScope(StrEnum):
+    """How far a forgotten memory's suppression reaches (S42)."""
+
+    LEARNER = "learner"  # a single Forget, or Forget everything
+    CONVERSATION = "conversation"  # forgotten with the conversation it was learned in
+
+
 class Memory(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """One durable, embedded fact/preference/summary about a learner."""
 
@@ -75,6 +82,10 @@ class Memory(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("conversations.id", ondelete="SET NULL"), index=True, default=None
     )
+    # Where it was learned, with no foreign key: `conversation_id` nulls when the conversation is
+    # deleted, and this is what still lets the learner forget what was learned there (S42, V11).
+    # None for a memory the learner wrote themselves (a correction).
+    origin_conversation_id: Mapped[uuid.UUID | None] = mapped_column(index=True, default=None)
     kind: Mapped[str] = mapped_column(index=True)  # MemoryKind
     content: Mapped[str] = mapped_column(Text)
     embedding: Mapped[Any] = mapped_column(Vector(_EMBED_DIM))
@@ -83,6 +94,8 @@ class Memory(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # that would otherwise leave no trace — see app/llm/embedding_space.py.
     embedding_space: Mapped[str] = mapped_column(index=True)
     status: Mapped[str] = mapped_column(index=True, default=MemoryStatus.CURRENT)
+    # Set only on DELETED rows; see ForgetScope.
+    forgotten_scope: Mapped[str | None] = mapped_column(Text, default=None)
     # The memory that replaced this one, when a later extraction contradicted it. Keeping the
     # chain rather than overwriting means a correction is visible as a correction.
     superseded_by_id: Mapped[uuid.UUID | None] = mapped_column(

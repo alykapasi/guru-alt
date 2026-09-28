@@ -10,6 +10,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -333,6 +334,43 @@ async def test_retry_endpoint_requeues_a_finished_source(
     source = await _source(db_session, store, owner=api_learner)
     await ingestion.ingest_source(db_session, store, fake_llm_client(), source.id)
 
+    response = await api_client.post(f"/api/v1/sources/{source.id}/retry", json={"confirm": True})
+
+    assert response.status_code == 202
+    assert response.json()["status"] == SourceStatus.PENDING
+
+
+async def test_reprocessing_a_finished_source_needs_confirmation(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """The source already exists in the library; replacing its passages is the learner's call."""
+    store = InMemoryBlobStore()
+    source = await _source(db_session, store, owner=api_learner)
+    await ingestion.ingest_source(db_session, store, fake_llm_client(), source.id)
+
+    url = f"/api/v1/sources/{source.id}/retry"
+    for response in (
+        await api_client.post(url),
+        await api_client.post(url, json={}),
+        await api_client.post(url, json={"confirm": False}),
+    ):
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "confirm_required"
+
+    refreshed = await db_session.scalar(
+        select(Source).where(Source.id == source.id).execution_options(populate_existing=True)
+    )
+    assert refreshed is not None and refreshed.status == SourceStatus.DONE
+
+
+async def test_a_failed_source_retries_without_asking(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    store = InMemoryBlobStore()
+    source = await _source(db_session, store, owner=api_learner)
+    source.status = SourceStatus.FAILED
+    await db_session.commit()
+
     response = await api_client.post(f"/api/v1/sources/{source.id}/retry")
 
     assert response.status_code == 202
@@ -349,6 +387,7 @@ async def test_retry_refuses_while_a_job_holds_the_claim(
     response = await api_client.post(f"/api/v1/sources/{source.id}/retry")
 
     assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "ingesting"
 
 
 async def test_retry_of_another_learners_source_is_404(

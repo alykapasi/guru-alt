@@ -17,6 +17,7 @@ from app.api.v1 import (
     onboarding,
     ops,
     placement,
+    preferences,
     profile,
     publications,
     retention,
@@ -41,4 +42,5 @@ api_router.include_router(analytics.router)
 api_router.include_router(onboarding.router)
 api_router.include_router(publications.router)
 api_router.include_router(retention.router)
+api_router.include_router(preferences.router)
 api_router.include_router(concept_links.router)

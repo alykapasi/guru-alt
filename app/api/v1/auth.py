@@ -14,6 +14,7 @@ from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 from sqlalchemy import select
 
 from app.api.deps import (
+    AccountHolder,
     CurrentLearner,
     IdentityProviderDep,
     SessionDep,
@@ -153,7 +154,7 @@ async def logout(request: Request, response: Response, session: SessionDep, sett
 
 @router.post("/logout-all", status_code=status.HTTP_204_NO_CONTENT)
 async def logout_all(
-    response: Response, learner: CurrentLearner, session: SessionDep, settings: SettingsDep
+    response: Response, learner: AccountHolder, session: SessionDep, settings: SettingsDep
 ):
     """End every session for this learner, on every device."""
     await svc.revoke_all(session, learner.id)
@@ -161,7 +162,7 @@ async def logout_all(
 
 
 @router.get("/me", response_model=LearnerRead)
-async def me(learner: CurrentLearner):
+async def me(learner: AccountHolder):
     """The learner this request is authenticated as."""
     return learner
 

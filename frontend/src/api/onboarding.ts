@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch } from "./client";
+import { apiFetch, failureMessage } from "./client";
 
 // ============================================================================
 // Types
@@ -101,7 +101,7 @@ export async function* streamGoalTurn(
     signal,
   });
   if (!res.ok || !res.body) {
-    throw new Error(`stream failed: ${res.status} ${res.statusText}`);
+    throw new Error(await failureMessage(res, `stream failed: ${res.status} ${res.statusText}`));
   }
 
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -214,7 +214,12 @@ export function useGenerateCurriculum() {
         body: JSON.stringify({ goal, source_ids: sourceIds }),
       });
       if (!res.ok) {
-        throw new Error(`curriculum generation failed: ${res.status} ${res.statusText}`);
+        throw new Error(
+          await failureMessage(
+            res,
+            `curriculum generation failed: ${res.status} ${res.statusText}`,
+          ),
+        );
       }
       return res.json();
     },

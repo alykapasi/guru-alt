@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { Memory } from "./Memory";
 
 /** The point of this page is that a learner can disagree with the system about themselves.
@@ -19,9 +20,11 @@ const MEMORY = {
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={client}>
-      <Memory />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <Memory />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -123,5 +126,99 @@ describe("forgetting everything", () => {
       .filter((r) => r.method === "DELETE");
     expect(deletes).toHaveLength(0);
     expect(screen.getByRole("button", { name: "Yes, forget everything" })).toBeInTheDocument();
+  });
+});
+
+describe("where a memory was learned", () => {
+  it("names a live conversation, and says so when it was deleted", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse([
+            {
+              ...MEMORY,
+              id: "m-live",
+              content: "Studies in the mornings",
+              origin_conversation_id: "c-live",
+              origin_title: "Chem help",
+              origin_live: true,
+            },
+            {
+              ...MEMORY,
+              id: "m-gone",
+              content: "Prefers short sessions",
+              origin_conversation_id: "c-gone",
+              origin_title: null,
+              origin_live: false,
+            },
+          ]),
+        ),
+      ),
+    );
+    renderPage();
+    expect(await screen.findByText("From: Chem help")).toBeInTheDocument();
+    expect(screen.getByText("From a deleted conversation")).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: "Forget all from this conversation" }),
+    ).toHaveLength(2);
+  });
+
+  it("shows no origin for something the learner wrote themselves", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse([{ ...MEMORY, origin_conversation_id: null }]))),
+    );
+    renderPage();
+    await screen.findByText("Prefers worked examples before definitions");
+    expect(screen.queryByText(/^From/)).not.toBeInTheDocument();
+  });
+});
+
+describe("a replacement that was wrong", () => {
+  it("shows what was replaced and puts it back on Undo", async () => {
+    const replacing = {
+      ...MEMORY,
+      id: "m-new",
+      content: "Studies in the evenings now",
+      replaced: { id: "m-old", content: "Studies in the mornings" },
+    };
+    const fetchMock = vi.fn((input: Request | string) => {
+      const request = input as Request;
+      if (request.method === "POST") {
+        return Promise.resolve(jsonResponse({ ...MEMORY, id: "m-old" }));
+      }
+      return Promise.resolve(jsonResponse([replacing]));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+
+    expect(await screen.findByText(/Replaced: Studies in the mornings/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Undo replacement/ }));
+
+    await waitFor(() => {
+      const posts = fetchMock.mock.calls.filter(([r]) => (r as Request).method === "POST");
+      expect(posts).toHaveLength(1);
+      expect((posts[0][0] as Request).url).toContain("/api/v1/memory/m-new/undo-replacement");
+    });
+  });
+});
+
+describe("while memory is paused", () => {
+  it("says no new memories are saved and links to the switch", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: Request | string) => {
+        const url = typeof input === "string" ? input : input.url;
+        if (url.includes("/me/memory-setting")) {
+          return Promise.resolve(jsonResponse({ remember: false }));
+        }
+        return Promise.resolve(jsonResponse([MEMORY]));
+      }),
+    );
+    renderPage();
+
+    expect(await screen.findByText(/isn.t saving new memories/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Account/ })).toHaveAttribute("href", "/account");
   });
 });

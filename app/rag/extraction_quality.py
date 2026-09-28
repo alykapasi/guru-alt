@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Mapping
 
 from pydantic import BaseModel
 
@@ -72,9 +73,10 @@ class ExtractionIndicators(BaseModel):
 
 
 def _is_control(ch: str) -> bool:
-    """A control character that is not ordinary layout. Tab, newline and carriage return are
-    how documents are shaped; the rest have no business surviving extraction."""
-    return ch not in "\t\n\r" and unicodedata.category(ch) == "Cc"
+    """A control character that is not ordinary layout. Tab, newline, carriage return and the
+    form and vertical feeds that break pages are how documents are shaped; the rest have no
+    business surviving extraction — and a reading note says so to the learner (S27)."""
+    return ch not in "\t\n\r\f\v" and unicodedata.category(ch) == "Cc"
 
 
 def measure(text: str) -> ExtractionIndicators:
@@ -100,3 +102,26 @@ def measure(text: str) -> ExtractionIndicators:
         vowelless_word_ratio=ratio(vowelless, len(long_enough)),
         runaway_token_ratio=ratio(runaway, n_words),
     )
+
+
+_METHOD_NOTES = {
+    "ocr": "read from a scan or image; wording may contain errors",
+    "asr": "transcribed from audio; wording may contain errors",
+}
+
+
+def reading_note(provenance: Mapping) -> str | None:
+    """What a reader should know about how this passage was read — facts only (S27).
+
+    How the text was obtained, and whether the decoder had to give up on characters. The ratio
+    indicators are left out on purpose: none has a measured threshold, and as written they fire
+    on ordinary English (single-letter words count as isolated letters).
+    """
+    notes = []
+    method_note = _METHOD_NOTES.get(str(provenance.get("method", "")))
+    if method_note:
+        notes.append(method_note)
+    extraction = provenance.get("extraction") or {}
+    if extraction.get("replacement_chars") or extraction.get("control_chars"):
+        notes.append("some characters could not be read")
+    return "; ".join(notes) or None

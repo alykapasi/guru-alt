@@ -25,18 +25,25 @@ item-selection hints are withheld.
 """
 
 import uuid
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.untrusted import as_untrusted
 from app.core.config import get_settings
 from app.learning import difficulty
+from app.learning.preferences import (
+    AUTO,
+    EXPLANATION_INSTRUCTIONS,
+    HINT_INSTRUCTIONS,
+    PACE_INSTRUCTIONS,
+)
 from app.llm.registry import LLMClient
 from app.memory import retrieval as memory_retrieval
 from app.memory.retrieval import MemoryHit
 from app.models.chat import Conversation
+from app.services import preferences as preferences_svc
 from app.services.lesson_plan import PlanGroundingContext, get_active_step_context
 
 
@@ -47,6 +54,9 @@ class LearnerContext:
     goal: str | None
     plan: PlanGroundingContext | None
     memories: Sequence[MemoryHit]
+    # The learner's explicit settings for this conversation's subject (S02): resolved values,
+    # "auto" where they left the parameter to adaptation.
+    preferences: Mapping[str, str] = field(default_factory=dict)
 
 
 async def gather(
@@ -76,7 +86,10 @@ async def gather(
         learner_id=learner_id,
         limit=get_settings().memory_retrieval_limit,
     )
-    return LearnerContext(goal=conversation.goal, plan=plan, memories=memories)
+    settings = await preferences_svc.values_for(session, learner_id, conversation.subject_id)
+    return LearnerContext(
+        goal=conversation.goal, plan=plan, memories=memories, preferences=settings
+    )
 
 
 def compose(
@@ -89,7 +102,8 @@ def compose(
 ) -> str:
     """The system prompt, in the one order every mode uses.
 
-    ``base`` -> goal -> plan focus -> ``extra`` -> retrieval grounding -> memory. ``extra`` is
+    ``base`` -> goal -> plan focus -> learner settings -> ``extra`` -> retrieval grounding ->
+    memory. ``extra`` is
     where a flow puts what only it has: the exact practice problem, or the grade of the answer
     just given. Memory goes last because it is the least specific thing in the prompt and the
     most quotable; grounding goes second-last so citations sit next to the passages.
@@ -99,9 +113,12 @@ def compose(
     parts = [base]
     if context.goal:
         parts.append(f"The learner's stated goal for this conversation: {context.goal}")
-    focus = plan_note(context.plan, task_fixed=task_fixed)
+    focus = plan_note(context.plan, task_fixed=task_fixed, hints_pinned=_pinned(context, "hints"))
     if focus is not None:
         parts.append(focus)
+    settings = settings_note(context.preferences)
+    if settings is not None:
+        parts.append(settings)
     parts.extend(p for p in extra if p)
     if grounding is not None:
         parts.append(grounding)
@@ -111,14 +128,20 @@ def compose(
     return "\n\n".join(parts)
 
 
-def plan_note(context: PlanGroundingContext | None, *, task_fixed: bool = False) -> str | None:
-    """What the plan says about this learner right now, or ``None`` if there is no plan."""
+def plan_note(
+    context: PlanGroundingContext | None, *, task_fixed: bool = False, hints_pinned: bool = False
+) -> str | None:
+    """What the plan says about this learner right now, or ``None`` if there is no plan.
+
+    ``hints_pinned`` drops the inferred hint density: the learner's own setting replaces it
+    (S02), and two instructions about hints would contradict each other.
+    """
     if context is None:
         return None
     parts = [
         f"The learner's current lesson-plan focus in {context.subject_name}: {context.kc_name}."
     ]
-    if context.hint_density is not None:
+    if context.hint_density is not None and not hints_pinned:
         parts.append(f"Hint density: {context.hint_density}.")
     if not task_fixed:
         if context.target_difficulty is not None:
@@ -130,6 +153,30 @@ def plan_note(context: PlanGroundingContext | None, *, task_fixed: bool = False)
         if context.preferred_item_type is not None:
             parts.append(f"Preferred item type: {context.preferred_item_type}.")
     return " ".join(parts)
+
+
+def _pinned(context: LearnerContext, key: str) -> bool:
+    return context.preferences.get(key, AUTO) != AUTO
+
+
+def settings_note(preferences: Mapping[str, str]) -> str | None:
+    """The learner's own settings, as instructions, or ``None`` when all are left to adaptation.
+
+    Catalog strings only (``app.learning.preferences``) — nothing the learner typed — so this
+    is not fenced as untrusted the way memory is.
+    """
+    lines = [
+        table[value]
+        for key, table in (
+            ("explanation_level", EXPLANATION_INSTRUCTIONS),
+            ("pace", PACE_INSTRUCTIONS),
+            ("hints", HINT_INSTRUCTIONS),
+        )
+        if (value := preferences.get(key, AUTO)) in table
+    ]
+    if not lines:
+        return None
+    return "The learner's own settings (these take precedence): " + " ".join(lines)
 
 
 def memory_note(hits: Sequence[MemoryHit]) -> str | None:

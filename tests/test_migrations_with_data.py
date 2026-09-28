@@ -14,6 +14,7 @@ import uuid
 
 import pytest
 
+from app.core.config import get_settings
 from tests.migration_harness import database_at, downgrade, upgrade
 
 SCRATCH = "guru_migration_test"
@@ -267,5 +268,306 @@ async def test_a_provider_link_survives_the_round_trip_down_and_back_up() -> Non
                     "third",
                     "user_def456",
                 )
+        finally:
+            await conn.close()
+
+
+async def test_chunks_that_predate_versions_come_through_as_version_one_and_current() -> None:
+    """0064 (S29/S50): every existing chunk was written by pipeline 1, and none is superseded."""
+    async with database_at("0063_source_scope_settings") as connect:
+        conn = await connect()
+        try:
+            learner_id, source_id, chunk_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            dim = get_settings().embed_dim
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "reader"
+            )
+            await conn.execute(
+                "INSERT INTO sources (id, learner_id, kind, origin, status, meta, attempts) "
+                "VALUES ($1, $2, 'file', 'notes.txt', 'done', '{}'::jsonb, 0)",
+                source_id,
+                learner_id,
+            )
+            await conn.execute(
+                "INSERT INTO chunks (id, source_id, ordinal, text, embedding, embedding_space, "
+                "provenance) VALUES ($1, $2, 0, 'old text', $3::vector, 'fake:fake-1:x', "
+                "'{}'::jsonb)",
+                chunk_id,
+                source_id,
+                "[" + ",".join(["0.1"] * dim) + "]",
+            )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0064_chunk_versions")
+
+        conn = await connect()
+        try:
+            row = await conn.fetchrow(
+                "SELECT pipeline_version, superseded_at, text FROM chunks WHERE id = $1",
+                chunk_id,
+            )
+            assert row is not None, "the chunk did not survive the upgrade"
+            assert row["pipeline_version"] == 1
+            assert row["superseded_at"] is None
+            assert row["text"] == "old text"
+        finally:
+            await conn.close()
+
+
+async def test_duplicates_recorded_in_meta_get_the_column_backfilled() -> None:
+    """0065 (S77): the relation moves from meta into a foreign key. An original that still
+    exists is linked; one that is gone backfills to NULL, which is what lets the sweep find it."""
+    async with database_at("0064_chunk_versions") as connect:
+        conn = await connect()
+        try:
+            learner_id = uuid.uuid4()
+            original, linked, orphan = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "reader"
+            )
+            for sid, meta in (
+                (original, "{}"),
+                (linked, f'{{"duplicate_of": "{original}"}}'),
+                (orphan, f'{{"duplicate_of": "{uuid.uuid4()}"}}'),
+            ):
+                await conn.execute(
+                    "INSERT INTO sources (id, learner_id, kind, origin, status, meta, attempts) "
+                    "VALUES ($1, $2, 'file', 'x.txt', 'done', $3::jsonb, 0)",
+                    sid,
+                    learner_id,
+                    meta,
+                )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0065_source_duplicate_of")
+
+        conn = await connect()
+        try:
+            rows = {
+                r["id"]: r["duplicate_of_id"]
+                for r in await conn.fetch("SELECT id, duplicate_of_id FROM sources")
+            }
+            assert rows[linked] == original
+            assert rows[orphan] is None
+            assert rows[original] is None
+        finally:
+            await conn.close()
+
+
+async def test_memories_keep_where_they_came_from_across_the_archive_migration() -> None:
+    """0066 (S61): the origin is copied from the FK, which a conversation delete nulls; the
+    copy has no FK, so it survives the delete and "forget" can still find the memory."""
+    async with database_at("0065_source_duplicate_of") as connect:
+        conn = await connect()
+        try:
+            learner_id, conversation_id, memory_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            dim = get_settings().embed_dim
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "rememberer"
+            )
+            await conn.execute(
+                "INSERT INTO conversations (id, learner_id, kind, phase) "
+                "VALUES ($1, $2, 'chat', 'chatting')",
+                conversation_id,
+                learner_id,
+            )
+            await conn.execute(
+                "INSERT INTO memories (id, learner_id, conversation_id, kind, content, embedding, "
+                "embedding_space, status) VALUES ($1, $2, $3, 'fact', 'likes mornings', "
+                "$4::vector, 'fake:fake-1:x', 'current')",
+                memory_id,
+                learner_id,
+                conversation_id,
+                "[" + ",".join(["0.1"] * dim) + "]",
+            )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0066_archive_and_memory_origin")
+
+        conn = await connect()
+        try:
+            row = await conn.fetchrow(
+                "SELECT origin_conversation_id FROM memories WHERE id = $1", memory_id
+            )
+            assert row is not None and row["origin_conversation_id"] == conversation_id
+            await conn.execute("DELETE FROM conversations WHERE id = $1", conversation_id)
+            row = await conn.fetchrow(
+                "SELECT conversation_id, origin_conversation_id FROM memories WHERE id = $1",
+                memory_id,
+            )
+            assert row is not None
+            assert row["conversation_id"] is None
+            assert row["origin_conversation_id"] == conversation_id
+        finally:
+            await conn.close()
+
+
+async def test_learners_arrive_active_across_the_deletion_migration() -> None:
+    """0067 (S61): nobody is pending deletion because a column appeared."""
+    async with database_at("0066_archive_and_memory_origin") as connect:
+        conn = await connect()
+        try:
+            learner_id = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "stayer"
+            )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0067_account_deletion_erasures")
+
+        conn = await connect()
+        try:
+            row = await conn.fetchrow(
+                "SELECT deletion_requested_at, deletion_due_at FROM learners WHERE id = $1",
+                learner_id,
+            )
+            assert row is not None
+            assert row["deletion_requested_at"] is None and row["deletion_due_at"] is None
+            assert await conn.fetchval("SELECT count(*) FROM pending_erasures") == 0
+        finally:
+            await conn.close()
+
+
+async def test_an_exploration_plan_becomes_a_subject_override() -> None:
+    """0068 (S02): nobody's guidance changes because it moved to preferences."""
+    async with database_at("0067_account_deletion_erasures") as connect:
+        conn = await connect()
+        try:
+            learner_id, s1, s2 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "prefs"
+            )
+            for sid in (s1, s2):
+                await conn.execute(
+                    "INSERT INTO subjects (id, slug, name, owner_learner_id) VALUES ($1, $2, $2, $3)",
+                    sid,
+                    f"s-{sid.hex[:6]}",
+                    learner_id,
+                )
+            await conn.execute(
+                "INSERT INTO lesson_plans (id, learner_id, subject_id, guidance, pacing, example_tags, "
+                "steps, revision_pending, objective_kc_ids) VALUES "
+                "($1, $2, $3, 'exploration', 'standard', '[]', '[]', false, '[]'), "
+                "($4, $2, $5, 'guided', 'standard', '[]', '[]', false, '[]')",
+                uuid.uuid4(),
+                learner_id,
+                s1,
+                uuid.uuid4(),
+                s2,
+            )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0068_learner_preferences")
+
+        conn = await connect()
+        try:
+            rows = await conn.fetch(
+                "SELECT subject_id, key, value FROM learner_preferences WHERE learner_id = $1",
+                learner_id,
+            )
+            assert [(r["subject_id"], r["key"], r["value"]) for r in rows] == [
+                (s1, "guidance", "exploration")
+            ]
+        finally:
+            await conn.close()
+
+
+async def test_existing_forgotten_memories_stay_learner_wide() -> None:
+    """0069 (S42): how an old tombstone was made is unknown, so it keeps today's reach."""
+    async with database_at("0068_learner_preferences") as connect:
+        conn = await connect()
+        try:
+            learner_id, deleted_id, current_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "scope"
+            )
+            for memory_id, status in ((deleted_id, "deleted"), (current_id, "current")):
+                await conn.execute(
+                    "INSERT INTO memories (id, learner_id, kind, content, embedding, "
+                    "embedding_space, status) VALUES ($1, $2, 'fact', 'x', $3::vector, "
+                    "'fake:fake-1:x', $4)",
+                    memory_id,
+                    learner_id,
+                    "[" + ",".join(["0.1"] * get_settings().embed_dim) + "]",
+                    status,
+                )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0069_memory_forgotten_scope")
+
+        conn = await connect()
+        try:
+            rows = {
+                r["id"]: r["forgotten_scope"]
+                for r in await conn.fetch(
+                    "SELECT id, forgotten_scope FROM memories WHERE learner_id = $1", learner_id
+                )
+            }
+            assert rows == {deleted_id: "learner", current_id: None}
+        finally:
+            await conn.close()
+
+
+async def test_refresh_scheduling_columns_default_sensibly() -> None:
+    """0070 (S43): existing learners keep memory on; nothing starts claimed."""
+    async with database_at("0069_memory_forgotten_scope") as connect:
+        conn = await connect()
+        try:
+            learner_id, conversation_id = uuid.uuid4(), uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO learners (id, handle) VALUES ($1, $2)", learner_id, "sched"
+            )
+            await conn.execute(
+                "INSERT INTO conversations (id, learner_id, kind, phase) "
+                "VALUES ($1, $2, 'chat', 'chatting')",
+                conversation_id,
+                learner_id,
+            )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0070_refresh_scheduling")
+
+        conn = await connect()
+        try:
+            remember = await conn.fetchval(
+                "SELECT remember_conversations FROM learners WHERE id = $1", learner_id
+            )
+            attempted = await conn.fetchval(
+                "SELECT memory_attempted_at FROM conversations WHERE id = $1", conversation_id
+            )
+            assert remember is True and attempted is None
+        finally:
+            await conn.close()
+
+
+async def test_existing_calls_become_settled_legacy_rows() -> None:
+    """0071 (S48): rows written before attribution existed are settled and unattributed."""
+    async with database_at("0070_refresh_scheduling") as connect:
+        conn = await connect()
+        try:
+            call_id = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO llm_calls (id, role, provider, model, input_tokens, output_tokens) "
+                "VALUES ($1, 'fast', 'fake', 'fake-1', 3, 4)",
+                call_id,
+            )
+        finally:
+            await conn.close()
+
+        await upgrade(SCRATCH, "0071_call_accounting")
+
+        conn = await connect()
+        try:
+            row = await conn.fetchrow(
+                "SELECT feature, status, estimated FROM llm_calls WHERE id = $1", call_id
+            )
+            assert (row["feature"], row["status"], row["estimated"]) == ("legacy", "ok", False)
         finally:
             await conn.close()

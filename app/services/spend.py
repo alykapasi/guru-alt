@@ -84,6 +84,15 @@ class SpendWindow(BaseModel):
     first_token: Latency
     by_role: list[SpendBucket]
     by_model: list[SpendBucket]
+    # What paid for it (S48): the feature the calls were attributed to.
+    by_feature: list[SpendBucket] = []
+    # How calls ended (S48). Failed and partial calls may have been billed; an estimated row
+    # carries the reservation's numbers, not the provider's, so its cost is an approximation.
+    failed_calls: int = 0
+    partial_calls: int = 0
+    estimated_calls: int = 0
+    # Past 90% of the budget: background work is paused (S47).
+    near_budget: bool = False
 
 
 def _timing_columns(column) -> list:
@@ -183,6 +192,15 @@ async def window(
         first_p95,
     ) = totals
     budget = settings.spend_budget_usd
+    failed, partial, estimated = (
+        await session.execute(
+            select(
+                func.count().filter(LLMCall.status == "failed"),
+                func.count().filter(LLMCall.status == "partial"),
+                func.count().filter(LLMCall.estimated.is_(True)),
+            ).where(LLMCall.created_at >= since)
+        )
+    ).one()
 
     return SpendWindow(
         window_hours=window_hours,
@@ -198,6 +216,28 @@ async def window(
         first_token=_latency(streamed, first_p50, first_p95),
         by_role=await _buckets(session, LLMCall.role, since),
         by_model=await _buckets(session, LLMCall.model, since),
+        by_feature=await _buckets(session, LLMCall.feature, since),
+        failed_calls=failed,
+        partial_calls=partial,
+        estimated_calls=estimated,
+        near_budget=budget is not None and float(cost) >= budget * 0.9,
+    )
+
+
+# A call still pending after this long was abandoned by a process that died mid-call (S48).
+STALE_PENDING = timedelta(minutes=15)
+
+
+async def stale_pending(session: AsyncSession, *, older_than: timedelta) -> int:
+    """Calls reserved and never settled — a process died mid-call (S48)."""
+    cutoff = (datetime.now(UTC) - older_than).replace(tzinfo=None)
+    return int(
+        await session.scalar(
+            select(func.count())
+            .select_from(LLMCall)
+            .where(LLMCall.status == "pending", LLMCall.created_at < cutoff)
+        )
+        or 0
     )
 
 

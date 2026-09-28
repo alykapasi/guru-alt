@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useConversations, useItem, useMessages } from "../api/hooks";
+import { useArchivedConversations, useConversations, useItem, useMessages } from "../api/hooks";
 import { isTerminal, streamTurn, type ItemEvent, type SendMessageBody } from "../api/sse";
 import type { components } from "../api/schema";
 
@@ -31,6 +31,8 @@ interface FailedTurn {
 export function useChatConversation(conversationId: string | undefined) {
   const queryClient = useQueryClient();
   const conversationsQuery = useConversations();
+  // An archived conversation is not in the main list but still opens, read-only (S61).
+  const archivedQuery = useArchivedConversations();
   const messagesQuery = useMessages(conversationId);
   const [pending, setPending] = useState<PendingTurn | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +54,9 @@ export function useChatConversation(conversationId: string | undefined) {
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  const conversation = conversationsQuery.data?.find((c) => c.id === conversationId);
+  const conversation = [...(conversationsQuery.data ?? []), ...(archivedQuery.data ?? [])].find(
+    (c) => c.id === conversationId,
+  );
   // Pages come newest-block-first; the transcript reads oldest-first. Reverse the page list,
   // not the messages inside each page — each page is already chronological.
   const messages = useMemo(

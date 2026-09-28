@@ -25,6 +25,10 @@ FILL_BLANK_REPLY = json.dumps({"stem": "X is the ___.", "answer": "Y"})
 SHORT_REPLY = json.dumps({"stem": "Explain X in your own words."})
 
 
+async def _call_count(session: AsyncSession) -> int:
+    return len((await session.scalars(select(LLMCall))).all())
+
+
 async def _graph(session: AsyncSession) -> tuple[Learner, Subject, KC, KC]:
     """A subject with a root KC and a dependent KC (root -> dependent prerequisite)."""
     learner = Learner(handle=f"l-{uuid.uuid4().hex[:8]}")
@@ -82,14 +86,14 @@ async def test_next_item_reuses_an_existing_bank_item(db_session: AsyncSession) 
     )
     assert existing is not None
 
+    calls_before = await _call_count(db_session)
     item = await svc.next_item(
         db_session, fake_llm_client(), learner_id=learner.id, subject_id=subject.id
     )
     assert item is not None
     assert item.id == existing.id
 
-    calls = (await db_session.scalars(select(LLMCall))).all()
-    assert len(calls) == 0
+    assert await _call_count(db_session) == calls_before  # reused: no model call
 
 
 async def test_next_item_generates_when_bank_is_empty(db_session: AsyncSession) -> None:
@@ -266,14 +270,14 @@ async def test_short_answer_item_for_kc_reuses_a_seeded_bank_item(db_session: As
     )
     assert existing is not None
 
+    calls_before = await _call_count(db_session)
     item = await svc.short_answer_item_for_kc(
         db_session, fake_llm_client(), learner_id=learner.id, kc=root
     )
     assert item is not None
     assert item.id == existing.id
 
-    calls = (await db_session.scalars(select(LLMCall))).all()
-    assert len(calls) == 0
+    assert await _call_count(db_session) == calls_before  # reused: no model call
 
 
 async def test_short_answer_item_for_kc_generates_when_bank_is_empty(

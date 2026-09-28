@@ -7,11 +7,12 @@ single source of truth for the dimension catalog — adding or dropping a dimens
 to this list only, never a migration (see ``app/models/profile.py``).
 """
 
+import hashlib
 import json
 import statistics
 import uuid
 from collections import Counter
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import pairwise
@@ -47,7 +48,8 @@ class DimensionEstimate:
 class EstimatorContext:
     """Everything an estimator might need, pre-loaded once and shared across the catalog.
 
-    ``events``/``messages`` cover the learner's full history — trait estimators read them
+    ``events``/``messages`` are the learner's most recent history (the refresh's window, S43) —
+    trait estimators read them
     as-is, state estimators (e.g. ``engagement``) window down to the most recent session
     themselves. ``session``/``llm`` are here for the minority of estimators that need an
     extra DB lookup (``format_effectiveness`` joins to ``Item``) or a model call.
@@ -63,6 +65,15 @@ class EstimatorContext:
 EstimatorFn = Callable[[EstimatorContext], Awaitable[tuple[DimensionEstimate | None, Usage]]]
 """Every estimator returns its ``Usage`` alongside the estimate (zero for non-LLM estimators)
 so the orchestrator can log LLM cost uniformly — same shape as ``kc_tagging.tag_chunk`` etc."""
+
+FingerprintFn = Callable[[EstimatorContext], Awaitable[str | None]]
+"""What a model-backed estimator would send, reduced to a digest (S43). The same digest means
+the same input and therefore the same answer, so the refresh keeps the stored value and makes
+no call. ``None`` means "no fingerprint": always estimate."""
+
+
+def _digest(parts: Iterable[str]) -> str:
+    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -87,6 +98,8 @@ class DimensionSpec:
     # One sentence naming what was actually observed — and, where it is easy to over-read,
     # what it is not evidence of.
     observation: str
+    # Only model-backed estimators set it (S43).
+    fingerprint: FingerprintFn | None = None
 
 
 def _uncertainty(n: int, *, floor: float = 0.15) -> float:
@@ -283,14 +296,22 @@ def _extract_json(content: str) -> str:
     return content[start : end + 1]
 
 
-async def _estimate_error_type(
-    ctx: EstimatorContext,
-) -> tuple[DimensionEstimate | None, Usage]:
-    incorrect = [
+def _incorrect(ctx: EstimatorContext) -> list[LearningEvent]:
+    return [
         e
         for e in _observations(ctx.events)
         if e.payload.get("score", 1.0) < 0.5 and e.payload.get("item_id")
     ]
+
+
+async def _fingerprint_error_type(ctx: EstimatorContext) -> str | None:
+    return _digest(str(e.id) for e in _incorrect(ctx)[-ERROR_TYPE_MAX_SAMPLE:])
+
+
+async def _estimate_error_type(
+    ctx: EstimatorContext,
+) -> tuple[DimensionEstimate | None, Usage]:
+    incorrect = _incorrect(ctx)
     if len(incorrect) < ERROR_TYPE_MIN_INCORRECT:
         return None, Usage()
     sample = incorrect[-ERROR_TYPE_MAX_SAMPLE:]
@@ -413,10 +434,8 @@ def _parse_goal_orientation(content: str) -> dict[str, Any] | None:
     return {"orientation": orientation, "confidence": max(0.0, min(1.0, confidence))}
 
 
-async def _estimate_goal_orientation(
-    ctx: EstimatorContext,
-) -> tuple[DimensionEstimate | None, Usage]:
-    goals = [
+async def _recent_goals(ctx: EstimatorContext) -> list[str]:
+    return [
         g
         for g in (
             await ctx.session.scalars(
@@ -428,6 +447,16 @@ async def _estimate_goal_orientation(
         ).all()
         if g
     ]
+
+
+async def _fingerprint_goal_orientation(ctx: EstimatorContext) -> str | None:
+    return _digest(await _recent_goals(ctx))
+
+
+async def _estimate_goal_orientation(
+    ctx: EstimatorContext,
+) -> tuple[DimensionEstimate | None, Usage]:
+    goals = await _recent_goals(ctx)
     if not goals:
         return None, Usage()
     prompt = "Learner's stated goals:\n" + "\n".join(f"- {g}" for g in goals)
@@ -480,11 +509,18 @@ def _parse_interests(content: str) -> list[str]:
     return tags
 
 
+def _interest_sample(ctx: EstimatorContext) -> list[Message]:
+    return [m for m in ctx.messages if m.content.strip()][-INTERESTS_MAX_MESSAGES:]
+
+
+async def _fingerprint_interests(ctx: EstimatorContext) -> str | None:
+    return _digest(str(m.id) for m in _interest_sample(ctx))
+
+
 async def _estimate_interests(ctx: EstimatorContext) -> tuple[DimensionEstimate | None, Usage]:
-    own_messages = [m.content for m in ctx.messages if m.content.strip()]
-    if not own_messages:
+    sample = [m.content for m in _interest_sample(ctx)]
+    if not sample:
         return None, Usage()
-    sample = own_messages[-INTERESTS_MAX_MESSAGES:]
     text = "\n".join(m[:INTERESTS_MAX_CHARS_PER_MESSAGE] for m in sample)
     completion = await ctx.llm.complete(
         PROFILE_LLM_ROLE,
@@ -644,6 +680,7 @@ DIMENSION_SPECS: list[DimensionSpec] = [
         kind="trait",
         source="behavioral",
         estimate=_estimate_error_type,
+        fingerprint=_fingerprint_error_type,
         label="How your wrong answers were classified",
         observation=(
             "A model's reading of up to ten incorrect answers as conceptual, procedural, or "
@@ -697,6 +734,7 @@ DIMENSION_SPECS: list[DimensionSpec] = [
         kind="trait",
         source="self_report",
         estimate=_estimate_goal_orientation,
+        fingerprint=_fingerprint_goal_orientation,
         label="What your stated goals are aiming at",
         observation="A model's reading of the goals you wrote for your recent conversations.",
     ),
@@ -705,6 +743,7 @@ DIMENSION_SPECS: list[DimensionSpec] = [
         kind="trait",
         source="behavioral",
         estimate=_estimate_interests,
+        fingerprint=_fingerprint_interests,
         label="Topics in your messages",
         observation="Subjects a model picked out of the messages you have typed.",
     ),

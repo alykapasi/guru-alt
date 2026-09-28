@@ -15,7 +15,9 @@ from app.core.db import engine
 from app.core.logging import configure_logging
 from app.core.middleware import request_id_middleware
 from app.core.release import enforce_production_settings
+from app.llm.meter import BudgetExceeded
 from app.services import decisions as decisions_svc
+from app.services import spend_guard  # noqa: F401  installs the spend guard on the meter (S47)
 from app.services.admin_audit import AdminAuditMiddleware
 from app.services.knowledge import NotVisible
 
@@ -58,6 +60,15 @@ app = FastAPI(title="Guru API", version="0.1.0", lifespan=lifespan)
 async def _not_visible(_request: Request, exc: NotVisible) -> JSONResponse:
     """The one 404 for a graph id the caller cannot see (S25). See ``knowledge.NotVisible``."""
     return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.exception_handler(BudgetExceeded)
+async def _budget_exceeded(_request: Request, exc: BudgetExceeded) -> JSONResponse:
+    """Any paid call refused by the spend guard (S47) — one shape for every route."""
+    return JSONResponse(
+        status_code=429,
+        content={"detail": {"code": "budget_exceeded", "scope": exc.scope, "message": exc.message}},
+    )
 
 
 app.middleware("http")(request_id_middleware)

@@ -3,6 +3,8 @@
 import json
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
+from typing import cast
 
 import pytest
 from httpx import AsyncClient
@@ -10,6 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_memory_write_back_enqueuer
+from app.core.config import get_settings
+from app.llm.providers.fake import FakeProvider
 from app.llm.registry import fake_llm_client
 from app.main import app
 from app.models.chat import Conversation, LLMCall, Message
@@ -523,3 +527,152 @@ async def test_an_unchanged_correction_writes_nothing(db_session: AsyncSession) 
     )
     await db_session.refresh(original)
     assert original.status == MemoryStatus.CURRENT
+
+
+async def test_the_list_says_what_a_memory_replaced_and_undo_works_over_the_route(
+    api_client, db_session, api_learner
+) -> None:
+    old = Memory(
+        embedding_space=FAKE_SPACE,
+        learner_id=api_learner.id,
+        kind="preference",
+        content="Studies in the mornings.",
+        embedding=[0.1] * get_settings().embed_dim,
+    )
+    new = Memory(
+        embedding_space=FAKE_SPACE,
+        learner_id=api_learner.id,
+        kind="preference",
+        content="Studies in the evenings now.",
+        embedding=[0.2] * get_settings().embed_dim,
+    )
+    db_session.add_all([old, new])
+    await db_session.flush()
+    old.status, old.superseded_by_id = MemoryStatus.SUPERSEDED, new.id
+    await db_session.flush()
+
+    listed = (await api_client.get(f"{API}/memory")).json()
+    [entry] = [m for m in listed if m["id"] == str(new.id)]
+    assert entry["replaced"] == {"id": str(old.id), "content": "Studies in the mornings."}
+
+    r = await api_client.post(f"{API}/memory/{new.id}/undo-replacement")
+    assert r.status_code == 200 and r.json()["id"] == str(old.id)
+    again = await api_client.post(f"{API}/memory/{new.id}/undo-replacement")
+    assert again.status_code == 409 and again.json()["detail"]["code"] == "not_a_replacement"
+    assert (
+        await api_client.post(f"{API}/memory/{uuid.uuid4()}/undo-replacement")
+    ).status_code == 404
+
+
+# --- the memory setting (S43) ----------------------------------------------------------------
+
+
+async def test_a_paused_learner_learns_nothing_and_pays_nothing(db_session: AsyncSession) -> None:
+    learner = Learner(handle=f"p-{uuid.uuid4().hex[:8]}", remember_conversations=False)
+    db_session.add(learner)
+    await db_session.flush()
+    conv = Conversation(learner_id=learner.id)
+    db_session.add(conv)
+    await db_session.flush()
+    db_session.add(Message(conversation_id=conv.id, role="user", content="I study at night."))
+    await db_session.commit()
+    llm = fake_llm_client('{"memories": [{"kind": "fact", "content": "Studies at night."}]}')
+
+    assert await svc.write_back(db_session, llm, conversation_id=conv.id) == []
+    assert cast(FakeProvider, llm._providers["fake"]).prompts_sent == []
+
+
+async def test_a_closing_account_learns_nothing(db_session: AsyncSession) -> None:
+    learner = Learner(handle=f"c-{uuid.uuid4().hex[:8]}", deletion_requested_at=datetime.now(UTC))
+    db_session.add(learner)
+    await db_session.flush()
+    conv = Conversation(learner_id=learner.id)
+    db_session.add(conv)
+    await db_session.flush()
+    db_session.add(Message(conversation_id=conv.id, role="user", content="I study at night."))
+    await db_session.commit()
+
+    llm = fake_llm_client('{"memories": [{"kind": "fact", "content": "Studies at night."}]}')
+    assert await svc.write_back(db_session, llm, conversation_id=conv.id) == []
+
+
+async def test_a_finished_write_back_releases_the_claim(db_session: AsyncSession) -> None:
+    """Review focus 1: a backlog bigger than the window stays due and must be claimable on the
+    next pass, not after the retry delay meant for failures."""
+    learner = Learner(handle=f"w-{uuid.uuid4().hex[:8]}")
+    db_session.add(learner)
+    await db_session.flush()
+    conv = Conversation(learner_id=learner.id, memory_attempted_at=datetime(2026, 1, 1))
+    db_session.add(conv)
+    await db_session.flush()
+    conv_id = conv.id
+    db_session.add(Message(conversation_id=conv_id, role="user", content="hello"))
+    await db_session.commit()
+
+    await svc.write_back(db_session, fake_llm_client('{"memories": []}'), conversation_id=conv_id)
+
+    again = await db_session.get(Conversation, conv_id, populate_existing=True)
+    assert again is not None and again.memory_attempted_at is None
+
+
+async def test_the_setting_defaults_on_and_pausing_refuses_write_back(
+    api_client: AsyncClient,
+) -> None:
+    assert (await api_client.get(f"{API}/me/memory-setting")).json() == {"remember": True}
+
+    r = await api_client.put(f"{API}/me/memory-setting", json={"remember": False})
+    assert r.status_code == 200 and r.json() == {"remember": False}
+    assert (await api_client.get(f"{API}/me/memory-setting")).json() == {"remember": False}
+
+    conv = (await api_client.post(f"{API}/conversations", json={})).json()
+    refused = await api_client.post(f"{API}/conversations/{conv['id']}/memory/write-back")
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["code"] == "memory_paused"
+
+
+async def test_what_is_remembered_is_still_used_while_paused(
+    db_session: AsyncSession,
+) -> None:
+    """Pausing stops learning; it does not hide what is already known."""
+    learner = Learner(handle=f"k-{uuid.uuid4().hex[:8]}", remember_conversations=False)
+    db_session.add(learner)
+    await db_session.flush()
+    db_session.add(
+        Memory(
+            embedding_space=FAKE_SPACE,
+            learner_id=learner.id,
+            kind=MemoryKind.FACT,
+            content="Studies at night.",
+            embedding=[0.1] * get_settings().embed_dim,
+        )
+    )
+    await db_session.commit()
+
+    assert [m.content for m in await svc.list_memories(db_session, learner.id)] == [
+        "Studies at night."
+    ]
+
+
+async def test_the_setting_is_exported(api_client: AsyncClient) -> None:
+    await api_client.put(f"{API}/me/memory-setting", json={"remember": False})
+    exported = (await api_client.get(f"{API}/me/export")).json()
+    assert exported["learner"]["remember_conversations"] is False
+
+
+async def test_what_was_said_while_paused_is_never_learned(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """Turning memory back on must not reach back into what was said while it was off."""
+    await api_client.put(f"{API}/me/memory-setting", json={"remember": False})
+    conv = Conversation(learner_id=api_learner.id)
+    db_session.add(conv)
+    await db_session.flush()
+    conv_id = conv.id
+    db_session.add(Message(conversation_id=conv_id, role="user", content="I have asthma."))
+    await db_session.commit()
+
+    await api_client.put(f"{API}/me/memory-setting", json={"remember": True})
+    llm = fake_llm_client('{"memories": [{"kind": "fact", "content": "Has asthma."}]}')
+
+    assert await svc.write_back(db_session, llm, conversation_id=conv_id) == []
+    assert cast(FakeProvider, llm._providers["fake"]).prompts_sent == []
