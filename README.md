@@ -3,6 +3,7 @@
 [![CI](https://github.com/alykapasi/guru-alt/actions/workflows/ci.yml/badge.svg)](https://github.com/alykapasi/guru-alt/actions/workflows/ci.yml)
 ![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue)
 ![React 19](https://img.shields.io/badge/react-19-61dafb)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
 **An AI-first personalized learning platform built for *durable* learning — knowledge that sticks.**
 
@@ -249,3 +250,11 @@ docs/          design, roadmap, runbook, operations
 Pragmatic Programmer (DRY, YAGNI), small verified increments, async throughout, and type safety at
 every layer — Pydantic at the boundaries, beartype at runtime, ty statically. Heavy dependencies
 arrive at the phase that needs them, behind thin seams.
+
+---
+
+## License
+
+Guru is licensed under the [GNU Affero General Public License v3.0](LICENSE). You may use, modify
+and redistribute it; if you run a modified version as a network service, you must offer its users
+the corresponding source code.
