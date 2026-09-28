@@ -17,6 +17,7 @@ import json
 
 import pytest
 
+from app.learning import item_generation
 from app.learning.conversation_evidence import _SYSTEM_PROMPT as _INTENT_SYSTEM_PROMPT
 from app.learning.conversation_evidence import TurnIntent, parse_intent
 from app.learning.curriculum import CURRICULUM_SYSTEM_PROMPT, generate_curriculum
@@ -24,6 +25,7 @@ from app.learning.item_generation import (
     _FILL_BLANK_SYSTEM_PROMPT,
     _FLASHCARD_SYSTEM_PROMPT,
     _SHORT_SYSTEM_PROMPT,
+    CRITERIA_SYSTEM_PROMPT,
 )
 from app.learning.item_generation import _SYSTEM_PROMPT as _MCQ_SYSTEM_PROMPT
 from app.learning.lesson_plan import _OBJECTIVE_SYSTEM_PROMPT
@@ -41,6 +43,7 @@ REAL_PROMPTS = [
     ("fill-blank item", _FILL_BLANK_SYSTEM_PROMPT),
     ("short item", _SHORT_SYSTEM_PROMPT),
     ("flashcard item", _FLASHCARD_SYSTEM_PROMPT),
+    ("criteria", CRITERIA_SYSTEM_PROMPT),
     ("grade", _GRADE_SYSTEM_PROMPT),
     ("per-component grade", _COMPONENT_SYSTEM_PROMPT),
     ("intent", _INTENT_SYSTEM_PROMPT),
@@ -110,7 +113,7 @@ def test_no_conversational_prompt_is_answered_with_json() -> None:
     system prompt would replace a teaching reply with a JSON blob — and the browser journeys
     would go on passing, because they assert on the *default* prose, which is what those
     callers get today. This sweeps every system prompt in the codebase, including the ones
-    written after this file, and requires that only the eight known callers match anything.
+    written after this file, and requires that only the known callers match anything.
     """
     known = {prompt for _, prompt in REAL_PROMPTS}
     wrongly_claimed = {
@@ -222,6 +225,13 @@ async def test_each_item_shape_carries_the_fields_its_parser_requires(
 
     assert set(required) <= set(data)
     assert "Eigenvalues" in data["stem"], "the question has to be about what was asked"
+
+
+async def test_criteria_for_a_declared_check_parse_with_a_level() -> None:
+    criteria, level, _ = await item_generation.write_criteria(
+        _client(), stem="Why is momentum a vector?", component_name="Momentum"
+    )
+    assert criteria and level == "moderate"
 
 
 async def test_the_multiple_choice_answer_key_is_in_range() -> None:

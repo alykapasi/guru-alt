@@ -344,6 +344,66 @@ def _parse_short(content: str) -> tuple[str, list[str]] | None:
     return stem, criteria
 
 
+CRITERIA_SYSTEM_PROMPT = (
+    "You write the marking criteria for a question a tutor has already asked in conversation, "
+    "and say how hard the question is. Respond with ONLY a JSON object "
+    '{"criteria": ["<what a full-credit answer must show>", ...], "level": "<level>"} and '
+    "nothing else. Give two to four criteria, each one specific and checkable. The level is "
+    "exactly one of: "
+    + "; ".join(f"{name} ({gloss})" for name, gloss in difficulty_mod.LEVELS)
+    + "."
+)
+
+
+async def write_criteria(
+    llm: LLMClient,
+    *,
+    stem: str,
+    component_name: str,
+    component_description: str = "",
+    max_tokens: int = 256,
+) -> tuple[list[str], str | None, Usage]:
+    """Criteria and a rated level for a question that already exists (S56).
+
+    For a conversational check the tutor declared, or a posed check whose generated criteria
+    did not parse. Given the question and its component only — never a learner's answer, so
+    the standard is fixed before anything is graded against it. Both halves are best-effort:
+    no usable criteria is ``[]``, and a level that is not exactly a band name is ``None``.
+    """
+    component = component_name + (f" — {component_description}" if component_description else "")
+    completion = await llm.complete(
+        GENERATION_ROLE,
+        [
+            ChatMessage(
+                role=ChatRole.USER,
+                content=f"Question:\n{stem}\n\nKnowledge component: {component}",
+            )
+        ],
+        system=CRITERIA_SYSTEM_PROMPT,
+        max_tokens=max_tokens,
+    )
+    criteria, level = _parse_criteria(completion.content)
+    return criteria, level, completion.usage
+
+
+def _parse_criteria(content: str) -> tuple[list[str], str | None]:
+    try:
+        raw = json.loads(_extract_json(content))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return [], None
+    if not isinstance(raw, dict):
+        return [], None
+    listed = raw.get("criteria")
+    criteria = (
+        [text for text in (str(c).strip() for c in listed) if text]
+        if isinstance(listed, list)
+        else []
+    )
+    level = str(raw.get("level", "")).strip().lower()
+    names = {name for name, _gloss in difficulty_mod.LEVELS}
+    return criteria, level if level in names else None
+
+
 def _parse_flashcard(content: str) -> tuple[str, str] | None:
     try:
         raw = json.loads(_extract_json(content))
