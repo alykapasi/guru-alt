@@ -893,6 +893,65 @@ async def due_reviews(
     return [ReviewItem.model_validate(s) for s in states]
 
 
+class RetentionCheck(BaseModel):
+    """A component due a delayed, independent check of retention (S14)."""
+
+    kc_id: uuid.UUID
+    due_at: datetime
+    ability: float
+    uncertainty: float
+
+
+def _naive_utc(value: datetime) -> datetime:
+    return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
+
+
+async def due_retention_checks(
+    session: AsyncSession, learner_id: uuid.UUID, *, now: datetime | None = None
+) -> list[RetentionCheck]:
+    """Components owed the second unaided demonstration retention needs, soonest first.
+
+    Due when the component has an unaided answer, has not shown retention, the latest unaided
+    answer is at least ``retention_min_days`` old (sooner could not count) — and either FSRS
+    has brought its review up or ``retention_probe_days`` have passed. FSRS may bring a check
+    forward; the interval makes sure one arrives. Derived, never stored, so a missed check
+    stays due. Stops once retention is shown: keeping it fresh afterwards is not this.
+    """
+    settings = get_settings()
+    now_naive = _naive_utc(now or datetime.now(UTC))
+    min_days = settings.retention_min_days
+    probe_days = max(settings.retention_probe_days, min_days)
+    states = (
+        await session.scalars(select(LearnerKCState).where(LearnerKCState.learner_id == learner_id))
+    ).all()
+    evidence = await kc_evidence(session, learner_id, [s.kc_id for s in states])
+    due: list[RetentionCheck] = []
+    for state in states:
+        found = evidence.get(state.kc_id)
+        if (
+            found is None
+            or found.last_unassisted_at is None
+            or found.retention_shown(min_days=min_days)
+        ):
+            continue
+        last = _naive_utc(found.last_unassisted_at)
+        earliest = last + timedelta(days=min_days)
+        by_interval = last + timedelta(days=probe_days)
+        # The earlier of FSRS's date and the interval, never before a check could count.
+        fsrs = _naive_utc(state.due_at) if state.due_at is not None else None
+        when = min(by_interval, max(fsrs, earliest)) if fsrs is not None else by_interval
+        if when <= now_naive:
+            due.append(
+                RetentionCheck(
+                    kc_id=state.kc_id,
+                    due_at=when,
+                    ability=state.ability,
+                    uncertainty=state.uncertainty,
+                )
+            )
+    return sorted(due, key=lambda c: c.due_at)
+
+
 class Struggle(BaseModel):
     """How badly, and why, a learner is currently stuck on one component (S11).
 
@@ -1366,6 +1425,9 @@ class KCEvidence(BaseModel):
     # has no span to measure and a 0.0 would read as "measured, and it was zero".
     unassisted_attempts: int
     unassisted_span_days: float | None
+    # When the latest unaided demonstration was (naive UTC), or None — what a retention check
+    # is timed from (S14).
+    last_unassisted_at: datetime | None = None
     # Self-rated attempts at this component (S56). Counted separately rather than folded in:
     # a rating is not backing for the estimate, but it is not nothing either, and an
     # interaction that vanished from the summary would make the history a lie of omission.
@@ -1391,10 +1453,13 @@ def _demonstrated_clause() -> ColumnElement[bool]:
 
 
 def _unassisted_clause() -> ColumnElement[bool]:
-    """An attempt made with no hints and not a re-look at the same question (S14)."""
+    """An attempt made with no hints, not a re-look at the same question, and not given straight
+    after a worked example of it (S14). Guided practice teaches before it asks; an answer given
+    moments after being shown how is not the independent demonstration retention needs."""
     return and_(
         func.coalesce(LearningEvent.payload["hints_used"].astext.cast(Integer), 0) == 0,
         func.coalesce(LearningEvent.payload["prior_attempts"].astext.cast(Integer), 0) == 0,
+        func.coalesce(LearningEvent.payload["taught_first"].astext, "false") != "true",
     )
 
 
@@ -1477,6 +1542,7 @@ async def kc_evidence(
             unassisted_items=int(unassisted_items or 0),
             unassisted_attempts=unassisted_attempts,
             unassisted_span_days=span,
+            last_unassisted_at=last_unassisted_at,
             self_reported_attempts=int(self_reported or 0),
         )
     return out
