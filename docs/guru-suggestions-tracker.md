@@ -1,340 +1,281 @@
 # Guru — Suggestions Tracker
 
-Last reviewed: 2026-09-28
+Last reviewed: 2026-09-29 · Branch state: `feat/workstream-2` (PR #44)
 
-Repository snapshot: `f9fbed8` (`main`, after PR #43 merged: workstream 3 slices B–C, workstream 4,
-and workstream 5 slice A)
+What is still to do, and what is done. [V0_DECISIONS.md](V0_DECISIONS.md) owns v0 scope and the
+[delivery sequence](V0_DECISIONS.md#delivery-sequence); [MASTERPLAN.md](MASTERPLAN.md) and
+[ROADMAP.md](ROADMAP.md) own mission and phases. History (original findings, superseded rows,
+older verification runs) lives in Git.
 
-## Purpose and maintenance
+### How to read it
 
-Track remaining work against the current repository. [V0_DECISIONS.md](V0_DECISIONS.md) is the
-source of accepted v0 scope and delivery order; it overrides conflicting historical proposals.
-[MASTERPLAN.md](MASTERPLAN.md) retains the mission and architecture, and
-[ROADMAP.md](ROADMAP.md) retains the phased plan.
+- Each ID appears in exactly one table. Update that row; don't append narrative.
+- **Open**: nothing built yet. **Partial**: a foundation exists and the named remainder is left.
+  **Proposed**: suggested, not accepted. **Implemented / Completed**: the bounded software scope
+  is closed. **Merged**: tracked under another ID. **Deferred**: outside v0.
+- "Implemented" means the code exists and is tested — not that it is educationally validated or
+  deployed. Thresholds are uncalibrated until S18/S59 say otherwise.
+- Small known defects found in reviews are listed under [Deferred minors](#deferred-minors), not
+  in the rows.
 
-- Keep each suggestion ID in exactly one register row. Update that row instead of appending a
-  second narrative. Cross-reference another ID when it owns the remaining work.
-- Use the same fields throughout: **ID, item, status, next step or closure, evidence**.
-- **Open** means work remains without an implemented solution. **Partial** means a foundation
-  exists but the stated follow-up remains. **Implemented** closes the bounded software scope,
-  with any separate follow-up named. **Merged** points to the authoritative entry or decision.
-  **Deferred** is outside v0; **Proposed** remains an unaccepted suggestion.
-- Status describes delivery, not approval or educational effectiveness. Acceptance comes from
-  the decision record; grouping a proposal does not approve it. No item here is educationally
-  validated merely because code or tests exist.
-- Evidence links identify current code/test sources or explicitly proposed designs. This review
-  inspected those sources; it did not rerun application tests, use paid models, or verify a deployed
-  environment. Linked vendor research retains its recorded date and was not refreshed here.
-- Original findings, branch histories, mutation anecdotes, and superseded requirements remain
-  in Git history. They are omitted here so fixed problems do not get scheduled again.
+## At a glance
 
-## Current scope and priorities
-
-Build for independent use by invited adults after founder testing, with unrestricted subjects.
-Generated material is private by default. URL imports and tutor web access are disabled for v0.
-Alpha administrators have broad, authenticated, audited access when enabled; learner opt-in and
-read-only support access are superseded. Durable learner work must survive routine cleanup.
-
-Follow the seven workstreams below in the [accepted delivery sequence](V0_DECISIONS.md#delivery-sequence).
-The retrieval gate failure (S76) is explained and fixed; its exact-versus-index performance
-tradeoff and the evidence semantics (S54/S56) must stay visible even where their surrounding
-infrastructure is already implemented.
-Provider choices, paid-evaluation budgets, alpha caps, hosting, domain, and mail configuration remain
-deferred operating choices; local implementation and deterministic verification can continue.
-
-The [Jev integration sequence](#jev-integration) is tracked separately as proposed work. It does
-not replace the accepted v0 sequence or make Jev a prerequisite for delivering it.
-
-## Active v0 work
-
-### 1. Identity, private ownership, and publication
-
-The tracked software items (S21, S25) are closed and recorded under
-[completed work](#completed-and-consolidated-work); S33 and P10 closed earlier.
-
-A real Clerk application is now configured and exercised from this checkout: the secret key is
-accepted, a malformed token is refused without a network call, and a well-formed token with an
-unknown signing key is rejected as a bad token with the signing key resolved locally. That first
-live run found a defect nineteen fake-backed tests had not — see S21 — which is the argument for
-doing it before the remaining provider work rather than after.
-
-Still open, and operating configuration rather than code: production mail and account recovery are
-unverified in a real deployment (S60), the provider's application name is unset so its emails are
-sent from "My Application", and `GURU_CLERK_AUTHORIZED_PARTIES` is unset, which is fine against a
-development instance and must be explicit before production.
-
-### 2. Learning evidence, goals, and guidance
-
-Delivered in four slices, each with its own design and plan under
-[docs/superpowers/](superpowers/) and a whole-branch review: evidence kinds (S56/S54), goal policy
-(S01/S14/S63), guidance (S11/S52), and integrity and transfer (S34/S23/S24). Eight rows are closed
-and recorded under [completed work](#completed-and-consolidated-work). The two below were split
-deliberately and keep their remaining halves. All new thresholds are uncalibrated and listed
-under S18.
-
-| ID | Item | Status | Next step or closure | Evidence |
-| --- | --- | --- | --- | --- |
-| S14 | Independent delayed retention and transfer evidence | Implemented | Consumed half done: retention now needs two unaided demonstrations rather than a time span, and goal status reads that evidence. The former `transfer_shown` claim (two item ids) was removed, not repaired. Delayed independent checks done (workstream 2, piece 3): a component with one unaided answer and no retention yet gets a retention check in its review queue — when FSRS surfaces it at least `retention_min_days` after that answer, or at `retention_probe_days` (7) otherwise — posed cold with an unseen written question; an answer given straight after a worked example no longer counts as unaided. Transfer done (workstream 2, piece 4): questions carry a setting from a fixed catalogue of twelve (`app/learning/transfer.py`, `items.setting`, NULL = abstract); transfer is an unaided, judged, correct answer in a setting no earlier attempt at the component used; after retention, a component without transfer gets a cold transfer check in its review queue in the next unpractised setting; the dashboard says "applied in <setting>". Evidence only — not required for achievement. Deferred minors from its review: ordinary practice can serve an unseen question generated for a transfer check, using up that setting; publishing a subject does not copy `items.setting`; `correct` is item-level, so on a multi-component item a weak component can still show transfer; no test of `/reviews/due` precedence when both checks are due (impossible in real data) nor of the session-surface transfer branch. Deferred minors from its review: every plan revision reads all of the learner's component states and evidence (add a `kc_ids` filter); `passed_since` repeats the taught-first condition now inside `_unassisted_clause`; no `revise_steps` test that a flagged step closes, nor an end-to-end workflow test of a check answered after a side discussion. For a product look: every component answered unaided once becomes a SMART-graded check within a week, with no cap on the queue. Cross-subject reuse (S24) is a different thing and does not close this. | [Transfer design](superpowers/specs/2026-09-29-transfer-evidence-design.md), [Retention-checks design](superpowers/specs/2026-09-29-retention-checks-design.md), [Goal-policy design §4, §11](superpowers/specs/2026-09-22-goal-policy-design.md), [evidence summaries](../app/learning/mastery.py), [exposure tests](../tests/test_item_exposure.py) |
-| S56 | Evidence kinds and reproducible grading history | Implemented | Evidence-kind half done: the server derives whether a score was judged or self-reported, self-ratings update retention scheduling only, and analytics, the profile's effort/help questions and notes read the distinction. Grading provenance done (workstream 2, piece 1): every graded event carries a `grading` block naming the grader and model and the hashes of frozen item, rubric and prompt snapshots (`grading_snapshots`, per learner, event schema v5), and `uv run poe regrade` re-grades past answers under a current or recorded grader and reports agreement without changing a grade (RUNBOOK §19). Declared-check part done (workstream 2, piece 2): a conversational check without criteria gets them, and a difficulty rated into one of the five bands, from one FAST call on its first attempt that passes the intent gate — from the question alone, never the answer (`app/services/check_criteria.py`) — and the tutor is told what level to pitch a declared check at from the learner's subject roll-up. Optional later: a shadow-only Jev question rating the band, to compare with the criteria call's. Deferred minors from the provenance review: `poe regrade` counts pre-v5 events toward `--limit` and loads the whole window before capping; an administrator's flashcard answer counts as "not re-gradable" instead of being skipped; a grading path that forgets `provenance` is recorded as `auto`; failures are not broken down by kind; `--model` is not validated as `provider:model`; no test yet pins a rubric on one KC of a two-KC item, the re-graded user message against the original, or the concurrent-race loser writing no snapshots. Legacy events without sufficient data stay explicitly unreplayable. Deferred minors from the declared-check review: the Jev turn read starts before a first attempt's criteria exist, so a live `fully_correct` pass on that attempt judges without them; `ensure_criteria` takes the first of `kc_links`, whose order is undefined (one component on a declared check, so no effect today); the item row stays locked across the criteria and grading calls; the refusal test raises from the provider rather than the spend guard. | [Evidence-kinds design](superpowers/specs/2026-09-21-s56-evidence-kinds-design.md), [assessment service](../app/services/assessment.py), [evidence-kind tests](../tests/test_evidence_kinds.py), [replay tests](../tests/eval/test_datasets_replay.py), [provenance design](superpowers/specs/2026-09-28-grading-provenance-design.md), [re-grade](../app/services/regrade.py), [declared-check design](superpowers/specs/2026-09-28-declared-check-criteria-design.md), [check criteria](../app/services/check_criteria.py) |
-
-### 3. Source scope, teaching quality, and retrieval
-
-| ID | Item | Status | Next step or closure | Evidence |
-| --- | --- | --- | --- | --- |
-| S26 | Consistent source scope and sources-only mode | Completed | One scope rule (`resolve_scope`, `app/rag/scope.py`) for lessons, chat, practice, agent search, onboarding and debug retrieval. Untagged sources are opt-in per subject; sources-only is a per-subject switch (`PATCH /subjects/{id}/source-settings`, Sources panel on Lessons). A General chat reaches no library at all, closing the agent-search leak. Lessons in sources-only with nothing retrieved are refused (422) before any model call. | [Scope](../app/rag/scope.py), [scope tests](../tests/test_scope.py), [settings tests](../tests/test_source_settings.py), [content tests](../tests/test_content.py) |
-| S27 | Technical extraction quality | Partial | Structure preservation and damage indicators exist. Chunking is structure-aware: fenced code, pipe tables and display math longer than a window are kept whole up to 4× the window and split beyond that with the header, fence or delimiters repeated in every part (`PIPELINE_VERSION` 2). Reading notes derived from provenance facts (OCR, ASR, undecodable characters) reach the tutor, lesson prompts and the citation pane. Remaining: evaluate known-correct equations, tables, code, and derivations against fixtures selected under V14 before making extraction-quality claims, and calibrate the ratio indicators (S18). Deferred minors: a stray `$$` or info-string fence line can open a block; a heading alone can become a tiny chunk. | [Chunking](../app/rag/chunking.py), [block detection](../app/rag/structure.py), [quality indicators](../app/rag/extraction_quality.py), [structure tests](../tests/test_structure.py), [reading-note tests](../tests/test_reading_notes.py), [adapter tests](../tests/test_doc_adapters.py), [extraction report](../tests/eval/extraction/report.py) |
-| S28 | Explain source support and insufficiency | Partial | One grounding policy (`app/services/grounding.py`) for chat, practice and agent turns covers passages vs nothing retrieved and normal vs sources-only, including disagreeing passages and naming what goes beyond the sources. Each reply stores `grounding_count`; the API derives `coverage` (cited / searched but not used / not from your materials) and the chat shows it. Remaining: checker accuracy (S59), and lesson coverage once a lesson-block viewer exists. | [Grounding policy](../app/services/grounding.py), [coverage](../app/rag/coverage.py), [support checker](../app/learning/citation_support.py), [grounding tests](../tests/test_grounding.py), [coverage tests](../tests/test_coverage.py) |
-| S29 | Preserve historical citations across source revisions | Completed | Re-ingest supersedes instead of deleting: chunks a chat reply or lesson block cites are kept (text and locator; no vector or tags) and uncited ones deleted; deleting a source still deletes everything. Re-processing a finished source needs the learner's confirmation (409 `confirm_required`, Re-process dialog); a failed source retries directly. The citation pane labels earlier versions and says when a passage is gone. | [Supersede](../app/rag/pipeline.py), [supersede tests](../tests/test_supersede.py), [retry tests](../tests/test_ingestion_recovery.py) |
-| S31 | Untrusted source and memory boundaries | Partial | Untrusted-content fencing and v0 web restrictions exist. Add held-out uploaded-document and memory-poisoning cases and evaluate the remaining model boundary under S59. Do not retain active-web exfiltration requirements as v0 work or mistake text filters for a guarantee. | [Untrusted-content handling](../app/agent/untrusted.py), [memory extraction](../app/memory/extraction.py), [injection tests](../tests/test_prompt_injection.py), [web-policy tests](../tests/test_v0_web_policy.py) |
-| S50 | Versioned reindexing and embedding migration | Partial | Chunks record `pipeline_version`. `uv run poe reindex` derives staleness from the data (embedding space, pipeline version, legacy subject/topic scope) and is resumable by running again: dry run by default, `--apply` re-embeds in place (chunk ids and citations kept) and repairs scope, `--reextract` re-ingests stale extractions through the queue. Remaining: run it against a real corpus; bump `PIPELINE_VERSION` when S27's extraction work lands. | [Reindex](../app/services/reindex.py), [reindex tests](../tests/test_reindex.py), [RUNBOOK §15](RUNBOOK.md) |
-| S76 | Retrieval correctness and corpus-scale behavior | Partial | Gate failure explained, reproduced and fixed (6c9d51d): every learner-scoped vector search ordered by the bare distance, so whenever table statistics favoured it the planner used the HNSW index, which returns the ~40 nearest vectors in the whole table *before* the learner filter; crowded by other learners' (or dead) rows it returned some or none of the learner's own. With the expected chunk missing, a distractor ties it at 1/61 in the fusion and wins on order — the gate's corpus then scores exactly the recorded 0.25. Chunk retrieval, memory retrieval and extraction's duplicate lookup now order by an exact expression the index cannot serve; each has a test that crowds the index and forces its plan (all three returned nothing before). Remaining: compare exact and index-based retrieval on representative permitted corpora before choosing a performance tradeoff (the historical synthetic measurements below). | [Retrieval gate](../tests/eval/test_eval.py), [exact distance](../app/llm/embedding_space.py), [regression tests](../tests/test_retrieval.py), [recall/plan experiment](../tests/eval/retrieval/recall.py) |
-| S77 | Duplicate-source recovery and evaluation | Partial | Exact-byte/text deduplication, shared blobs, and suggestion-only near matching exist. The duplicate relation is a foreign key; a duplicate whose original was deleted, moved, failed or emptied is released at curriculum reassignment and reindex scope repair, and caught by the reconcile sweep and `poe reindex`; it re-ingests from its own file, and the uploads list names the shared original. Remaining: evaluate selected scanned/digital pairs (testing phase). Keep near matches advisory; automatic near-duplicate deletion is not a missing feature. Deferred minors: the stranded-duplicate sweep has no batch limit, and its `requeued` count includes `recovered`. | [Duplicate suppression](../app/rag/pipeline.py), [source recovery](../app/services/ingestion.py), [recovery tests](../tests/test_duplicate_recovery.py), [text-dedup tests](../tests/test_text_dedup.py), [similarity tests](../tests/test_simhash.py) |
-
-### 4. Durable learner work and controls
-
-Closed. S61 (archive, delete, forget, export, retention), S02 (explicit preferences), S42 (memory
-supersession) and S43 (refresh scheduling) are recorded under
-[completed work](#completed-and-consolidated-work), each with its deferred minors. One product
-question is open: [O07](#decisions-and-standing-direction).
-
-### 5. Reliability and resource limits
-
-| ID | Item | Status | Next step or closure | Evidence |
-| --- | --- | --- | --- | --- |
-| S17 | Durable practice lifecycle and restart verification | Partial | PostgreSQL checkpoints, advisory locks, durable onboarding ownership, and revalidation exist. Move checkpoint schema setup into a controlled migration lifecycle, verify actual process restart/resume races, and reconcile expiry with V12's durable-work policy. Define safe onboarding cleanup and graph-state compatibility. Durability alerts already exist. | [Checkpoint setup](../app/agent/checkpointing.py), [lifecycle service](../app/services/checkpoints.py), [durability tests](../tests/test_durable_state.py), [lifecycle tests](../tests/test_checkpoint_lifecycle.py) |
-| S37 | Bounded, resumable ingestion | Partial | Visible jobs, leases, attempts, timeouts, and character/chunk caps exist. Every paid call in ingestion is now admitted against the learner's daily caps and the deployment ceiling, and a refused upload fails with the learner-facing reason (S47). Remaining: make required concurrency ceilings strict, a per-job spend ceiling if the daily caps prove too coarse, and split long extraction/model work into short resumable stages. | [Ingestion service](../app/services/ingestion.py), [pipeline](../app/rag/pipeline.py), [job tests](../tests/test_ingestion_jobs.py) |
-| S47 | Whole-request and spend budgets | Partial | Caps are enforced on every paid call: the learner's exactly (one transaction with an advisory lock admits the call and writes its reservation, so concurrent calls see each other), the deployment ceiling (`GURU_SPEND_BUDGET_USD`) from a 30-second cached total, and background work paused at 90% of either. A refusal answers 429 `budget_exceeded`, ends a turn with the reason, fails an upload with it, and defers a background task. Remaining: whole-request deadlines and cancellation (workstream 5 slice B). Actual alpha caps remain an operating decision. Deferred minors from the final review: the spend report calls a window over budget at `>` while the guard refuses at `>=`, so at exactly the budget `spend_near_budget` fires saying live turns continue; a failed deployment-total read aborts the admission transaction, so that one call proceeds unguarded and unrecorded; reservations ignore images and tool schemas (under-reserving vision and agentic calls near a cap); admission takes a lock and a sum even with both learner limits off; no two-connection test of the advisory lock. | [Spend guard](../app/services/spend_guard.py), [meter](../app/llm/meter.py), [guard tests](../tests/test_spend_guard.py), [budget tests](../tests/test_chat_budget.py), [RUNBOOK §18](RUNBOOK.md#18-spend-limits-s47-s48) |
-| S49 | Provider failure experience | Partial | Capability checks, SDK timeouts/retries, malformed-tool handling, and stream closure exist; a spend refusal is already a predictable 429 `budget_exceeded` and a turn error with its reason (S47), and failed calls are recorded (S48). Give learners predictable provider rate-limit and provider-unavailable responses with safe retry behavior; do not reimplement the compatibility contract. | [Registry](../app/llm/registry.py), [tool-use tests](../tests/test_llm_tool_use.py), [turn lifecycle](../app/services/turn.py) |
-| S53 | Technical rendering edge cases and accessibility | Partial | Math, tables, code blocks, citations, and responsive panels exist. Check indented code against LaTeX normalization and verify keyboard/screen-reader use and panel layout in the browser. Syntax coloring and Markdown transformation of the learner's own messages are not required fixes. | [Rich text](../frontend/src/components/content/RichText.tsx), [rendering tests](../frontend/src/components/content/RichText.test.tsx), [browser tests](../frontend/e2e/) |
-| S62 | Measured long-history performance | Partial | Batched mastery/notes reads, query-count budgets, and transcript pagination exist. Measure representative long-history latency and message-page growth; make further aggregation changes only where measurements justify them. Incremental profile refresh was S43 (a recency window; true running aggregates only if measurements here call for them). | [Query budgets](../tests/test_query_budgets.py), [transcript queries](../app/services/chat.py), [history tests](../tests/test_chat_budget.py) |
-
-### 6. Evaluation and release verification
-
-| ID | Item | Status | Next step or closure | Evidence |
-| --- | --- | --- | --- | --- |
-| S18 | Calibrate estimates and teaching heuristics | Partial | A constants inventory and synthetic difficulty/calibration instruments exist. Workstream 2 added more uncalibrated rules, all in the inventory: the mastery bar (ability − 2·uncertainty ≥ 0.5, k=2 per V02, about twelve correct medium answers from a cold start), retention's minimum spacing, goal-evidence freshness, three unassisted passes to disprove a detour, and a transferred head start's uncertainty floor (0.6) and confirming passes (2). With suitable data under S59, calibrate placement, mastery, assistance, detour, scaffolding, transfer, and goal-duration/freshness rules. Measure requested versus delivered generator difficulty; unrestricted subjects do not justify assuming a common repeated-item cohort. Extraction ratio indicators (`isolated_letter_ratio`, `vowelless_word_ratio`, `runaway_token_ratio`) are stored and unread; they need thresholds (single-letter English words already trip the first). | [Constants inventory](../tests/eval/reliability/knobs.py), [difficulty report](../tests/eval/reliability/difficulty.py), [difficulty tests](../tests/eval/test_reliability_difficulty.py) |
-| S20 | Synchronize remaining project documentation | Partial | This tracker is reconciled; other documents still contain stale implementation descriptions. Correct README's remaining private-ownership claim, CLAUDE's stub-auth/frontend descriptions, historical roadmap status, and OPERATIONS' polling/history gaps. Preserve historical milestones as historical. | [README](../README.md), [repository guidance](../CLAUDE.md), [roadmap](ROADMAP.md), [operations](OPERATIONS.md) |
-| S58 | Current end-to-end and release gates | Partial | Backend/frontend, contract, real Redis, cross-connection, failure-injection, migration-data, and browser test infrastructure exists. S76's gate failure is fixed; add browser coverage for broad sudo, v0 web restriction, and durable note editing; verify newly changed boundaries together and required-check enforcement before release. Current branch protection was not inspected. Two order-dependent browser/suite failures are recorded and unfixed: the admin journey asserts "Not measured" for completion latency, which only holds while the shared e2e database has recorded no non-streamed call in 24 hours, and a mastery assertion is sensitive to clock skew. Sign-in and curriculum journeys now run against the hosted-identity path. Two suites that depended on the developer's machine rather than on the code are fixed, both found by the environment disagreeing with CI rather than by review: the backend suite reached a real object store on an upload path and passed only where `docker compose` was up, and the frontend suite read the Clerk key out of `.env.local`, so configuring the provider turned three passing tests red while CI stayed green. Both now default to the environment CI runs. Treat "green locally, red in CI" as the symptom to look for, not a flake. On 2026-09-26 the browser-journeys job broke on an upstream change: MinIO stopped publishing public images (`minio/minio` gone from Docker Hub, quay.io answering anonymous pulls with 401), so dev and CI now run RustFS 1.0.0 with the bucket created by the official aws-cli image, and `main` needs the same change. The same run found the journeys' stand-in model had no answer for S52's intent gate, so every typed answer paused practice instead of being graded; a stand-in shape and a prompt-coupling test now cover it. Any new LLM prompt a journey reaches needs a shape in `app/llm/providers/shaped.py`, or the journey fails in the browser rather than in a unit test. | [CI](../.github/workflows/ci.yml), [queue tests](../tests/test_queue_integration.py), [migration tests](../tests/test_migrations_with_data.py), [browser journeys](../frontend/e2e/) |
-| S59 | Reliability, model quality, and learning evaluation | Partial | Report tools exist. Select traceable permitted fixtures/founder examples, add independent grading comparisons and founder labels, and measure reliability before setting thresholds. Include diagnosis, conversational intent, source support, injection, extraction, and difficulty cases. Live/paid runs wait for data and budget; later retention/transfer/outcome studies remain distinct from software gates. Owns S03/S67/S71/S72 evaluation overlap. | [Reliability report](../tests/eval/reliability/report.py), [agreement metrics](../tests/eval/reliability/agreement.py), [report tests](../tests/eval/test_reliability_report.py), [V14](V0_DECISIONS.md#accepted-product-decisions) |
-
-### 7. Operated invited alpha
-
-| ID | Item | Status | Next step or closure | Evidence |
-| --- | --- | --- | --- | --- |
-| S60 | Deployment, monitoring, backup, and recovery | Partial | Packaging, production guards, readiness, alert polling/history, admin dashboard, and local restore tools exist. Choose and configure hosting/TLS/secrets/mail/inference; deliver alerts; configure database and object backups with the accepted retention policy (`GURU_DIAGNOSTIC_RETENTION_DAYS`, 30 days) and a way for a restore to re-erase accounts erased since the backup, which nothing records today (S61; [operations](OPERATIONS.md#backup-and-restore)); demonstrate restore/rollback against the 24-hour loss and four-hour recovery targets. Then undertake founder use and observed invited sessions. Deployment and paid choices remain deferred until the product is ready. | [Release guard](../app/core/release.py), [alert history](../app/services/alert_history.py), [restore drill](../scripts/backup-drill.sh), [blob check](../app/workers/blob_check.py), [V16](V0_DECISIONS.md#accepted-product-decisions) |
-| S64 | Stable founder-testing configuration | Proposed | During S60's founder stage, keep an initial model configuration stable and distinguish model, product/state, and serving failures. Configuration and monetary limits have not been selected. | [Accepted inference approach](V0_DECISIONS.md#accepted-product-decisions), S48, S59 |
-| S65 | Observed first-use sessions before a longer pilot | Open | Accepted approach: sustained founder use, then observed sessions, then independent invited use when the exposed capabilities are ready. Record observed obstacles and repeat-use behavior. | [Release objective](V0_DECISIONS.md#release-objective), S58–S60 |
-| S66 | Separate learner, reviewer, and sponsor feedback | Open | Accepted approach: keep evidence about usability, teaching correctness, learning, and commercial interest separate when gathering feedback from the early cohort. | S59, S65 |
-
-## Jev integration
-
-Source: the [implementation plan](jev-implementation-plan.md),
-[architecture proposal](jev-architecture.md), and [capability snapshot](jev-capabilities.md),
-recorded 2026-09-18. The `typesafe-sdk` dependency is declared in [pyproject.toml](../pyproject.toml)
-and locked to 0.6.0 in [uv.lock](../uv.lock). No Jev adapter, `DecisionClient`, decision configuration,
-or Jev evaluation suite exists in the current application. The existing
-[FAST intent classifier](../app/learning/conversation_evidence.py) remains authoritative.
-
-Track the plan in the order below. Synthetic contract work can proceed independently of unrelated
-learner-evidence repairs. Learner-connected evaluation requires the relevant privacy and caller
-checks; studies using ability or downstream learning outcomes also depend on S54/S56. S78, S81, S82
-and S83 are implemented (2026-09-26) with every question off by default. No question has been
-switched live, and no shadow results are recorded here yet.
-
-| ID | Item | Status | Next step or closure | Evidence |
-| --- | --- | --- | --- | --- |
-| S78 | Jev decision contract and isolated adapter | Completed | `DecisionClient` + Guru-owned types, `TypeSafeDecisionClient` (sole SDK importer, no retries, SDK logger pinned at WARNING), `FakeDecisionClient`, settings off by default, startup refuses a mode that is on without a key. Opt-in smoke test `GURU_JEV_SMOKE=1`. | `app/llm/decisions.py`; `tests/test_decision_client.py`; 759b578, b8e47a2 |
-| S79 | Offline answer-intent comparison | Superseded | Replaced by the shadow report on real founder traffic (`uv run poe decision-report`). A hand-labelled set remains a possible later check. | spec 2026-09-26-jev-turn-read §9 |
-| S80 | Jev learner-data eligibility and provider controls | Proposed | Re-scoped: resolve the data-handling questions before any learner other than the founder is invited. Not a precondition for shadow traffic. See RUNBOOK §14. | spec §1, §4 |
-| S81 | Bounded shadow intent execution | Completed | Broadened from intent-only to the turn read: one request per conversational check asks `intent` + `fully_correct`. The practice gate and direct submissions ask their own. Shadow never changes the outcome and writes in the background. | `app/learning/turn_read.py`, `app/services/decisions.py`; `tests/test_decisions.py`, `tests/test_decision_routes.py` |
-| S82 | Jev accounting and diagnostic lifecycle | Completed | `decision_calls` (own transaction, `request_id` so a shared request is costed once, no learner text), Jev pricing, `uv run poe decision-report` (false passes, harmful intent directions, savings, latency, spend). | `app/models/decision.py`, `app/services/decision_report.py`; `tests/test_decision_log.py`, `tests/test_decision_report.py` |
-| S83 | Gated live intent experiment and rollback | Completed | Redefined: a manual per-question `live` switch with threshold and deadline fallback, replacing the invited-cohort experiment. Jev never fails an answer. | `app/services/decisions.py`; live tests in `tests/test_decisions.py` |
-| S84 | Optional Jev tutoring-move study | Proposed | Phase 6, only after useful intent results: let Guru construct the eligible action set from learner preferences, guidance, prerequisites, active attempts, and source scope. Zero/one eligible actions need no model call; revalidate a returned choice before applying it and fall back to current policy on failure. Compare incremental cost and pedagogical outcomes against the existing policy. Depends on relevant S02/S11/S24/S52/S56 work; does not alter goal achievement, mastery mathematics, or FSRS. | [Phase 6](jev-implementation-plan.md#phase-6--optional-bounded-tutoring-policy-study), [policy boundaries](jev-architecture.md#gates-boundaries-and-fallback), [session runner](../app/services/session_runner.py) |
-| S85 | Optional additional Jev decision studies | Proposed | The grading second opinion moved into the turn read as `fully_correct`. The rest (grounding sufficiency, concept mapping, preference suggestions) remains later work. Per-turn learner signals are the next slice. Candidate from S28: `fully_sourced`, which would split the coverage label into full vs partial; shadow first. | spec §6 |
-
-The proposal keeps prose generation, retrieval, DSPy, authorization, mastery estimation, and FSRS
-in their existing components. Shadow comparisons establish decision-quality evidence, not durable
-learning gains; any later causal learning claim requires its own outcome study under S59.
-
-## Completed and consolidated work
-
-These rows close the stated implementation or remove duplicate tracking. Referenced active items
-retain the follow-up work; closure here is not a claim that the complete v0 product is ready.
-
-| ID | Item | Status | Next step or closure | Evidence |
-| --- | --- | --- | --- | --- |
-| S01 | Goal-specific achievement and closure | Implemented | Mastery is judged on the conservative estimate ability − 2·uncertainty ≥ 0.5 (V02's k=2) and only on a component with measured evidence, so an unmeasured placement seed can never count. Achievement is recorded once per component and kept. Goal status reports four separate facts: the learner closed it, current evidence meets the target, achieved historically, and stale and due for a recheck. The learner can close a goal without any evidence being written. Staleness is reported, not acted on, by decision; re-surfacing stays FSRS's job. Thresholds are S18; delayed probes are S14. | [Goal-policy design](superpowers/specs/2026-09-22-goal-policy-design.md), [mastery rule](../app/services/lesson_plan.py), [achievement](../app/learning/mastery.py), [plan tests](../tests/test_lesson_plan.py), [status bar](../frontend/src/components/lessons/GoalStatusBar.tsx) |
-| S02 | Explicit learner preferences | Implemented | Global defaults and subject overrides for guidance, explanation level, note format, hints and pace (V09). An explicit setting pins its parameter in every mode — tutor (chat, agentic, practice), lessons, notes and detours — and is read when instructions are assembled, so a change reaches the next turn (in guided practice, the next question). A subject can pin a value, the default included, against a different global setting. Inferred values stay visible beside each setting and resettable on the Dashboard, which marks those a setting overrides. Guidance moved from the plan row to preferences (migration 0068 copied non-default values). Out of scope: explicit item type and challenge; wiring inferred pacing into the tutor; dropping the unread `lesson_plans.guidance` column. Deferred minors from the final review: a database error while reading settings still fails the turn (the fallback covers other errors only); a subject following a global "Adapt to me" does not show what adaptation chose; a failed save is not shown; downgrading migration 0068 loses guidance changes made since; no query-budget test on the tutor turn (one extra constant query). | [Preferences service](../app/services/preferences.py), [catalog](../app/learning/preferences.py), [tests](../tests/test_preferences.py), [API tests](../tests/test_preferences_api.py) |
-| S03 | Independent checks alongside user feedback | Merged | Evaluation design and evidence are tracked once in S59. | [Evaluation decisions](V0_DECISIONS.md#accepted-product-decisions) |
-| S08 | One trustworthy learning loop | Merged | Shared acceptance criterion for S01/S11/S14/S56/S58/S59: diagnose, teach, independently apply, and revisit. Existing diagnosis-to-feedback wiring need not be rebuilt. | [Feedback policy](../app/learning/feedback.py), [delivery sequence](V0_DECISIONS.md#delivery-sequence) |
-| S09 | Structured per-component diagnosis | Implemented | Diagnoses, checked evidence, recurrent patterns, feedback moves, and failed-review escalation exist. Calibration and accuracy remain S18/S59. | [Diagnosis](../app/learning/diagnosis.py), [recurring-diagnosis tests](../tests/test_recurring_diagnoses.py) |
-| S10 | Component evidence and generated rubrics | Implemented | Per-component grading, generated rubrics, scheduling, and displayed component scores exist. Immutable grading provenance and declared-check gaps are consolidated in S56. | [Rubric grading](../app/learning/rubric_grading.py), [item generation](../app/learning/item_generation.py), [component tests](../tests/test_component_evidence.py) |
-| S11 | Learner-controlled prerequisite detours | Implemented | A per-plan guidance setting chooses the behaviour: exploration proposes a detour for the learner to take or skip; guided mode may take one automatically; either can be skipped. A detour ends when the prerequisite is mastered or when it is disproved, which takes a run of three unassisted, untaught passes on different items (a failure breaks the run). A disproved route may be offered again; a skipped one is remembered. Global preference defaults remain S02. | [Guidance design](superpowers/specs/2026-09-24-guidance-design.md), [plan service](../app/services/lesson_plan.py), [detour tests](../tests/test_prerequisite_detour.py), [step row](../frontend/src/components/lessons/LessonStepRow.tsx) |
-| S12 | Difficulty targeting and instrumentation | Implemented | Selection/generation uses ability-conditioned targets; difficulty reports exist. Delivered difficulty still requires calibration under S18/S59. The two former S12 narratives are consolidated here. | [Difficulty policy](../app/learning/difficulty.py), [targeting tests](../tests/test_difficulty_targeting.py) |
-| S13 | Discount assisted and repeated attempts | Implemented | Workflow assistance, repeat exposure, and reduced evidence credit are implemented. Server-established evidence kinds and self-rating separation remain S54/S56. | [Assistance policy](../app/learning/assistance.py), [assistance tests](../tests/test_assistance.py) |
-| S15 | Deliberate conversational assessment | Implemented | Explicit checks, safe intent routing, help counts, and persisted results exist. Retry identity is S34, pause/resume is S52, grading provenance is S56, and classifier quality is S59. | [Conversation evidence](../app/learning/conversation_evidence.py), [evidence tests](../tests/test_conversation_evidence.py) |
-| S16 | Shared learner context across modes | Implemented | Shared context gathering/composition and learner memory controls exist. Explicit preference precedence is tracked in S02. | [Context service](../app/services/learner_context.py), [context tests](../tests/test_learner_context.py) |
-| S19 | Retain existing architectural foundations | Merged | Standing architectural principle, not a separate repair. Keep the modular application, provider-role seam, continuous estimator, and FSRS. | [Release objective](V0_DECISIONS.md#release-objective), [masterplan](MASTERPLAN.md) |
-| S21 | Invited access and account recovery | Implemented | Identity is delegated to a hosted provider (Clerk): passwords, recovery, verification, and social sign-in are the provider's and Guru stores none. Guru keeps invitation-controlled enrollment, the admin tier, suspension and reinstatement, and audited visits; a proven identity is exchanged once for the session Guru already issued, so no downstream caller knows the provider exists. Guru's own password system was removed, with existing Argon2 digests handed to the provider so learners keep the password they had. A provider outage answers 503 and a rejected token 401, so an outage cannot present as "everyone signed out". A real instance is configured and verified from this checkout: the secret key is accepted, a malformed token is refused locally, and signature checking resolves the signing key offline. That first live run found what nineteen fake-backed tests had not — a token naming an unknown signing key was classified as a provider failure, so any unauthenticated caller could make sign-in report an outage; it is a bad token now, and the classifier's boundary is asserted in both directions. Sign-in and registration are pages rather than mounted panels, sharing one shell with the provider's own flows inside it. Production mail and account recovery remain unverified in a deployment (S60); the provider's application name and authorized parties are unset. | [Identity seam](../app/core/identity.py), [exchange API](../app/api/v1/auth.py), [error classification](../tests/test_identity_provider.py), [invitation tests](../tests/test_invitations.py), [exchange tests](../tests/test_identity_exchange.py), [auth pages](../frontend/src/pages/AuthPages.test.tsx), [RUNBOOK §11](RUNBOOK.md#11-identity-s21) |
-| S22 | Persist generated prerequisites | Implemented | Stable proposal keys, validation, commit revalidation, and edge persistence exist. Concurrent graph integrity is S23; cross-subject transfer is S24; teaching quality is S59. | [Curriculum generation](../app/learning/curriculum.py), [prerequisite tests](../tests/test_prerequisites.py) |
-| S23 | Graph integrity under concurrent edits | Implemented | The cycle check and the prerequisite insert run under one global advisory lock, so two concurrent edits cannot create a cycle between them; the edit that would close one is refused with a 409. A subject's owner sees its existing conflicts in a *Curriculum issues* panel and can remove the prerequisite the planner is ignoring. | [Integrity and transfer design §3](superpowers/specs/2026-09-25-integrity-transfer-design.md), [graph service](../app/services/knowledge.py), [concurrency tests](../tests/test_cross_connection.py), [issues panel](../frontend/src/components/lessons/CurriculumIssuesPanel.tsx) |
-| S24 | Confirmed cross-subject concept transfer | Implemented | A shared concept name only makes two components a candidate. A link needs an endorsement (an administrator for curated pairs, a SMART-role judge for pairs touching a learner's private subjects) and then the learner's own acceptance; decline and revoke are always available. Accepting seeds a provisional head start from the source's estimate with uncertainty raised to at least 0.6, recorded as a `transfer_seed` event; it cannot count as mastered until two unassisted passes on different items confirm it, and the source's evidence is never touched. A provisional component is checked before it is explained in guided practice. An unmastered prerequisite in another subject becomes an external step in the plan. Named residuals: the judge runs only when a subject is committed and candidates are re-scanned on each Lessons load; an external step does not link to the other subject's plan; check-first does not apply in tutor chat; equivalents whose names differ are never found; a foreign prerequisite's own prerequisites are not traversed. | [Integrity and transfer design §4–6](superpowers/specs/2026-09-25-integrity-transfer-design.md), [link service](../app/services/concept_links.py), [judge](../app/learning/link_judge.py), [link tests](../tests/test_concept_links.py), [API tests](../tests/test_concept_links_api.py), [transfer tests](../tests/test_transfer.py), [RUNBOOK §13](RUNBOOK.md#13-concept-links-s24) |
-| S25 | Private ownership and reviewed publication | Implemented | One gate (`is_visible_to`/`is_writable_by`) now covers every operation taking a graph id, including the lesson-plan and content-generation callers previously named here; a guard test fails when a new graph-id operation escapes the table, so the sweep cannot silently rot. Publishing takes a snapshot frozen at request time through administrator review into an immutable, anonymous copy: the original is never made public, withdrawal and superseding unlist without deleting, and upload-derived material is never publishable — that flag is a latch read from a server-side record rather than carried by the client. Subject slugs became per-owner, closing an existence oracle in the de-duplication suffix. Residual, not defended by code: an author who requests a clean proposal and then pastes source-derived material in as their own edits evades the flag, so administrator review of the full snapshot is the control that does not depend on the author's cooperation. Assessment publication (S33) is covered by the same path. | [Visibility gate](../app/services/knowledge.py), [publication service](../app/services/publication.py), [sweep guard](../tests/test_visibility_sweep.py), [author tests](../tests/test_publication_author.py), [review tests](../tests/test_publication_review.py), [slug scope](../tests/test_publication_slug_scope.py), [source-derived latch](../tests/test_source_derived_flag.py), [RUNBOOK §12](RUNBOOK.md#12-publication-review-s25b) |
-| S30 | Disable unsafe URL intake for v0 | Implemented | URL import/retry and legacy queued URL jobs reject without fetching; tutor tools expose stored-material search only. External Markdown images are suppressed. New web intake is deferred beyond v0; browser verification remains S58. | [Web-policy tests](../tests/test_v0_web_policy.py), [agent tools](../app/agent/tools.py) |
-| S32 | Bind onboarding state to the learner | Implemented | Onboarding ownership is stored durably and checked against authenticated identity. Lifecycle cleanup remains S17. | [Onboarding sessions](../app/services/onboarding_sessions.py), [onboarding API tests](../tests/test_onboarding_api.py) |
-| S33 | Assessment authorship and private visibility | Implemented | Generated items/rubrics are private, with owner/visibility checks and legacy quarantine. Reviewed publication is S25; item/rubric versions are S56. Generated no longer means shared. | [Assessment models](../app/models/assessment.py), [ownership migration](../db/migrations/versions/0052_assessment_ownership.py), [privacy tests](../tests/test_assessment_privacy.py) |
-| S34 | Concurrency-safe evidence and retries | Implemented | A component's state row is locked (`FOR UPDATE`, rows taken in sorted order) while an answer updates it, so two distinct attempts in flight at once cannot erase each other; a test shows the stale read the lock prevents. A retried chat or workflow turn derives the same attempt id from its client turn id, so the answer is recorded once. | [Integrity and transfer design §2](superpowers/specs/2026-09-25-integrity-transfer-design.md), [mastery updates](../app/learning/mastery.py), [cross-connection tests](../tests/test_cross_connection.py) |
-| S35 | Repair plans after committed assessments | Implemented | Pending revision state permits repair without regrading committed evidence. | [Plan service](../app/services/lesson_plan.py), [plan tests](../tests/test_lesson_plan.py) |
-| S36 | Recover stranded ingestion delivery | Implemented | Reconciliation, lease recovery, finite attempts, and retry paths exist; real broker coverage exists. Operator alert delivery belongs to S60; a separate dead-letter product is not required for this closure. | [Reconciler](../app/workers/reconcile.py), [recovery tests](../tests/test_ingestion_recovery.py), [queue tests](../tests/test_queue_integration.py) |
-| S38 | Correct note catch-up cursors | Implemented | Separate bounded message/event cursors prevent skipped activity. | [Notes service](../app/services/notes.py), [notes tests](../tests/test_notes_service.py) |
-| S39 | Topic and concept provenance in notes | Implemented | Distillation is topic-scoped and validates concept references. | [Note distillation](../app/learning/note_distill.py), [distillation tests](../tests/test_note_distill.py) |
-| S40 | Preserve exact learner note edits | Implemented | Exact authored Markdown, editable surrounding additions, rewrite suggestions, revision history, and expected-revision restore are implemented. The old lossy-edit/unguarded-restore findings are obsolete. Browser verification remains S58. | [Notes service](../app/services/notes.py), [authorship migration tests](../tests/test_note_authorship_migration.py), [note UI tests](../frontend/src/pages/NoteView.test.tsx) |
-| S41 | Bound note rewrites and tolerate render failure | Implemented | Bounded tail rewriting preserves older atoms; failed/truncated renders fall back to deterministic readable content. | [Note distillation](../app/learning/note_distill.py), [notes tests](../tests/test_notes_service.py) |
-| S42 | Durable memory correction and supersession | Implemented | Correction, forgetting and suppression are durable. Supersession is an explicit same/updates/coexists judgement (one batched FAST call per write-back, only for candidates with near neighbours; doubt means coexists), shown on the Memory page as "Replaced: …" with Undo. Forgetting a conversation suppresses re-extraction only from that conversation; a single Forget and Forget everything stay learner-wide (Forget everything also widens earlier conversation forgets). Remaining for the testing phase: calibrate `memory_related_max_distance` and measure the judge. Deferred minors from the final review: fence the candidate text as untrusted too (only neighbours are fenced); after an Undo the restored memory reads "Replaced: <the rejected one>" (it works as a redo, but the wording misleads); the Undo error copy blames a changed memory for any failure and a 409 does not refresh the list; `replaced_by` picks "most recent" by creation rather than replacement time; the cross-learner authorization test does not cover the undo route. | [Supersession judge](../app/memory/supersession.py), [memory service](../app/services/memory.py), [judge tests](../tests/test_memory_supersession.py), [memory lifecycle tests](../tests/test_memory_lifecycle.py), [memory UI](../frontend/src/pages/Memory.tsx) |
-| S43 | Incremental and explicit refresh scheduling | Implemented | Write-back and profile refresh run when a conversation or learner goes quiet (20 minutes), from a state-driven worker sweep that also catches up backlogs; claims stop double work and delay retries after failures; `refresh_stuck` alerts when work is due for hours. The profile reads a recency window (2,000 events, 500 messages) and model-backed estimators run only when their sample changed. Admin-visit messages no longer count as evidence. Learners can pause memory. Remaining for the testing phase: calibrate the quiet period, windows and batch size. Deferred minors from the final review: claims are committed before queuing, so a broker error mid-pass leaves the rest claimed but unqueued for the retry window; a manual write-back can overlap a scheduled one on the same conversation (no row lock); fingerprints carry no estimator/prompt version, so a prompt change needs `force` per learner; a paid estimator call that returns nothing is repaid on the next refresh with new evidence; the profile's event window counts non-observation events; the sweep's full GROUP BYs want a partial index or maintained columns at scale; the write-back cursor is `created_at` only, so a window boundary inside one transaction's messages can skip the rest (pre-existing, now on the backlog path); the Account switch shows on while loading and hides a failed save; missing tests for a failed write-back keeping its claim and for two-session claim races. | [Refresh schedule](../app/services/refresh_schedule.py), [profile service](../app/services/profile.py), [worker tasks](../app/workers/tasks.py), [schedule tests](../tests/test_refresh_schedule.py), [cursor tests](../tests/test_refresh_cursors.py), [RUNBOOK §17](RUNBOOK.md#17-refresh-scheduling-s43) |
-| S44 | Honest learner-profile proxies | Implemented | Proxy naming and narrower inference replace unsupported trait claims. Explicit settings are S02; refresh behavior is S43; empirical validity is S59. | [Profile estimators](../app/learning/profile_estimators.py), [proxy tests](../tests/test_profile_proxies.py) |
-| S45 | Count attempts separately from component events | Implemented | Attempt identity supports correct aggregation rather than counting each component as a learner action. New evidence-kind distinctions remain S56. | [Analytics service](../app/services/analytics.py), [analytics tests](../tests/test_analytics.py) |
-| S46 | Honest mastery displays | Implemented | Displays distinguish ability, uncertainty, and practice outcomes. V02's new achievement policy is S01. | [Mastery display tests](../tests/test_mastery.py), [dashboard](../frontend/src/pages/Dashboard.tsx) |
-| S48 | Complete call accounting and feature attribution | Implemented | Every model call is recorded by the client, before and after: pending, ok, failed or partial, with feature, request, prompt hash and app version; cost is reported by feature with failed/partial/estimated counts, and `calls_pending_stale` flags a process that died mid-call. Services name what they pay for with `@metered(...)`; an API test fails on an unattributed call. Remaining when operating: reconcile against provider billing. Deferred minors from the final review: the extraction adapters' `usage_log` is now dead code with stale docstrings; the per-request attribution test orders by a timestamp that ties within one test transaction. | [Meter](../app/llm/meter.py), [attribution](../app/llm/attribution.py), [meter tests](../tests/test_meter.py), [attribution tests](../tests/test_attribution.py), [failure tests](../tests/test_fault_injection.py), [spend report](../app/services/spend.py) |
-| S51 | Persist interrupted-turn lifecycle | Implemented | Pending/completed/failed/cancelled states, safe retries, and on-access stale-turn recovery exist. Partial-call billing belongs to S48 and process restart verification to S17. Token-by-token continuation is not an accepted requirement. | [Turn lifecycle](../app/services/turn.py), [lifecycle tests](../tests/test_turn_lifecycle.py) |
-| S52 | Pause, resume, and skip practice explicitly | Implemented | Every reply to an open practice question passes the S15 intent gate: an attempt is graded, a side question pauses practice and is answered by the tutor ungraded, a withdrawal skips with no evidence. While paused, messages go to the tutor; only the explicit controls resume or skip. An agentic interjection neither resumes nor un-pauses. Help given during a pause counts as assistance on the eventual answer. | [Guidance design §4](superpowers/specs/2026-09-24-guidance-design.md), [practice service](../app/services/practice.py), [chat routing](../app/api/v1/chat.py), [pause tests](../tests/test_practice_pause.py) |
-| S54 | Flashcard reveal and self-rating | Implemented | Think, reveal, then rate: the answer is revealed on request, the learner rates recall, and the copy says a rating schedules review rather than measuring ability (S56). Other item types still withhold their keys until answered. A failed reveal no longer strands the learner, and a re-asked flashcard adds nothing to the transcript. | [Evidence-kinds design §9](superpowers/specs/2026-09-21-s56-evidence-kinds-design.md), [flashcard panel](../frontend/src/components/lessons/FlashcardPanel.tsx), [privacy tests](../tests/test_assessment_privacy.py) |
-| S55 | Validate source scope and refresh tags | Implemented | Source reassignment validates topic/subject relationships and refreshes derived tags. Consistent generation policy is S26; legacy scope repair and versioned reindexing are S50. | [Source service](../app/services/ingestion.py), [source API tests](../tests/test_sources_api.py) |
-| S57 | Make supported sweep settings effective | Implemented | Supported knobs affect execution; unsupported settings fail; applied settings, roles, and dataset identity are recorded. Further experiment expansion belongs to Phase 9 and S59. | [Sweep settings](../tests/eval/sweep/settings.py), [sweep tests](../tests/eval/test_sweep_runner.py) |
-| S61 | Archive, delete, forget, export, and retention | Implemented | Software done: V11 (slice A) and V12 (slice B) delivered. Archive/delete/forget; account deletion disables access at once with a seven-day self-service recovery window and erase-now, then a worker erases, including the identity provider's copy; failed file and provider erasures are retried until done with an alert on persistent refusal; diagnostic rows are anonymised or deleted after 30 days (learning history, notes and audit kept); uploads downloadable from the export. Operating remainder (backup creation and its 30-day window) belongs to workstream 7 (S60). Deferred minors from the final review: slice A — the delete dialog allows Delete when the impact report failed to load, `kc_coverage` counts chunks from archived sources, the message box can flash before the archived banner, and the guided-practice page has no archived banner (the server refuses with 409); slice B — two worker processes can take the same pending erasure (needs `SKIP LOCKED`); a restore racing a finishing erase answers 500; deleting ends Guru sessions but not Clerk sessions on other devices, which sign back in to the recovery screen; only `/auth/me`, not every 403 `deletion_pending`, routes the app to recovery; `DELETE /me?now=true` omits the erase report; file download reads the whole file into memory and a store outage answers 404; a delete with forget still shows the "memories stay" note. | [Retention service](../app/services/retention.py), [removal service](../app/services/removal.py), [account-deletion tests](../tests/test_account_deletion.py), [erasure-retry tests](../tests/test_erasure_retry.py), [diagnostic-expiry tests](../tests/test_diagnostic_expiry.py), [removal tests](../tests/test_removal.py) |
-| S63 | Show the complete goal beyond the planning window | Implemented | The Lessons page shows the whole goal (objectives in the window, deferred objectives, and goal status) so finishing the current window no longer looks like finishing the goal. | [Goal-policy design §9](superpowers/specs/2026-09-22-goal-policy-design.md), [status bar](../frontend/src/components/lessons/GoalStatusBar.tsx), [plan tests](../tests/test_lesson_plan.py) |
-| S67 | Evaluate iterations through observed learning and return | Merged | Agreed evaluation direction, retained through S59/S65. | S59, S65 |
-| P10 | Administrator portal and audited alpha sudo | Implemented | Portal, timing/spend summaries, reason-required short visits, durable action audit, live revocation, actor attribution, and learner-evidence exclusion exist. The switch defaults off. Broad V13 access supersedes read-only/learner-opt-in proposals; sudo browser coverage is S58. | [Impersonation service](../app/services/impersonation.py), [audit service](../app/services/admin_audit.py), [sudo tests](../tests/test_admin_sudo.py), [attribution tests](../tests/test_message_admin_attribution.py) |
-
-## Deferred work and unaccepted strategy proposals
-
-These are not additional v0 engineering gates. The original commercial and research suggestions
-remain identifiable without duplicating development work or treating them as accepted strategy.
-
-| ID | Item | Status | Next step or closure | Evidence |
-| --- | --- | --- | --- | --- |
-| S04 | Establish value, continued use, and delivery economics before expansion | Deferred | Revisit business strategy with usage evidence. Engineering cost accounting is S48; learning evaluation is S59. | [Release scope](V0_DECISIONS.md#release-objective) |
-| S05 | Revalidate teaching for new populations and environments | Deferred | Revisit when expanding beyond invited adults. | [Deferred scope](V0_DECISIONS.md#already-deferred) |
-| S06 | Institutional integration versus a full LMS | Deferred | Decide after institutional needs are known; O06 remains deferred. | [Deferred scope](V0_DECISIONS.md#already-deferred) |
-| S07 | Evaluate the whole flipped-classroom arrangement | Deferred | Revisit with an institutional pilot, including teacher-led application and support. | [Masterplan](MASTERPLAN.md) |
-| S68 | Position on observed comparative value | Proposed | Maintain accurate capability comparisons if positioning work resumes; no superiority claim is established. | S59, S69 |
-| S69 | Compare suitable alternatives during founder use | Proposed | Record configuration, material, prior knowledge, and order effects. Do not treat a repeated topic as an uncontaminated learning comparison. | S64, S65 |
-| S70 | Investigate actual learning habits and switching reasons | Proposed | Ask first users what they use, postpone, and choose after trying Guru. Seniority alone does not establish a market or willingness to pay. | S65, S66 |
-| S71 | Build reusable reviewed learning cases | Proposed | If adopted, contribute permitted, traceable cases to S59 rather than a second evaluation pipeline. | S59 |
-| S72 | Compare learning, effort, retention, and return separately | Proposed | If competitive testing is adopted, extend S59/S65 without confusing completion or enthusiasm with learning. | S59, S65 |
-| S73 | Evaluate full value to a reachable audience | Proposed | Investigate experience, fit, support, convenience, and continued use without requiring category-wide superiority. | S68–S70 |
-| S74 | Separate sustainability, expansion, and acquisition criteria | Proposed | Revisit within business strategy; these are different outcomes, not implementation milestones. | S04, S75 |
-| S75 | Keep acquisition optional | Proposed | Do not make the operating plan depend on a named buyer. No buyer interest, offer, or acquisition probability has been established. | S74 |
-
-URL ingestion/web discovery, DKT, billing, younger learner tiers, institutional/LMS work, native
-clients, and offline operation remain outside v0. Historical competitor research, acquisition
-precedents, and links to absent pilot/landscape documents have been removed from this tracker.
-
-## Decisions and standing direction
-
-The accepted v0 decisions are maintained once in [V0_DECISIONS.md](V0_DECISIONS.md), rather than
-repeated as unresolved questions here.
-
-| ID | Current disposition |
-| --- | --- |
-| O01 | Resolved: invited, experienced adults; subjects deliberately unrestricted. |
-| O02 | Cohort payment/pricing arrangement remains open within later operating/business choices. |
-| O03 | Direction resolved by V02. Goal-specific thresholds, evidence freshness, and duration still require S01/S18/S59. |
-| O04 | Resolved approach: calibration and grading reliability first; later educational-effect studies remain separate. |
-| O05 | Funding for broad free access remains open; no amount, source, or runway is committed. |
-| O06 | Institutional integration versus LMS remains deferred under S06. |
-| O07 | Open (raised 2026-09-27, S43): the learner's "Remember things from my conversations" switch stops new memories only; profile refresh still reads their recent answers and messages, and the Account copy says so. Decide whether pausing should also stop the profile reading messages. |
-
-Standing discussion IDs are retained compactly for continuity:
-
-| ID | Direction or context |
-| --- | --- |
-| D01 | Durable, independently usable understanding; long-term access across subjects and populations. |
-| D02 | Experienced, engaged adults form the initial learning and feedback cohort. |
-| D03 | Model knowledge relative to domain, task, and goal; no global intelligence score. |
-| D04 | Learner-led exploration with adjustable guidance, now specified by V07/V09. |
-| D05 | Address forgotten prerequisites and never-established understanding while respecting existing capability. |
-| D06 | Financial sustainability supports the access mission; margin maximization is not the mission. |
-| D07 | Institutional delivery and flipped classrooms are possible later routes, not an immediate LMS commitment. |
-| D08 | Large learning gains are a research ambition requiring Guru-specific evidence. |
-| D09 | Let product direction evolve through use, feedback, and iteration. |
-| D10 | Historical review/development coordination is complete as a process note; it creates no new backlog item. |
-| D11 | Founder use precedes observed sessions and independent invited use. |
-| D12 | Founder time is available; funding, runway, and commercial commitments remain unspecified. |
-
-## Verification record and limitations
-
-### Workstream 4 slices C–E and workstream 5 slice A — 2026-09-28
-
-Run on `feat/s29-s50-versioned-sources` (PR #43, merged as `f9fbed8`), locally and in CI:
-
-- Backend: `poe check` **2477 passed, 10 skipped**; format check, `db-check` and API contract pass.
-  CI's first run failed `db-check` (the `LLMCall` model did not match migration 0071); fixed in
-  `48ac210`. `db-check` is not part of `poe check`, so run it after any model or migration change.
-- Frontend: **201 tests**, production build, and lint pass.
-- Each slice ended with a fresh whole-branch review; Critical and Important findings were fixed
-  test-first, and deferred minors are recorded on S02, S42, S43, S47 and S48.
-- Nothing here ran a worker process against the new sweeps, real providers, or browser journeys.
-  The spend guard's advisory lock was reasoned about, not tested across two connections.
-
-### Workstream 3 slices B–C and workstream 4 slices A–B — 2026-09-27
-
-Run on `feat/s29-s50-versioned-sources` (PR #43), locally:
-
-- Backend: `poe check` **2364 passed, 12 skipped**; format check and API contract pass.
-- Frontend: **189 tests across 37 files**, production build, and lint pass.
-- Each slice ended with a fresh whole-branch review; Critical and Important findings were fixed
-  test-first, and deferred minors are recorded on S27/S77 and S61.
-- Nothing here exercised real Clerk, a real object store, or a worker process running the new
-  sweeps; the sweeps are tested as functions. Browser journeys were not run for these slices.
-
-### Workstream 2 and hosted-identity pages — 2026-09-26
-
-Run on the combined branch for PR #40 (workstream 2 merged into `fix/auth-ui`), locally and in CI:
-
-- Backend: `poe check` **2112 passed, 6 skipped**; format check and API contract pass. One local
-  `poe check` run failed and two reruns passed; the failure was not captured, so which test it
-  was is unknown. CI's backend job passed.
-- Frontend: **156 tests across 28 files**, production build, and lint pass.
-- Browser journeys: **13 passed** locally against RustFS and in CI, after the fixes recorded
-  under S58. Locally the admin journey passes only on a freshly created e2e database, which is
-  the order dependence already recorded there.
-- Educational effect of the new rules (the mastery bar, detour disproval, transferred head starts)
-  is not established by any of this; see S18 and S59.
-
-### Latest recorded integration run — 2026-09-19
-
-Preserved from the prior tracker; **not rerun during this cleanup**:
-
-- API contract regeneration/comparison, backend lint/format/types, migration to head, the
-  `0053 → 0052 → 0053` round trip, and model/migration drift checks were recorded as passing.
-- Item-exposure chronology: 16 passed. Frontend: 83 tests, lint, and production build passed.
-- **Backend suite not green:** `tests/eval/test_eval.py::test_retrieval_eval_gate` reported
-  pass rate **0.25**, requiring **1.0**, with three expected top-k recall misses. The remainder
-  reported **1702 passed, 6 skipped**. Explained and fixed on 2026-09-26 under S76: the vector
-  arm could use the HNSW index before the learner filter and return none of the learner's rows.
-- That integration pass did not perform browser network capture, real Redis delivery, or live
-  provider evaluation. Existing Redis/browser suites elsewhere in the repository do not change
-  the scope of that recorded run.
-
-This cleanup verifies tracker structure, stable IDs, local links, and the documentation diff.
-Source-visible gaps are findings for follow-up, not claims of reproduced production incidents.
-No educational outcomes, current hosted CI status, or deployment readiness are established here.
-
-### S76 measurement context — recorded 2026-09-08
-
-The earlier synthetic experiment found the scoped vector query using an exact join-based path,
-not HNSW; it did not support the proposed filtered-ANN explanation for the intermittent failures.
-Recorded exact-search cost was about 4 microseconds per owned chunk, reaching 185 ms at 45,000.
-For a separate 40,050-chunk comparison requesting 50 results:
-
-| Query shape | Recall against exact baseline | Recorded latency |
+| | Count | IDs |
 | --- | --- | --- |
-| Scoped production query, exact path | 50/50 | 162 ms |
-| Index-reaching alternative, `ef_search=40` | 44% | 1.4 ms |
-| Index-reaching alternative, `ef_search=1000` | 86% | 15.0 ms |
+| Live, v0 | 19 | S17 S18 S20 S27 S28 S31 S37 S47 S49 S50 S53 S58 S59 S60 S62 S65 S66 S76 S77 |
+| Live, proposed (not v0 gates) | 4 | S64 S80 S84 S85 |
+| Open questions | 3 | O02 O05 O07 |
+| Done | 46 | [Completed](#completed) |
 
-These are historical measurements on hash-derived, near-uniform vectors, not current production
-benchmarks or real-corpus relevance evidence. They justify measuring the tradeoff, not changing
-retrieval or closing the failure. The repeatable experiment is documented in the
-[runbook](RUNBOOK.md#65-retrieval-recall--plan-s76--needs-a-live-db-no-model).
+**Next up: workstream 5** — S47 deadlines and cancellation, then S49, S37, S17, S62, S53.
+
+## Live work
+
+Ordered by the delivery sequence. "Remaining" is only what is left; what exists is in the
+evidence links and in [Completed](#completed).
+
+### Workstream 5 — Reliability and resource limits (next)
+
+| ID | Item | Status | Remaining | Evidence |
+| --- | --- | --- | --- | --- |
+| S47 | Whole-request and spend budgets | Partial | Whole-request deadlines and cancellation. (Spend caps are done: exact per-learner admission, deployment ceiling, background pause at 90%, 429 `budget_exceeded`.) Actual alpha caps are an operating decision. | [Spend guard](../app/services/spend_guard.py), [guard tests](../tests/test_spend_guard.py), [RUNBOOK §18](RUNBOOK.md#18-spend-limits-s47-s48) |
+| S49 | Provider failure experience | Partial | Predictable learner-facing responses for provider rate limits and outages, with safe retry. Don't reimplement the compatibility contract. | [Registry](../app/llm/registry.py), [turn lifecycle](../app/services/turn.py) |
+| S37 | Bounded, resumable ingestion | Partial | Strict concurrency ceilings; a per-job spend ceiling if daily caps prove too coarse; split long extraction/model work into short resumable stages. | [Ingestion service](../app/services/ingestion.py), [job tests](../tests/test_ingestion_jobs.py) |
+| S17 | Durable practice lifecycle and restart verification | Partial | Checkpoint schema setup under migrations; verify real process restart/resume races; reconcile expiry with V12; safe onboarding cleanup and graph-state compatibility. | [Checkpoints](../app/services/checkpoints.py), [lifecycle tests](../tests/test_checkpoint_lifecycle.py) |
+| S62 | Measured long-history performance | Partial | Measure long-history latency and message-page growth; aggregate further only where measurements justify it. | [Query budgets](../tests/test_query_budgets.py) |
+| S53 | Rendering edge cases and accessibility | Partial | Indented code vs LaTeX normalization; keyboard/screen-reader use and panel layout in the browser. | [Rich text](../frontend/src/components/content/RichText.tsx), [browser tests](../frontend/e2e/) |
+
+### Workstream 6 — Evaluation and release gates
+
+| ID | Item | Status | Remaining | Evidence |
+| --- | --- | --- | --- | --- |
+| S58 | End-to-end and release gates | Partial | Browser coverage for broad sudo, v0 web restriction and durable note editing; verify changed boundaries together and required-check enforcement before release. Two order-dependent failures unfixed (see [notes](#s58-notes)). | [CI](../.github/workflows/ci.yml), [browser journeys](../frontend/e2e/) |
+| S59 | Reliability, model quality, and learning evaluation | Partial | Select permitted fixtures/founder examples, add independent grading comparisons and founder labels, measure before setting thresholds. Covers diagnosis, intent, source support, injection, extraction, difficulty. Owns S03/S67/S71/S72. Paid runs wait for data and budget. | [Reliability report](../tests/eval/reliability/report.py), [V14](V0_DECISIONS.md#accepted-product-decisions) |
+| S18 | Calibrate estimates and heuristics | Partial | With S59 data: calibrate placement, mastery bar, assistance, detour disproval, scaffolding, transfer seeds, goal freshness, retention spacing and probe days; measure requested vs delivered difficulty; set thresholds for the three stored-but-unread extraction ratios. | [Constants inventory](../tests/eval/reliability/knobs.py), [difficulty report](../tests/eval/reliability/difficulty.py) |
+| S20 | Synchronize project documentation | Partial | README's private-ownership claim, CLAUDE's stub-auth/frontend descriptions, roadmap status, OPERATIONS' polling/history gaps. Keep historical milestones historical. | [README](../README.md), [CLAUDE.md](../CLAUDE.md), [ROADMAP](ROADMAP.md), [OPERATIONS](OPERATIONS.md) |
+
+### Workstream 7 — Operated invited alpha
+
+| ID | Item | Status | Remaining | Evidence |
+| --- | --- | --- | --- | --- |
+| S60 | Deployment, monitoring, backup, recovery | Partial | Choose/configure hosting, TLS, secrets, mail, inference; deliver alerts; database and object backups with 30-day retention and a way to re-erase accounts erased since a backup; demonstrate restore/rollback against the 24-hour loss / 4-hour recovery targets. Also: Clerk application name and `GURU_CLERK_AUTHORIZED_PARTIES` unset; production mail and recovery unverified. | [Release guard](../app/core/release.py), [restore drill](../scripts/backup-drill.sh), [V16](V0_DECISIONS.md#accepted-product-decisions) |
+| S65 | Observed first-use sessions | Open | Founder use → observed sessions → independent invited use; record obstacles and repeat use. | [Release objective](V0_DECISIONS.md#release-objective) |
+| S66 | Separate learner, reviewer, and sponsor feedback | Open | Keep usability, teaching correctness, learning and commercial interest separate in early-cohort feedback. | S59, S65 |
+| S64 | Stable founder-testing configuration | Proposed | Keep one model configuration stable during founder use; distinguish model, product/state and serving failures. | S48, S59 |
+
+### Workstream 3 remainders — Source and teaching quality
+
+The workstream is otherwise closed; these need evaluation data or a real corpus, so they wait for
+the testing phase.
+
+| ID | Item | Status | Remaining | Evidence |
+| --- | --- | --- | --- | --- |
+| S76 | Retrieval correctness at corpus scale | Partial | Gate failure fixed (6c9d51d). Compare exact vs index retrieval on representative permitted corpora before choosing a performance tradeoff (see [notes](#s76-notes)). | [Exact distance](../app/llm/embedding_space.py), [regression tests](../tests/test_retrieval.py), [RUNBOOK §6.5](RUNBOOK.md#65-retrieval-recall--plan-s76--needs-a-live-db-no-model) |
+| S27 | Technical extraction quality | Partial | Evaluate equations, tables, code and derivations against V14 fixtures before claiming quality; calibrate ratio indicators (S18). | [Chunking](../app/rag/chunking.py), [extraction report](../tests/eval/extraction/report.py) |
+| S28 | Explain source support and insufficiency | Partial | Checker accuracy (S59); lesson coverage once a lesson-block viewer exists. | [Grounding policy](../app/services/grounding.py), [coverage](../app/rag/coverage.py) |
+| S31 | Untrusted source and memory boundaries | Partial | Held-out uploaded-document and memory-poisoning cases evaluated under S59. Text filters are not a guarantee. | [Untrusted content](../app/agent/untrusted.py), [injection tests](../tests/test_prompt_injection.py) |
+| S50 | Versioned reindexing | Partial | Run `poe reindex` against a real corpus; bump `PIPELINE_VERSION` when S27's extraction work lands. | [Reindex](../app/services/reindex.py), [RUNBOOK §15](RUNBOOK.md) |
+| S77 | Duplicate-source recovery | Partial | Evaluate selected scanned/digital pairs. Near matches stay advisory by design. | [Recovery tests](../tests/test_duplicate_recovery.py) |
+
+### Jev integration (proposed, not a v0 prerequisite)
+
+S78, S81, S82 and S83 are implemented with every question **off** by default; none is live and no
+shadow results are recorded yet. Sources: [plan](jev-implementation-plan.md),
+[architecture](jev-architecture.md), [RUNBOOK §14](RUNBOOK.md).
+
+| ID | Item | Status | Remaining |
+| --- | --- | --- | --- |
+| S80 | Learner-data eligibility and provider controls | Proposed | Resolve data handling before any learner other than the founder is invited. Not needed for shadow traffic. |
+| S84 | Tutoring-move study | Proposed | Phase 6, only after useful intent results. Guru builds the eligible action set; revalidate and fall back to current policy; compare cost and outcomes. Never alters mastery, FSRS or achievement. |
+| S85 | Additional decision studies | Proposed | Grounding sufficiency, concept mapping, preference suggestions, per-turn learner signals; candidate `fully_sourced` (shadow first). Optional: a shadow question rating declared-check difficulty (S56). |
+
+### Open questions
+
+| ID | Question |
+| --- | --- |
+| O07 | Raised 2026-09-27 (S43): "Remember things from my conversations" stops new memories only; profile refresh still reads recent answers and messages (the Account copy says so). Should pausing also stop the profile reading messages? |
+| O02 | Cohort payment/pricing arrangement — later operating/business choice. |
+| O05 | Funding for broad free access — no amount, source or runway committed. |
+
+## Completed
+
+One line each; the design docs, CLAUDE.md and the RUNBOOK carry the detail. Anything left over is
+named in the "Hand-off" column and tracked under that ID.
+
+| ID | Item | What closed it | Hand-off | Evidence |
+| --- | --- | --- | --- | --- |
+| S01 | Goal-specific achievement | Mastery = ability − 2·uncertainty ≥ 0.5 on measured evidence; achievement recorded per component and kept; goal status reports closed / meets target / achieved / stale. | S18 | [Goal-policy design](superpowers/specs/2026-09-22-goal-policy-design.md) |
+| S02 | Explicit learner preferences | Five settings, global + subject overrides, pin their parameter in every mode from the next turn; inferred values shown beside them. | — | [Preferences](../app/services/preferences.py) |
+| S09 | Per-component diagnosis | Diagnoses, recurrent patterns, feedback moves, failed-review escalation. | S18, S59 | [Diagnosis](../app/learning/diagnosis.py) |
+| S10 | Component evidence and rubrics | Per-component grading, generated rubrics, component scores. | — | [Rubric grading](../app/learning/rubric_grading.py) |
+| S11 | Learner-controlled detours | Exploration proposes, guided may take; ends on mastery or disproval (three unassisted passes). | — | [Guidance design](superpowers/specs/2026-09-24-guidance-design.md) |
+| S12 | Difficulty targeting | Ability-conditioned targets; difficulty reports. | S18 | [Difficulty](../app/learning/difficulty.py) |
+| S13 | Discount assisted/repeated attempts | Assistance and repeat exposure reduce evidence credit. | — | [Assistance](../app/learning/assistance.py) |
+| S14 | Delayed retention and transfer evidence | Retention needs two unaided answers `retention_min_days` apart; a taught-first answer isn't unaided; due components get cold retention checks, then transfer checks in the next unpractised catalogue setting; dashboard shows "applied in `<setting>`". Transfer is evidence only. | — | [Retention design](superpowers/specs/2026-09-29-retention-checks-design.md), [transfer design](superpowers/specs/2026-09-29-transfer-evidence-design.md) |
+| S15 | Deliberate conversational assessment | Explicit checks, intent routing, help counts, persisted results. | S59 | [Conversation evidence](../app/learning/conversation_evidence.py) |
+| S16 | Shared learner context across modes | Shared context composition and memory controls. | — | [Context](../app/services/learner_context.py) |
+| S21 | Invited access and account recovery | Hosted identity (Clerk) exchanged once for Guru's session; Guru keeps invitations, admin tier, suspension, audited visits. | S60 (mail, app name, authorized parties) | [RUNBOOK §11](RUNBOOK.md#11-identity-s21) |
+| S22 | Persist generated prerequisites | Stable keys, validation, commit revalidation. | — | [Curriculum](../app/learning/curriculum.py) |
+| S23 | Graph integrity under concurrent edits | Cycle check + insert under one advisory lock; Curriculum issues panel. | — | [Integrity design §3](superpowers/specs/2026-09-25-integrity-transfer-design.md) |
+| S24 | Confirmed cross-subject transfer | Endorsement + learner acceptance; provisional head start confirmed by real answers. | See [deferred minors](#deferred-minors) | [RUNBOOK §13](RUNBOOK.md#13-concept-links-s24) |
+| S25 | Private ownership and reviewed publication | One visibility gate with a sweep guard; admin-reviewed frozen snapshots; upload-derived material never publishable. | Residual: pasted source text evades the flag — admin review is the control | [RUNBOOK §12](RUNBOOK.md#12-publication-review-s25b) |
+| S26 | Consistent source scope, sources-only | One `resolve_scope`; opt-in untagged sources; General chat reads none. | — | [Scope](../app/rag/scope.py) |
+| S29 | Citations survive re-ingest | Supersede instead of delete; confirmed re-processing. | — | [Pipeline](../app/rag/pipeline.py) |
+| S30 | Disable URL intake for v0 | URL import/retry rejected; tutor searches stored material only. | S58 (browser) | [Web-policy tests](../tests/test_v0_web_policy.py) |
+| S32 | Bind onboarding state to learner | Durable ownership checked against identity. | S17 (cleanup) | [Onboarding](../app/services/onboarding_sessions.py) |
+| S33 | Assessment authorship and privacy | Generated items/rubrics private with owner checks. | — | [Privacy tests](../tests/test_assessment_privacy.py) |
+| S34 | Concurrency-safe evidence and retries | State rows locked in sorted order; retried turns reuse the attempt id. | — | [Integrity design §2](superpowers/specs/2026-09-25-integrity-transfer-design.md) |
+| S35 | Repair plans after assessments | Pending revision state. | — | [Plan service](../app/services/lesson_plan.py) |
+| S36 | Recover stranded ingestion | Reconciliation, leases, finite attempts. | S60 (alert delivery) | [Reconciler](../app/workers/reconcile.py) |
+| S38 | Note catch-up cursors | Separate bounded message/event cursors. | — | [Notes](../app/services/notes.py) |
+| S39 | Topic/concept provenance in notes | Topic-scoped distillation, validated references. | — | [Distillation](../app/learning/note_distill.py) |
+| S40 | Preserve exact note edits | Authored Markdown kept; revisions and guarded restore. | S58 (browser) | [Notes](../app/services/notes.py) |
+| S41 | Bounded note rewrites | Tail rewriting; deterministic fallback render. | — | [Distillation](../app/learning/note_distill.py) |
+| S42 | Memory correction and supersession | Explicit same/updates/coexists judgement, shown with Undo; durable forgetting. | S18 (distance threshold) | [Supersession](../app/memory/supersession.py) |
+| S43 | Refresh scheduling | Quiet-period worker sweep; recency window; estimators pay only on change; pause memory. | S18 (windows), O07 | [RUNBOOK §17](RUNBOOK.md#17-refresh-scheduling-s43) |
+| S44 | Honest profile proxies | Proxy naming, narrower inference. | S59 | [Estimators](../app/learning/profile_estimators.py) |
+| S45 | Count attempts separately | Attempt identity in aggregation. | — | [Analytics](../app/services/analytics.py) |
+| S46 | Honest mastery displays | Ability, uncertainty and outcomes shown separately. | — | [Dashboard](../frontend/src/pages/Dashboard.tsx) |
+| S48 | Call accounting and attribution | Every call recorded pending → settled; `@metered` attribution; cost by feature. | S60 (reconcile with provider billing) | [Meter](../app/llm/meter.py) |
+| S51 | Interrupted-turn lifecycle | Turn states, safe retries, stale-turn recovery. | S17 (restart) | [Turn](../app/services/turn.py) |
+| S52 | Pause, resume, skip practice | Intent gate on every reply; explicit resume/skip. | — | [Guidance design §4](superpowers/specs/2026-09-24-guidance-design.md) |
+| S54 | Flashcard reveal and self-rating | Think, reveal, rate; rating schedules review only. | — | [Flashcard panel](../frontend/src/components/lessons/FlashcardPanel.tsx) |
+| S55 | Validate source scope, refresh tags | Reassignment validated, tags refreshed. | — | [Source API tests](../tests/test_sources_api.py) |
+| S56 | Evidence kinds and reproducible grading | Server-derived judged vs self-rated; `grading` block + frozen snapshots on every graded event; `poe regrade` reports agreement; declared checks get criteria and a difficulty band. Legacy events stay unreplayable. | S85 (optional band question) | [RUNBOOK §19](RUNBOOK.md), [provenance design](superpowers/specs/2026-09-28-grading-provenance-design.md), [criteria design](superpowers/specs/2026-09-28-declared-check-criteria-design.md) |
+| S57 | Effective sweep settings | Supported knobs apply; unsupported fail; settings recorded. | S59 | [Sweep tests](../tests/eval/test_sweep_runner.py) |
+| S61 | Archive, delete, forget, export, retention | Three removal actions; account deletion with 7-day recovery then full erase; diagnostic rows expire at 30 days. | S60 (backups) | [RUNBOOK §16](RUNBOOK.md) |
+| S63 | Show the whole goal | Lessons page shows window, deferred objectives and status. | — | [Status bar](../frontend/src/components/lessons/GoalStatusBar.tsx) |
+| S78 | Jev decision contract and adapter | Sole SDK importer, off by default, fake client. | — | [Decisions](../app/llm/decisions.py) |
+| S81 | Shadow turn read | `intent` + `fully_correct` per check, never changes the outcome. | — | [Turn read](../app/learning/turn_read.py) |
+| S82 | Jev accounting and report | `decision_calls`, pricing, `poe decision-report`. | — | [Report](../app/services/decision_report.py) |
+| S83 | Live switch and rollback | Per-question live switch with threshold and deadline fallback; never fails an answer. | — | [Decisions service](../app/services/decisions.py) |
+| P10 | Admin portal and audited sudo | Reason-required short visits, durable audit, live revocation; off by default. | S58 (browser) | [Impersonation](../app/services/impersonation.py) |
+
+**Merged or superseded:** S03 → S59 · S08 (shared acceptance criterion: diagnose, teach, apply
+independently, revisit) · S19 (standing principle: keep the modular app, role seam, continuous
+estimator, FSRS) · S67 → S59/S65 · S79 → superseded by `poe decision-report` on real traffic.
+
+## Deferred and not accepted
+
+Outside v0; none is an engineering gate. URL ingestion, DKT, billing, younger tiers, LMS work,
+native clients and offline use are also out of v0.
+
+| ID | Item | Status |
+| --- | --- | --- |
+| S04 | Value, continued use and economics before expansion | Deferred (revisit with usage evidence) |
+| S05 | Revalidate teaching for new populations | Deferred |
+| S06 | Institutional integration vs full LMS (O06) | Deferred |
+| S07 | Evaluate the flipped-classroom arrangement | Deferred (institutional pilot) |
+| S68 | Position on observed comparative value | Proposed |
+| S69 | Compare alternatives during founder use | Proposed |
+| S70 | Learning habits and switching reasons | Proposed |
+| S71 | Reusable reviewed learning cases (→ S59) | Proposed |
+| S72 | Compare learning, effort, retention, return (→ S59/S65) | Proposed |
+| S73 | Full value to a reachable audience | Proposed |
+| S74 | Separate sustainability, expansion, acquisition criteria | Proposed |
+| S75 | Keep acquisition optional | Proposed |
+
+**Resolved decisions:** O01 invited experienced adults, subjects unrestricted · O03 direction by
+V02 (thresholds are S18/S59) · O04 calibration and grading reliability first · O06 deferred under
+S06.
+
+**Standing direction (D01–D12):** durable, independently usable understanding (D01); experienced
+adults first (D02); knowledge relative to domain and goal, no global score (D03); learner-led with
+adjustable guidance (D04); address forgotten prerequisites without disrespecting capability (D05);
+sustainability serves access (D06); institutions are a later route (D07); large gains need
+Guru-specific evidence (D08); evolve through use (D09); coordination process note (D10); founder
+use first (D11); founder time available, funding unspecified (D12).
+
+## Deferred minors
+
+Small defects found in final reviews and left on purpose. Pick them up when working nearby or in
+the testing phase.
+
+**S02** — a database error reading settings still fails the turn; a subject following global
+"Adapt to me" doesn't show what adaptation chose; a failed save isn't shown; downgrading 0068
+loses later guidance changes; no query-budget test on the tutor turn.
+
+**S14** — every plan revision reads all component states and evidence (add a `kc_ids` filter);
+`passed_since` repeats the taught-first condition; no `revise_steps` test that a flagged step
+closes, nor an end-to-end check answered after a side discussion; checks have no queue cap (every
+component answered once becomes a SMART-graded check within a week); practice can serve a question
+generated for a transfer check, using up its setting; publishing doesn't copy `items.setting`;
+`correct` is item-level, so on a multi-component item a weak component can show transfer; no test
+of `/reviews/due` precedence when both checks are due, nor of the session-surface transfer branch.
+
+**S24** — the judge runs only when a subject is committed; candidates re-scan on each Lessons load;
+an external step doesn't link to the other subject's plan; check-first doesn't apply in tutor chat;
+differently named equivalents are never found; a foreign prerequisite's own prerequisites aren't
+traversed.
+
+**S27** — a stray `$$` or info-string fence line can open a block; a heading alone can become a
+tiny chunk.
+
+**S42** — the candidate text isn't fenced as untrusted (only neighbours are); after Undo the
+restored memory reads "Replaced: …" naming the rejected one; Undo's error copy blames a changed memory for
+any failure and a 409 doesn't refresh; `replaced_by` orders by creation, not replacement time; the
+cross-learner test doesn't cover the undo route.
+
+**S43** — claims commit before queuing, so a broker error leaves the rest claimed but unqueued; a
+manual write-back can overlap a scheduled one; fingerprints carry no prompt version; an empty paid
+estimator result is re-paid; the event window counts non-observation events; the sweep's GROUP BYs
+want an index at scale; the write-back cursor can skip messages at a window boundary inside one
+transaction; the Account switch shows on while loading; missing tests for a failed write-back
+keeping its claim and two-session claim races.
+
+**S47** — the report calls over-budget at `>` while the guard refuses at `>=`; a failed
+deployment-total read lets that one call through unrecorded; reservations ignore images and tool
+schemas; admission locks and sums even with learner limits off; no two-connection lock test.
+
+**S48** — the extraction adapters' `usage_log` is dead code; the per-request attribution test
+orders by a timestamp that can tie.
+
+**S56** — `poe regrade` counts pre-v5 events toward `--limit` and loads the whole window first; an
+admin's flashcard answer counts as not re-gradable instead of skipped; a grading path that forgets
+`provenance` records `auto`; failures aren't broken down by kind; `--model` isn't validated; no
+tests for a rubric on one KC of a two-KC item, the re-graded user message, or the race loser
+writing no snapshots; the Jev turn read starts before a first attempt's criteria exist;
+`ensure_criteria` takes the first of unordered `kc_links`; the item row stays locked across the
+criteria and grading calls; the refusal test raises from the provider, not the spend guard.
+
+**S61** — slice A: Delete is allowed when the impact report failed; `kc_coverage` counts archived
+chunks; the message box can flash before the archived banner; guided practice has no archived
+banner. Slice B: two workers can take the same pending erasure (needs `SKIP LOCKED`); a restore
+racing an erase answers 500; Clerk sessions on other devices survive deletion; only `/auth/me`
+routes to recovery; `DELETE /me?now=true` omits the report; downloads read whole files into memory
+and a store outage answers 404; delete-with-forget still shows "memories stay".
+
+**S77** — the stranded-duplicate sweep has no batch limit; `requeued` includes `recovered`.
+
+## Notes
+
+### S58 notes
+
+- Order-dependent failures (unfixed): the admin journey asserts "Not measured" for completion
+  latency, true only on an e2e database with no non-streamed call in 24 hours; a mastery assertion
+  is clock-skew sensitive.
+- "Green locally, red in CI" is the symptom to look for: two suites once depended on the developer
+  machine (a real object store; the Clerk key in `.env.local`) and now default to CI's environment.
+- Dev and CI run RustFS 1.0.0 (MinIO stopped publishing public images on 2026-09-26).
+- Any new LLM prompt a browser journey reaches needs a shape in `app/llm/providers/shaped.py`.
+
+### S76 notes
+
+Historical synthetic measurements (2026-09-08, hash-derived near-uniform vectors — not production
+benchmarks). Exact search cost about 4 µs per owned chunk (185 ms at 45,000). For 40,050 chunks,
+top 50:
+
+| Query shape | Recall vs exact | Latency |
+| --- | --- | --- |
+| Scoped production query, exact | 50/50 | 162 ms |
+| Index, `ef_search=40` | 44% | 1.4 ms |
+| Index, `ef_search=1000` | 86% | 15.0 ms |
+
+They justify measuring the tradeoff on a real corpus, not changing retrieval.
+
+### Latest verification — 2026-09-29
+
+On `feat/workstream-2` (PR #44), locally: `poe check` 2574 passed; format check, `db-check` and API
+contract clean; frontend 206 tests, build and lint pass. Each piece ended with a whole-branch
+review; Critical/Important findings were fixed test-first. Not run: browser journeys, real
+providers, worker processes. Educational effect is not established by any of this (S18, S59).
