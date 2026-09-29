@@ -4219,6 +4219,12 @@ export interface components {
              * Format: uuid
              */
             kc_id: string;
+            /**
+             * Kind
+             * @default review
+             * @enum {string}
+             */
+            kind: "review" | "retention_check";
             /** Uncertainty */
             uncertainty: number;
         };

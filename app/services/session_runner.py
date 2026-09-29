@@ -32,6 +32,8 @@ calls on one request.
 """
 
 import uuid
+from collections.abc import Sequence
+from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -290,7 +292,12 @@ async def review_item_type(
 
 
 async def due_review_items(
-    session: AsyncSession, llm: LLMClient, *, learner_id: uuid.UUID, item_limit: int
+    session: AsyncSession,
+    llm: LLMClient,
+    *,
+    learner_id: uuid.UUID,
+    item_limit: int,
+    now: datetime | None = None,
 ) -> list[tuple[ReviewItem, Item | None]]:
     """Every due review, paired with a resolved item for the first ``item_limit`` (the
     due list is soonest-due-first, so this caps the *nearest* reviews, not an arbitrary slice).
@@ -300,7 +307,10 @@ async def due_review_items(
     ``review_item_type``). The struggle read is per resolved review, so it is bounded by
     ``item_limit`` along with everything else this loop does.
     """
-    reviews = await mastery.DEFAULT_TRACER.due_reviews(session, learner_id)
+    reviews = _with_retention_checks(
+        await mastery.DEFAULT_TRACER.due_reviews(session, learner_id),
+        await mastery.due_retention_checks(session, learner_id, now=now),
+    )
     results: list[tuple[ReviewItem, Item | None]] = []
     # Sequential, not gathered: item_for_kc can call session.commit() on this one shared
     # AsyncSession, and concurrent operations on a single session are unsafe.
@@ -315,17 +325,45 @@ async def due_review_items(
                 # The estimate is already in hand: ReviewItem carries the learner's ability
                 # for this KC, and decay only widens uncertainty, so the undecayed row is the
                 # same ability estimate_kc would return — no second query to target.
-                item = await item_for_kc(
-                    session,
-                    llm,
-                    learner_id=learner_id,
-                    kc=kc,
-                    preferred_type=await review_item_type(
-                        session, learner_id=learner_id, kc_id=kc.id
-                    ),
-                    target_difficulty=practice_target(
-                        Estimate(ability=review.ability, uncertainty=review.uncertainty)
-                    ),
-                )
+                if review.kind == "retention_check":
+                    # An unseen written question: a self-rating can never be the unaided
+                    # demonstration a retention check exists to get (S14).
+                    item = await short_answer_item_for_kc(
+                        session, llm, learner_id=learner_id, kc=kc
+                    )
+                else:
+                    item = await item_for_kc(
+                        session,
+                        llm,
+                        learner_id=learner_id,
+                        kc=kc,
+                        preferred_type=await review_item_type(
+                            session, learner_id=learner_id, kc_id=kc.id
+                        ),
+                        target_difficulty=practice_target(
+                            Estimate(ability=review.ability, uncertainty=review.uncertainty)
+                        ),
+                    )
         results.append((review, item))
     return results
+
+
+def _with_retention_checks(
+    reviews: Sequence[ReviewItem], checks: Sequence[mastery.RetentionCheck]
+) -> list[ReviewItem]:
+    """FSRS reviews and retention checks as one queue, soonest first. A component due both
+    ways is one entry, a check, at the earlier of the two dates."""
+    merged: dict[uuid.UUID, ReviewItem] = {r.kc_id: r for r in reviews}
+    for check in checks:
+        existing = merged.get(check.kc_id)
+        due_at = mastery.naive_utc(check.due_at)
+        if existing is not None:
+            due_at = min(due_at, mastery.naive_utc(existing.due_at))
+        merged[check.kc_id] = ReviewItem(
+            kc_id=check.kc_id,
+            due_at=due_at,
+            ability=check.ability,
+            uncertainty=check.uncertainty,
+            kind="retention_check",
+        )
+    return sorted(merged.values(), key=lambda r: mastery.naive_utc(r.due_at))

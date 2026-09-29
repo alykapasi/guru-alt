@@ -15,6 +15,9 @@ function ReviewRow({ review }: { review: ReviewItem }) {
   return (
     <div className="flex items-center justify-between rounded-field px-3 py-2">
       <span className="text-body truncate">{kc?.name ?? "…"}</span>
+      {review.kind === "retention_check" && (
+        <span className="badge badge-sm badge-primary badge-soft shrink-0">Retention check</span>
+      )}
       <span className="text-caption text-base-content/50 shrink-0">
         {overdueDays === 0 ? "due today" : `due ${overdueDays}d ago`}
       </span>

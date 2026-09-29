@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.learning import lesson_plan as engine
 from app.learning import mastery
 from app.learning.mastery import Observation
+from app.llm.registry import fake_llm_client
 from app.models.assessment import ItemType
 from app.models.knowledge import KC
 from app.models.learner import Learner
@@ -205,3 +206,37 @@ def test_a_retention_check_asks_a_written_question_on_the_session_surface() -> N
         session_runner._effective_item_type(_review_context(retention_check=False))
         == ItemType.FLASHCARD
     )
+
+
+# --- the review queue ---------------------------------------------------------------------------
+
+SHORT_REPLY = '{"stem": "Explain K.", "criteria": ["states it", "gives an example"]}'
+
+
+async def test_the_due_list_marks_a_check_and_serves_it_a_written_question(db_session) -> None:
+    learner, kc = await _one_answer(db_session)
+    pairs = await session_runner.due_review_items(
+        db_session,
+        fake_llm_client(SHORT_REPLY),
+        learner_id=learner.id,
+        item_limit=5,
+        now=T0 + timedelta(days=8),
+    )
+    [(review, item)] = pairs
+    assert review.kind == "retention_check" and review.kc_id == kc.id
+    assert item is not None and item.item_type == ItemType.SHORT
+
+
+async def test_an_ordinary_due_review_stays_a_review(db_session) -> None:
+    learner = await _learner(db_session)
+    _subject, kc = await _kc(db_session)
+    await _answer(db_session, learner, kc, await _item(db_session, kc, "a"), when=T0, hints=1)
+    await _fsrs_due(db_session, learner, kc, T0 + timedelta(days=1))
+    [(review, _item_row)] = await session_runner.due_review_items(
+        db_session,
+        fake_llm_client(),
+        learner_id=learner.id,
+        item_limit=0,
+        now=T0 + timedelta(days=2),
+    )
+    assert review.kind == "review"

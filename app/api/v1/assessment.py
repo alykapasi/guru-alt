@@ -143,6 +143,7 @@ async def due_reviews(session: SessionDep, learner: CurrentLearner, llm: LLMClie
             due_at=review.due_at,
             ability=review.ability,
             uncertainty=review.uncertainty,
+            kind=review.kind,
             item=svc.item_to_read(item) if item is not None else None,
         )
         for review, item in pairs
