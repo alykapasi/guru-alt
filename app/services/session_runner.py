@@ -34,11 +34,12 @@ calls on one request.
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.learning import difficulty, item_generation, mastery
+from app.learning import difficulty, item_generation, mastery, transfer
 from app.learning.mastery import ReviewItem
 from app.learning.tracer import Estimate
 from app.llm import LLMClient
@@ -220,9 +221,15 @@ async def _generate_owned(
     learner_id: uuid.UUID,
     generator: item_generation.GeneratorFn,
     target_difficulty: float | None = None,
+    setting: str | None = None,
 ) -> Item | None:
     item, _usage = await generator(
-        session, llm, kc, owner_learner_id=learner_id, target_difficulty=target_difficulty
+        session,
+        llm,
+        kc,
+        owner_learner_id=learner_id,
+        target_difficulty=target_difficulty,
+        setting=setting,
     )
     return item
 
@@ -230,7 +237,7 @@ async def _generate_owned(
 def _effective_item_type(context: PlanGroundingContext) -> ItemType | None:
     """The plan's steer on item type: an explicit profile preference wins; otherwise review
     steps default to a flashcard (spaced-repetition surfacing); new steps have no preference."""
-    if context.retention_check:
+    if context.retention_check or context.transfer_check:
         # A self-rating can never be the unaided demonstration a retention check exists to get.
         return ItemType.SHORT
     if context.preferred_item_type is not None:
@@ -256,6 +263,8 @@ async def next_item(
     kc = await session.get(KC, context.kc_id)
     if kc is None:
         return None
+    if context.transfer_check:
+        return await transfer_item_for_kc(session, llm, learner_id=learner_id, kc=kc)
     return await item_for_kc(
         session,
         llm,
@@ -307,9 +316,10 @@ async def due_review_items(
     ``review_item_type``). The struggle read is per resolved review, so it is bounded by
     ``item_limit`` along with everything else this loop does.
     """
-    reviews = _with_retention_checks(
+    reviews = _with_checks(
         await mastery.DEFAULT_TRACER.due_reviews(session, learner_id),
-        await mastery.due_retention_checks(session, learner_id, now=now),
+        retention=await mastery.due_retention_checks(session, learner_id, now=now),
+        transfer=await mastery.due_transfer_checks(session, learner_id, now=now),
     )
     results: list[tuple[ReviewItem, Item | None]] = []
     # Sequential, not gathered: item_for_kc can call session.commit() on this one shared
@@ -325,7 +335,9 @@ async def due_review_items(
                 # The estimate is already in hand: ReviewItem carries the learner's ability
                 # for this KC, and decay only widens uncertainty, so the undecayed row is the
                 # same ability estimate_kc would return — no second query to target.
-                if review.kind == "retention_check":
+                if review.kind == "transfer_check":
+                    item = await transfer_item_for_kc(session, llm, learner_id=learner_id, kc=kc)
+                elif review.kind == "retention_check":
                     # An unseen written question: a self-rating can never be the unaided
                     # demonstration a retention check exists to get (S14).
                     item = await short_answer_item_for_kc(
@@ -348,13 +360,26 @@ async def due_review_items(
     return results
 
 
-def _with_retention_checks(
-    reviews: Sequence[ReviewItem], checks: Sequence[mastery.RetentionCheck]
+def _with_checks(
+    reviews: Sequence[ReviewItem],
+    *,
+    retention: Sequence[mastery.RetentionCheck],
+    transfer: Sequence[mastery.TransferCheck],
 ) -> list[ReviewItem]:
-    """FSRS reviews and retention checks as one queue, soonest first. A component due both
-    ways is one entry, a check, at the earlier of the two dates."""
+    """FSRS reviews and retention and transfer checks as one queue, soonest first (S14). A
+    component due several ways is one entry at its earliest date; a retention check wins over a
+    transfer check, which wins over a plain review."""
     merged: dict[uuid.UUID, ReviewItem] = {r.kc_id: r for r in reviews}
-    for check in checks:
+    checks: list[
+        tuple[
+            mastery.RetentionCheck | mastery.TransferCheck,
+            Literal["retention_check", "transfer_check"],
+        ]
+    ] = [
+        *((c, "transfer_check") for c in transfer),
+        *((c, "retention_check") for c in retention),
+    ]
+    for check, kind in checks:
         existing = merged.get(check.kc_id)
         due_at = mastery.naive_utc(check.due_at)
         if existing is not None:
@@ -364,6 +389,41 @@ def _with_retention_checks(
             due_at=due_at.replace(tzinfo=UTC),
             ability=check.ability,
             uncertainty=check.uncertainty,
-            kind="retention_check",
+            kind=kind,
         )
     return sorted(merged.values(), key=lambda r: mastery.naive_utc(r.due_at))
+
+
+async def transfer_item_for_kc(
+    session: AsyncSession, llm: LLMClient, *, learner_id: uuid.UUID, kc: KC
+) -> Item | None:
+    """A written question for ``kc`` in the next setting it was never practised in (S14).
+
+    An unseen one already set there, else one generated there. ``None`` when every setting has
+    been practised, or generation fails — the step then waits, like a review without an item.
+    """
+    evidence = (await mastery.kc_evidence(session, learner_id, [kc.id])).get(kc.id)
+    setting = transfer.next_setting(evidence.practised_settings if evidence else ())
+    if setting is None:
+        return None
+    target_difficulty = await practice_target_for_kc(session, learner_id=learner_id, kc_id=kc.id)
+    item = await assessment_svc.find_item_for_kc(
+        session,
+        kc.id,
+        learner_id=learner_id,
+        item_type=ItemType.SHORT,
+        target_difficulty=target_difficulty,
+        unseen_only=True,
+        setting=setting,
+    )
+    if item is not None:
+        return item
+    return await _generate_owned(
+        session,
+        llm,
+        kc,
+        learner_id=learner_id,
+        generator=item_generation.generate_short_item,
+        target_difficulty=target_difficulty,
+        setting=setting,
+    )

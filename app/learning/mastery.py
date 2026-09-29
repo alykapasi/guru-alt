@@ -193,7 +193,7 @@ class ReviewItem(BaseModel):
     due_at: datetime
     ability: float
     uncertainty: float
-    kind: Literal["review", "retention_check"] = "review"
+    kind: Literal["review", "retention_check", "transfer_check"] = "review"
     """``retention_check`` — a delayed independent check of retention (S14), merged into the
     queue by ``session_runner.due_review_items``; the tracer itself only reports FSRS reviews."""
 

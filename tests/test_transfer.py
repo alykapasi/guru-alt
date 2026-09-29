@@ -9,13 +9,16 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import item_generation, mastery, transfer
+from app.learning import lesson_plan as engine
 from app.learning.mastery import Observation
 from app.llm.providers import FakeProvider
-from app.llm.registry import LLMClient, ModelSpec
+from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
 from app.llm.types import ModelRole
 from app.models.assessment import Item, ItemKC, ItemType
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
+from app.services import lesson_plan as plan_svc
+from app.services import session_runner
 from tests.test_item_exposure import T0, _learner
 from tests.test_item_exposure import _kc as _exposure_kc
 
@@ -233,3 +236,57 @@ async def test_a_failed_check_moves_to_the_next_setting(db_session) -> None:
     assert transfer.next_setting(ev.practised_settings) == "money"
     assert await _due(db_session, learner, T0 + timedelta(days=9, hours=12)) == []
     assert await _due(db_session, learner, T0 + timedelta(days=10, hours=1)) == [kc.id]
+
+
+# --- transfer checks in the queue ----------------------------------------------------------------
+
+
+def test_a_due_transfer_check_is_a_flagged_review_step() -> None:
+    kc = uuid.uuid4()
+    steps = engine.revise_steps(
+        [],
+        mastered_kc_ids=[],
+        due_review_kc_ids=[kc],
+        transfer_check_kc_ids=[kc],
+        scaffolding=engine.ScaffoldingHints(),
+    )
+    [step] = [s for s in steps if s["step_type"] == "review"]
+    assert step["transfer_check"] is True and step["retention_check"] is False
+
+
+async def test_retention_wins_over_transfer_for_one_component(db_session, monkeypatch) -> None:
+    """Review focus 3."""
+    learner, kc = await _retained(db_session)
+    check = mastery.RetentionCheck(kc_id=kc.id, due_at=T0, ability=0.0, uncertainty=1.0)
+
+    async def also_retention(*_a, **_k) -> list[mastery.RetentionCheck]:
+        return [check]
+
+    monkeypatch.setattr(mastery, "due_retention_checks", also_retention)
+    due = await plan_svc._due_review_kc_ids(
+        db_session, learner.id, {kc.id}, now=T0 + timedelta(days=9)
+    )
+    assert due.kc_ids == [kc.id]
+    assert due.retention_checks == frozenset({kc.id}) and due.transfer_checks == frozenset()
+
+
+async def test_the_plan_lists_a_due_transfer_check(db_session) -> None:
+    learner, kc = await _retained(db_session)
+    due = await plan_svc._due_review_kc_ids(
+        db_session, learner.id, {kc.id}, now=T0 + timedelta(days=9)
+    )
+    assert kc.id in due.kc_ids and due.transfer_checks == frozenset({kc.id})
+
+
+async def test_the_queue_serves_a_transfer_check_in_the_next_setting(db_session) -> None:
+    learner, kc = await _retained(db_session)
+    pairs = await session_runner.due_review_items(
+        db_session,
+        fake_llm_client(SHORT_REPLY),
+        learner_id=learner.id,
+        item_limit=5,
+        now=T0 + timedelta(days=9),
+    )
+    [(review, item)] = [(r, i) for r, i in pairs if r.kc_id == kc.id]
+    assert review.kind == "transfer_check"
+    assert item is not None and item.item_type == ItemType.SHORT and item.setting == "everyday"

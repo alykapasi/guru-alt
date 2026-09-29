@@ -98,6 +98,9 @@ class StepDict(TypedDict):
     # A review that is also a delayed, independent retention check (S14): posed cold, with an
     # unseen written question. Recomputed on every revision.
     retention_check: NotRequired[bool]
+    # A review that is a transfer check (S14): posed cold, with a question set in a setting the
+    # component was never practised in. Recomputed on every revision.
+    transfer_check: NotRequired[bool]
 
 
 @dataclass(frozen=True)
@@ -516,6 +519,7 @@ def revise_steps(
     disproved_kc_ids: Iterable[uuid.UUID] = (),
     provisional_kc_ids: Iterable[uuid.UUID] = (),
     retention_check_kc_ids: Iterable[uuid.UUID] = (),
+    transfer_check_kc_ids: Iterable[uuid.UUID] = (),
     now: datetime | None = None,
 ) -> list[StepDict]:
     """Re-derive status/order/hints over an existing step list. Pure, no DB, no LLM — this is
@@ -579,7 +583,8 @@ def revise_steps(
     7. Scaffolding hints refresh on every step not ``"done"`` or ``"skipped"``, and so does
        ``check_first`` — whether the step's KC is in ``provisional_kc_ids``, a head start
        carried over a concept link that practice has not yet confirmed (S24) — and
-       ``retention_check``, whether a review step's KC is in ``retention_check_kc_ids`` (S14).
+       ``retention_check``, whether a review step's KC is in ``retention_check_kc_ids``, and
+       ``transfer_check`` likewise (S14; a retention check wins).
        Closed steps
        keep the hints they were actually taught under. An external detour (S24) is practised
        in the learner's preferred format rather than ``DETOUR_ITEM_TYPE``: it is not a
@@ -742,6 +747,7 @@ def revise_steps(
 
     provisional = {str(kc_id) for kc_id in provisional_kc_ids}
     retention_checks = {str(kc_id) for kc_id in retention_check_kc_ids}
+    transfer_checks = {str(kc_id) for kc_id in transfer_check_kc_ids}
     for step in result:
         if step["status"] in CLOSED:
             continue
@@ -755,6 +761,11 @@ def revise_steps(
         step["check_first"] = step["kc_id"] in provisional
         step["retention_check"] = (
             step["step_type"] == "review" and step["kc_id"] in retention_checks
+        )
+        step["transfer_check"] = (
+            step["step_type"] == "review"
+            and step["kc_id"] in transfer_checks
+            and not step["retention_check"]
         )
 
     return result

@@ -4226,7 +4226,7 @@ export interface components {
              * @default review
              * @enum {string}
              */
-            kind: "review" | "retention_check";
+            kind: "review" | "retention_check" | "transfer_check";
             /** Uncertainty */
             uncertainty: number;
         };

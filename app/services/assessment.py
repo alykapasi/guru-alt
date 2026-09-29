@@ -252,6 +252,7 @@ async def find_item_for_kc(
     item_type: ItemType | None = None,
     target_difficulty: float | None = None,
     unseen_only: bool = False,
+    setting: str | None = None,
 ) -> Item | None:
     """The freshest bank item assessing ``kc_id``, if any — reuse before generating a new one.
 
@@ -283,6 +284,8 @@ async def find_item_for_kc(
     exchange, not retention of the component. A caller that asks for unseen can generate
     instead, which is the only thing that makes exhaustion recoverable.
 
+    ``setting`` (S14) restricts the search to items set there — what a transfer check asks.
+
     Scoped to what ``learner_id`` may be assessed with (S33): reuse used to pick up anything
     tagged to the KC, so a question and answer key another learner had written became this
     learner's practice — and the mastery observation it produced was traced to it.
@@ -309,6 +312,8 @@ async def find_item_for_kc(
         stmt = stmt.where(Item.item_type == item_type)
     if unseen_only:
         stmt = stmt.where(last_answered.is_(None))
+    if setting is not None:
+        stmt = stmt.where(Item.setting == setting)
     order = [last_answered.asc().nullsfirst()]
     if target_difficulty is not None:
         order.append(func.abs(Item.difficulty - target_difficulty))

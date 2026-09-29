@@ -54,6 +54,8 @@ class PlanGroundingContext:
     check_first: bool = False
     # A delayed retention check (S14): practice asks before it explains, with a written question.
     retention_check: bool = False
+    # A transfer check (S14): asked cold, in a setting it was never practised in.
+    transfer_check: bool = False
 
 
 async def _get_plan(
@@ -231,10 +233,12 @@ async def set_goal_closed(
 
 
 class DueReviews(NamedTuple):
-    """This subject's due reviews, soonest first, and which of them are retention checks."""
+    """This subject's due reviews, soonest first, and which of them are retention or transfer
+    checks (S14). A KC is in at most one of the two sets; a retention check wins."""
 
     kc_ids: list[uuid.UUID]
     retention_checks: frozenset[uuid.UUID]
+    transfer_checks: frozenset[uuid.UUID] = frozenset()
 
 
 async def _due_review_kc_ids(
@@ -244,21 +248,26 @@ async def _due_review_kc_ids(
     *,
     now: datetime | None = None,
 ) -> DueReviews:
-    """FSRS reviews and delayed retention checks (S14), soonest-due first, filtered to this
-    subject's KCs (both sources are global). A KC due both ways is one entry, a check."""
+    """FSRS reviews and delayed retention and transfer checks (S14), soonest-due first,
+    filtered to this subject's KCs (every source is global). A KC due several ways is one
+    entry, at its earliest date."""
     reviews = await mastery.due_reviews(session, learner_id, now=now)
-    checks = await mastery.due_retention_checks(session, learner_id, now=now)
+    retention = await mastery.due_retention_checks(session, learner_id, now=now)
+    transfer = await mastery.due_transfer_checks(session, learner_id, now=now)
     earliest: dict[uuid.UUID, datetime] = {}
     for kc_id, due_at in [(r.kc_id, r.due_at) for r in reviews] + [
-        (c.kc_id, c.due_at) for c in checks
+        (c.kc_id, c.due_at) for c in [*retention, *transfer]
     ]:
         if kc_id not in subject_kc_ids:
             continue
         when = mastery.naive_utc(due_at)
         earliest[kc_id] = min(when, earliest.get(kc_id, when))
+    retention_ids = frozenset(c.kc_id for c in retention if c.kc_id in subject_kc_ids)
     return DueReviews(
         kc_ids=sorted(earliest, key=lambda kc_id: earliest[kc_id]),
-        retention_checks=frozenset(c.kc_id for c in checks if c.kc_id in subject_kc_ids),
+        retention_checks=retention_ids,
+        transfer_checks=frozenset(c.kc_id for c in transfer if c.kc_id in subject_kc_ids)
+        - retention_ids,
     )
 
 
@@ -492,6 +501,7 @@ async def generate_lesson_plan(
         mastered_kc_ids=mastered,
         due_review_kc_ids=due_reviews.kc_ids,
         retention_check_kc_ids=due_reviews.retention_checks,
+        transfer_check_kc_ids=due_reviews.transfer_checks,
         scaffolding=scaffolding,
         guidance=guidance,
         external_detours=await _external_detours(
@@ -644,6 +654,7 @@ async def _apply_revision(
         mastered_kc_ids=mastered,
         due_review_kc_ids=due_reviews.kc_ids,
         retention_check_kc_ids=due_reviews.retention_checks,
+        transfer_check_kc_ids=due_reviews.transfer_checks,
         scaffolding=scaffolding,
         detour=detour,
         external_detours=await _external_detours(
@@ -669,6 +680,7 @@ async def _apply_revision(
             mastered_kc_ids=mastered,
             due_review_kc_ids=due_reviews.kc_ids,
             retention_check_kc_ids=due_reviews.retention_checks,
+            transfer_check_kc_ids=due_reviews.transfer_checks,
             scaffolding=scaffolding,
             guidance=guidance,
             provisional_kc_ids=provisional,
@@ -951,4 +963,5 @@ async def get_active_step_context(
         preferred_item_type=active["preferred_item_type"],
         check_first=bool(active.get("check_first")),
         retention_check=bool(active.get("retention_check")),
+        transfer_check=bool(active.get("transfer_check")),
     )

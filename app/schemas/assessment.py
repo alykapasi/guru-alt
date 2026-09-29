@@ -118,7 +118,7 @@ class ReviewItemRead(BaseModel):
     due_at: datetime
     ability: float
     uncertainty: float
-    kind: Literal["review", "retention_check"] = "review"
+    kind: Literal["review", "retention_check", "transfer_check"] = "review"
     """``retention_check`` — a delayed independent check of retention (S14): an unseen written
     question, answered without help."""
     item: ItemRead | None = None

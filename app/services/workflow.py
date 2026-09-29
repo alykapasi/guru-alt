@@ -31,7 +31,7 @@ from app.services import assessment as assessment_svc
 from app.services import checkpoints, learner_context
 from app.services.assessment import item_to_read
 from app.services.grounding import format_grounding
-from app.services.session_runner import short_answer_item_for_kc
+from app.services.session_runner import short_answer_item_for_kc, transfer_item_for_kc
 from app.services.turn_common import (
     TurnEvent,
     add_message,
@@ -224,7 +224,11 @@ async def run_workflow_turn(
         if kc is None:
             yield TurnEvent(type="error", detail="no active lesson-plan step to practice")
             return
-        item = await short_answer_item_for_kc(session, llm, learner_id=learner_id, kc=kc)
+        item = (
+            await transfer_item_for_kc(session, llm, learner_id=learner_id, kc=kc)
+            if step.transfer_check
+            else await short_answer_item_for_kc(session, llm, learner_id=learner_id, kc=kc)
+        )
         if item is None:
             yield TurnEvent(
                 type="error", detail="couldn't prepare a practice item for the current step"
@@ -246,9 +250,9 @@ async def run_workflow_turn(
         # A provisional component (S24) is confirmed, not taught: asking first is the "short
         # confirmation" V04 calls for, and an answer given without a worked example is exactly
         # the unaided pass that confirms it.
-        # Posed cold for a retention check (S14) too: both need an answer given without a
-        # worked example.
-        cold = step.check_first or step.retention_check
+        # Posed cold for a retention or transfer check (S14) too: each needs an answer given
+        # without a worked example.
+        cold = step.check_first or step.retention_check or step.transfer_check
         base_prompt = CHECK_FIRST_SYSTEM_PROMPT if cold else WORKFLOW_SYSTEM_PROMPT
         system = learner_context.compose(
             base_prompt,
