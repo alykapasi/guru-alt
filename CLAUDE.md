@@ -169,7 +169,9 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
 - **A self-rating is not evidence of ability** (S56) — the server decides whether a score was
   judged or self-reported, and a self-rating moves the review schedule only. Mastery is the
   conservative estimate `ability − 2·uncertainty ≥ 0.5` on measured evidence (V02); achievement
-  is recorded per component and kept, and staleness is reported, never used to un-master.
+  is recorded per component and kept, and staleness is reported, never used to un-master. An
+  answer given straight after a worked example is not unaided, and a component owed a second
+  unaided answer gets a cold retention check in its review queue (S14).
 - **A cross-subject link needs two agreements** (S24) — an endorsement (admin for curated
   pairs, the `SMART` judge for private ones) and the learner's own acceptance. A shared name
   never links anything, and an accepted link gives only a provisional head start that real

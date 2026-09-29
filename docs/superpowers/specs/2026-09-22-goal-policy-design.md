@@ -525,7 +525,8 @@ exactly what it produced before.
 
 - **Delayed independent probes (slice 2b).** This slice reads the independent evidence that
   happens to exist. Arranging for it — scheduling a fresh unassisted check at a chosen delay,
-  rather than waiting for FSRS to surface one — is S14's other half.
+  rather than waiting for FSRS to surface one — is S14's other half. Done:
+  [retention checks](2026-09-29-retention-checks-design.md).
 - **Transfer.** Dropped in §4.3 and not replaced. It returns when items can be shown to differ
   in a way the system can point at.
 - **Calibration.** `MASTERY_CONSERVATIVE_BAR`, `retention_min_days` and
