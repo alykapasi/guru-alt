@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from app.learning import item_generation
+from app.learning import item_generation, transfer
 from app.learning.conversation_evidence import _SYSTEM_PROMPT as _INTENT_SYSTEM_PROMPT
 from app.learning.conversation_evidence import TurnIntent, parse_intent
 from app.learning.curriculum import CURRICULUM_SYSTEM_PROMPT, generate_curriculum
@@ -82,6 +82,13 @@ def test_each_real_system_prompt_is_claimed_by_exactly_one_shape(
     matched = [shape.name for shape in SHAPES if shape.marker in prompt]
 
     assert matched == [expected]
+
+
+@pytest.mark.parametrize(("expected", "prompt"), REAL_PROMPTS, ids=[n for n, _ in REAL_PROMPTS])
+def test_a_setting_line_does_not_change_which_shape_answers(expected: str, prompt: str) -> None:
+    """Generators append a setting sentence (S14); the marker must still match."""
+    with_line = prompt + transfer.prompt_line("money")
+    assert [shape.name for shape in SHAPES if shape.marker in with_line] == [expected]
 
 
 def _every_system_prompt_in_the_app() -> dict[str, str]:

@@ -582,3 +582,18 @@ async def test_grading_snapshots_table_arrives_empty() -> None:
             assert await conn.fetchval("SELECT count(*) FROM grading_snapshots") == 0
         finally:
             await conn.close()
+
+
+async def test_existing_items_get_an_empty_setting() -> None:
+    """0073 (S14): a nullable column, so every existing item reads as abstract."""
+    async with database_at("0072_grading_snapshots") as connect:
+        await upgrade(SCRATCH, "0073_item_settings")
+        conn = await connect()
+        try:
+            nullable = await conn.fetchval(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_name = 'items' AND column_name = 'setting'"
+            )
+            assert nullable == "YES"
+        finally:
+            await conn.close()

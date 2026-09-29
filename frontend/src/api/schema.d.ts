@@ -3230,6 +3230,8 @@ export interface components {
             kcs: components["schemas"]["ItemKCRef"][];
             /** Rubric Id */
             rubric_id?: string | null;
+            /** Setting */
+            setting?: string | null;
             /** Stem */
             stem: string;
         };

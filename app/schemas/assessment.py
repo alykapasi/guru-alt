@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.learning import transfer
 from app.learning.diagnosis import Diagnosis
 from app.models.assessment import AUTO_GRADABLE, ItemType
 
@@ -24,11 +25,15 @@ class ItemCreate(BaseModel):
     answer_key: dict | None = None
     difficulty: float = 0.0
     rubric_id: uuid.UUID | None = None
+    # A setting from ``app.learning.transfer.SETTINGS`` (S14); None is abstract.
+    setting: str | None = None
 
     @model_validator(mode="after")
     def _objective_items_need_a_key(self) -> "ItemCreate":
         if self.item_type in AUTO_GRADABLE and not self.answer_key:
             raise ValueError(f"{self.item_type} items require an answer_key")
+        if self.setting is not None and self.setting not in transfer.NAMES:
+            raise ValueError(f"unknown setting {self.setting!r}")
         return self
 
 

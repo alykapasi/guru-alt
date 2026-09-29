@@ -9,7 +9,7 @@ SMART model later. A ``Rubric`` holds the per-KC criteria that rubric grading co
 import uuid
 from enum import StrEnum
 
-from sqlalchemy import ForeignKey, UniqueConstraint
+from sqlalchemy import ForeignKey, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -97,6 +97,8 @@ class Item(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     stem: Mapped[str]
     answer_key: Mapped[dict | None] = mapped_column(JSONB, default=None)
     difficulty: Mapped[float] = mapped_column(default=0.0)
+    # The named setting it is set in (S14, ``app.learning.transfer``); None is abstract.
+    setting: Mapped[str | None] = mapped_column(Text, default=None)
     rubric_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("rubrics.id", ondelete="SET NULL"), default=None
     )

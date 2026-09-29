@@ -88,6 +88,7 @@ async def create_item(
         stem=data.stem,
         answer_key=data.answer_key,
         difficulty=data.difficulty,
+        setting=data.setting,
         rubric_id=data.rubric_id,
         origin=ItemOrigin.LEARNER if author_learner_id else ItemOrigin.GENERATED,
         author_learner_id=author_learner_id,
