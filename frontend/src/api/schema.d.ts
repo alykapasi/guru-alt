@@ -3766,6 +3766,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Interrupted */
+            interrupted?: string | null;
             /** Model */
             model: string | null;
             /** Role */

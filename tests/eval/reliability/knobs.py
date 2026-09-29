@@ -179,6 +179,23 @@ KNOBS: list[Knob] = [
             "measured on pages where both are available (S27)"
         ),
     ),
+    Knob(
+        id="deadline.turn_seconds",
+        where="app.core.config.Settings.turn_deadline_seconds",
+        value=120.0,
+        governs="how long a streamed turn may run before it is cut off, keeping its text (S47)",
+        settled_by=(
+            "the turn-duration distribution from founder use: the 99th percentile of turns "
+            "that finished"
+        ),
+    ),
+    Knob(
+        id="deadline.request_seconds",
+        where="app.core.config.Settings.request_deadline_seconds",
+        value=180.0,
+        governs="how long a non-streamed request may run before it answers 504 (S47)",
+        settled_by="measured generation times of lessons and curricula on the chosen providers",
+    ),
 ]
 
 
@@ -218,6 +235,8 @@ def live() -> dict[str, float]:
         "transfer.uncertainty_floor": float(s.transfer_uncertainty_floor),
         "transfer.confirm_passes": float(s.transfer_confirm_passes),
         "ingest.ocr_min_text_chars": float(pdf._MIN_TEXT_CHARS),
+        "deadline.turn_seconds": float(s.turn_deadline_seconds),
+        "deadline.request_seconds": float(s.request_deadline_seconds),
     }
 
 

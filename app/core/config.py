@@ -249,6 +249,12 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 2
 
+    # Whole-request bounds (S47). A streamed turn ends at turn_deadline_seconds keeping its
+    # text; any other request answers 504 if it has not started responding by
+    # request_deadline_seconds. Uncalibrated guesses, listed in the S18 inventory.
+    turn_deadline_seconds: float = Field(default=120.0, gt=0)
+    request_deadline_seconds: float = Field(default=180.0, gt=0)
+
     ollama_base_url: str = "http://localhost:11434/v1"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_api_key: str = ""

@@ -597,3 +597,18 @@ async def test_existing_items_get_an_empty_setting() -> None:
             assert nullable == "YES"
         finally:
             await conn.close()
+
+
+async def test_existing_messages_are_not_interrupted() -> None:
+    """0074 (S47): a nullable marker, so every existing reply reads as a whole one."""
+    async with database_at("0073_item_settings") as connect:
+        await upgrade(SCRATCH, "0074_turn_stop")
+        conn = await connect()
+        try:
+            nullable = await conn.fetchval(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_name = 'messages' AND column_name = 'interrupted'"
+            )
+            assert nullable == "YES"
+        finally:
+            await conn.close()
