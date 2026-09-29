@@ -171,7 +171,9 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   conservative estimate `ability − 2·uncertainty ≥ 0.5` on measured evidence (V02); achievement
   is recorded per component and kept, and staleness is reported, never used to un-master. An
   answer given straight after a worked example is not unaided, and a component owed a second
-  unaided answer gets a cold retention check in its review queue (S14).
+  unaided answer gets a cold retention check in its review queue (S14). Transfer is an unaided
+  correct answer in a catalogue setting (`app/learning/transfer.py`) no earlier attempt used,
+  checked after retention; it is shown as evidence and not required for achievement.
 - **A cross-subject link needs two agreements** (S24) — an endorsement (admin for curated
   pairs, the `SMART` judge for private ones) and the learner's own acceptance. A shared name
   never links anything, and an accepted link gives only a provisional head start that real
