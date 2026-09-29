@@ -12,6 +12,7 @@ from app.api.deps import get_llm_client
 from app.api.v1 import api_router
 from app.core.config import get_settings
 from app.core.db import engine
+from app.core.deadline import RequestDeadlineMiddleware
 from app.core.logging import configure_logging
 from app.core.middleware import request_id_middleware
 from app.core.release import enforce_production_settings
@@ -72,6 +73,8 @@ async def _budget_exceeded(_request: Request, exc: BudgetExceeded) -> JSONRespon
 
 
 app.middleware("http")(request_id_middleware)
+# Innermost, so a 504 still passes through audit and the rest (S47).
+app.add_middleware(RequestDeadlineMiddleware)
 app.add_middleware(AdminAuditMiddleware)
 app.add_middleware(
     CORSMiddleware,
