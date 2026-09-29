@@ -33,7 +33,7 @@ calls on one request.
 
 import uuid
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -361,7 +361,7 @@ def _with_retention_checks(
             due_at = min(due_at, mastery.naive_utc(existing.due_at))
         merged[check.kc_id] = ReviewItem(
             kc_id=check.kc_id,
-            due_at=due_at,
+            due_at=due_at.replace(tzinfo=UTC),
             ability=check.ability,
             uncertainty=check.uncertainty,
             kind="retention_check",

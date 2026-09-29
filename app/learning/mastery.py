@@ -947,7 +947,9 @@ async def due_retention_checks(
             due.append(
                 RetentionCheck(
                     kc_id=state.kc_id,
-                    due_at=when,
+                    # Aware again on the way out: it is served over the API, and a timestamp
+                    # without a zone is read as the browser's local time.
+                    due_at=when.replace(tzinfo=UTC),
                     ability=state.ability,
                     uncertainty=state.uncertainty,
                 )

@@ -240,3 +240,18 @@ async def test_an_ordinary_due_review_stays_a_review(db_session) -> None:
         now=T0 + timedelta(days=2),
     )
     assert review.kind == "review"
+
+
+async def test_a_check_says_its_due_date_in_utc(db_session) -> None:
+    """The API serialises it; a date without a zone is read as local time by the browser."""
+    learner, _kc_row = await _one_answer(db_session)
+    [check] = await mastery.due_retention_checks(db_session, learner.id, now=T0 + timedelta(days=8))
+    assert check.due_at.tzinfo is not None and check.due_at.utcoffset() == timedelta(0)
+    [(review, _item_row)] = await session_runner.due_review_items(
+        db_session,
+        fake_llm_client(),
+        learner_id=learner.id,
+        item_limit=0,
+        now=T0 + timedelta(days=8),
+    )
+    assert review.due_at.tzinfo is not None and review.due_at.utcoffset() == timedelta(0)
