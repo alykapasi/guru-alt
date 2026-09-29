@@ -316,3 +316,31 @@ async def test_the_mastery_page_says_nothing_was_applied_yet(db_session) -> None
     read = await analytics_svc.subject_mastery(db_session, learner.id, subject.id)
     (kc_read,) = read.topics[0].kcs
     assert not kc_read.transfer_shown and kc_read.transfer_setting is None
+
+
+async def test_the_settings_read_does_not_grow_with_history(db_session) -> None:
+    """It runs on every graded answer; a row per attempt would grow with a learner's lifetime."""
+    from sqlalchemy import event as sa_event
+
+    learner = await _learner(db_session)
+    _s, kc = await _exposure_kc(db_session)
+    abstract = await _item_in(db_session, kc, None)
+    for i in range(30):
+        await _answer(db_session, learner, kc, abstract, when=T0 + timedelta(minutes=i))
+    money = await _item_in(db_session, kc, "money")
+    await _answer(db_session, learner, kc, money, when=T0 + timedelta(days=3))
+
+    rows: list[int] = []
+    engine = db_session.get_bind().engine
+
+    def after(conn, cursor, statement, parameters, context, executemany) -> None:
+        if "items.setting" in statement:
+            rows.append(cursor.rowcount)
+
+    sa_event.listen(engine, "after_cursor_execute", after)
+    try:
+        ev = await _evidence(db_session, learner, kc)
+    finally:
+        sa_event.remove(engine, "after_cursor_execute", after)
+    assert ev.transfer_setting == "money"
+    assert rows and max(rows) <= len(transfer.SETTINGS), rows

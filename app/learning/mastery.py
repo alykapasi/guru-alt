@@ -23,7 +23,6 @@ from sqlalchemy import (
     Float,
     Integer,
     String,
-    Uuid,
     and_,
     case,
     cast,
@@ -1581,42 +1580,67 @@ async def _settings_evidence(
 ) -> dict[uuid.UUID, tuple[set[str], str | None]]:
     """Per component: the settings its attempts were set in, and where transfer was shown.
 
-    Walked in time order because transfer is a claim about *earlier* attempts: the answer
-    counts only if no attempt before it used its setting, and at least one attempt came first.
+    Transfer is a claim about *earlier* attempts: an answer counts only if no attempt before it
+    used its setting, and at least one attempt came first. So each attempt is compared with the
+    first time its setting appeared for the component and with the component's first attempt —
+    window functions over the events — and the database returns one row per (component,
+    setting), at most a dozen per component however long the history. This runs on every
+    graded answer (via the due checks), so it must not grow with a learner's lifetime.
     """
-    item_id = cast(LearningEvent.payload["item_id"].astext, Uuid)
-    rows = await session.execute(
+    when = _observed_when()
+    # Compared as text, as `find_item_for_kc` does: a malformed legacy id must not make every
+    # evidence read fail, and a deleted item simply finds no row — which is abstract.
+    setting = func.coalesce(Item.setting, transfer.ABSTRACT)
+    success = and_(
+        _demonstrated_clause(),
+        _unassisted_clause(),
+        LearningEvent.payload["correct"].astext == "true",
+    )
+    attempts = (
         select(
-            LearningEvent.kc_id,
-            _demonstrated_clause(),
-            _unassisted_clause(),
-            LearningEvent.payload["correct"].astext,
-            Item.setting,
+            LearningEvent.kc_id.label("kc_id"),
+            setting.label("setting"),
+            when.label("at"),
+            success.label("success"),
+            func.min(when).over(partition_by=[LearningEvent.kc_id, setting]).label("setting_first"),
+            func.min(when).over(partition_by=LearningEvent.kc_id).label("kc_first"),
         )
-        .outerjoin(Item, Item.id == item_id)
+        .select_from(LearningEvent)
+        .outerjoin(Item, cast(Item.id, String) == LearningEvent.payload["item_id"].astext)
         .where(
             LearningEvent.learner_id == learner_id,
             LearningEvent.event_type.in_(ATTEMPT_EVENTS),
             LearningEvent.kc_id.in_(kc_ids),
         )
-        .order_by(LearningEvent.kc_id, _observed_when(), LearningEvent.id)
+        .subquery()
+    )
+    shown_at = func.min(
+        case(
+            (
+                and_(
+                    attempts.c.success,
+                    attempts.c.at == attempts.c.setting_first,
+                    attempts.c.at > attempts.c.kc_first,
+                ),
+                attempts.c.at,
+            )
+        )
+    )
+    rows = await session.execute(
+        select(attempts.c.kc_id, attempts.c.setting, shown_at).group_by(
+            attempts.c.kc_id, attempts.c.setting
+        )
     )
     found: dict[uuid.UUID, tuple[set[str], str | None]] = {}
-    for kc_id, demonstrated, unassisted, correct, item_setting in rows:
+    earliest: dict[uuid.UUID, datetime] = {}
+    for kc_id, name, at in rows:
         if kc_id is None:
             continue
         practised, shown = found.get(kc_id, (set(), None))
-        setting = transfer.setting_of(item_setting)
-        if (
-            shown is None
-            and practised
-            and demonstrated
-            and unassisted
-            and correct == "true"
-            and setting not in practised
-        ):
-            shown = setting
-        practised.add(setting)
+        practised.add(name)
+        if at is not None and (kc_id not in earliest or at < earliest[kc_id]):
+            earliest[kc_id] = at
+            shown = name
         found[kc_id] = (practised, shown)
     return found
 
