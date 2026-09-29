@@ -4,8 +4,15 @@ import type { components } from "../../api/schema";
 
 type ReviewItem = components["schemas"]["ReviewItemRead"];
 
+/** The checks that must be answered unaided (S14); a plain review has no badge. */
+const CHECK_LABEL: Partial<Record<ReviewItem["kind"] & string, string>> = {
+  retention_check: "Retention check",
+  transfer_check: "Transfer check",
+};
+
 function ReviewRow({ review }: { review: ReviewItem }) {
   const { data: kc } = useKC(review.kc_id);
+  const label = review.kind ? CHECK_LABEL[review.kind] : undefined;
   const dueDate = new Date(review.due_at);
   const overdueDays = Math.max(
     0,
@@ -14,10 +21,10 @@ function ReviewRow({ review }: { review: ReviewItem }) {
 
   return (
     <div className="flex items-center justify-between rounded-field px-3 py-2">
-      <span className="text-body truncate">{kc?.name ?? "…"}</span>
-      {review.kind === "retention_check" && (
-        <span className="badge badge-sm badge-primary badge-soft shrink-0">Retention check</span>
-      )}
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="text-body truncate">{kc?.name ?? "…"}</span>
+        {label && <span className="badge badge-sm badge-primary badge-soft shrink-0">{label}</span>}
+      </div>
       <span className="text-caption text-base-content/50 shrink-0">
         {overdueDays === 0 ? "due today" : `due ${overdueDays}d ago`}
       </span>

@@ -17,6 +17,7 @@ from app.llm.types import ModelRole
 from app.models.assessment import Item, ItemKC, ItemType
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
+from app.services import analytics as analytics_svc
 from app.services import lesson_plan as plan_svc
 from app.services import session_runner
 from tests.test_item_exposure import T0, _learner
@@ -290,3 +291,28 @@ async def test_the_queue_serves_a_transfer_check_in_the_next_setting(db_session)
     [(review, item)] = [(r, i) for r, i in pairs if r.kc_id == kc.id]
     assert review.kind == "transfer_check"
     assert item is not None and item.item_type == ItemType.SHORT and item.setting == "everyday"
+
+
+# --- shown back ------------------------------------------------------------------------------------
+
+
+async def test_the_mastery_page_says_where_a_component_was_applied(db_session) -> None:
+    learner = await _learner(db_session)
+    subject, kc = await _exposure_kc(db_session)
+    await _answer(db_session, learner, kc, await _item_in(db_session, kc, None), when=T0)
+    money = await _item_in(db_session, kc, "money")
+    await _answer(db_session, learner, kc, money, when=T0 + timedelta(days=3))
+
+    read = await analytics_svc.subject_mastery(db_session, learner.id, subject.id)
+    (kc_read,) = read.topics[0].kcs
+    assert kc_read.transfer_shown and kc_read.transfer_setting == "money"
+
+
+async def test_the_mastery_page_says_nothing_was_applied_yet(db_session) -> None:
+    learner = await _learner(db_session)
+    subject, kc = await _exposure_kc(db_session)
+    await _answer(db_session, learner, kc, await _item_in(db_session, kc, None), when=T0)
+
+    read = await analytics_svc.subject_mastery(db_session, learner.id, subject.id)
+    (kc_read,) = read.topics[0].kcs
+    assert not kc_read.transfer_shown and kc_read.transfer_setting is None

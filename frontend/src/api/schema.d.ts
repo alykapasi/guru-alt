@@ -3399,6 +3399,13 @@ export interface components {
              * @default 0
              */
             self_reported_attempts: number;
+            /** Transfer Setting */
+            transfer_setting?: string | null;
+            /**
+             * Transfer Shown
+             * @default false
+             */
+            transfer_shown: boolean;
             /**
              * Unassisted Items
              * @default 0

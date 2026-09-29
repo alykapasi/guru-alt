@@ -10,7 +10,8 @@ type KCMastery = components["schemas"]["KCMasteryRead"];
  * by default. The backend has carried these counts since S14; nothing displayed them.
  *
  * Absence is stated rather than left out. "No delayed check yet" and silence look identical
- * on screen, and only one of them is true. */
+ * on screen, and only one of them is true. Once it has held up, the line says whether it has
+ * also been applied in a setting it was never practised in (S14). */
 export function MasteryEvidence({ kc }: { kc: KCMastery }) {
   if (!kc.assessed) return null;
 
@@ -24,6 +25,16 @@ export function MasteryEvidence({ kc }: { kc: KCMastery }) {
       <span className={kc.retention_shown ? "text-success" : undefined}>
         {kc.retention_shown ? "held up later" : "no delayed check yet"}
       </span>
+      {kc.retention_shown && (
+        <>
+          {" · "}
+          <span className={kc.transfer_shown ? "text-success" : undefined}>
+            {kc.transfer_shown
+              ? `applied in ${kc.transfer_setting}`
+              : "not yet applied in a new setting"}
+          </span>
+        </>
+      )}
     </p>
   );
 }

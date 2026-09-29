@@ -121,6 +121,8 @@ async def subject_mastery(
                 unassisted_items=_ev(evidence, kc.id).unassisted_items,
                 self_reported_attempts=_ev(evidence, kc.id).self_reported_attempts,
                 retention_shown=_ev(evidence, kc.id).retention_shown(min_days=retention_min_days),
+                transfer_shown=_ev(evidence, kc.id).transfer_shown,
+                transfer_setting=_ev(evidence, kc.id).transfer_setting,
             )
             for kc in kcs
         ]

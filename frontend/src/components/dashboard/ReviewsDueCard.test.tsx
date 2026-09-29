@@ -14,9 +14,19 @@ vi.mock("../../api/hooks", () => ({
         kind: "retention_check",
         item: null,
       },
+      {
+        kc_id: "kc-3",
+        due_at: now,
+        ability: 0,
+        uncertainty: 1,
+        kind: "transfer_check",
+        item: null,
+      },
     ],
   }),
-  useKC: (id: string) => ({ data: { name: id === "kc-1" ? "Vectors" : "Matrices" } }),
+  useKC: (id: string) => ({
+    data: { name: { "kc-1": "Vectors", "kc-2": "Matrices", "kc-3": "Eigenvalues" }[id] },
+  }),
 }));
 
 import { ReviewsDueCard } from "./ReviewsDueCard";
@@ -28,5 +38,11 @@ describe("the review queue", () => {
     render(<ReviewsDueCard />);
     expect(screen.getAllByText("Retention check")).toHaveLength(1);
     expect(screen.getByText("Matrices").closest("div")).toHaveTextContent("Retention check");
+  });
+
+  it("labels a transfer check", () => {
+    render(<ReviewsDueCard />);
+    expect(screen.getAllByText("Transfer check")).toHaveLength(1);
+    expect(screen.getByText("Eigenvalues").closest("div")).toHaveTextContent("Transfer check");
   });
 });
