@@ -342,7 +342,8 @@ async def test_the_mastery_page_stays_flat_in_queries(db_session: AsyncSession) 
     with count_queries(db_session) as counter:
         await analytics_svc.subject_mastery(db_session, learner.id, subject.id)
 
-    assert len(counter) == 4, counter
+    # Five: the fifth is the settings walk behind transfer (S14), one per page like the rest.
+    assert len(counter) == 5, counter
 
 
 def test_the_retention_floor_is_configured_not_hardcoded() -> None:

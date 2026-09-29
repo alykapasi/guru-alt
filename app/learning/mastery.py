@@ -23,8 +23,10 @@ from sqlalchemy import (
     Float,
     Integer,
     String,
+    Uuid,
     and_,
     case,
+    cast,
     distinct,
     func,
     or_,
@@ -34,7 +36,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.learning import scheduler
+from app.learning import scheduler, transfer
 from app.learning.assistance import evidence_credit
 from app.learning.diagnosis import ACTIONABLE, FailureKind
 from app.learning.tracer import (
@@ -45,7 +47,7 @@ from app.learning.tracer import (
     MasteryEstimator,
     aggregate,
 )
-from app.models.assessment import EvidenceKind
+from app.models.assessment import EvidenceKind, Item
 from app.models.knowledge import KC, Topic
 from app.models.learning import LearnerKCState, LearningEvent
 
@@ -1433,10 +1435,21 @@ class KCEvidence(BaseModel):
     # When the latest unaided demonstration was (naive UTC), or None — what a retention check
     # is timed from (S14).
     last_unassisted_at: datetime | None = None
+    # Every setting this component's attempts were set in (S14; NULL and deleted items are
+    # abstract), and the setting of the earliest unaided, judged, correct answer in a setting
+    # no earlier attempt used — transfer. None until then. A first answer is never transfer:
+    # there is nothing it was applied *beyond*.
+    practised_settings: frozenset[str] = frozenset()
+    transfer_setting: str | None = None
     # Self-rated attempts at this component (S56). Counted separately rather than folded in:
     # a rating is not backing for the estimate, but it is not nothing either, and an
     # interaction that vanished from the summary would make the history a lie of omission.
     self_reported_attempts: int
+
+    @property
+    def transfer_shown(self) -> bool:
+        """Applied unaided, correctly, in a setting it was never practised in (S14)."""
+        return self.transfer_setting is not None
 
     def retention_shown(self, *, min_days: float) -> bool:
         """Demonstrated unaided at least twice, at least ``min_days`` apart.
@@ -1550,4 +1563,123 @@ async def kc_evidence(
             last_unassisted_at=last_unassisted_at,
             self_reported_attempts=int(self_reported or 0),
         )
+    for kc_id, (practised, transfer_setting) in (
+        await _settings_evidence(session, learner_id, kc_ids)
+    ).items():
+        if kc_id in out:
+            out[kc_id] = out[kc_id].model_copy(
+                update={
+                    "practised_settings": frozenset(practised),
+                    "transfer_setting": transfer_setting,
+                }
+            )
     return out
+
+
+async def _settings_evidence(
+    session: AsyncSession, learner_id: uuid.UUID, kc_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, tuple[set[str], str | None]]:
+    """Per component: the settings its attempts were set in, and where transfer was shown.
+
+    Walked in time order because transfer is a claim about *earlier* attempts: the answer
+    counts only if no attempt before it used its setting, and at least one attempt came first.
+    """
+    item_id = cast(LearningEvent.payload["item_id"].astext, Uuid)
+    rows = await session.execute(
+        select(
+            LearningEvent.kc_id,
+            _demonstrated_clause(),
+            _unassisted_clause(),
+            LearningEvent.payload["correct"].astext,
+            Item.setting,
+        )
+        .outerjoin(Item, Item.id == item_id)
+        .where(
+            LearningEvent.learner_id == learner_id,
+            LearningEvent.event_type.in_(ATTEMPT_EVENTS),
+            LearningEvent.kc_id.in_(kc_ids),
+        )
+        .order_by(LearningEvent.kc_id, _observed_when(), LearningEvent.id)
+    )
+    found: dict[uuid.UUID, tuple[set[str], str | None]] = {}
+    for kc_id, demonstrated, unassisted, correct, item_setting in rows:
+        if kc_id is None:
+            continue
+        practised, shown = found.get(kc_id, (set(), None))
+        setting = transfer.setting_of(item_setting)
+        if (
+            shown is None
+            and practised
+            and demonstrated
+            and unassisted
+            and correct == "true"
+            and setting not in practised
+        ):
+            shown = setting
+        practised.add(setting)
+        found[kc_id] = (practised, shown)
+    return found
+
+
+class TransferCheck(BaseModel):
+    """A component due a check that it applies in a setting it was never practised in (S14)."""
+
+    kc_id: uuid.UUID
+    due_at: datetime
+    ability: float
+    uncertainty: float
+
+
+async def due_transfer_checks(
+    session: AsyncSession, learner_id: uuid.UUID, *, now: datetime | None = None
+) -> list[TransferCheck]:
+    """Components owed a transfer check, soonest first (S14).
+
+    Due when retention is shown, transfer is not, some catalogue setting is still unpractised,
+    and at least ``retention_min_days`` have passed since the component's latest judged answer
+    — so it does not follow straight on from other practice, and a failed check waits before
+    the next. Derived, never stored, like retention checks.
+    """
+    settings = get_settings()
+    now_naive = naive_utc(now or datetime.now(UTC))
+    min_days = settings.retention_min_days
+    states = (
+        await session.scalars(select(LearnerKCState).where(LearnerKCState.learner_id == learner_id))
+    ).all()
+    kc_ids = [s.kc_id for s in states]
+    evidence = await kc_evidence(session, learner_id, kc_ids)
+    latest: dict[uuid.UUID, datetime] = {
+        kc_id: when
+        for kc_id, when in await session.execute(
+            select(LearningEvent.kc_id, func.max(_observed_when()))
+            .where(
+                LearningEvent.learner_id == learner_id,
+                LearningEvent.kc_id.in_(kc_ids),
+                _demonstrated_clause(),
+            )
+            .group_by(LearningEvent.kc_id)
+        )
+        if kc_id is not None and when is not None
+    }
+    due: list[TransferCheck] = []
+    for state in states:
+        found = evidence.get(state.kc_id)
+        if (
+            found is None
+            or not found.retention_shown(min_days=min_days)
+            or found.transfer_shown
+            or transfer.next_setting(found.practised_settings) is None
+            or latest.get(state.kc_id) is None
+        ):
+            continue
+        when = naive_utc(latest[state.kc_id]) + timedelta(days=min_days)
+        if when <= now_naive:
+            due.append(
+                TransferCheck(
+                    kc_id=state.kc_id,
+                    due_at=when.replace(tzinfo=UTC),
+                    ability=state.ability,
+                    uncertainty=state.uncertainty,
+                )
+            )
+    return sorted(due, key=lambda c: c.due_at)
