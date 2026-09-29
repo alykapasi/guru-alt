@@ -830,6 +830,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/turns/{turn_id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop Turn
+         * @description Ask a running turn to stop (S47). Its text so far is kept as the reply.
+         *
+         *     409 when the turn is not running — it finished first, or the process running it is gone —
+         *     which a client racing a finishing turn can ignore: its ``done`` has arrived or will.
+         */
+        post: operations["stop_turn_api_v1_conversations__conversation_id__turns__turn_id__stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/unarchive": {
         parameters: {
             query?: never;
@@ -5913,6 +5936,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TurnRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stop_turn_api_v1_conversations__conversation_id__turns__turn_id__stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
                 };
             };
             /** @description Validation Error */

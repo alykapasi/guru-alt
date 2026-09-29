@@ -32,7 +32,7 @@ from app.api.deps import CurrentLearner, EngineDep, LLMClientDep, SessionDep, Se
 from app.core.config import get_settings
 from app.learning.conversation_evidence import TurnIntent
 from app.llm import LLMClient
-from app.models.chat import Conversation, ConversationPhase, Message, TurnStatus
+from app.models.chat import Conversation, ConversationPhase, Message, Turn, TurnStatus
 from app.models.source import Source
 from app.schemas.chat import (
     ChatTurnRequest,
@@ -50,11 +50,12 @@ from app.services import chat as svc
 from app.services import knowledge as knowledge_svc
 from app.services import practice as practice_svc
 from app.services import refinement as refinement_svc
-from app.services import removal, spend_guard, turn_lock
+from app.services import removal, spend_guard, turn_control, turn_lock
 from app.services import turn as turn_svc
 from app.services import workflow as workflow_svc
 from app.services.assessment import item_to_read
-from app.services.turn_common import TurnEvent
+from app.services.turn_common import TurnEvent, add_message
+from app.services.turn_control import Interrupted
 
 log = structlog.get_logger(__name__)
 
@@ -508,6 +509,34 @@ async def list_turns(
     return await turn_svc.recent_turns(session, conversation_id, limit=max(1, min(limit, 50)))
 
 
+@router.post(
+    "/conversations/{conversation_id}/turns/{turn_id}/stop",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def stop_turn(
+    conversation_id: uuid.UUID,
+    turn_id: uuid.UUID,
+    session: SessionDep,
+    learner: CurrentLearner,
+    db_engine: EngineDep,
+) -> dict[str, str]:
+    """Ask a running turn to stop (S47). Its text so far is kept as the reply.
+
+    409 when the turn is not running — it finished first, or the process running it is gone —
+    which a client racing a finishing turn can ignore: its ``done`` has arrived or will.
+    """
+    conversation = await svc.get_conversation(session, conversation_id, learner_id=learner.id)
+    if conversation is None or conversation.learner_id != learner.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    turn = await session.get(Turn, turn_id)
+    if turn is None or turn.conversation_id != conversation_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "turn not found")
+    if turn.status != TurnStatus.PENDING or not await turn_lock.is_active(session, conversation_id):
+        raise HTTPException(status.HTTP_409_CONFLICT, "this turn is not running")
+    await turn_control.request_stop(db_engine, turn_id)
+    return {"status": "stopping"}
+
+
 @router.post("/conversations/{conversation_id}/practice", response_model=PracticeStateRead)
 async def practice_action(
     conversation_id: uuid.UUID,
@@ -629,6 +658,7 @@ async def send_message(
             choice=choice,
             history=history,
         )
+        control = turn_control.TurnControl(turn.id, deadline_s=settings.turn_deadline_seconds)
     except turn_svc.TurnAlreadyCompleted as exc:
         await claim.release()
         raise HTTPException(
@@ -647,60 +677,94 @@ async def send_message(
         outcome: TurnStatus | None = None
         assistant_message_id: uuid.UUID | None = None
         error: str | None = None
-        async for ev in stream:
-            if ev.type == "token":
-                yield _sse({"type": "token", "text": ev.text})
-            elif ev.type == "error":
-                outcome, error = TurnStatus.FAILED, ev.detail
-                yield _sse({"type": "error", "detail": ev.detail})
-            elif ev.type == "done":
-                outcome = TurnStatus.COMPLETED
-                assistant_message_id = uuid.UUID(ev.message_id) if ev.message_id else None
-                posed = _open_check_id(ev)
-                if posed is not None:
-                    check_open, active_item = True, posed
-                yield _sse(
-                    {
-                        "type": "done",
-                        "message_id": ev.message_id,
-                        "usage": {
-                            "input_tokens": ev.usage.input_tokens,
-                            "output_tokens": ev.usage.output_tokens,
-                        },
-                        "cost_usd": ev.cost_usd,
-                        "item": ev.item.model_dump(mode="json") if ev.item else None,
-                        "detail": ev.detail,
-                        "citations": ev.citations,
-                        # Present only on a turn that graded an answer the learner gave in
-                        # conversation (S15) — null on every other turn, which is most of them.
-                        "check_result": (
-                            ev.check_result.model_dump(mode="json") if ev.check_result else None
-                        ),
-                    }
-                )
-            elif ev.type == "awaiting_reply":
-                awaiting_reply = True
-                outcome = TurnStatus.COMPLETED
-                active_item = ev.item.id if ev.item else None
-                yield _sse(
-                    {
-                        "type": "awaiting_reply",
-                        "text": ev.text,
-                        "detail": ev.detail,
-                        "item": ev.item.model_dump(mode="json") if ev.item else None,
-                        "citations": ev.citations,
-                        # Guided practice reports the attempt it just graded here, mid-round,
-                        # where the learner is about to answer the same question again (S15).
-                        "check_result": (
-                            ev.check_result.model_dump(mode="json") if ev.check_result else None
-                        ),
-                    }
-                )
-            elif ev.type == "committed":
-                outcome = TurnStatus.COMPLETED
-                yield _sse({"type": "committed", "goal": ev.text, "detail": ev.detail})
-            elif ev.type == "tool_call":
-                yield _sse({"type": "tool_call", "detail": ev.detail})
+        streamed: list[str] = []
+        async with control:
+            await control.listen(claim)
+            # First, so the client can address a Stop to this turn.
+            yield _sse({"type": "turn", "turn_id": str(turn.id)})
+            async for ev in control.run(stream):
+                if isinstance(ev, Interrupted):
+                    # The flow was cancelled at an await; anything it had not committed rolls
+                    # back, exactly as for a disconnect. What the learner saw is kept (S47).
+                    await session.rollback()
+                    text_so_far = "".join(streamed)
+                    if text_so_far:
+                        message = await add_message(
+                            session,
+                            conversation_id,
+                            "assistant",
+                            text_so_far,
+                            interrupted=ev.value,
+                        )
+                        assistant_message_id = message.id
+                    if ev is Interrupted.STOPPED:
+                        outcome = TurnStatus.STOPPED
+                        stopped_id = str(assistant_message_id) if assistant_message_id else None
+                        yield _sse({"type": "stopped", "message_id": stopped_id})
+                    else:
+                        outcome, error = TurnStatus.FAILED, "deadline"
+                        yield _sse(
+                            {
+                                "type": "error",
+                                "detail": turn_control.DEADLINE_DETAIL,
+                                "code": "deadline",
+                            }
+                        )
+                    break
+                if ev.type == "token":
+                    streamed.append(ev.text)
+                    yield _sse({"type": "token", "text": ev.text})
+                elif ev.type == "error":
+                    outcome, error = TurnStatus.FAILED, ev.detail
+                    yield _sse({"type": "error", "detail": ev.detail})
+                elif ev.type == "done":
+                    outcome = TurnStatus.COMPLETED
+                    assistant_message_id = uuid.UUID(ev.message_id) if ev.message_id else None
+                    posed = _open_check_id(ev)
+                    if posed is not None:
+                        check_open, active_item = True, posed
+                    yield _sse(
+                        {
+                            "type": "done",
+                            "message_id": ev.message_id,
+                            "usage": {
+                                "input_tokens": ev.usage.input_tokens,
+                                "output_tokens": ev.usage.output_tokens,
+                            },
+                            "cost_usd": ev.cost_usd,
+                            "item": ev.item.model_dump(mode="json") if ev.item else None,
+                            "detail": ev.detail,
+                            "citations": ev.citations,
+                            # Present only on a turn that graded an answer the learner gave in
+                            # conversation (S15) — null on every other turn, which is most of them.
+                            "check_result": (
+                                ev.check_result.model_dump(mode="json") if ev.check_result else None
+                            ),
+                        }
+                    )
+                elif ev.type == "awaiting_reply":
+                    awaiting_reply = True
+                    outcome = TurnStatus.COMPLETED
+                    active_item = ev.item.id if ev.item else None
+                    yield _sse(
+                        {
+                            "type": "awaiting_reply",
+                            "text": ev.text,
+                            "detail": ev.detail,
+                            "item": ev.item.model_dump(mode="json") if ev.item else None,
+                            "citations": ev.citations,
+                            # Guided practice reports the attempt it just graded here, mid-round,
+                            # where the learner is about to answer the same question again (S15).
+                            "check_result": (
+                                ev.check_result.model_dump(mode="json") if ev.check_result else None
+                            ),
+                        }
+                    )
+                elif ev.type == "committed":
+                    outcome = TurnStatus.COMPLETED
+                    yield _sse({"type": "committed", "goal": ev.text, "detail": ev.detail})
+                elif ev.type == "tool_call":
+                    yield _sse({"type": "tool_call", "detail": ev.detail})
 
         # Record the phase only after the stream drains, so an interrupted turn leaves the
         # previous phase standing rather than a half-decided one.

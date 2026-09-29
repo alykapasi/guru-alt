@@ -19,7 +19,7 @@ really running is listening. The payload is an id, never learner text.
 
 import asyncio
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from enum import StrEnum
 from typing import Self
 
@@ -32,6 +32,9 @@ from app.services.turn_lock import TurnClaim
 log = structlog.get_logger(__name__)
 
 CHANNEL = "turn_stop"
+
+# What the learner is told when a turn runs out of time; the reply so far is kept.
+DEADLINE_DETAIL = "This reply took too long and was cut off."
 
 
 class Interrupted(StrEnum):
@@ -92,7 +95,7 @@ class TurnControl:
         except Exception as exc:
             log.warning("turn_control.listen_failed", turn_id=str(self.turn_id), error=str(exc))
 
-    async def run[T](self, events: AsyncGenerator[T]) -> AsyncIterator[T | Interrupted]:
+    async def run[T](self, events: AsyncIterator[T]) -> AsyncIterator[T | Interrupted]:
         loop = asyncio.get_running_loop()
         end = loop.time() + self.deadline_s
         try:
@@ -118,7 +121,11 @@ class TurnControl:
                     self._timeout = None
                 yield event
         finally:
-            await events.aclose()
+            # Closing the flow runs its ``finally`` blocks now, in this task — which is what
+            # closes the provider stream and settles the call ``partial``.
+            aclose = getattr(events, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
 
 # Turns running in this process, by id. A Stop for one of these never needs the database.

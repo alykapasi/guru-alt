@@ -874,6 +874,7 @@ _NOT_GRAPH_IDS = frozenset(
         "conversation_id",  # a chat conversation id
         "before",  # a message id used as a pagination cursor
         "client_turn_id",  # idempotency key for a chat turn
+        "turn_id",  # a chat turn, checked against its conversation (Stop, S47)
         "rubric_id",  # an item's optional rubric reference, not a graph id
         "attempt_id",  # idempotency key for an answer submission
         "chunk_id",  # a source chunk id
