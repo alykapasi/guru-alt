@@ -117,6 +117,21 @@ async def _mark_active_step_check_first(session: AsyncSession, conv: Conversatio
     await session.commit()
 
 
+async def _mark_active_step_retention_check(session: AsyncSession, conv: Conversation) -> None:
+    """Flag the active step as a retention check (S14), as revision does for a due check."""
+    assert conv.subject_id is not None
+    plan = await lesson_plan_svc.get_lesson_plan(
+        session, learner_id=conv.learner_id, subject_id=conv.subject_id
+    )
+    assert plan is not None
+    steps = [dict(step) for step in plan.steps]
+    for step in steps:
+        if step["status"] == "active":
+            step["retention_check"] = True
+    plan.steps = steps
+    await session.commit()
+
+
 async def _drain(
     session: AsyncSession,
     llm: LLMClient,
@@ -346,6 +361,37 @@ async def test_an_answer_on_a_check_first_step_is_not_marked_taught(
     await _drain(db_session, llm, conv, user_content="let's practice")
     await _drain(db_session, llm, conv, user_content="sunlight -> sugars", resume=True)
 
+    assert seen == [False]
+
+
+async def test_a_retention_check_is_posed_cold_and_not_marked_taught(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S14: the answer a retention check exists to get is one given without a worked example."""
+    conv = await _conversation_with_active_step(db_session)
+    await _mark_active_step_retention_check(db_session, conv)
+    captured: list[str] = []
+    real_compose = workflow_svc.learner_context.compose
+    monkeypatch.setattr(
+        workflow_svc.learner_context,
+        "compose",
+        lambda base, *a, **k: captured.append(base) or real_compose(base, *a, **k),
+    )
+    seen: list[bool] = []
+    real = assessment_svc.answer_item
+
+    async def capture(session, learner_id, item, submission, **kwargs):
+        seen.append(kwargs.get("taught_first", False))
+        return await real(session, learner_id, item, submission, **kwargs)
+
+    monkeypatch.setattr(assessment_svc, "answer_item", capture)
+    llm = fake_llm_client(
+        script=[FakeTurn(text=PRESENT), FakeTurn(text=RIGHT_GRADE), FakeTurn(text=RESPOND_2)]
+    )
+    await _drain(db_session, llm, conv, user_content="let's practice")
+    await _drain(db_session, llm, conv, user_content="sunlight -> sugars", resume=True)
+
+    assert captured[0] == workflow_svc.CHECK_FIRST_SYSTEM_PROMPT
     assert seen == [False]
 
 

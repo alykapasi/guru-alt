@@ -7,11 +7,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.learning import lesson_plan as engine
 from app.learning import mastery
 from app.learning.mastery import Observation
+from app.models.assessment import ItemType
 from app.models.knowledge import KC
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState
+from app.services import lesson_plan as plan_svc
+from app.services import session_runner
+from app.services.lesson_plan import PlanGroundingContext
 from tests.test_item_exposure import T0, _item, _kc, _learner
 
 
@@ -108,3 +113,95 @@ async def test_a_probe_interval_below_the_minimum_is_raised_to_it(db_session, mo
     learner, _kc_row = await _one_answer(db_session)
     assert await _due(db_session, learner, T0 + timedelta(days=1)) == []
     assert len(await _due(db_session, learner, T0 + timedelta(days=2, hours=1))) == 1
+
+
+# --- a due check becomes a cold review step ----------------------------------------------------
+
+
+def _open_reviews(steps: list[engine.StepDict]) -> list[engine.StepDict]:
+    return [
+        s for s in steps if s["step_type"] == "review" and s["status"] not in ("done", "skipped")
+    ]
+
+
+def test_a_due_check_is_a_flagged_review_step() -> None:
+    kc = uuid.uuid4()
+    steps = engine.revise_steps(
+        [],
+        mastered_kc_ids=[],
+        due_review_kc_ids=[kc],
+        retention_check_kc_ids=[kc],
+        scaffolding=engine.ScaffoldingHints(),
+    )
+    [step] = _open_reviews(steps)
+    assert step["retention_check"] is True
+
+
+def test_an_ordinary_review_is_not_flagged() -> None:
+    kc = uuid.uuid4()
+    steps = engine.revise_steps(
+        [], mastered_kc_ids=[], due_review_kc_ids=[kc], scaffolding=engine.ScaffoldingHints()
+    )
+    [step] = _open_reviews(steps)
+    assert step.get("retention_check") is False
+
+
+async def test_the_plan_merges_checks_with_fsrs_reviews_once(db_session) -> None:
+    """Review focus 3: due both ways is one entry, flagged."""
+    learner, kc = await _one_answer(db_session)
+    await _fsrs_due(db_session, learner, kc, T0 + timedelta(days=2))
+    due = await plan_svc._due_review_kc_ids(
+        db_session, learner.id, {kc.id}, now=T0 + timedelta(days=8)
+    )
+    assert due.kc_ids == [kc.id] and due.retention_checks == frozenset({kc.id})
+
+
+async def test_an_ordinary_due_review_is_not_a_check(db_session) -> None:
+    learner = await _learner(db_session)
+    _subject, kc = await _kc(db_session)
+    item = await _item(db_session, kc, "a")
+    await _answer(db_session, learner, kc, item, when=T0, hints=1)
+    await _fsrs_due(db_session, learner, kc, T0 + timedelta(days=1))
+    due = await plan_svc._due_review_kc_ids(
+        db_session, learner.id, {kc.id}, now=T0 + timedelta(days=2)
+    )
+    assert due.kc_ids == [kc.id] and due.retention_checks == frozenset()
+
+
+async def test_an_unaided_answer_closes_the_check(db_session) -> None:
+    """Review focus 3: answered unaided, the clock restarts — not due at day 7."""
+    learner, kc = await _one_answer(db_session)
+    item = await _item(db_session, kc, "b")
+    await _answer(db_session, learner, kc, item, when=T0 + timedelta(hours=2))
+    assert await _due(db_session, learner, T0 + timedelta(days=7, hours=1)) == []
+
+
+async def test_a_check_answered_after_a_hint_stays_due(db_session) -> None:
+    """Review focus 2."""
+    learner, kc = await _one_answer(db_session)
+    item = await _item(db_session, kc, "b")
+    await _answer(db_session, learner, kc, item, when=T0 + timedelta(days=7, hours=2), hints=1)
+    assert await _due(db_session, learner, T0 + timedelta(days=7, hours=3)) == [kc.id]
+
+
+def _review_context(*, retention_check: bool) -> PlanGroundingContext:
+    return PlanGroundingContext(
+        subject_name="S",
+        kc_id=uuid.uuid4(),
+        kc_name="K",
+        step_type="review",
+        target_difficulty=None,
+        hint_density=None,
+        preferred_item_type="flashcard",
+        retention_check=retention_check,
+    )
+
+
+def test_a_retention_check_asks_a_written_question_on_the_session_surface() -> None:
+    assert (
+        session_runner._effective_item_type(_review_context(retention_check=True)) == ItemType.SHORT
+    )
+    assert (
+        session_runner._effective_item_type(_review_context(retention_check=False))
+        == ItemType.FLASHCARD
+    )

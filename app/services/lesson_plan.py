@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, cast
+from typing import Any, Literal, NamedTuple, cast
 
 import structlog
 from sqlalchemy import select, update
@@ -52,6 +52,8 @@ class PlanGroundingContext:
     preferred_item_type: str | None
     # A provisional component (S24): practice asks before it explains.
     check_first: bool = False
+    # A delayed retention check (S14): practice asks before it explains, with a written question.
+    retention_check: bool = False
 
 
 async def _get_plan(
@@ -228,12 +230,36 @@ async def set_goal_closed(
     return plan
 
 
+class DueReviews(NamedTuple):
+    """This subject's due reviews, soonest first, and which of them are retention checks."""
+
+    kc_ids: list[uuid.UUID]
+    retention_checks: frozenset[uuid.UUID]
+
+
 async def _due_review_kc_ids(
-    session: AsyncSession, learner_id: uuid.UUID, subject_kc_ids: set[uuid.UUID]
-) -> list[uuid.UUID]:
-    """Soonest-due first, filtered to this subject's KCs (``mastery.due_reviews`` is global)."""
-    reviews = await mastery.due_reviews(session, learner_id)
-    return [r.kc_id for r in reviews if r.kc_id in subject_kc_ids]
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    subject_kc_ids: set[uuid.UUID],
+    *,
+    now: datetime | None = None,
+) -> DueReviews:
+    """FSRS reviews and delayed retention checks (S14), soonest-due first, filtered to this
+    subject's KCs (both sources are global). A KC due both ways is one entry, a check."""
+    reviews = await mastery.due_reviews(session, learner_id, now=now)
+    checks = await mastery.due_retention_checks(session, learner_id, now=now)
+    earliest: dict[uuid.UUID, datetime] = {}
+    for kc_id, due_at in [(r.kc_id, r.due_at) for r in reviews] + [
+        (c.kc_id, c.due_at) for c in checks
+    ]:
+        if kc_id not in subject_kc_ids:
+            continue
+        when = mastery.naive_utc(due_at)
+        earliest[kc_id] = min(when, earliest.get(kc_id, when))
+    return DueReviews(
+        kc_ids=sorted(earliest, key=lambda kc_id: earliest[kc_id]),
+        retention_checks=frozenset(c.kc_id for c in checks if c.kc_id in subject_kc_ids),
+    )
 
 
 async def _scaffolding(session: AsyncSession, learner_id: uuid.UUID) -> engine.ScaffoldingHints:
@@ -464,7 +490,8 @@ async def generate_lesson_plan(
     steps = engine.revise_steps(
         bare_steps,
         mastered_kc_ids=mastered,
-        due_review_kc_ids=due_reviews,
+        due_review_kc_ids=due_reviews.kc_ids,
+        retention_check_kc_ids=due_reviews.retention_checks,
         scaffolding=scaffolding,
         guidance=guidance,
         external_detours=await _external_detours(
@@ -492,7 +519,7 @@ async def generate_lesson_plan(
 
 async def _revision_inputs(
     session: AsyncSession, *, learner_id: uuid.UUID, subject_id: uuid.UUID, plan: LessonPlan
-) -> tuple[set[uuid.UUID], list[uuid.UUID], engine.ScaffoldingHints, set[uuid.UUID]]:
+) -> tuple[set[uuid.UUID], DueReviews, engine.ScaffoldingHints, set[uuid.UUID]]:
     """The four reads every revision needs: current mastery of this plan's open ``"new"`` and
     ``"detour"`` step KCs, this subject's due reviews, the learner's scaffolding hints, and
     which of those KCs are still provisional — gathered once here so :func:`revise_plan` and
@@ -565,7 +592,7 @@ async def _apply_revision(
     learner_id: uuid.UUID,
     plan: LessonPlan,
     mastered: set[uuid.UUID],
-    due_reviews: Sequence[uuid.UUID],
+    due_reviews: DueReviews,
     scaffolding: engine.ScaffoldingHints,
     detour: engine.Detour | None,
     provisional: set[uuid.UUID],
@@ -615,7 +642,8 @@ async def _apply_revision(
     revised = engine.revise_steps(
         cast("list[engine.StepDict]", plan.steps),
         mastered_kc_ids=mastered,
-        due_review_kc_ids=due_reviews,
+        due_review_kc_ids=due_reviews.kc_ids,
+        retention_check_kc_ids=due_reviews.retention_checks,
         scaffolding=scaffolding,
         detour=detour,
         external_detours=await _external_detours(
@@ -639,7 +667,8 @@ async def _apply_revision(
         revised = engine.revise_steps(
             [*revised, *engine.build_initial_steps(extension_ids)],
             mastered_kc_ids=mastered,
-            due_review_kc_ids=due_reviews,
+            due_review_kc_ids=due_reviews.kc_ids,
+            retention_check_kc_ids=due_reviews.retention_checks,
             scaffolding=scaffolding,
             guidance=guidance,
             provisional_kc_ids=provisional,
@@ -921,4 +950,5 @@ async def get_active_step_context(
         hint_density=active["hint_density"],
         preferred_item_type=active["preferred_item_type"],
         check_first=bool(active.get("check_first")),
+        retention_check=bool(active.get("retention_check")),
     )

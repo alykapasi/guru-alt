@@ -902,7 +902,7 @@ class RetentionCheck(BaseModel):
     uncertainty: float
 
 
-def _naive_utc(value: datetime) -> datetime:
+def naive_utc(value: datetime) -> datetime:
     return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
 
 
@@ -918,7 +918,7 @@ async def due_retention_checks(
     stays due. Stops once retention is shown: keeping it fresh afterwards is not this.
     """
     settings = get_settings()
-    now_naive = _naive_utc(now or datetime.now(UTC))
+    now_naive = naive_utc(now or datetime.now(UTC))
     min_days = settings.retention_min_days
     probe_days = max(settings.retention_probe_days, min_days)
     states = (
@@ -934,11 +934,11 @@ async def due_retention_checks(
             or found.retention_shown(min_days=min_days)
         ):
             continue
-        last = _naive_utc(found.last_unassisted_at)
+        last = naive_utc(found.last_unassisted_at)
         earliest = last + timedelta(days=min_days)
         by_interval = last + timedelta(days=probe_days)
         # The earlier of FSRS's date and the interval, never before a check could count.
-        fsrs = _naive_utc(state.due_at) if state.due_at is not None else None
+        fsrs = naive_utc(state.due_at) if state.due_at is not None else None
         when = min(by_interval, max(fsrs, earliest)) if fsrs is not None else by_interval
         if when <= now_naive:
             due.append(

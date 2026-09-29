@@ -228,6 +228,9 @@ async def _generate_owned(
 def _effective_item_type(context: PlanGroundingContext) -> ItemType | None:
     """The plan's steer on item type: an explicit profile preference wins; otherwise review
     steps default to a flashcard (spaced-repetition surfacing); new steps have no preference."""
+    if context.retention_check:
+        # A self-rating can never be the unaided demonstration a retention check exists to get.
+        return ItemType.SHORT
     if context.preferred_item_type is not None:
         try:
             return ItemType(context.preferred_item_type)

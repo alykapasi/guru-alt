@@ -95,6 +95,9 @@ class StepDict(TypedDict):
     # A provisional component (S24) — a head start carried over a concept link, unconfirmed
     # here. Practice asks before it explains. Recomputed on every revision.
     check_first: NotRequired[bool]
+    # A review that is also a delayed, independent retention check (S14): posed cold, with an
+    # unseen written question. Recomputed on every revision.
+    retention_check: NotRequired[bool]
 
 
 @dataclass(frozen=True)
@@ -512,6 +515,7 @@ def revise_steps(
     guidance: Guidance = "guided",
     disproved_kc_ids: Iterable[uuid.UUID] = (),
     provisional_kc_ids: Iterable[uuid.UUID] = (),
+    retention_check_kc_ids: Iterable[uuid.UUID] = (),
     now: datetime | None = None,
 ) -> list[StepDict]:
     """Re-derive status/order/hints over an existing step list. Pure, no DB, no LLM — this is
@@ -574,7 +578,9 @@ def revise_steps(
        once the learner accepts it via ``decide_detour``.
     7. Scaffolding hints refresh on every step not ``"done"`` or ``"skipped"``, and so does
        ``check_first`` — whether the step's KC is in ``provisional_kc_ids``, a head start
-       carried over a concept link that practice has not yet confirmed (S24). Closed steps
+       carried over a concept link that practice has not yet confirmed (S24) — and
+       ``retention_check``, whether a review step's KC is in ``retention_check_kc_ids`` (S14).
+       Closed steps
        keep the hints they were actually taught under. An external detour (S24) is practised
        in the learner's preferred format rather than ``DETOUR_ITEM_TYPE``: it is not a
        diagnostic question about a hypothesis, it is the prerequisite itself.
@@ -735,6 +741,7 @@ def revise_steps(
             break
 
     provisional = {str(kc_id) for kc_id in provisional_kc_ids}
+    retention_checks = {str(kc_id) for kc_id in retention_check_kc_ids}
     for step in result:
         if step["status"] in CLOSED:
             continue
@@ -746,6 +753,9 @@ def revise_steps(
             else scaffolding.preferred_item_type
         )
         step["check_first"] = step["kc_id"] in provisional
+        step["retention_check"] = (
+            step["step_type"] == "review" and step["kc_id"] in retention_checks
+        )
 
     return result
 

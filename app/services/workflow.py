@@ -246,7 +246,10 @@ async def run_workflow_turn(
         # A provisional component (S24) is confirmed, not taught: asking first is the "short
         # confirmation" V04 calls for, and an answer given without a worked example is exactly
         # the unaided pass that confirms it.
-        base_prompt = CHECK_FIRST_SYSTEM_PROMPT if step.check_first else WORKFLOW_SYSTEM_PROMPT
+        # Posed cold for a retention check (S14) too: both need an answer given without a
+        # worked example.
+        cold = step.check_first or step.retention_check
+        base_prompt = CHECK_FIRST_SYSTEM_PROMPT if cold else WORKFLOW_SYSTEM_PROMPT
         system = learner_context.compose(
             base_prompt,
             context,
@@ -268,7 +271,7 @@ async def run_workflow_turn(
             "usage": Usage(),
             "rounds": 0,
             "max_rounds": max_rounds,
-            "taught_first": not step.check_first,
+            "taught_first": not cold,
         }
         # A fresh start carries no help from whatever came before it. Pause/resume/skip already
         # reset this at their own moments, but a start reached without going through any of them
