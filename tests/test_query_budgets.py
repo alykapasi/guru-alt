@@ -61,7 +61,8 @@ async def test_subject_mastery_does_not_query_per_component(db_session: AsyncSes
     assert len(large_count) == len(small_count), (
         f"query count grew with the graph\nsmall: {small_count}\nlarge: {large_count}"
     )
-    assert len(small_count) <= 4, small_count
+    # Five since transfer (S14) added one fixed query for the settings a component was answered in.
+    assert len(small_count) <= 5, small_count
     # For the record: this was 15 for the 2x2 and 147 for the 8x8 before the fix.
 
 

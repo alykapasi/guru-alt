@@ -73,6 +73,28 @@ precision. Five bands is about as fine as a model can reliably hit, and the bins
 wide, which is roughly the gap between placement's "some" and "strong"."""
 
 
+LEVELS: tuple[tuple[str, str], ...] = tuple((name, gloss) for _, name, gloss in _BANDS)
+"""The band names and what each means, easiest first — what a model is asked to choose from."""
+
+_MIDPOINTS: dict[str, float] = {
+    "introductory": -2.0,
+    "straightforward": -1.0,
+    "moderate": 0.0,
+    "challenging": 1.0,
+    "demanding": 2.0,
+}
+
+
+def midpoint(level: str) -> float:
+    """The difficulty recorded for a question *rated* at ``level`` (S56): the middle of its
+    one-logit band (the outer two, one logit past the last boundary). A rating, not a
+    measurement — see ``app.learning.item_generation`` on what a stored difficulty claims."""
+    try:
+        return _MIDPOINTS[level]
+    except KeyError:
+        raise ValueError(f"unknown level {level!r}") from None
+
+
 def band(difficulty: float) -> str:
     """The band ``difficulty`` falls in."""
     for upper, name, _ in _BANDS:

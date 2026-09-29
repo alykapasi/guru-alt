@@ -317,6 +317,11 @@ class Settings(BaseSettings):
     # study S59 covers.
     retention_min_days: float = 1.0
 
+    # How long after a component's latest unaided answer a retention check is arranged if
+    # FSRS has not surfaced it first (S14). Read as at least `retention_min_days`: a check
+    # sooner than that could not count. v1-arbitrary like its neighbours; S59 calibrates.
+    retention_probe_days: float = 7.0
+
     # The lower confidence bound a component must clear to count as mastered. v1-arbitrary,
     # the same standing as the two thresholds it replaces and as retention_min_days above:
     # not calibrated against outcome data. Compared against ability - 2 * uncertainty

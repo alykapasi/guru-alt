@@ -161,10 +161,19 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   concurrency) or the deployment ceiling, and background work stops at 90%. Services say what
   they are with `@metered(...)` (`app/llm/attribution.py`); nothing calls a logging function by
   hand. See [docs/RUNBOOK.md](docs/RUNBOOK.md) §18.
+- **A grade says what measured it** (S56) — every graded event carries a `grading` block
+  (grader, model, and hashes of frozen item/rubric/prompt snapshots in `grading_snapshots`, per
+  learner, surviving item deletion); `uv run poe regrade` re-grades past answers under a current
+  or recorded grader and reports agreement, never changing a grade. See
+  [docs/RUNBOOK.md](docs/RUNBOOK.md) §19.
 - **A self-rating is not evidence of ability** (S56) — the server decides whether a score was
   judged or self-reported, and a self-rating moves the review schedule only. Mastery is the
   conservative estimate `ability − 2·uncertainty ≥ 0.5` on measured evidence (V02); achievement
-  is recorded per component and kept, and staleness is reported, never used to un-master.
+  is recorded per component and kept, and staleness is reported, never used to un-master. An
+  answer given straight after a worked example is not unaided, and a component owed a second
+  unaided answer gets a cold retention check in its review queue (S14). Transfer is an unaided
+  correct answer in a catalogue setting (`app/learning/transfer.py`) no earlier attempt used,
+  checked after retention; it is shown as evidence and not required for achievement.
 - **A cross-subject link needs two agreements** (S24) — an endorsement (admin for curated
   pairs, the `SMART` judge for private ones) and the learner's own acceptance. A shared name
   never links anything, and an accepted link gives only a provisional head start that real

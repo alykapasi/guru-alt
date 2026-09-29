@@ -14,7 +14,7 @@ tracer update + event together so an interaction is recorded atomically.
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import (
@@ -25,6 +25,7 @@ from sqlalchemy import (
     String,
     and_,
     case,
+    cast,
     distinct,
     func,
     or_,
@@ -34,7 +35,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.learning import scheduler
+from app.learning import scheduler, transfer
 from app.learning.assistance import evidence_credit
 from app.learning.diagnosis import ACTIONABLE, FailureKind
 from app.learning.tracer import (
@@ -45,13 +46,13 @@ from app.learning.tracer import (
     MasteryEstimator,
     aggregate,
 )
-from app.models.assessment import EvidenceKind
+from app.models.assessment import EvidenceKind, Item
 from app.models.knowledge import KC, Topic
 from app.models.learning import LearnerKCState, LearningEvent
 
 _SECONDS_PER_DAY = 86_400.0
 
-EVENT_SCHEMA_VERSION = 4
+EVENT_SCHEMA_VERSION = 5
 """Payload shape of an ``observation`` or ``self_report`` event.
 
 1 — score/difficulty/weight/credit and the grader's verdict.
@@ -65,6 +66,8 @@ EVENT_SCHEMA_VERSION = 4
     carries the rating and its FSRS outcome but no prior/posterior pair, because nothing about
     the ability estimate moved. Rows at versions 1-3 are all ``observation`` and are read as
     demonstrated, which is what they were recorded as.
+5 — adds ``grading``: which grader, and hashes of the item, rubric and prompt snapshots it used
+    (S56, ``grading_snapshots``). Absent on earlier rows, which cannot be re-graded.
 """
 
 SELF_REPORT_EVENT = "self_report"
@@ -150,6 +153,10 @@ class Observation(BaseModel):
     is not the unaided demonstration that proves a prerequisite was never the gap. Only
     ``passed_since`` reads it; it is recorded in the payload only when true."""
 
+    grading: dict | None = None
+    """What graded this attempt (S56): grader, model, and hashes of the frozen item, rubric and
+    prompt in ``grading_snapshots``. Set by ``answer_item``; None for evidence it did not grade."""
+
     @field_validator("kc_weights")
     @classmethod
     def _weights_positive(cls, v: dict[uuid.UUID, float]) -> dict[uuid.UUID, float]:
@@ -185,6 +192,9 @@ class ReviewItem(BaseModel):
     due_at: datetime
     ability: float
     uncertainty: float
+    kind: Literal["review", "retention_check", "transfer_check"] = "review"
+    """``retention_check`` — a delayed independent check of retention (S14), merged into the
+    queue by ``session_runner.due_review_items``; the tracer itself only reports FSRS reviews."""
 
 
 def _estimate_of(state: LearnerKCState) -> Estimate:
@@ -472,6 +482,7 @@ async def record_observation(
                         "hints_used": obs.hints_used,
                         "prior_attempts": obs.prior_attempts,
                         "item_id": str(obs.item_id) if obs.item_id else None,
+                        "grading": obs.grading,
                         "admin_actor_id": session.info["admin_actor_id"],
                         "admin_action_id": session.info.get("admin_action_id"),
                     },
@@ -533,6 +544,7 @@ async def record_observation(
                         "schema_version": EVENT_SCHEMA_VERSION,
                         "observed_at": now.isoformat(),
                         "due_at": state.due_at.isoformat() if state.due_at else None,
+                        "grading": obs.grading,
                         **_taught_first_payload(obs),
                     },
                 )
@@ -598,6 +610,7 @@ async def record_observation(
                     "prior_uncertainty": decayed.uncertainty,
                     "posterior_ability": post.ability,
                     "posterior_uncertainty": post.uncertainty,
+                    "grading": obs.grading,
                     **_taught_first_payload(obs),
                 },
             )
@@ -882,6 +895,67 @@ async def due_reviews(
         )
     ).all()
     return [ReviewItem.model_validate(s) for s in states]
+
+
+class RetentionCheck(BaseModel):
+    """A component due a delayed, independent check of retention (S14)."""
+
+    kc_id: uuid.UUID
+    due_at: datetime
+    ability: float
+    uncertainty: float
+
+
+def naive_utc(value: datetime) -> datetime:
+    return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
+
+
+async def due_retention_checks(
+    session: AsyncSession, learner_id: uuid.UUID, *, now: datetime | None = None
+) -> list[RetentionCheck]:
+    """Components owed the second unaided demonstration retention needs, soonest first.
+
+    Due when the component has an unaided answer, has not shown retention, the latest unaided
+    answer is at least ``retention_min_days`` old (sooner could not count) — and either FSRS
+    has brought its review up or ``retention_probe_days`` have passed. FSRS may bring a check
+    forward; the interval makes sure one arrives. Derived, never stored, so a missed check
+    stays due. Stops once retention is shown: keeping it fresh afterwards is not this.
+    """
+    settings = get_settings()
+    now_naive = naive_utc(now or datetime.now(UTC))
+    min_days = settings.retention_min_days
+    probe_days = max(settings.retention_probe_days, min_days)
+    states = (
+        await session.scalars(select(LearnerKCState).where(LearnerKCState.learner_id == learner_id))
+    ).all()
+    evidence = await kc_evidence(session, learner_id, [s.kc_id for s in states])
+    due: list[RetentionCheck] = []
+    for state in states:
+        found = evidence.get(state.kc_id)
+        if (
+            found is None
+            or found.last_unassisted_at is None
+            or found.retention_shown(min_days=min_days)
+        ):
+            continue
+        last = naive_utc(found.last_unassisted_at)
+        earliest = last + timedelta(days=min_days)
+        by_interval = last + timedelta(days=probe_days)
+        # The earlier of FSRS's date and the interval, never before a check could count.
+        fsrs = naive_utc(state.due_at) if state.due_at is not None else None
+        when = min(by_interval, max(fsrs, earliest)) if fsrs is not None else by_interval
+        if when <= now_naive:
+            due.append(
+                RetentionCheck(
+                    kc_id=state.kc_id,
+                    # Aware again on the way out: it is served over the API, and a timestamp
+                    # without a zone is read as the browser's local time.
+                    due_at=when.replace(tzinfo=UTC),
+                    ability=state.ability,
+                    uncertainty=state.uncertainty,
+                )
+            )
+    return sorted(due, key=lambda c: c.due_at)
 
 
 class Struggle(BaseModel):
@@ -1357,10 +1431,24 @@ class KCEvidence(BaseModel):
     # has no span to measure and a 0.0 would read as "measured, and it was zero".
     unassisted_attempts: int
     unassisted_span_days: float | None
+    # When the latest unaided demonstration was (naive UTC), or None — what a retention check
+    # is timed from (S14).
+    last_unassisted_at: datetime | None = None
+    # Every setting this component's attempts were set in (S14; NULL and deleted items are
+    # abstract), and the setting of the earliest unaided, judged, correct answer in a setting
+    # no earlier attempt used — transfer. None until then. A first answer is never transfer:
+    # there is nothing it was applied *beyond*.
+    practised_settings: frozenset[str] = frozenset()
+    transfer_setting: str | None = None
     # Self-rated attempts at this component (S56). Counted separately rather than folded in:
     # a rating is not backing for the estimate, but it is not nothing either, and an
     # interaction that vanished from the summary would make the history a lie of omission.
     self_reported_attempts: int
+
+    @property
+    def transfer_shown(self) -> bool:
+        """Applied unaided, correctly, in a setting it was never practised in (S14)."""
+        return self.transfer_setting is not None
 
     def retention_shown(self, *, min_days: float) -> bool:
         """Demonstrated unaided at least twice, at least ``min_days`` apart.
@@ -1382,10 +1470,13 @@ def _demonstrated_clause() -> ColumnElement[bool]:
 
 
 def _unassisted_clause() -> ColumnElement[bool]:
-    """An attempt made with no hints and not a re-look at the same question (S14)."""
+    """An attempt made with no hints, not a re-look at the same question, and not given straight
+    after a worked example of it (S14). Guided practice teaches before it asks; an answer given
+    moments after being shown how is not the independent demonstration retention needs."""
     return and_(
         func.coalesce(LearningEvent.payload["hints_used"].astext.cast(Integer), 0) == 0,
         func.coalesce(LearningEvent.payload["prior_attempts"].astext.cast(Integer), 0) == 0,
+        func.coalesce(LearningEvent.payload["taught_first"].astext, "false") != "true",
     )
 
 
@@ -1468,6 +1559,151 @@ async def kc_evidence(
             unassisted_items=int(unassisted_items or 0),
             unassisted_attempts=unassisted_attempts,
             unassisted_span_days=span,
+            last_unassisted_at=last_unassisted_at,
             self_reported_attempts=int(self_reported or 0),
         )
+    for kc_id, (practised, transfer_setting) in (
+        await _settings_evidence(session, learner_id, kc_ids)
+    ).items():
+        if kc_id in out:
+            out[kc_id] = out[kc_id].model_copy(
+                update={
+                    "practised_settings": frozenset(practised),
+                    "transfer_setting": transfer_setting,
+                }
+            )
     return out
+
+
+async def _settings_evidence(
+    session: AsyncSession, learner_id: uuid.UUID, kc_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, tuple[set[str], str | None]]:
+    """Per component: the settings its attempts were set in, and where transfer was shown.
+
+    Transfer is a claim about *earlier* attempts: an answer counts only if no attempt before it
+    used its setting, and at least one attempt came first. So each attempt is compared with the
+    first time its setting appeared for the component and with the component's first attempt —
+    window functions over the events — and the database returns one row per (component,
+    setting), at most a dozen per component however long the history. This runs on every
+    graded answer (via the due checks), so it must not grow with a learner's lifetime.
+    """
+    when = _observed_when()
+    # Compared as text, as `find_item_for_kc` does: a malformed legacy id must not make every
+    # evidence read fail, and a deleted item simply finds no row — which is abstract.
+    setting = func.coalesce(Item.setting, transfer.ABSTRACT)
+    success = and_(
+        _demonstrated_clause(),
+        _unassisted_clause(),
+        LearningEvent.payload["correct"].astext == "true",
+    )
+    attempts = (
+        select(
+            LearningEvent.kc_id.label("kc_id"),
+            setting.label("setting"),
+            when.label("at"),
+            success.label("success"),
+            func.min(when).over(partition_by=[LearningEvent.kc_id, setting]).label("setting_first"),
+            func.min(when).over(partition_by=LearningEvent.kc_id).label("kc_first"),
+        )
+        .select_from(LearningEvent)
+        .outerjoin(Item, cast(Item.id, String) == LearningEvent.payload["item_id"].astext)
+        .where(
+            LearningEvent.learner_id == learner_id,
+            LearningEvent.event_type.in_(ATTEMPT_EVENTS),
+            LearningEvent.kc_id.in_(kc_ids),
+        )
+        .subquery()
+    )
+    shown_at = func.min(
+        case(
+            (
+                and_(
+                    attempts.c.success,
+                    attempts.c.at == attempts.c.setting_first,
+                    attempts.c.at > attempts.c.kc_first,
+                ),
+                attempts.c.at,
+            )
+        )
+    )
+    rows = await session.execute(
+        select(attempts.c.kc_id, attempts.c.setting, shown_at).group_by(
+            attempts.c.kc_id, attempts.c.setting
+        )
+    )
+    found: dict[uuid.UUID, tuple[set[str], str | None]] = {}
+    earliest: dict[uuid.UUID, datetime] = {}
+    for kc_id, name, at in rows:
+        if kc_id is None:
+            continue
+        practised, shown = found.get(kc_id, (set(), None))
+        practised.add(name)
+        if at is not None and (kc_id not in earliest or at < earliest[kc_id]):
+            earliest[kc_id] = at
+            shown = name
+        found[kc_id] = (practised, shown)
+    return found
+
+
+class TransferCheck(BaseModel):
+    """A component due a check that it applies in a setting it was never practised in (S14)."""
+
+    kc_id: uuid.UUID
+    due_at: datetime
+    ability: float
+    uncertainty: float
+
+
+async def due_transfer_checks(
+    session: AsyncSession, learner_id: uuid.UUID, *, now: datetime | None = None
+) -> list[TransferCheck]:
+    """Components owed a transfer check, soonest first (S14).
+
+    Due when retention is shown, transfer is not, some catalogue setting is still unpractised,
+    and at least ``retention_min_days`` have passed since the component's latest judged answer
+    — so it does not follow straight on from other practice, and a failed check waits before
+    the next. Derived, never stored, like retention checks.
+    """
+    settings = get_settings()
+    now_naive = naive_utc(now or datetime.now(UTC))
+    min_days = settings.retention_min_days
+    states = (
+        await session.scalars(select(LearnerKCState).where(LearnerKCState.learner_id == learner_id))
+    ).all()
+    kc_ids = [s.kc_id for s in states]
+    evidence = await kc_evidence(session, learner_id, kc_ids)
+    latest: dict[uuid.UUID, datetime] = {
+        kc_id: when
+        for kc_id, when in await session.execute(
+            select(LearningEvent.kc_id, func.max(_observed_when()))
+            .where(
+                LearningEvent.learner_id == learner_id,
+                LearningEvent.kc_id.in_(kc_ids),
+                _demonstrated_clause(),
+            )
+            .group_by(LearningEvent.kc_id)
+        )
+        if kc_id is not None and when is not None
+    }
+    due: list[TransferCheck] = []
+    for state in states:
+        found = evidence.get(state.kc_id)
+        if (
+            found is None
+            or not found.retention_shown(min_days=min_days)
+            or found.transfer_shown
+            or transfer.next_setting(found.practised_settings) is None
+            or latest.get(state.kc_id) is None
+        ):
+            continue
+        when = naive_utc(latest[state.kc_id]) + timedelta(days=min_days)
+        if when <= now_naive:
+            due.append(
+                TransferCheck(
+                    kc_id=state.kc_id,
+                    due_at=when.replace(tzinfo=UTC),
+                    ability=state.ability,
+                    uncertainty=state.uncertainty,
+                )
+            )
+    return sorted(due, key=lambda c: c.due_at)

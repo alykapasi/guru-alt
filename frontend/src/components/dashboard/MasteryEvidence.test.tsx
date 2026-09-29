@@ -58,4 +58,23 @@ describe("the evidence behind a mastery estimate", () => {
     render(<MasteryEvidence kc={kc({ mastered: true, distinct_items: 1 })} />);
     expect(screen.getByText(/1 problem,/)).toBeInTheDocument();
   });
+
+  it("says where a component was applied in a new setting", () => {
+    render(
+      <MasteryEvidence
+        kc={kc({ retention_shown: true, transfer_shown: true, transfer_setting: "money" })}
+      />,
+    );
+    expect(screen.getByText(/applied in money/)).toBeInTheDocument();
+  });
+
+  it("says a retained component has not been applied in a new setting yet", () => {
+    render(<MasteryEvidence kc={kc({ retention_shown: true, transfer_shown: false })} />);
+    expect(screen.getByText(/not yet applied in a new setting/)).toBeInTheDocument();
+  });
+
+  it("says nothing about transfer before retention", () => {
+    render(<MasteryEvidence kc={kc({ retention_shown: false })} />);
+    expect(screen.queryByText(/applied in/)).not.toBeInTheDocument();
+  });
 });

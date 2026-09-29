@@ -30,6 +30,10 @@ class KCMasteryRead(BaseModel):
     # Demonstrated unaided after a delay. False for a component whose whole history is one
     # question in one sitting.
     retention_shown: bool = False
+    # Applied unaided, correctly, in a setting from ``app.learning.transfer`` it was never
+    # practised in (S14), and which one. Evidence only: not required for mastery.
+    transfer_shown: bool = False
+    transfer_setting: str | None = None
 
 
 class TopicMasteryRead(BaseModel):

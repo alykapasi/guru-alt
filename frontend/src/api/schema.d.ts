@@ -3230,6 +3230,8 @@ export interface components {
             kcs: components["schemas"]["ItemKCRef"][];
             /** Rubric Id */
             rubric_id?: string | null;
+            /** Setting */
+            setting?: string | null;
             /** Stem */
             stem: string;
         };
@@ -3397,6 +3399,13 @@ export interface components {
              * @default 0
              */
             self_reported_attempts: number;
+            /** Transfer Setting */
+            transfer_setting?: string | null;
+            /**
+             * Transfer Shown
+             * @default false
+             */
+            transfer_shown: boolean;
             /**
              * Unassisted Items
              * @default 0
@@ -4219,6 +4228,12 @@ export interface components {
              * Format: uuid
              */
             kc_id: string;
+            /**
+             * Kind
+             * @default review
+             * @enum {string}
+             */
+            kind: "review" | "retention_check" | "transfer_check";
             /** Uncertainty */
             uncertainty: number;
         };

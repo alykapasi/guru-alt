@@ -173,6 +173,13 @@ def _short(prompt: str) -> str:
     )
 
 
+def _criteria(prompt: str) -> str:
+    kc = _kc_of(prompt)
+    return json.dumps(
+        {"criteria": [f"States what {kc} is.", "Gives a reason."], "level": "moderate"}
+    )
+
+
 def _flashcard(prompt: str) -> str:
     kc = _kc_of(prompt)
     return json.dumps({"stem": f"What is {kc}?", "answer": f"The accepted account of {kc}."})
@@ -260,6 +267,7 @@ SHAPES: tuple[Shape, ...] = (
     Shape("fill-blank item", "one fill-in-the-blank question", _fill_blank),
     Shape("short item", "one short-answer question", _short),
     Shape("flashcard item", "one flashcard question", _flashcard),
+    Shape("criteria", "marking criteria for a question a tutor has already asked", _criteria),
     Shape("per-component grade", "several numbered knowledge components", _grade_components),
     Shape("grade", "against the question and rubric", _grade),
     Shape("intent", "Classify what the learner's reply does about that question", _intent),

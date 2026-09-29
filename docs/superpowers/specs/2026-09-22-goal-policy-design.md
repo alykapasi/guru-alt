@@ -239,6 +239,8 @@ March → `retention_shown` is False).
 
 ### 4.3 Transfer is removed, not repaired
 
+(Since returned, with named settings: [transfer evidence](2026-09-29-transfer-evidence-design.md).)
+
 ```python
 @property
 def transfer_shown(self) -> bool:
@@ -525,9 +527,11 @@ exactly what it produced before.
 
 - **Delayed independent probes (slice 2b).** This slice reads the independent evidence that
   happens to exist. Arranging for it — scheduling a fresh unassisted check at a chosen delay,
-  rather than waiting for FSRS to surface one — is S14's other half.
+  rather than waiting for FSRS to surface one — is S14's other half. Done:
+  [retention checks](2026-09-29-retention-checks-design.md).
 - **Transfer.** Dropped in §4.3 and not replaced. It returns when items can be shown to differ
-  in a way the system can point at.
+  in a way the system can point at. Returned:
+  [transfer evidence](2026-09-29-transfer-evidence-design.md).
 - **Calibration.** `MASTERY_CONSERVATIVE_BAR`, `retention_min_days` and
   `goal_evidence_max_age_days` are all uncalibrated and all say so. S59's delayed-outcome study
   is what turns them into measurements.

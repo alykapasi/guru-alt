@@ -1,222 +1,346 @@
-"""A head start carried over an accepted concept link, and what confirms it (S24)."""
+"""Transfer: an unaided answer in a setting the component was never practised in (S14)."""
 
+import json
 import uuid
-from datetime import UTC, datetime
+from datetime import timedelta
 
-from sqlalchemy import select
+import pytest
+from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
-from app.learning import mastery
+from app.learning import item_generation, mastery, transfer
+from app.learning import lesson_plan as engine
 from app.learning.mastery import Observation
-from app.models.knowledge import Topic
-from app.models.learning import LearnerKCState, LearningEvent
-from app.services import lesson_plan as lesson_plan_svc
-from tests.test_concept_links import _kc, _learner, _subject
+from app.llm.providers import FakeProvider
+from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
+from app.llm.types import ModelRole
+from app.models.assessment import Item, ItemKC, ItemType
+from app.models.knowledge import KC, Subject, Topic
+from app.models.learner import Learner
+from app.services import analytics as analytics_svc
+from app.services import lesson_plan as plan_svc
+from app.services import session_runner
+from tests.test_item_exposure import T0, _learner
+from tests.test_item_exposure import _kc as _exposure_kc
+
+SHORT_REPLY = json.dumps({"stem": "A shop sells...", "criteria": ["a", "b"]})
 
 
-async def _measured(session, learner, kc, ability, uncertainty):
-    session.add(
-        LearnerKCState(
+def _client(reply: str) -> tuple[LLMClient, FakeProvider]:
+    provider = FakeProvider(reply=reply)
+    specs = {r: ModelSpec(provider="fake", model="fake-1") for r in ModelRole}
+    return LLMClient({"fake": provider}, specs), provider
+
+
+def test_the_catalogue_starts_abstract_and_has_no_duplicates() -> None:
+    names = [name for name, _ in transfer.SETTINGS]
+    assert names[0] == transfer.ABSTRACT and len(names) == len(set(names)) == 12
+
+
+def test_no_setting_is_abstract() -> None:
+    assert transfer.setting_of(None) == transfer.ABSTRACT
+    assert transfer.setting_of("money") == "money"
+
+
+def test_the_next_setting_skips_abstract_and_what_was_practised() -> None:
+    assert transfer.next_setting({"abstract"}) == "everyday"
+    assert transfer.next_setting({"abstract", "everyday"}) == "money"
+    assert transfer.next_setting(transfer.NAMES) is None
+
+
+async def _kc(session: AsyncSession) -> tuple[Learner, KC]:
+    learner = Learner(handle=f"tr-{uuid.uuid4().hex[:8]}")
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:8]}", name="S")
+    session.add_all([learner, subject])
+    await session.flush()
+    topic = Topic(subject_id=subject.id, slug="t", name="T")
+    session.add(topic)
+    await session.flush()
+    kc = KC(topic_id=topic.id, slug=f"k-{uuid.uuid4().hex[:6]}", name="Percentages")
+    session.add(kc)
+    await session.flush()
+    return learner, kc
+
+
+async def test_a_setting_reaches_the_prompt_and_the_item(db_session) -> None:
+    learner, kc = await _kc(db_session)
+    llm, provider = _client(SHORT_REPLY)
+    item, _ = await item_generation.generate_short_item(
+        db_session, llm, kc, owner_learner_id=learner.id, setting="money"
+    )
+    assert item is not None and item.setting == "money"
+    [(system, _messages)] = provider.prompts_sent
+    assert system is not None and "Set the question in this setting: money" in system
+
+
+async def test_no_setting_leaves_prompt_and_item_as_before(db_session) -> None:
+    learner, kc = await _kc(db_session)
+    llm, provider = _client(SHORT_REPLY)
+    item, _ = await item_generation.generate_short_item(
+        db_session, llm, kc, owner_learner_id=learner.id
+    )
+    assert item is not None and item.setting is None
+    [(system, _messages)] = provider.prompts_sent
+    assert system is not None and "setting" not in system
+
+
+# --- what counts as transfer ------------------------------------------------------------------
+
+
+async def _item_in(session: AsyncSession, kc: KC, setting: str | None) -> Item:
+    item = Item(
+        visibility="curated",
+        item_type=ItemType.MCQ,
+        stem=f"q-{uuid.uuid4().hex[:6]}",
+        difficulty=0.0,
+        answer_key={"correct": 0},
+        setting=setting,
+    )
+    session.add(item)
+    await session.flush()
+    session.add(ItemKC(item_id=item.id, kc_id=kc.id, weight=1.0))
+    await session.flush()
+    return item
+
+
+async def _answer(
+    session, learner, kc, item, *, when, correct=True, hints=None, taught_first=False
+) -> None:
+    await mastery.record_observation(
+        session,
+        Observation(
             learner_id=learner.id,
-            kc_id=kc.id,
-            ability=ability,
-            uncertainty=uncertainty,
-            last_seen_at=datetime.now(UTC),
-        )
+            kc_weights={kc.id: 1.0},
+            score=1.0 if correct else 0.0,
+            correct=correct,
+            item_id=item.id,
+            hints_used=hints,
+            taught_first=taught_first,
+        ),
+        now=when,
     )
     await session.flush()
 
 
-async def _pair(session):
+async def _evidence(session, learner, kc) -> mastery.KCEvidence:
+    (ev,) = (await mastery.kc_evidence(session, learner.id, [kc.id])).values()
+    return ev
+
+
+async def test_a_correct_unaided_answer_in_a_new_setting_is_transfer(db_session) -> None:
+    learner = await _learner(db_session)
+    _s, kc = await _exposure_kc(db_session)
+    await _answer(db_session, learner, kc, await _item_in(db_session, kc, None), when=T0)
+    money = await _item_in(db_session, kc, "money")
+    await _answer(db_session, learner, kc, money, when=T0 + timedelta(days=3))
+    ev = await _evidence(db_session, learner, kc)
+    assert ev.transfer_shown and ev.transfer_setting == "money"
+    assert ev.practised_settings == frozenset({"abstract", "money"})
+
+
+async def test_a_first_answer_is_not_transfer(db_session) -> None:
+    """Review focus 1."""
+    learner = await _learner(db_session)
+    _s, kc = await _exposure_kc(db_session)
+    await _answer(db_session, learner, kc, await _item_in(db_session, kc, "money"), when=T0)
+    assert not (await _evidence(db_session, learner, kc)).transfer_shown
+
+
+@pytest.mark.parametrize("variant", ["practised", "wrong", "hinted", "taught_first"])
+async def test_what_is_not_transfer(db_session, variant: str) -> None:
+    learner = await _learner(db_session)
+    _s, kc = await _exposure_kc(db_session)
+    first = "money" if variant == "practised" else None
+    await _answer(db_session, learner, kc, await _item_in(db_session, kc, first), when=T0)
+    await _answer(
+        db_session,
+        learner,
+        kc,
+        await _item_in(db_session, kc, "money"),
+        when=T0 + timedelta(days=3),
+        correct=variant != "wrong",
+        hints=1 if variant == "hinted" else None,
+        taught_first=variant == "taught_first",
+    )
+    assert not (await _evidence(db_session, learner, kc)).transfer_shown
+
+
+async def test_a_deleted_item_counts_as_abstract(db_session) -> None:
+    """Review focus 2."""
+    learner = await _learner(db_session)
+    _s, kc = await _exposure_kc(db_session)
+    old = await _item_in(db_session, kc, None)
+    await _answer(db_session, learner, kc, old, when=T0)
+    await db_session.execute(delete(Item).where(Item.id == old.id))
+    await db_session.flush()
+    money = await _item_in(db_session, kc, "money")
+    await _answer(db_session, learner, kc, money, when=T0 + timedelta(days=3))
+    ev = await _evidence(db_session, learner, kc)
+    assert ev.transfer_setting == "money" and "abstract" in ev.practised_settings
+
+
+# --- when a transfer check is due ---------------------------------------------------------------
+
+
+async def _retained(session: AsyncSession) -> tuple[Learner, KC]:
+    """Retention shown: two unaided abstract answers a week apart."""
     learner = await _learner(session)
-    source = await _kc(session, await _subject(session, name="Calculus"), "Derivatives", None)
-    target = await _kc(session, await _subject(session, name="Physics"), "Derivatives", None)
-    return learner, source, target
+    _s, kc = await _exposure_kc(session)
+    await _answer(session, learner, kc, await _item_in(session, kc, None), when=T0)
+    later = await _item_in(session, kc, None)
+    await _answer(session, learner, kc, later, when=T0 + timedelta(days=7))
+    return learner, kc
 
 
-async def _answer(session, learner, kc, score, item=None):
-    await mastery.record_observation(
-        session,
-        Observation(learner_id=learner.id, kc_weights={kc.id: 1.0}, score=score, item_id=item),
-    )
+async def _due(session, learner, now) -> list[uuid.UUID]:
+    return [c.kc_id for c in await mastery.due_transfer_checks(session, learner.id, now=now)]
 
 
-async def _state(session, learner, kc) -> LearnerKCState:
-    return await session.scalar(
-        select(LearnerKCState).where(
-            LearnerKCState.learner_id == learner.id, LearnerKCState.kc_id == kc.id
+async def test_a_transfer_check_is_due_after_retention(db_session) -> None:
+    learner, kc = await _retained(db_session)
+    assert await _due(db_session, learner, T0 + timedelta(days=7, hours=2)) == []
+    [check] = await mastery.due_transfer_checks(db_session, learner.id, now=T0 + timedelta(days=9))
+    assert check.kc_id == kc.id and check.due_at.utcoffset() == timedelta(0)
+
+
+async def test_no_check_before_retention(db_session) -> None:
+    learner = await _learner(db_session)
+    _s, kc = await _exposure_kc(db_session)
+    await _answer(db_session, learner, kc, await _item_in(db_session, kc, None), when=T0)
+    assert await _due(db_session, learner, T0 + timedelta(days=30)) == []
+
+
+async def test_no_check_once_transfer_is_shown(db_session) -> None:
+    learner, kc = await _retained(db_session)
+    money = await _item_in(db_session, kc, "money")
+    await _answer(db_session, learner, kc, money, when=T0 + timedelta(days=9))
+    assert await _due(db_session, learner, T0 + timedelta(days=30)) == []
+
+
+async def test_no_check_when_every_setting_is_practised(db_session) -> None:
+    """Review focus 4."""
+    learner, kc = await _retained(db_session)
+    names = [n for n, _ in transfer.SETTINGS if n != transfer.ABSTRACT]
+    for i, name in enumerate(names):
+        item = await _item_in(db_session, kc, name)
+        await _answer(
+            db_session, learner, kc, item, when=T0 + timedelta(days=8, minutes=i), correct=False
         )
+    assert await _due(db_session, learner, T0 + timedelta(days=30)) == []
+
+
+async def test_a_failed_check_moves_to_the_next_setting(db_session) -> None:
+    learner, kc = await _retained(db_session)
+    everyday = await _item_in(db_session, kc, "everyday")
+    await _answer(db_session, learner, kc, everyday, when=T0 + timedelta(days=9), correct=False)
+    ev = await _evidence(db_session, learner, kc)
+    assert transfer.next_setting(ev.practised_settings) == "money"
+    assert await _due(db_session, learner, T0 + timedelta(days=9, hours=12)) == []
+    assert await _due(db_session, learner, T0 + timedelta(days=10, hours=1)) == [kc.id]
+
+
+# --- transfer checks in the queue ----------------------------------------------------------------
+
+
+def test_a_due_transfer_check_is_a_flagged_review_step() -> None:
+    kc = uuid.uuid4()
+    steps = engine.revise_steps(
+        [],
+        mastered_kc_ids=[],
+        due_review_kc_ids=[kc],
+        transfer_check_kc_ids=[kc],
+        scaffolding=engine.ScaffoldingHints(),
     )
+    [step] = [s for s in steps if s["step_type"] == "review"]
+    assert step["transfer_check"] is True and step["retention_check"] is False
 
 
-async def test_a_seed_takes_the_source_estimate_with_widened_uncertainty(db_session):
-    learner, source, target = await _pair(db_session)
-    await _measured(db_session, learner, source, 2.0, 0.3)
-    link = uuid.uuid4()
-    state = await mastery.seed_transfer(
-        db_session, learner.id, target_kc_id=target.id, source_kc_id=source.id, link_id=link
-    )
-    assert state is not None
-    assert state.ability == 2.0
-    assert state.uncertainty == get_settings().transfer_uncertainty_floor
-    assert state.last_seen_at is None and mastery.is_provisional(state)
-    event = await db_session.scalar(
-        select(LearningEvent).where(
-            LearningEvent.kc_id == target.id,
-            LearningEvent.event_type == mastery.TRANSFER_SEED_EVENT,
-        )
-    )
-    assert event.payload["source_kc_id"] == str(source.id) and event.payload["link_id"] == str(link)
-    # Spec §5.1: the payload also names the source's subject, so a reader of the event log
-    # doesn't have to re-join KC -> Topic -> Subject to know where the head start came from.
-    source_topic = await db_session.get(Topic, source.topic_id)
-    assert event.payload["source_subject_id"] == str(source_topic.subject_id)
-    # The source is untouched.
-    assert (await _state(db_session, learner, source)).uncertainty == 0.3
-
-
-async def test_real_evidence_on_the_target_is_never_overwritten(db_session):
-    learner, source, target = await _pair(db_session)
-    await _measured(db_session, learner, source, 2.0, 0.3)
-    await _measured(db_session, learner, target, -0.5, 0.7)
-    assert (
-        await mastery.seed_transfer(
-            db_session,
-            learner.id,
-            target_kc_id=target.id,
-            source_kc_id=source.id,
-            link_id=uuid.uuid4(),
-        )
-        is None
-    )
-    assert (await _state(db_session, learner, target)).ability == -0.5
-
-
-async def test_an_unmeasured_source_seeds_nothing(db_session):
-    learner, source, target = await _pair(db_session)
-    assert (
-        await mastery.seed_transfer(
-            db_session,
-            learner.id,
-            target_kc_id=target.id,
-            source_kc_id=source.id,
-            link_id=uuid.uuid4(),
-        )
-        is None
-    )
-
-
-async def test_the_strongest_source_wins(db_session):
-    learner, weak, target = await _pair(db_session)
-    strong = await _kc(
-        db_session, await _subject(db_session, name="Mechanics"), "Derivatives", None
-    )
-    await _measured(db_session, learner, weak, 1.0, 0.3)
-    await _measured(db_session, learner, strong, 2.5, 0.3)
-    await mastery.seed_transfer(
-        db_session, learner.id, target_kc_id=target.id, source_kc_id=strong.id, link_id=uuid.uuid4()
-    )
-    assert (
-        await mastery.seed_transfer(
-            db_session,
-            learner.id,
-            target_kc_id=target.id,
-            source_kc_id=weak.id,
-            link_id=uuid.uuid4(),
-        )
-        is None
-    )
-    assert (await _state(db_session, learner, target)).transferred_from_kc_id == strong.id
-
-
-async def test_a_wrong_first_answer_is_never_mastery(db_session):
-    """Review focus 2: 2.0/0.6 → 1.69/0.59 after a miss still clears the bar numerically."""
-    learner, source, target = await _pair(db_session)
-    await _measured(db_session, learner, source, 2.0, 0.3)
-    await mastery.seed_transfer(
-        db_session, learner.id, target_kc_id=target.id, source_kc_id=source.id, link_id=uuid.uuid4()
-    )
-    await _answer(db_session, learner, target, 0.0)
-    assert target.id not in await lesson_plan_svc.mastered_kc_ids(
-        db_session, learner.id, [target.id]
-    )
-    assert (await _state(db_session, learner, target)).achieved_at is None
-
-
-async def test_one_pass_is_not_enough_and_two_on_different_questions_confirm(db_session):
-    learner, source, target = await _pair(db_session)
-    await _measured(db_session, learner, source, 2.0, 0.3)
-    await mastery.seed_transfer(
-        db_session, learner.id, target_kc_id=target.id, source_kc_id=source.id, link_id=uuid.uuid4()
-    )
-    await _answer(db_session, learner, target, 1.0, item=uuid.uuid4())
-    assert mastery.is_provisional(await _state(db_session, learner, target))
-    await _answer(db_session, learner, target, 1.0, item=uuid.uuid4())
-    state = await _state(db_session, learner, target)
-    assert not mastery.is_provisional(state) and state.transfer_confirmed_at is not None
-    assert target.id in await lesson_plan_svc.mastered_kc_ids(db_session, learner.id, [target.id])
-
-
-async def test_the_same_question_twice_confirms_nothing(db_session):
-    learner, source, target = await _pair(db_session)
-    await _measured(db_session, learner, source, 2.0, 0.3)
-    await mastery.seed_transfer(
-        db_session, learner.id, target_kc_id=target.id, source_kc_id=source.id, link_id=uuid.uuid4()
-    )
-    item = uuid.uuid4()
-    await _answer(db_session, learner, target, 1.0, item=item)
-    await _answer(db_session, learner, target, 1.0, item=item)
-    assert mastery.is_provisional(await _state(db_session, learner, target))
-
-
-async def test_a_failure_restarts_the_run(db_session):
-    learner, source, target = await _pair(db_session)
-    await _measured(db_session, learner, source, 2.0, 0.3)
-    await mastery.seed_transfer(
-        db_session, learner.id, target_kc_id=target.id, source_kc_id=source.id, link_id=uuid.uuid4()
-    )
-    await _answer(db_session, learner, target, 1.0, item=uuid.uuid4())
-    await _answer(db_session, learner, target, 0.0, item=uuid.uuid4())
-    await _answer(db_session, learner, target, 1.0, item=uuid.uuid4())
-    assert mastery.is_provisional(await _state(db_session, learner, target))
-
-
-async def test_revoking_before_any_answer_removes_the_head_start(db_session):
+async def test_retention_wins_over_transfer_for_one_component(db_session, monkeypatch) -> None:
     """Review focus 3."""
-    learner, source, target = await _pair(db_session)
-    await _measured(db_session, learner, source, 2.0, 0.3)
-    link = uuid.uuid4()
-    await mastery.seed_transfer(
-        db_session, learner.id, target_kc_id=target.id, source_kc_id=source.id, link_id=link
+    learner, kc = await _retained(db_session)
+    check = mastery.RetentionCheck(kc_id=kc.id, due_at=T0, ability=0.0, uncertainty=1.0)
+
+    async def also_retention(*_a, **_k) -> list[mastery.RetentionCheck]:
+        return [check]
+
+    monkeypatch.setattr(mastery, "due_retention_checks", also_retention)
+    due = await plan_svc._due_review_kc_ids(
+        db_session, learner.id, {kc.id}, now=T0 + timedelta(days=9)
     )
-    assert await mastery.revoke_transfer(
-        db_session, learner.id, target_kc_id=target.id, source_kc_id=source.id, link_id=link
-    )
-    state = await _state(db_session, learner, target)
-    assert (state.ability, state.uncertainty, state.transferred_at) == (0.0, 1.0, None)
-    assert target.id not in await mastery.provisional_kc_ids(db_session, learner.id, [target.id])
+    assert due.kc_ids == [kc.id]
+    assert due.retention_checks == frozenset({kc.id}) and due.transfer_checks == frozenset()
 
 
-async def test_revoking_after_answers_keeps_the_estimate(db_session):
-    learner, source, target = await _pair(db_session)
-    await _measured(db_session, learner, source, 2.0, 0.3)
-    link = uuid.uuid4()
-    await mastery.seed_transfer(
-        db_session, learner.id, target_kc_id=target.id, source_kc_id=source.id, link_id=link
+async def test_the_plan_lists_a_due_transfer_check(db_session) -> None:
+    learner, kc = await _retained(db_session)
+    due = await plan_svc._due_review_kc_ids(
+        db_session, learner.id, {kc.id}, now=T0 + timedelta(days=9)
     )
-    await _answer(db_session, learner, target, 1.0, item=uuid.uuid4())
-    before = (await _state(db_session, learner, target)).ability
-    assert not await mastery.revoke_transfer(
-        db_session, learner.id, target_kc_id=target.id, source_kc_id=source.id, link_id=link
-    )
-    state = await _state(db_session, learner, target)
-    assert state.ability == before and mastery.is_provisional(state)
+    assert kc.id in due.kc_ids and due.transfer_checks == frozenset({kc.id})
 
 
-async def test_a_seed_is_not_evidence(db_session):
-    learner, source, target = await _pair(db_session)
-    await _measured(db_session, learner, source, 2.0, 0.3)
-    await mastery.seed_transfer(
-        db_session, learner.id, target_kc_id=target.id, source_kc_id=source.id, link_id=uuid.uuid4()
+async def test_the_queue_serves_a_transfer_check_in_the_next_setting(db_session) -> None:
+    learner, kc = await _retained(db_session)
+    pairs = await session_runner.due_review_items(
+        db_session,
+        fake_llm_client(SHORT_REPLY),
+        learner_id=learner.id,
+        item_limit=5,
+        now=T0 + timedelta(days=9),
     )
-    assert await mastery.kc_evidence(db_session, learner.id, [target.id]) == {}
+    [(review, item)] = [(r, i) for r, i in pairs if r.kc_id == kc.id]
+    assert review.kind == "transfer_check"
+    assert item is not None and item.item_type == ItemType.SHORT and item.setting == "everyday"
+
+
+# --- shown back ------------------------------------------------------------------------------------
+
+
+async def test_the_mastery_page_says_where_a_component_was_applied(db_session) -> None:
+    learner = await _learner(db_session)
+    subject, kc = await _exposure_kc(db_session)
+    await _answer(db_session, learner, kc, await _item_in(db_session, kc, None), when=T0)
+    money = await _item_in(db_session, kc, "money")
+    await _answer(db_session, learner, kc, money, when=T0 + timedelta(days=3))
+
+    read = await analytics_svc.subject_mastery(db_session, learner.id, subject.id)
+    (kc_read,) = read.topics[0].kcs
+    assert kc_read.transfer_shown and kc_read.transfer_setting == "money"
+
+
+async def test_the_mastery_page_says_nothing_was_applied_yet(db_session) -> None:
+    learner = await _learner(db_session)
+    subject, kc = await _exposure_kc(db_session)
+    await _answer(db_session, learner, kc, await _item_in(db_session, kc, None), when=T0)
+
+    read = await analytics_svc.subject_mastery(db_session, learner.id, subject.id)
+    (kc_read,) = read.topics[0].kcs
+    assert not kc_read.transfer_shown and kc_read.transfer_setting is None
+
+
+async def test_the_settings_read_does_not_grow_with_history(db_session) -> None:
+    """It runs on every graded answer; a row per attempt would grow with a learner's lifetime."""
+    from sqlalchemy import event as sa_event
+
+    learner = await _learner(db_session)
+    _s, kc = await _exposure_kc(db_session)
+    abstract = await _item_in(db_session, kc, None)
+    for i in range(30):
+        await _answer(db_session, learner, kc, abstract, when=T0 + timedelta(minutes=i))
+    money = await _item_in(db_session, kc, "money")
+    await _answer(db_session, learner, kc, money, when=T0 + timedelta(days=3))
+
+    rows: list[int] = []
+    engine = db_session.get_bind().engine
+
+    def after(conn, cursor, statement, parameters, context, executemany) -> None:
+        if "items.setting" in statement:
+            rows.append(cursor.rowcount)
+
+    sa_event.listen(engine, "after_cursor_execute", after)
+    try:
+        ev = await _evidence(db_session, learner, kc)
+    finally:
+        sa_event.remove(engine, "after_cursor_execute", after)
+    assert ev.transfer_setting == "money"
+    assert rows and max(rows) <= len(transfer.SETTINGS), rows

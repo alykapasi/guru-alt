@@ -36,6 +36,7 @@ from typing import Protocol, runtime_checkable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import difficulty as difficulty_mod
+from app.learning import transfer
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
 from app.models.assessment import Item, ItemType, Rubric
 from app.models.knowledge import KC
@@ -80,6 +81,7 @@ async def generate_mcq_item(
     *,
     owner_learner_id: uuid.UUID | None = None,
     target_difficulty: float | None = None,
+    setting: str | None = None,
     max_tokens: int = 256,
 ) -> tuple[Item | None, Usage]:
     """Generate and persist one MCQ item for ``kc``, or ``(None, usage)`` on a bad reply."""
@@ -87,7 +89,7 @@ async def generate_mcq_item(
     completion = await llm.complete(
         GENERATION_ROLE,
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
-        system=_SYSTEM_PROMPT + _pitch(target_difficulty),
+        system=_SYSTEM_PROMPT + _pitch(target_difficulty) + transfer.prompt_line(setting),
         max_tokens=max_tokens,
     )
     parsed = _parse_mcq(completion.content)
@@ -102,6 +104,7 @@ async def generate_mcq_item(
             kcs=[ItemKCRef(kc_id=kc.id)],
             answer_key={"choices": choices, "correct": correct},
             difficulty=_recorded_difficulty(target_difficulty),
+            setting=setting,
         ),
         owner_learner_id=owner_learner_id,
     )
@@ -123,6 +126,7 @@ async def generate_fill_blank_item(
     *,
     owner_learner_id: uuid.UUID | None = None,
     target_difficulty: float | None = None,
+    setting: str | None = None,
     max_tokens: int = 256,
 ) -> tuple[Item | None, Usage]:
     """Generate and persist one fill-in-the-blank item for ``kc``, or ``(None, usage)``."""
@@ -130,7 +134,9 @@ async def generate_fill_blank_item(
     completion = await llm.complete(
         GENERATION_ROLE,
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
-        system=_FILL_BLANK_SYSTEM_PROMPT + _pitch(target_difficulty),
+        system=_FILL_BLANK_SYSTEM_PROMPT
+        + _pitch(target_difficulty)
+        + transfer.prompt_line(setting),
         max_tokens=max_tokens,
     )
     parsed = _parse_fill_blank(completion.content)
@@ -145,6 +151,7 @@ async def generate_fill_blank_item(
             kcs=[ItemKCRef(kc_id=kc.id)],
             answer_key={"blanks": [answer]},
             difficulty=_recorded_difficulty(target_difficulty),
+            setting=setting,
         ),
         owner_learner_id=owner_learner_id,
     )
@@ -167,6 +174,7 @@ async def generate_short_item(
     *,
     owner_learner_id: uuid.UUID | None = None,
     target_difficulty: float | None = None,
+    setting: str | None = None,
     max_tokens: int = 256,
 ) -> tuple[Item | None, Usage]:
     """Generate and persist one open, rubric-graded short-answer item for ``kc``, with the
@@ -188,7 +196,7 @@ async def generate_short_item(
     completion = await llm.complete(
         GENERATION_ROLE,
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
-        system=_SHORT_SYSTEM_PROMPT + _pitch(target_difficulty),
+        system=_SHORT_SYSTEM_PROMPT + _pitch(target_difficulty) + transfer.prompt_line(setting),
         max_tokens=max_tokens,
     )
     parsed = _parse_short(completion.content)
@@ -213,6 +221,7 @@ async def generate_short_item(
             stem=stem,
             kcs=[ItemKCRef(kc_id=kc.id)],
             difficulty=_recorded_difficulty(target_difficulty),
+            setting=setting,
             rubric_id=rubric_id,
         ),
         owner_learner_id=owner_learner_id,
@@ -234,6 +243,7 @@ async def generate_flashcard_item(
     *,
     owner_learner_id: uuid.UUID | None = None,
     target_difficulty: float | None = None,
+    setting: str | None = None,
     max_tokens: int = 256,
 ) -> tuple[Item | None, Usage]:
     """Generate and persist one flashcard item for ``kc``, or ``(None, usage)``.
@@ -245,7 +255,7 @@ async def generate_flashcard_item(
     completion = await llm.complete(
         GENERATION_ROLE,
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
-        system=_FLASHCARD_SYSTEM_PROMPT + _pitch(target_difficulty),
+        system=_FLASHCARD_SYSTEM_PROMPT + _pitch(target_difficulty) + transfer.prompt_line(setting),
         max_tokens=max_tokens,
     )
     parsed = _parse_flashcard(completion.content)
@@ -260,6 +270,7 @@ async def generate_flashcard_item(
             kcs=[ItemKCRef(kc_id=kc.id)],
             answer_key={"back": answer} if answer else None,
             difficulty=_recorded_difficulty(target_difficulty),
+            setting=setting,
         ),
         owner_learner_id=owner_learner_id,
     )
@@ -284,6 +295,7 @@ class GeneratorFn(Protocol):
         *,
         owner_learner_id: uuid.UUID | None = None,
         target_difficulty: float | None = None,
+        setting: str | None = None,
     ) -> tuple[Item | None, Usage]: ...
 
 
@@ -342,6 +354,66 @@ def _parse_short(content: str) -> tuple[str, list[str]] | None:
         else []
     )
     return stem, criteria
+
+
+CRITERIA_SYSTEM_PROMPT = (
+    "You write the marking criteria for a question a tutor has already asked in conversation, "
+    "and say how hard the question is. Respond with ONLY a JSON object "
+    '{"criteria": ["<what a full-credit answer must show>", ...], "level": "<level>"} and '
+    "nothing else. Give two to four criteria, each one specific and checkable. The level is "
+    "exactly one of: "
+    + "; ".join(f"{name} ({gloss})" for name, gloss in difficulty_mod.LEVELS)
+    + "."
+)
+
+
+async def write_criteria(
+    llm: LLMClient,
+    *,
+    stem: str,
+    component_name: str,
+    component_description: str = "",
+    max_tokens: int = 256,
+) -> tuple[list[str], str | None, Usage]:
+    """Criteria and a rated level for a question that already exists (S56).
+
+    For a conversational check the tutor declared, or a posed check whose generated criteria
+    did not parse. Given the question and its component only — never a learner's answer, so
+    the standard is fixed before anything is graded against it. Both halves are best-effort:
+    no usable criteria is ``[]``, and a level that is not exactly a band name is ``None``.
+    """
+    component = component_name + (f" — {component_description}" if component_description else "")
+    completion = await llm.complete(
+        GENERATION_ROLE,
+        [
+            ChatMessage(
+                role=ChatRole.USER,
+                content=f"Question:\n{stem}\n\nKnowledge component: {component}",
+            )
+        ],
+        system=CRITERIA_SYSTEM_PROMPT,
+        max_tokens=max_tokens,
+    )
+    criteria, level = _parse_criteria(completion.content)
+    return criteria, level, completion.usage
+
+
+def _parse_criteria(content: str) -> tuple[list[str], str | None]:
+    try:
+        raw = json.loads(_extract_json(content))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return [], None
+    if not isinstance(raw, dict):
+        return [], None
+    listed = raw.get("criteria")
+    criteria = (
+        [text for text in (str(c).strip() for c in listed) if text]
+        if isinstance(listed, list)
+        else []
+    )
+    level = str(raw.get("level", "")).strip().lower()
+    names = {name for name, _gloss in difficulty_mod.LEVELS}
+    return criteria, level if level in names else None
 
 
 def _parse_flashcard(content: str) -> tuple[str, str] | None:

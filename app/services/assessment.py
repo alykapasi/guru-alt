@@ -53,6 +53,7 @@ from app.models.knowledge import KC, Subject, Topic
 from app.models.learning import LearnerKCState, LearningEvent
 from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRead, ItemRead
 from app.services import decisions as decisions_svc
+from app.services import grading_history
 from app.services import knowledge as knowledge_svc
 from app.services import lesson_plan as lesson_plan_svc
 
@@ -87,6 +88,7 @@ async def create_item(
         stem=data.stem,
         answer_key=data.answer_key,
         difficulty=data.difficulty,
+        setting=data.setting,
         rubric_id=data.rubric_id,
         origin=ItemOrigin.LEARNER if author_learner_id else ItemOrigin.GENERATED,
         author_learner_id=author_learner_id,
@@ -250,6 +252,7 @@ async def find_item_for_kc(
     item_type: ItemType | None = None,
     target_difficulty: float | None = None,
     unseen_only: bool = False,
+    setting: str | None = None,
 ) -> Item | None:
     """The freshest bank item assessing ``kc_id``, if any — reuse before generating a new one.
 
@@ -281,6 +284,8 @@ async def find_item_for_kc(
     exchange, not retention of the component. A caller that asks for unseen can generate
     instead, which is the only thing that makes exhaustion recoverable.
 
+    ``setting`` (S14) restricts the search to items set there — what a transfer check asks.
+
     Scoped to what ``learner_id`` may be assessed with (S33): reuse used to pick up anything
     tagged to the KC, so a question and answer key another learner had written became this
     learner's practice — and the mastery observation it produced was traced to it.
@@ -307,6 +312,8 @@ async def find_item_for_kc(
         stmt = stmt.where(Item.item_type == item_type)
     if unseen_only:
         stmt = stmt.where(last_answered.is_(None))
+    if setting is not None:
+        stmt = stmt.where(Item.setting == setting)
     order = [last_answered.asc().nullsfirst()]
     if target_difficulty is not None:
         order.append(func.abs(Item.difficulty - target_difficulty))
@@ -391,6 +398,11 @@ async def answer_item(
         ):
             raise InvalidResponse("attempt id belongs to another actor; submit a new attempt id")
     result = await _grade(session, learner_id, item, submission, llm=llm, read=read)
+    # What this grade was measured against, frozen (S56). Written on this session, so it
+    # commits with the observation or not at all.
+    grading = await grading_history.record(
+        session, learner_id, item, await _components_of(session, item), result
+    )
     observation = Observation(
         learner_id=learner_id,
         kc_weights=kc_weights,
@@ -414,6 +426,7 @@ async def answer_item(
         # cannot claim its self-rating was a demonstration.
         evidence_kind=result.evidence_kind,
         taught_first=taught_first,
+        grading=grading,
     )
     try:
         # Inside the guard, not before it: the tracer *flushes* the observation, so under a

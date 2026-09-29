@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from app.agent.untrusted import as_untrusted
 from app.learning import diagnosis
 from app.learning.diagnosis import Diagnosis
-from app.learning.grading import GradeResult
+from app.learning.grading import GradeResult, GradingProvenance
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
 from app.models.assessment import Rubric
 
@@ -49,6 +49,11 @@ GRADING_ROLE = ModelRole.SMART
 PASS_THRESHOLD = 0.6
 """Score at/above which ``correct`` is reported — a coarse display flag only. The tracer
 always consumes the continuous score, never this boolean."""
+
+TEMPLATE_VERSION = 1
+"""Version of ``_build_prompt`` — how the user message is assembled from question, rubric,
+components and response. Bump it with any change there: it is recorded with every grade (S56),
+and a re-grade under the recorded system prompt still rebuilds the message with today's code."""
 
 _DIAGNOSIS_SPEC = (
     '"diagnosis": {"kind": "none"|"notation"|"procedural"|"conceptual"|"prerequisite"|'
@@ -112,11 +117,15 @@ async def grade_open(
     rubric: Rubric | None,
     components: Sequence[GradedComponent] = (),
     max_tokens: int = 512,
+    system: str | None = None,
 ) -> tuple[GradeResult, Usage]:
     """Grade an open response against its rubric with the SMART model.
 
     Returns the partial-credit :class:`GradeResult` plus the call's token ``Usage`` so the
     caller can log cost. An empty response scores 0 with no model call.
+
+    ``system`` replaces the system prompt (a re-grade under a recorded one, S56); the prompt
+    actually sent is recorded on the result's ``provenance`` either way.
 
     With two or more ``components`` the model is asked to mark each one separately and the
     result carries ``component_scores``; a component it omits or mis-numbers simply does not
@@ -126,9 +135,16 @@ async def grade_open(
     """
     answer = str(response.get("text", "")).strip()
     if not answer:
-        return GradeResult(score=0.0, correct=False, detail={"rationale": "no response"}), Usage()
+        return GradeResult(
+            score=0.0,
+            correct=False,
+            detail={"rationale": "no response"},
+            provenance=GradingProvenance(grader="rubric"),
+        ), Usage()
 
     per_component = len(components) > 1
+    used_system = system or (_COMPONENT_SYSTEM_PROMPT if per_component else _SYSTEM_PROMPT)
+    spec = client.spec(GRADING_ROLE)
     completion = await client.complete(
         GRADING_ROLE,
         [
@@ -137,7 +153,7 @@ async def grade_open(
                 content=_build_prompt(stem, answer, rubric, components if per_component else ()),
             )
         ],
-        system=_COMPONENT_SYSTEM_PROMPT if per_component else _SYSTEM_PROMPT,
+        system=used_system,
         max_tokens=max_tokens,
     )
     grade = _parse_grade(completion.content, response_text=answer)
@@ -161,6 +177,12 @@ async def grade_open(
         detail={"rationale": grade.rationale, "method": "rubric"},
         component_scores=component_scores,
         diagnoses=diagnoses,
+        provenance=GradingProvenance(
+            grader="rubric",
+            system_prompt=used_system,
+            template_version=TEMPLATE_VERSION,
+            model=f"{spec.provider}:{spec.model}",
+        ),
     )
     return result, completion.usage
 

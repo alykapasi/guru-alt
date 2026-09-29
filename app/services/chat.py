@@ -15,7 +15,7 @@ from sqlalchemy.orm import selectinload
 
 from app.agent.tutor import TutorState, build_tutor_graph
 from app.core.config import get_settings
-from app.learning import declared_check, feedback, mastery
+from app.learning import declared_check, difficulty, feedback, mastery
 from app.learning import prerequisites as prereq_index
 from app.learning.conversation_evidence import TurnIntent
 from app.learning.diagnosis import FailureKind
@@ -35,6 +35,7 @@ from app.rag.scope import resolve_scope
 from app.schemas.assessment import AnswerSubmit, ItemCreate, ItemKCRef
 from app.schemas.chat import CheckResultRead
 from app.services import assessment as assessment_svc
+from app.services import check_criteria as check_criteria_svc
 from app.services import decisions as decisions_svc
 from app.services import knowledge as knowledge_svc
 from app.services import learner_context
@@ -332,6 +333,20 @@ async def _resolve_check(
         conversation.active_item_scaffolds += 1
         return item, None
 
+    if item.rubric_id is None:
+        # A check the tutor declared has no standard yet; write one now that it is being
+        # answered, from the question alone (S56). Failing to is not a reason to lose the
+        # answer — it is graded against the fallback, as before — but a refusal is: the turn
+        # is over budget, so nothing is recorded and the question stays open.
+        try:
+            item = await check_criteria_svc.ensure_criteria(session, llm, learner_id, item)
+        except BudgetExceeded:
+            return item, None
+        except Exception as exc:
+            log.warning(
+                "check.criteria_unavailable", item_id=str(item.id), error=type(exc).__name__
+            )
+
     # Read before grading: `answer_item` returns the posterior, and a posterior with nothing
     # to compare it against is not something a learner can act on.
     kc_ids = [link.kc_id for link in item.kc_links]
@@ -406,13 +421,12 @@ async def _materialise_declared_check(
 
     The item is authored **to the learner** (S33) rather than added to the shared bank. A
     question the tutor improvised for one conversation is not something other learners should
-    be assessed against — it has no reviewed rubric, no difficulty target, and no provenance
-    beyond one exchange. Scoping it means it can still be reused for *this* learner, which is
-    the right amount of permanence for it.
+    be assessed against — it has no reviewed rubric and no provenance beyond one exchange.
+    Scoping it means it can still be reused for *this* learner, which is the right amount of
+    permanence for it.
 
-    No rubric, so it is graded by ``grade_open``'s stated fallback. That is a real limitation
-    and it is the honest one: the alternative is a second model call to invent criteria for a
-    question that may never be answered.
+    No rubric yet: criteria and a rated difficulty are written on its first real attempt
+    (``app.services.check_criteria``, S56), so a question nobody answers costs nothing.
     """
     kcs = await knowledge_svc.list_kcs_for_subject(session, subject_id)
     index, _ = prereq_index.index_by_name([(str(kc.id), kc.name) for kc in kcs])
@@ -428,6 +442,22 @@ async def _materialise_declared_check(
             kcs=[ItemKCRef(kc_id=uuid.UUID(key))],
         ),
         author_learner_id=learner_id,
+    )
+
+
+async def _declared_check_note(
+    session: AsyncSession, *, learner_id: uuid.UUID, subject_id: uuid.UUID
+) -> str:
+    """The invitation to declare a check, aimed at this learner (S56).
+
+    The component is not known until the tutor names it, so the aim is the practice target
+    for the learner's estimate over the whole subject — the same target plan-driven items use.
+    It steers; it is not recorded. What is recorded is the level the question is rated at when
+    it is first answered (``app.services.check_criteria``).
+    """
+    estimate = await mastery.rollup_subject(session, learner_id, subject_id)
+    return declared_check.instruction(
+        difficulty.describe(session_runner_svc.practice_target(estimate))
     )
 
 
@@ -548,7 +578,9 @@ async def run_tutor_turn(
         # resolve a component against, so inviting a declaration there is inviting one that is
         # always dropped. Not on a withdrawal turn either: the learner just declined a
         # question, and a declared one would hand them a fresh check in its place.
-        notes.append(declared_check.INSTRUCTION)
+        notes.append(
+            await _declared_check_note(session, learner_id=learner_id, subject_id=subject_id)
+        )
 
     hits = []
     grounding = None
