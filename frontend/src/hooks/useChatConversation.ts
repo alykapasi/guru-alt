@@ -54,6 +54,8 @@ export function useChatConversation(conversationId: string | undefined) {
   const abortRef = useRef<AbortController | null>(null);
   // The server's id for the turn now streaming — the first frame names it — so Stop can.
   const turnIdRef = useRef<string | null>(null);
+  // Stop pressed before that frame arrived — sent as soon as the turn has a name.
+  const stopQueuedRef = useRef(false);
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const conversation = [...(conversationsQuery.data ?? []), ...(archivedQuery.data ?? [])].find(
@@ -107,6 +109,7 @@ export function useChatConversation(conversationId: string | undefined) {
       const controller = new AbortController();
       abortRef.current = controller;
       turnIdRef.current = null;
+      stopQueuedRef.current = false;
       // A stream can stop for reasons that are not an ending: the connection drops, the server
       // restarts, a proxy times out. Until this was tracked, the generator simply running out
       // was read as success, so a half-written explanation was left on screen looking finished.
@@ -116,6 +119,7 @@ export function useChatConversation(conversationId: string | undefined) {
           if (isTerminal(ev)) sawTerminal = true;
           if (ev.type === "turn") {
             turnIdRef.current = ev.turn_id;
+            if (stopQueuedRef.current) void stopTurn(conversationId, ev.turn_id).catch(() => {});
           } else if (ev.type === "token") {
             setPending((p) => (p ? { ...p, assistantText: p.assistantText + ev.text } : p));
           } else if (ev.type === "tool_call") {
@@ -146,6 +150,7 @@ export function useChatConversation(conversationId: string | undefined) {
       } finally {
         abortRef.current = null;
         turnIdRef.current = null;
+        stopQueuedRef.current = false;
       }
 
       // The pending buffer is dropped as soon as the persisted transcript has landed, and not
@@ -196,10 +201,15 @@ export function useChatConversation(conversationId: string | undefined) {
   }, []);
 
   /** Stop the reply being written (S47). The stream keeps going until the server's `stopped`
-   * event, so what stays on screen is exactly what was saved. */
+   * event, so what stays on screen is exactly what was saved. Pressed before the stream has
+   * named its turn, it waits for the name rather than being dropped. */
   const stop = useCallback(() => {
     const turnId = turnIdRef.current;
-    if (!conversationId || !turnId) return;
+    if (!conversationId) return;
+    if (!turnId) {
+      if (abortRef.current) stopQueuedRef.current = true;
+      return;
+    }
     void stopTurn(conversationId, turnId).catch(() => {});
   }, [conversationId]);
 
