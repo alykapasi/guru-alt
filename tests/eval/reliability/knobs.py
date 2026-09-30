@@ -196,6 +196,15 @@ KNOBS: list[Knob] = [
         governs="how long a non-streamed request may run before it answers 504 (S47)",
         settled_by="measured generation times of lessons and curricula on the chosen providers",
     ),
+    Knob(
+        id="provider.retry_after_seconds",
+        where="app.core.config.Settings.provider_retry_after_seconds",
+        value=20.0,
+        governs=(
+            "how long a learner is asked to wait when a provider rate-limits without saying (S49)"
+        ),
+        settled_by="the retry-after values the chosen providers actually send, from alpha logs",
+    ),
 ]
 
 
@@ -237,6 +246,7 @@ def live() -> dict[str, float]:
         "ingest.ocr_min_text_chars": float(pdf._MIN_TEXT_CHARS),
         "deadline.turn_seconds": float(s.turn_deadline_seconds),
         "deadline.request_seconds": float(s.request_deadline_seconds),
+        "provider.retry_after_seconds": float(s.provider_retry_after_seconds),
     }
 
 

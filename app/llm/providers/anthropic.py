@@ -11,8 +11,10 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any, cast
 
 import structlog
-from anthropic import AsyncAnthropic
+from anthropic import APIConnectionError, APIStatusError, AsyncAnthropic
 
+from app.llm.meter import ProviderUnavailable
+from app.llm.providers.failure import classify, translated
 from app.llm.types import (
     ChatChunk,
     ChatMessage,
@@ -42,6 +44,17 @@ def _warn_if_truncated(stop_reason: str | None, *, model: str, streaming: bool) 
         return False
     log.warning("llm.response_truncated", model=model, streaming=streaming)
     return True
+
+
+def refusal(exc: Exception) -> ProviderUnavailable | None:
+    """What an Anthropic SDK error means to a learner (S49); ``None`` when it is not a refusal.
+
+    An error inside a stream arrives on the stream's 200 response, so its ``type`` decides."""
+    if isinstance(exc, APIConnectionError):  # APITimeoutError included
+        return classify(unreachable=True)
+    if isinstance(exc, APIStatusError):
+        return classify(status=exc.status_code, error_type=exc.type, headers=exc.response.headers)
+    return None
 
 
 class AnthropicProvider:
@@ -134,9 +147,10 @@ class AnthropicProvider:
         system_text, convo = self._split(messages, system)
         extra: dict[str, Any] = {"system": system_text} if system_text else {}
         extra.update(self._tools_payload(tools))
-        msg = await self._client.messages.create(
-            model=model, max_tokens=max_tokens, messages=cast(Any, convo), **extra
-        )
+        with translated(refusal):
+            msg = await self._client.messages.create(
+                model=model, max_tokens=max_tokens, messages=cast(Any, convo), **extra
+            )
         content = "".join(b.text for b in msg.content if b.type == "text")
         tool_calls = [
             ToolCall(id=b.id, name=b.name, input=b.input)
@@ -161,27 +175,28 @@ class AnthropicProvider:
         system_text, convo = self._split(messages, system)
         extra: dict[str, Any] = {"system": system_text} if system_text else {}
         extra.update(self._tools_payload(tools))
-        async with self._client.messages.stream(
-            model=model, max_tokens=max_tokens, messages=cast(Any, convo), **extra
-        ) as stream:
-            async for text in stream.text_stream:
-                yield ChatChunk(text=text)
-            # get_final_message() accumulates streamed input_json_delta fragments for us —
-            # final.content's ToolUseBlock.input is already a fully-parsed dict.
-            final = await stream.get_final_message()
-            _warn_if_truncated(final.stop_reason, model=model, streaming=True)
-            tool_calls = [
-                ToolCall(id=b.id, name=b.name, input=b.input)
-                for b in final.content
-                if b.type == "tool_use"
-            ]
-            yield ChatChunk(
-                usage=Usage(
-                    input_tokens=final.usage.input_tokens,
-                    output_tokens=final.usage.output_tokens,
-                ),
-                tool_calls=tool_calls,
-            )
+        with translated(refusal):
+            async with self._client.messages.stream(
+                model=model, max_tokens=max_tokens, messages=cast(Any, convo), **extra
+            ) as stream:
+                async for text in stream.text_stream:
+                    yield ChatChunk(text=text)
+                # get_final_message() accumulates streamed input_json_delta fragments for us —
+                # final.content's ToolUseBlock.input is already a fully-parsed dict.
+                final = await stream.get_final_message()
+                _warn_if_truncated(final.stop_reason, model=model, streaming=True)
+                tool_calls = [
+                    ToolCall(id=b.id, name=b.name, input=b.input)
+                    for b in final.content
+                    if b.type == "tool_use"
+                ]
+                yield ChatChunk(
+                    usage=Usage(
+                        input_tokens=final.usage.input_tokens,
+                        output_tokens=final.usage.output_tokens,
+                    ),
+                    tool_calls=tool_calls,
+                )
 
     async def embed(self, *, model: str, texts: Sequence[str]) -> EmbedResult:
         raise NotImplementedError(

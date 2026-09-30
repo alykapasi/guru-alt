@@ -7,7 +7,8 @@ comes back still counts, and concurrent calls see each other. After: the row is 
 contain learner text), or ``partial`` for a stream closed before its last chunk.
 
 Accounting is written on its own session and never fails the work: a failed write is logged
-and the call proceeds. ``BudgetExceeded`` is the one exception raised here on purpose.
+and the call proceeds. ``BudgetExceeded`` is the one exception raised here on purpose;
+``ProviderUnavailable`` is defined here beside it and raised by the adapters.
 """
 
 import hashlib
@@ -34,13 +35,55 @@ MESSAGES: dict[str, str] = {
 }
 
 
-class BudgetExceeded(Exception):
+class CallRefused(Exception):
+    """A model call that did not happen, for a reason the learner can be told (S47, S49).
+
+    Not a bug in Guru: a spend limit, or the provider refusing or out of reach. Every place
+    that turns a refusal into a reason — the 429/503 handlers, ``refusal_ends_turn``, the
+    workers' deferral — catches this base, so a new kind of refusal is handled everywhere at
+    once.
+    """
+
+    code: str
+    reason: Literal["budget", "provider"]
+    retry_after: float | None = None
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class BudgetExceeded(CallRefused):
     """A paid call refused before it was made (S47)."""
+
+    code = "budget_exceeded"
+    reason = "budget"
 
     def __init__(self, scope: Scope) -> None:
         super().__init__(MESSAGES[scope])
         self.scope: Scope = scope
-        self.message = MESSAGES[scope]
+
+
+ProviderKind = Literal["busy", "down"]
+PROVIDER_MESSAGES: dict[str, str] = {
+    "busy": "The tutor is busy right now — try again in a few seconds.",
+    "down": "The tutor can't be reached right now — try again shortly.",
+}
+
+
+class ProviderUnavailable(CallRefused):
+    """The provider rate-limited the call or could not be reached, after the SDK's own
+    retries (S49). Raised only by the provider adapters — the only SDK importers — from
+    ``app.llm.providers.failure``; ``retry_after`` is the wait the provider asked for (busy)
+    or ``None`` (down)."""
+
+    reason = "provider"
+
+    def __init__(self, kind: ProviderKind, *, retry_after: float | None = None) -> None:
+        super().__init__(PROVIDER_MESSAGES[kind])
+        self.kind: ProviderKind = kind
+        self.code = f"provider_{kind}"
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)
@@ -174,11 +217,13 @@ async def settle(reservation: Reservation, usage: Usage) -> None:
 
 async def fail(reservation: Reservation, exc: BaseException) -> None:
     usage = Usage(input_tokens=reservation.input_tokens, output_tokens=0)
-    log.info("llm.call", model=reservation.model, status="failed", error_kind=type(exc).__name__)
+    # A provider refusal records which (S49); anything else its class name, never its message.
+    kind = exc.code if isinstance(exc, ProviderUnavailable) else type(exc).__name__
+    log.info("llm.call", model=reservation.model, status="failed", error_kind=kind)
     await _update(
         reservation,
         status="failed",
-        error_kind=type(exc).__name__,
+        error_kind=kind,
         estimated=True,
         input_tokens=usage.input_tokens,
         output_tokens=0,

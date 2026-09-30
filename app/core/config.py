@@ -248,6 +248,9 @@ class Settings(BaseSettings):
     # has stopped responding. Retries are the SDK's own (connection errors and 429/5xx only).
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 2
+    # How long a learner is asked to wait when a provider rate-limits a call and names no wait
+    # of its own (S49). Uncalibrated, listed in the S18 inventory.
+    provider_retry_after_seconds: float = Field(default=20.0, gt=0)
 
     # Whole-request bounds (S47). A streamed turn ends at turn_deadline_seconds keeping its
     # text; any other request answers 504 if it has not started responding by

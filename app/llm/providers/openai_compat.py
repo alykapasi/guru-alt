@@ -10,9 +10,11 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any, cast
 
 import structlog
-from openai import AsyncOpenAI
+from openai import APIConnectionError, APIError, APIStatusError, AsyncOpenAI
 
 from app.core.redact import fingerprint
+from app.llm.meter import ProviderUnavailable
+from app.llm.providers.failure import classify, translated
 from app.llm.types import (
     ChatChunk,
     ChatMessage,
@@ -63,6 +65,21 @@ def _warn_if_truncated(finish_reason: str | None, *, model: str, streaming: bool
         return False
     log.warning("llm.response_truncated", model=model, streaming=streaming)
     return True
+
+
+def refusal(exc: Exception) -> ProviderUnavailable | None:
+    """What an OpenAI-compatible SDK error means to a learner (S49); ``None`` when it is not.
+
+    An error event inside a stream (OpenRouter reports mid-generation failures this way) is a
+    bare ``APIError`` with no HTTP status of its own — only a code in its body, when any."""
+    if isinstance(exc, APIConnectionError):  # APITimeoutError included
+        return classify(unreachable=True)
+    if isinstance(exc, APIStatusError):
+        return classify(status=exc.status_code, headers=exc.response.headers)
+    if type(exc) is APIError:
+        code = str(exc.code) if exc.code is not None else ""
+        return classify(status=int(code) if code.isdigit() else 500)
+    return None
 
 
 class OpenAICompatProvider:
@@ -174,12 +191,13 @@ class OpenAICompatProvider:
         max_tokens: int = 1024,
         tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
-        resp = await self._client.chat.completions.create(
-            model=model,
-            messages=cast(Any, self._payload(messages, system)),
-            max_tokens=max_tokens,
-            **self._tools_payload(tools),
-        )
+        with translated(refusal):
+            resp = await self._client.chat.completions.create(
+                model=model,
+                messages=cast(Any, self._payload(messages, system)),
+                max_tokens=max_tokens,
+                **self._tools_payload(tools),
+            )
         usage = Usage()
         if resp.usage is not None:
             usage = Usage(
@@ -206,43 +224,46 @@ class OpenAICompatProvider:
         max_tokens: int = 1024,
         tools: Sequence[ToolDef] | None = None,
     ) -> AsyncIterator[ChatChunk]:
-        stream = await self._client.chat.completions.create(
-            model=model,
-            messages=cast(Any, self._payload(messages, system)),
-            max_tokens=max_tokens,
-            stream=True,
-            stream_options={"include_usage": True},
-            **self._tools_payload(tools),
-        )
-        # Unlike Anthropic, OpenAI has no server-side accumulation helper: tool calls stream
-        # as index-keyed partial deltas (id/name typically only on the first delta for that
-        # index, arguments as string fragments) — accumulate per index and finalize once.
-        pending: dict[int, dict[str, str]] = {}
-        usage: Usage | None = None
-        # `async with` matters here: an SSE client hanging up closes *this* generator, and
-        # without it the underlying HTTP response is left open until garbage collection.
-        async with stream:
-            async for chunk in stream:
-                if chunk.choices:
-                    choice = chunk.choices[0]
-                    delta = choice.delta
-                    _warn_if_truncated(choice.finish_reason, model=model, streaming=True)
-                    if delta.content:
-                        yield ChatChunk(text=delta.content)
-                    for tc in delta.tool_calls or []:
-                        acc = pending.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
-                        if tc.id:
-                            acc["id"] = tc.id
-                        if tc.function is not None:
-                            if tc.function.name:
-                                acc["name"] = tc.function.name
-                            if tc.function.arguments:
-                                acc["arguments"] += tc.function.arguments
-                if chunk.usage is not None:
-                    usage = Usage(
-                        input_tokens=chunk.usage.prompt_tokens,
-                        output_tokens=chunk.usage.completion_tokens,
-                    )
+        with translated(refusal):
+            stream = await self._client.chat.completions.create(
+                model=model,
+                messages=cast(Any, self._payload(messages, system)),
+                max_tokens=max_tokens,
+                stream=True,
+                stream_options={"include_usage": True},
+                **self._tools_payload(tools),
+            )
+            # Unlike Anthropic, OpenAI has no server-side accumulation helper: tool calls stream
+            # as index-keyed partial deltas (id/name typically only on the first delta for that
+            # index, arguments as string fragments) — accumulate per index and finalize once.
+            pending: dict[int, dict[str, str]] = {}
+            usage: Usage | None = None
+            # `async with` matters here: an SSE client hanging up closes *this* generator, and
+            # without it the underlying HTTP response is left open until garbage collection.
+            async with stream:
+                async for chunk in stream:
+                    if chunk.choices:
+                        choice = chunk.choices[0]
+                        delta = choice.delta
+                        _warn_if_truncated(choice.finish_reason, model=model, streaming=True)
+                        if delta.content:
+                            yield ChatChunk(text=delta.content)
+                        for tc in delta.tool_calls or []:
+                            acc = pending.setdefault(
+                                tc.index, {"id": "", "name": "", "arguments": ""}
+                            )
+                            if tc.id:
+                                acc["id"] = tc.id
+                            if tc.function is not None:
+                                if tc.function.name:
+                                    acc["name"] = tc.function.name
+                                if tc.function.arguments:
+                                    acc["arguments"] += tc.function.arguments
+                    if chunk.usage is not None:
+                        usage = Usage(
+                            input_tokens=chunk.usage.prompt_tokens,
+                            output_tokens=chunk.usage.completion_tokens,
+                        )
         # Finalize when the stream ends, not when usage happens to arrive. `include_usage` is
         # an OpenAI extension: a compatible endpoint is free to ignore it, and one that does
         # used to have every tool call it had just streamed silently discarded here.
@@ -254,7 +275,8 @@ class OpenAICompatProvider:
             yield ChatChunk(usage=usage or Usage(), tool_calls=tool_calls)
 
     async def embed(self, *, model: str, texts: Sequence[str]) -> EmbedResult:
-        resp = await self._client.embeddings.create(model=model, input=list(texts))
+        with translated(refusal):
+            resp = await self._client.embeddings.create(model=model, input=list(texts))
         # Ollama's OpenAI-compatible endpoint omits usage; a missing count is 0, not a crash.
         prompt_tokens = getattr(resp.usage, "prompt_tokens", 0) if resp.usage else 0
         return EmbedResult(
