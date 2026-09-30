@@ -13,6 +13,7 @@ from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
 from app.core.config import get_settings
 from app.models.publication import CurriculumProposal
 from app.services import onboarding, onboarding_sessions, turn_control
+from app.services.turn_common import error_frame
 from app.services.turn_control import Interrupted
 
 router = APIRouter(tags=["onboarding"])
@@ -120,7 +121,7 @@ async def goal_refinement_turn(
                             {"type": "committed", "goal": event.text, "detail": event.detail}
                         )
                     elif event.type == "error":
-                        yield _sse({"type": "error", "detail": event.detail})
+                        yield _sse(error_frame(event))
         except Exception as exc:
             yield _sse({"type": "error", "detail": str(exc)})
 

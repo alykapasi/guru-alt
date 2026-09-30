@@ -9,7 +9,7 @@ import re
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -110,6 +110,10 @@ class TurnEvent:
     # (S15). Set on "done". The tutor's reply already reflects the grade; this is the part the
     # learner can check it against, because a reply is not a record.
     check_result: CheckResultRead | None = None
+    # Set on an "error" a refusal produced (S47, S49): what refused, and — for a busy
+    # provider — how long to wait before trying again.
+    code: str | None = None
+    retry_after: float | None = None
 
 
 def refusal_ends_turn[**P](
@@ -130,9 +134,19 @@ def refusal_ends_turn[**P](
             async for event in turn(*args, **kwargs):
                 yield event
         except CallRefused as exc:
-            yield TurnEvent(type="error", detail=exc.message)
+            yield TurnEvent(
+                type="error", detail=exc.message, code=exc.code, retry_after=exc.retry_after
+            )
 
     return guarded
+
+
+def error_frame(ev: TurnEvent) -> dict[str, Any]:
+    """The SSE frame for an ``error`` event; a refusal's code and wait ride along (S49)."""
+    frame: dict[str, Any] = {"type": "error", "detail": ev.detail}
+    if ev.code is not None:
+        frame |= {"code": ev.code, "retry_after": ev.retry_after}
+    return frame
 
 
 def build_check_result(

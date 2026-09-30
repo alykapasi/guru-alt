@@ -54,7 +54,7 @@ from app.services import removal, spend_guard, turn_control, turn_lock
 from app.services import turn as turn_svc
 from app.services import workflow as workflow_svc
 from app.services.assessment import item_to_read
-from app.services.turn_common import TurnEvent, add_message
+from app.services.turn_common import TurnEvent, add_message, error_frame
 from app.services.turn_control import Interrupted
 
 log = structlog.get_logger(__name__)
@@ -718,8 +718,8 @@ async def send_message(
                     streamed.append(ev.text)
                     yield _sse({"type": "token", "text": ev.text})
                 elif ev.type == "error":
-                    outcome, error = TurnStatus.FAILED, ev.detail
-                    yield _sse({"type": "error", "detail": ev.detail})
+                    outcome, error = TurnStatus.FAILED, ev.code or ev.detail
+                    yield _sse(error_frame(ev))
                 elif ev.type == "done":
                     outcome = TurnStatus.COMPLETED
                     assistant_message_id = uuid.UUID(ev.message_id) if ev.message_id else None

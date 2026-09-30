@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import math
 from contextlib import asynccontextmanager
 
 import structlog
@@ -16,7 +17,7 @@ from app.core.deadline import RequestDeadlineMiddleware
 from app.core.logging import configure_logging
 from app.core.middleware import request_id_middleware
 from app.core.release import enforce_production_settings
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import BudgetExceeded, ProviderUnavailable
 from app.services import decisions as decisions_svc
 from app.services import spend_guard  # noqa: F401  installs the spend guard on the meter (S47)
 from app.services.admin_audit import AdminAuditMiddleware
@@ -69,6 +70,21 @@ async def _budget_exceeded(_request: Request, exc: BudgetExceeded) -> JSONRespon
     return JSONResponse(
         status_code=429,
         content={"detail": {"code": "budget_exceeded", "scope": exc.scope, "message": exc.message}},
+    )
+
+
+@app.exception_handler(ProviderUnavailable)
+async def _provider_unavailable(_request: Request, exc: ProviderUnavailable) -> JSONResponse:
+    """A provider busy or out of reach after its own retries (S49) — one shape for every route."""
+    headers = (
+        {"Retry-After": str(math.ceil(exc.retry_after))} if exc.retry_after is not None else None
+    )
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": {"code": exc.code, "message": exc.message, "retry_after": exc.retry_after}
+        },
+        headers=headers,
     )
 
 

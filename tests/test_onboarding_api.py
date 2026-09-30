@@ -195,3 +195,31 @@ async def test_goal_turns_have_a_deadline(
         "detail": "This reply took too long and was cut off.",
         "code": "deadline",
     }
+
+
+async def test_a_goal_turn_the_provider_refused_says_so(
+    api_client: AsyncClient, fake_llm_goal: None, monkeypatch
+) -> None:
+    """The refinement stream carries the refusal's code, like chat (S49)."""
+    from app.llm.meter import PROVIDER_MESSAGES, ProviderUnavailable
+    from app.services.turn_common import refusal_ends_turn
+
+    @refusal_ends_turn
+    async def down(**kwargs):
+        raise ProviderUnavailable("down")
+        yield  # an async generator
+
+    monkeypatch.setattr("app.services.onboarding.run_goal_refinement_turn", down)
+    session_id = (await api_client.post(f"{API}/onboarding/goal-sessions")).json()["session_id"]
+
+    response = await api_client.post(
+        f"{API}/onboarding/goal-turns",
+        json={"session_id": session_id, "content": "x", "satisfied": False, "mode": "start"},
+    )
+
+    assert _parse_sse(response.text)[-1] == {
+        "type": "error",
+        "detail": PROVIDER_MESSAGES["down"],
+        "code": "provider_down",
+        "retry_after": None,
+    }
