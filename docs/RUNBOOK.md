@@ -954,6 +954,14 @@ Every model call is recorded and admitted by `LLMClient` itself; no service logs
   marked failed, so it can be retried; a refused upload fails with the message as its error; a
   refused background task logs `budget.deferred task=…` at info and keeps its claim, so the sweep
   retries it later.
+- **Deadlines and Stop.** A streamed chat or onboarding turn runs for at most
+  `GURU_TURN_DEADLINE_SECONDS` (120); past it the text so far is saved with
+  `messages.interrupted = 'timed_out'`, the cut-off call settles `partial`, and the turn is
+  `failed` with error `deadline`. Any other request answers 504 `deadline_exceeded` if it has not
+  started responding within `GURU_REQUEST_DEADLINE_SECONDS` (180). A learner's Stop
+  (`POST /api/v1/conversations/{id}/turns/{turn_id}/stop`) ends the turn the same way with
+  `interrupted = 'stopped'` and turn status `stopped`; it reaches another process as a Postgres
+  `NOTIFY turn_stop` carrying only the turn id. Both limits are uncalibrated (S18).
 - **Reading it.** `/api/v1/ops/spend` and the Admin page break cost down by role, model and
   feature, with counts of failed, partial and estimated calls. Estimated rows carry their
   reservation, not the provider's numbers. Rows written before this change have feature

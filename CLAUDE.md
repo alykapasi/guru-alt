@@ -160,7 +160,9 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   `app/services/spend_guard.py` refuses a call over the learner's daily caps (exact under
   concurrency) or the deployment ceiling, and background work stops at 90%. Services say what
   they are with `@metered(...)` (`app/llm/attribution.py`); nothing calls a logging function by
-  hand. See [docs/RUNBOOK.md](docs/RUNBOOK.md) §18.
+  hand. A streamed turn has a deadline and the learner can stop it, keeping its text
+  (`app/services/turn_control.py`); any other request answers 504 past its own. See
+  [docs/RUNBOOK.md](docs/RUNBOOK.md) §18.
 - **A grade says what measured it** (S56) — every graded event carries a `grading` block
   (grader, model, and hashes of frozen item/rubric/prompt snapshots in `grading_snapshots`, per
   learner, surviving item deletion); `uv run poe regrade` re-grades past answers under a current
