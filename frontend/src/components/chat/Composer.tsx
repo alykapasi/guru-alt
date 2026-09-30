@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { ArrowUp, Bot, MessageCircle } from "lucide-react";
+import { ArrowUp, Bot, MessageCircle, Square } from "lucide-react";
 
 export function Composer({
   disabled,
   onSend,
   fixedMode,
   placeholder = "Message Guru…",
+  streaming = false,
+  onStop,
 }: {
   disabled: boolean;
   onSend: (content: string, mode: "chat" | "agentic" | "workflow") => void;
@@ -13,6 +15,9 @@ export function Composer({
    * guided-practice session, where "chat vs. agentic" isn't a choice the learner makes. */
   fixedMode?: "chat" | "agentic" | "workflow";
   placeholder?: string;
+  /** A reply is being written; with `onStop`, Send becomes Stop (S47). */
+  streaming?: boolean;
+  onStop?: () => void;
 }) {
   const [content, setContent] = useState("");
   const [mode, setMode] = useState<"chat" | "agentic">("chat");
@@ -69,14 +74,20 @@ export function Composer({
             placeholder={placeholder}
             className="textarea text-body max-h-40 flex-1 resize-none"
           />
-          <button
-            onClick={submit}
-            disabled={disabled || !content.trim()}
-            className="btn btn-primary btn-square"
-            aria-label="Send"
-          >
-            <ArrowUp size={18} />
-          </button>
+          {streaming && onStop ? (
+            <button onClick={onStop} className="btn btn-square" aria-label="Stop">
+              <Square size={16} />
+            </button>
+          ) : (
+            <button
+              onClick={submit}
+              disabled={disabled || !content.trim()}
+              className="btn btn-primary btn-square"
+              aria-label="Send"
+            >
+              <ArrowUp size={18} />
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -67,6 +67,7 @@ export function MessageList({
             onCitationClick={onCitationClick}
             coverage={m.coverage}
             sourceCount={m.cited_source_count}
+            interrupted={m.interrupted ?? null}
           />
           {/* Rendered from the transcript rather than from the stream, so it survives a
               reload and scrolls back with the conversation it belongs to. The turn that

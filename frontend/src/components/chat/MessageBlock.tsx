@@ -21,6 +21,7 @@ export function MessageBlock({
   onCitationClick,
   coverage = null,
   sourceCount = 0,
+  interrupted = null,
 }: {
   role: string;
   content: string;
@@ -30,6 +31,8 @@ export function MessageBlock({
   onCitationClick?: (citation: Citation) => void;
   coverage?: Coverage | null;
   sourceCount?: number;
+  /** How the reply was cut short, if it was (S47): `stopped` or `timed_out`. */
+  interrupted?: string | null;
 }) {
   if (role === "user") {
     return (
@@ -51,6 +54,12 @@ export function MessageBlock({
         )}
         <RichText content={content} citations={citations} onCitationClick={onCitationClick} />
         {streaming && <span className="animate-pulse">▍</span>}
+        {interrupted === "stopped" && <p className="text-caption text-base-content/50">Stopped</p>}
+        {interrupted === "timed_out" && (
+          <p className="text-caption text-base-content/50">
+            This reply took too long and was cut off.
+          </p>
+        )}
         {!streaming && <CoverageChip coverage={coverage} sourceCount={sourceCount} />}
       </div>
     </div>

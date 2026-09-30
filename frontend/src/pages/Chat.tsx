@@ -27,6 +27,7 @@ export function Chat() {
     practicePaused,
     applyPracticeState,
     send,
+    stop,
   } = useChatConversation(conversationId);
   const practiceAction = usePracticeAction(conversationId);
   const unarchive = useArchive("conversation");
@@ -105,7 +106,12 @@ export function Chat() {
             ) : (
               awaitingReply && <PracticeControls onSkip={handleSkip} disabled={practiceBusy} />
             )}
-            <Composer disabled={!!pending} onSend={(content, mode) => send(content, { mode })} />
+            <Composer
+              disabled={!!pending}
+              streaming={!!pending}
+              onStop={stop}
+              onSend={(content, mode) => send(content, { mode })}
+            />
           </>
         )}
       </div>

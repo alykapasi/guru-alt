@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { streamTurn } from "./sse";
+import { isTerminal, streamTurn } from "./sse";
 
 describe("a refused turn", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -24,5 +24,12 @@ describe("a refused turn", () => {
     );
     const turn = streamTurn("c-1", { content: "hi" } as never);
     await expect(turn.next()).rejects.toThrow("You've reached today's usage limit");
+  });
+});
+
+describe("stopped", () => {
+  it("is a terminal event", () => {
+    expect(isTerminal({ type: "stopped", message_id: null })).toBe(true);
+    expect(isTerminal({ type: "turn", turn_id: "t" })).toBe(false);
   });
 });

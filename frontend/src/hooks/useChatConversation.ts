@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useArchivedConversations, useConversations, useItem, useMessages } from "../api/hooks";
-import { isTerminal, streamTurn, type ItemEvent, type SendMessageBody } from "../api/sse";
+import { isTerminal, stopTurn, streamTurn, type ItemEvent, type SendMessageBody } from "../api/sse";
 import type { components } from "../api/schema";
 
 type PracticeStateRead = components["schemas"]["PracticeStateRead"];
@@ -52,6 +52,8 @@ export function useChatConversation(conversationId: string | undefined) {
   // and its state setters ran against an unmounted tree. The backend sees the disconnect and
   // records the turn as cancelled rather than leaving it pending forever.
   const abortRef = useRef<AbortController | null>(null);
+  // The server's id for the turn now streaming — the first frame names it — so Stop can.
+  const turnIdRef = useRef<string | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const conversation = [...(conversationsQuery.data ?? []), ...(archivedQuery.data ?? [])].find(
@@ -104,6 +106,7 @@ export function useChatConversation(conversationId: string | undefined) {
       };
       const controller = new AbortController();
       abortRef.current = controller;
+      turnIdRef.current = null;
       // A stream can stop for reasons that are not an ending: the connection drops, the server
       // restarts, a proxy times out. Until this was tracked, the generator simply running out
       // was read as success, so a half-written explanation was left on screen looking finished.
@@ -111,7 +114,9 @@ export function useChatConversation(conversationId: string | undefined) {
       try {
         for await (const ev of streamTurn(conversationId, body, controller.signal)) {
           if (isTerminal(ev)) sawTerminal = true;
-          if (ev.type === "token") {
+          if (ev.type === "turn") {
+            turnIdRef.current = ev.turn_id;
+          } else if (ev.type === "token") {
             setPending((p) => (p ? { ...p, assistantText: p.assistantText + ev.text } : p));
           } else if (ev.type === "tool_call") {
             setPending((p) => (p ? { ...p, toolCalls: [...p.toolCalls, ev.detail] } : p));
@@ -140,6 +145,7 @@ export function useChatConversation(conversationId: string | undefined) {
         }
       } finally {
         abortRef.current = null;
+        turnIdRef.current = null;
       }
 
       // The pending buffer is dropped as soon as the persisted transcript has landed, and not
@@ -189,6 +195,14 @@ export function useChatConversation(conversationId: string | undefined) {
     setSessionDetail(null);
   }, []);
 
+  /** Stop the reply being written (S47). The stream keeps going until the server's `stopped`
+   * event, so what stays on screen is exactly what was saved. */
+  const stop = useCallback(() => {
+    const turnId = turnIdRef.current;
+    if (!conversationId || !turnId) return;
+    void stopTurn(conversationId, turnId).catch(() => {});
+  }, [conversationId]);
+
   return {
     conversation,
     messages,
@@ -208,5 +222,6 @@ export function useChatConversation(conversationId: string | undefined) {
     practicePaused,
     applyPracticeState,
     send,
+    stop,
   };
 }
