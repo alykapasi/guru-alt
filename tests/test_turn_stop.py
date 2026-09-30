@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Iterator
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.api.deps import get_llm_client
@@ -61,9 +61,13 @@ async def _assistant(db_session: AsyncSession, cid: str) -> list[Message]:
 
 
 def _stopping_flow():
-    """Streams two tokens, then the learner presses Stop, then it would go on for ever."""
+    """Streams two tokens, then the learner presses Stop, then it would go on for ever.
 
-    async def flow(*args, **kwargs) -> AsyncIterator[TurnEvent]:
+    It reads the database first, as every real flow does: the rollback on Stop then has a
+    transaction to discard, which is what expires the objects the route has loaded."""
+
+    async def flow(session: AsyncSession, *args, **kwargs) -> AsyncIterator[TurnEvent]:
+        await session.execute(text("select 1"))
         yield TurnEvent(type="token", text="Half ")
         yield TurnEvent(type="token", text="an answer")
         for control in list(turn_control._local.values()):
@@ -128,7 +132,8 @@ def _short_deadline(monkeypatch) -> None:
 
 
 def _slow_flow():
-    async def flow(*args, **kwargs) -> AsyncIterator[TurnEvent]:
+    async def flow(session: AsyncSession, *args, **kwargs) -> AsyncIterator[TurnEvent]:
+        await session.execute(text("select 1"))
         yield TurnEvent(type="token", text="Slow start")
         await asyncio.sleep(30)
         yield TurnEvent(type="done")
@@ -175,6 +180,30 @@ async def test_a_timed_out_turn_can_be_retried(
     assert r.status_code == 200
     assert _sse(r.text)[-1]["type"] == "done"
     assert (await _turn(db_session, cid)).status == TurnStatus.COMPLETED
+
+
+async def test_a_retry_does_not_show_the_model_its_own_cut_off_reply(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, monkeypatch
+) -> None:
+    cid = await _conversation(api_client, db_session)
+    key = str(uuid.uuid4())
+    _short_deadline(monkeypatch)
+    monkeypatch.setattr("app.services.chat.run_tutor_turn", _slow_flow())
+    await api_client.post(
+        f"{API}/conversations/{cid}/messages", json={"content": "Hi", "client_turn_id": key}
+    )
+    seen: list = []
+
+    async def capture(*args, **kwargs) -> AsyncIterator[TurnEvent]:
+        seen.append(kwargs["history"])
+        yield TurnEvent(type="done")
+
+    monkeypatch.setattr("app.services.chat.run_tutor_turn", capture)
+    await api_client.post(
+        f"{API}/conversations/{cid}/messages", json={"content": "Hi", "client_turn_id": key}
+    )
+
+    assert [m.content for m in seen[0]] == []
 
 
 async def test_the_next_turn_sees_a_stopped_reply(

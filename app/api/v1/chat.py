@@ -658,7 +658,10 @@ async def send_message(
             choice=choice,
             history=history,
         )
-        control = turn_control.TurnControl(turn.id, deadline_s=settings.turn_deadline_seconds)
+        # A plain id, not ``turn.id`` read later: a Stop rolls the session back, which expires
+        # every loaded object, and reading one afterwards is a lazy load outside async context.
+        turn_id = turn.id
+        control = turn_control.TurnControl(turn_id, deadline_s=settings.turn_deadline_seconds)
     except turn_svc.TurnAlreadyCompleted as exc:
         await claim.release()
         raise HTTPException(
@@ -681,7 +684,7 @@ async def send_message(
         async with control:
             await control.listen(claim)
             # First, so the client can address a Stop to this turn.
-            yield _sse({"type": "turn", "turn_id": str(turn.id)})
+            yield _sse({"type": "turn", "turn_id": str(turn_id)})
             async for ev in control.run(stream):
                 if isinstance(ev, Interrupted):
                     # The flow was cancelled at an await; anything it had not committed rolls
@@ -782,7 +785,7 @@ async def send_message(
         )
         await turn_svc.close_turn(
             session,
-            turn.id,
+            turn_id,
             outcome or TurnStatus.CANCELLED,
             assistant_message_id=assistant_message_id,
             error=error if outcome else "the stream ended without a terminal event",
