@@ -3,6 +3,7 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
+from types import SimpleNamespace
 
 import anthropic
 import httpx
@@ -91,10 +92,21 @@ def test_an_http_date_wait_is_read() -> None:
     assert 25.0 <= refused.retry_after <= 31.0
 
 
-def test_a_malformed_wait_falls_back_to_the_default() -> None:
-    exc = openai.RateLimitError("slow", response=_response(429, {"retry-after": "soon"}), body=None)
+@pytest.mark.parametrize("raw", ["soon", "inf", "Infinity", "1e400", "nan"])
+def test_a_malformed_wait_falls_back_to_the_default(raw: str) -> None:
+    """A wait that is not a finite number would crash the 503 and break the stream's JSON."""
+    exc = openai.RateLimitError("slow", response=_response(429, {"retry-after": raw}), body=None)
     refused = openai_refusal(exc)
     assert refused is not None and refused.retry_after == 20.0
+
+
+def test_a_very_long_wait_is_capped() -> None:
+    """A daily quota's wait is not a countdown anyone should watch."""
+    exc = openai.RateLimitError(
+        "slow", response=_response(429, {"retry-after": "86400"}), body=None
+    )
+    refused = openai_refusal(exc)
+    assert refused is not None and refused.retry_after == 300.0
 
 
 @pytest.mark.parametrize(
@@ -199,6 +211,73 @@ async def test_an_anthropic_stream_refused_raises_provider_unavailable(monkeypat
         async for _ in provider.stream(model="m", messages=HELLO):
             pass
     assert caught.value.kind == "down"
+
+
+async def test_an_anthropic_stream_that_fails_part_way_is_translated(monkeypatch) -> None:
+    """The error arrives after text has already been yielded, on the stream's 200."""
+    provider = AnthropicProvider(api_key="k", timeout=1.0, max_retries=0)
+
+    async def text_stream():
+        yield "Hello"
+        raise anthropic.APIStatusError(
+            "stream error",
+            response=_response(200),
+            body={"type": "error", "error": {"type": "overloaded_error", "message": "x"}},
+        )
+
+    class Stream:
+        async def __aenter__(self):
+            return SimpleNamespace(text_stream=text_stream())
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+    monkeypatch.setattr(provider._client.messages, "stream", lambda **kwargs: Stream())
+    seen: list[str] = []
+    with pytest.raises(ProviderUnavailable) as caught:
+        async for chunk in provider.stream(model="m", messages=HELLO):
+            seen.append(chunk.text)
+    assert seen == ["Hello"] and caught.value.kind == "down"
+
+
+async def test_an_openai_stream_that_fails_part_way_is_translated(monkeypatch) -> None:
+    """OpenRouter reports a mid-generation failure as an error event: a bare APIError."""
+    provider = OpenAICompatProvider(
+        name="openrouter",
+        base_url="https://provider.test/v1",
+        api_key="k",
+        timeout=1.0,
+        max_retries=0,
+    )
+    chunk = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(content="Hello", tool_calls=None), finish_reason=None
+            )
+        ],
+        usage=None,
+    )
+
+    class Stream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def __aiter__(self):
+            yield chunk
+            raise openai.APIError("upstream failed", REQUEST, body={"message": "x"})
+
+    async def create(**kwargs):
+        return Stream()
+
+    monkeypatch.setattr(provider._client.chat.completions, "create", create)
+    seen: list[str] = []
+    with pytest.raises(ProviderUnavailable) as caught:
+        async for out in provider.stream(model="m", messages=HELLO):
+            seen.append(out.text)
+    assert seen == ["Hello"] and caught.value.kind == "down"
 
 
 async def test_an_anthropic_client_error_passes_through(monkeypatch) -> None:

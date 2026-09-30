@@ -6,6 +6,7 @@ SDK. Only errors that survived the SDK's own retries ever get here.
 """
 
 import contextlib
+import math
 from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -16,25 +17,32 @@ from app.llm.meter import ProviderUnavailable
 # Error types a provider names in a body — Anthropic's, inside a stream, arrive on a 200.
 BUSY_TYPES = frozenset({"rate_limit_error"})
 DOWN_TYPES = frozenset({"overloaded_error", "api_error"})
+# The longest wait a learner is asked to count down; a daily quota's "tomorrow" is not one.
+MAX_RETRY_AFTER_SECONDS = 300.0
 
 
 def retry_after_seconds(headers: Mapping[str, str] | None) -> float:
-    """The provider's ``retry-after`` in seconds (a number or an HTTP-date), else the default."""
+    """The provider's ``retry-after`` in seconds (a number or an HTTP-date), else the default.
+
+    Always finite and at most ``MAX_RETRY_AFTER_SECONDS``: ``float()`` accepts "inf" and "nan",
+    and either would crash the 503's ``Retry-After`` and break a stream's JSON."""
     default = get_settings().provider_retry_after_seconds
     raw = (headers or {}).get("retry-after")
     if not raw:
         return default
     try:
-        return max(0.0, float(raw))
+        seconds = float(raw)
     except ValueError:
-        pass
-    try:
-        when = parsedate_to_datetime(raw)
-    except (TypeError, ValueError):
+        try:
+            when = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return default
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        seconds = (when - datetime.now(UTC)).total_seconds()
+    if not math.isfinite(seconds):
         return default
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=UTC)
-    return max(0.0, (when - datetime.now(UTC)).total_seconds())
+    return min(max(0.0, seconds), MAX_RETRY_AFTER_SECONDS)
 
 
 def classify(
