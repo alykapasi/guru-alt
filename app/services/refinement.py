@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.refinement import RefinementState, build_refinement_graph, refinement_config
 from app.llm.attribution import metered
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import CallRefused
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.models.chat import Conversation
@@ -96,7 +96,7 @@ async def run_refinement_turn(
                 yield TurnEvent(type="token", text=payload["token"])  # ty: ignore[invalid-argument-type]
             elif mode == "values":
                 proposal = payload["proposal"]  # ty: ignore[invalid-argument-type]
-    except BudgetExceeded:
+    except CallRefused:
         raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
         log.error("refinement.stream_failed", error=str(exc), model=spec.model)

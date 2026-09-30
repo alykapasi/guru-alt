@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult
 from app.learning.mastery import Estimate
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import CallRefused
 from app.llm.types import ChatMessage, ChatRole, Usage
 from app.models.chat import Message
 from app.models.knowledge import KC
@@ -115,7 +115,8 @@ class TurnEvent:
 def refusal_ends_turn[**P](
     turn: Callable[P, AsyncIterator[TurnEvent]],
 ) -> Callable[P, AsyncIterator[TurnEvent]]:
-    """A paid call refused by the spend guard ends the turn with the reason (S47).
+    """A paid call refused — by the spend guard (S47) or by a provider that is busy or down
+    (S49) — ends the turn with the reason.
 
     Any model call in a turn can be refused — the intent check, grading, a retrieval embedding,
     the reply itself — and most happen before the turn's own ``try`` around generation, so the
@@ -128,7 +129,7 @@ def refusal_ends_turn[**P](
         try:
             async for event in turn(*args, **kwargs):
                 yield event
-        except BudgetExceeded as exc:
+        except CallRefused as exc:
             yield TurnEvent(type="error", detail=exc.message)
 
     return guarded

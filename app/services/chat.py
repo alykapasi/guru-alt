@@ -22,7 +22,7 @@ from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult, InvalidResponse
 from app.learning.turn_read import FULLY_CORRECT, INTENT, ReadContext
 from app.llm.attribution import metered
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import CallRefused
 from app.llm.pricing import price_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
@@ -340,7 +340,7 @@ async def _resolve_check(
         # is over budget, so nothing is recorded and the question stays open.
         try:
             item = await check_criteria_svc.ensure_criteria(session, llm, learner_id, item)
-        except BudgetExceeded:
+        except CallRefused:
             return item, None
         except Exception as exc:
             log.warning(
@@ -623,7 +623,7 @@ async def run_tutor_turn(
             elif mode == "values":
                 reply = payload["reply"]  # ty: ignore[invalid-argument-type]
                 usage = payload["usage"]  # ty: ignore[invalid-argument-type]
-    except BudgetExceeded:
+    except CallRefused:
         raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
         log.error("tutor.stream_failed", error=str(exc), model=spec.model)

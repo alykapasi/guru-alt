@@ -21,7 +21,7 @@ from app.core.identity import build_identity_provider
 from app.core.readiness import readiness
 from app.llm import build_llm_client
 from app.llm.attribution import attributed
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import CallRefused
 from app.models.learner import Learner
 from app.models.source import Source
 from app.rag import pipeline
@@ -78,9 +78,9 @@ async def _memory_write_back_task(conversation_id: str) -> None:
                 await memory_svc.write_back(
                     session, llm, conversation_id=uuid.UUID(conversation_id)
                 )
-            except BudgetExceeded:
-                # Deferred, not failed (S47): the claim stays, so the sweep retries it later.
-                logger.info("budget.deferred task=memory_write_back")
+            except CallRefused as exc:
+                # Deferred, not failed (S47, S49): the claim stays, so the sweep retries it later.
+                logger.info("%s.deferred task=memory_write_back", exc.reason)
                 return
             except Exception:
                 logger.exception("memory.write_back_failed conversation=%s", conversation_id)
@@ -98,8 +98,8 @@ async def _profile_refresh_task(learner_id: str) -> None:
                 return  # closed or suspended since it was queued: no model call
             try:
                 await profile_svc.refresh_profile(session, learner.id, llm)
-            except BudgetExceeded:
-                logger.info("budget.deferred task=profile_refresh")
+            except CallRefused as exc:
+                logger.info("%s.deferred task=profile_refresh", exc.reason)
 
 
 async def _judge_concept_links_task(learner_id: str) -> None:
@@ -109,8 +109,8 @@ async def _judge_concept_links_task(learner_id: str) -> None:
         async with SessionFactory() as session:
             try:
                 await concept_links_svc.judge_pending(session, llm, uuid.UUID(learner_id))
-            except BudgetExceeded:
-                logger.info("budget.deferred task=concept_links")
+            except CallRefused as exc:
+                logger.info("%s.deferred task=concept_links", exc.reason)
 
 
 async def _enqueue_ingestion(source_id: uuid.UUID) -> None:

@@ -21,7 +21,7 @@ from app.learning import mastery, note_distill
 from app.learning.note_distill import FALLBACK_FORMAT, FORMATS
 from app.llm import LLMClient
 from app.llm.attribution import metered
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import CallRefused
 from app.models.assessment import Item
 from app.models.chat import Conversation, Message
 from app.models.knowledge import KC, Subject, Topic
@@ -436,7 +436,7 @@ async def _render_and_cache(
             atoms=note.substrate,
             note_format=fmt,
         )
-    except BudgetExceeded:
+    except CallRefused:
         # Over a usage limit (S47): show the readable fallback, but do not keep it — cached, it
         # would outlive the limit and stand in for a real render of this revision for good.
         refused = True
@@ -523,7 +523,7 @@ async def refresh_note(
             outcomes=gathered.outcomes,
             refs=gathered.refs,
         )
-    except BudgetExceeded:
+    except CallRefused:
         raise  # the learner is told why (429), rather than shown the old note in silence
     except Exception as exc:
         log.warning("notes.distill_failed", topic_id=str(topic.id), error=str(exc))

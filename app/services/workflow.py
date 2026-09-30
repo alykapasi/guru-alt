@@ -17,7 +17,7 @@ from app.agent import checkpointing
 from app.agent.workflow import WorkflowState, build_workflow_graph, workflow_config
 from app.core.config import get_settings
 from app.llm.attribution import metered
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import CallRefused
 from app.llm.pricing import price_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
@@ -295,7 +295,7 @@ async def run_workflow_turn(
             elif mode == "values":
                 last_message = payload["last_message"]  # ty: ignore[invalid-argument-type]
                 usage = payload["usage"]  # ty: ignore[invalid-argument-type]
-    except BudgetExceeded:
+    except CallRefused:
         raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
         log.error("workflow.stream_failed", error=str(exc), model=spec.model)

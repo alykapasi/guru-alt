@@ -26,7 +26,7 @@ from app.learning.profile_estimators import (
 )
 from app.llm import LLMClient
 from app.llm.attribution import metered
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import CallRefused
 from app.models.chat import Conversation, Message
 from app.models.learner import Learner
 from app.models.learning import LearningEvent
@@ -212,7 +212,7 @@ async def refresh_profile(
             result, _usage = await spec.estimate(context)
             if result is not None:
                 await _upsert_dimension(session, learner_id, spec, result, fingerprint)
-    except BudgetExceeded:
+    except CallRefused:
         # Refused, not broken (S47): nothing to record against the profile. Retried when the
         # spend window allows, since the watermark has not moved.
         await session.rollback()
