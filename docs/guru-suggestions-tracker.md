@@ -24,7 +24,7 @@ older verification runs) lives in Git.
 | --- | --- | --- |
 | Live, v0 | 18 | S17 S18 S20 S27 S28 S31 S37 S49 S50 S53 S58 S59 S60 S62 S65 S66 S76 S77 |
 | Live, proposed (not v0 gates) | 4 | S64 S80 S84 S85 |
-| Open questions | 3 | O02 O05 O07 |
+| Open questions | 2 | O02 O05 |
 | Done | 47 | [Completed](#completed) |
 
 **Next up: workstream 5** — S49, then S37, S17, S62, S53.
@@ -92,7 +92,6 @@ shadow results are recorded yet. Sources: [plan](jev-implementation-plan.md),
 
 | ID | Question |
 | --- | --- |
-| O07 | Raised 2026-09-27 (S43): "Remember things from my conversations" stops new memories only; profile refresh still reads recent answers and messages (the Account copy says so). Should pausing also stop the profile reading messages? |
 | O02 | Cohort payment/pricing arrangement — later operating/business choice. |
 | O05 | Funding for broad free access — no amount, source or runway committed. |
 
@@ -131,7 +130,7 @@ named in the "Hand-off" column and tracked under that ID.
 | S40 | Preserve exact note edits | Authored Markdown kept; revisions and guarded restore. | S58 (browser) | [Notes](../app/services/notes.py) |
 | S41 | Bounded note rewrites | Tail rewriting; deterministic fallback render. | — | [Distillation](../app/learning/note_distill.py) |
 | S42 | Memory correction and supersession | Explicit same/updates/coexists judgement, shown with Undo; durable forgetting. | S18 (distance threshold) | [Supersession](../app/memory/supersession.py) |
-| S43 | Refresh scheduling | Quiet-period worker sweep; recency window; estimators pay only on change; pause memory. | S18 (windows), O07 | [RUNBOOK §17](RUNBOOK.md#17-refresh-scheduling-s43) |
+| S43 | Refresh scheduling | Quiet-period worker sweep; recency window; estimators pay only on change; pause memory. | S18 (windows) | [RUNBOOK §17](RUNBOOK.md#17-refresh-scheduling-s43) |
 | S44 | Honest profile proxies | Proxy naming, narrower inference. | S59 | [Estimators](../app/learning/profile_estimators.py) |
 | S45 | Count attempts separately | Attempt identity in aggregation. | — | [Analytics](../app/services/analytics.py) |
 | S46 | Honest mastery displays | Ability, uncertainty and outcomes shown separately. | — | [Dashboard](../frontend/src/pages/Dashboard.tsx) |
@@ -177,7 +176,9 @@ native clients and offline use are also out of v0.
 
 **Resolved decisions:** O01 invited experienced adults, subjects unrestricted · O03 direction by
 V02 (thresholds are S18/S59) · O04 calibration and grading reliability first · O06 deferred under
-S06.
+S06 · O07 (2026-09-30) pausing memory also stops the profile reading message text: the two
+message dimensions keep their last value, marked paused, and nothing typed during a pause is
+read after resuming; answer-based dimensions go on.
 
 **Standing direction (D01–D12):** durable, independently usable understanding (D01); experienced
 adults first (D02); knowledge relative to domain and goal, no global score (D03); learner-led with

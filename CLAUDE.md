@@ -154,7 +154,8 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   are queued by a worker sweep (`app/services/refresh_schedule.py`) for conversations and
   learners with unread evidence and no activity for 20 minutes; due-ness is derived from the
   data, so backlogs catch up by themselves. The profile reads a recency window, and a
-  model-backed estimator pays only when its input changed. Learners can pause memory.
+  model-backed estimator pays only when its input changed. Learners can pause memory, which
+  also stops the profile reading what they type, then and afterwards (O07).
 - **Every paid call is recorded and admitted by the client** (S47, S48) — `LLMClient` writes a
   `pending` row before each call and settles it (`ok`/`failed`/`partial`);
   `app/services/spend_guard.py` refuses a call over the learner's daily caps (exact under

@@ -918,8 +918,11 @@ Memory write-back and profile refresh run on their own when things go quiet.
 - **Pausing memory** is the learner's choice (Account → Preferences). No new memories are
   saved, by the sweep or on request (the write-back endpoint answers 409 `memory_paused`), and
   resuming moves every conversation's `memory_watermark` to its newest message, so nothing said
-  while paused is ever extracted. Existing memories stay in use until forgotten. The switch is
-  about memories only: profile refresh still reads the learner's recent answers and messages.
+  while paused is ever extracted. Existing memories stay in use until forgotten. The profile
+  stops reading message text too (O07): the dimensions marked `reads_messages` (interests,
+  writing complexity) keep their last value and show as paused, a message alone makes no
+  refresh due, and resuming sets `learners.profile_messages_since` so nothing typed during the
+  pause is read. Answer-based dimensions keep refreshing.
 
 ## 18. Spend limits (S47, S48)
 
