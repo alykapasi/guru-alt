@@ -22,12 +22,12 @@ older verification runs) lives in Git.
 
 | | Count | IDs |
 | --- | --- | --- |
-| Live, v0 | 18 | S17 S18 S20 S27 S28 S31 S37 S49 S50 S53 S58 S59 S60 S62 S65 S66 S76 S77 |
+| Live, v0 | 17 | S17 S18 S20 S27 S28 S31 S37 S50 S53 S58 S59 S60 S62 S65 S66 S76 S77 |
 | Live, proposed (not v0 gates) | 4 | S64 S80 S84 S85 |
 | Open questions | 2 | O02 O05 |
-| Done | 47 | [Completed](#completed) |
+| Done | 48 | [Completed](#completed) |
 
-**Next up: workstream 5** — S49, then S37, S17, S62, S53.
+**Next up: workstream 5** — S37, then S17, S62, S53.
 
 ## Live work
 
@@ -38,7 +38,6 @@ evidence links and in [Completed](#completed).
 
 | ID | Item | Status | Remaining | Evidence |
 | --- | --- | --- | --- | --- |
-| S49 | Provider failure experience | Partial | Predictable learner-facing responses for provider rate limits and outages, with safe retry. Don't reimplement the compatibility contract. | [Registry](../app/llm/registry.py), [turn lifecycle](../app/services/turn.py) |
 | S37 | Bounded, resumable ingestion | Partial | Strict concurrency ceilings; a per-job spend ceiling if daily caps prove too coarse; split long extraction/model work into short resumable stages. | [Ingestion service](../app/services/ingestion.py), [job tests](../tests/test_ingestion_jobs.py) |
 | S17 | Durable practice lifecycle and restart verification | Partial | Checkpoint schema setup under migrations; verify real process restart/resume races; reconcile expiry with V12; safe onboarding cleanup and graph-state compatibility. | [Checkpoints](../app/services/checkpoints.py), [lifecycle tests](../tests/test_checkpoint_lifecycle.py) |
 | S62 | Measured long-history performance | Partial | Measure long-history latency and message-page growth; aggregate further only where measurements justify it. | [Query budgets](../tests/test_query_budgets.py) |
@@ -50,7 +49,7 @@ evidence links and in [Completed](#completed).
 | --- | --- | --- | --- | --- |
 | S58 | End-to-end and release gates | Partial | Browser coverage for broad sudo, v0 web restriction and durable note editing; verify changed boundaries together and required-check enforcement before release. Two order-dependent failures unfixed (see [notes](#s58-notes)). | [CI](../.github/workflows/ci.yml), [browser journeys](../frontend/e2e/) |
 | S59 | Reliability, model quality, and learning evaluation | Partial | Select permitted fixtures/founder examples, add independent grading comparisons and founder labels, measure before setting thresholds. Covers diagnosis, intent, source support, injection, extraction, difficulty. Owns S03/S67/S71/S72. Paid runs wait for data and budget. | [Reliability report](../tests/eval/reliability/report.py), [V14](V0_DECISIONS.md#accepted-product-decisions) |
-| S18 | Calibrate estimates and heuristics | Partial | With S59 data: calibrate placement, mastery bar, assistance, detour disproval, scaffolding, transfer seeds, goal freshness, retention spacing and probe days, the turn and request deadlines; measure requested vs delivered difficulty; set thresholds for the three stored-but-unread extraction ratios. | [Constants inventory](../tests/eval/reliability/knobs.py), [difficulty report](../tests/eval/reliability/difficulty.py) |
+| S18 | Calibrate estimates and heuristics | Partial | With S59 data: calibrate placement, mastery bar, assistance, detour disproval, scaffolding, transfer seeds, goal freshness, retention spacing and probe days, the turn and request deadlines, the provider retry wait; measure requested vs delivered difficulty; set thresholds for the three stored-but-unread extraction ratios. | [Constants inventory](../tests/eval/reliability/knobs.py), [difficulty report](../tests/eval/reliability/difficulty.py) |
 | S20 | Synchronize project documentation | Partial | README's private-ownership claim, CLAUDE's stub-auth/frontend descriptions, roadmap status, OPERATIONS' polling/history gaps. Keep historical milestones historical. | [README](../README.md), [CLAUDE.md](../CLAUDE.md), [ROADMAP](ROADMAP.md), [OPERATIONS](OPERATIONS.md) |
 
 ### Workstream 7 — Operated invited alpha
@@ -136,6 +135,7 @@ named in the "Hand-off" column and tracked under that ID.
 | S46 | Honest mastery displays | Ability, uncertainty and outcomes shown separately. | — | [Dashboard](../frontend/src/pages/Dashboard.tsx) |
 | S47 | Whole-request and spend budgets | Spend caps: exact per-learner admission, deployment ceiling, background pause at 90%, 429 `budget_exceeded`. Whole-request bounds: a streamed turn is cut off at `turn_deadline_seconds` keeping its text; other requests answer 504 at `request_deadline_seconds`; a learner can Stop a reply and keep what they saw. | S18 (the two deadlines); alpha caps are an operating decision. Review minors, deferred: a 504 carries no `X-Request-ID` (the deadline middleware sits outside the request-id one); UNLISTEN is skipped on a client disconnect; a timed-out reply says so twice and loses Retry on reload; onboarding registers a throwaway id for Stop | [Spend guard](../app/services/spend_guard.py), [turn control](../app/services/turn_control.py), [deadlines design](superpowers/specs/2026-09-29-deadlines-and-stop-design.md), [RUNBOOK §18](RUNBOOK.md#18-spend-limits-s47-s48) |
 | S48 | Call accounting and attribution | Every call recorded pending → settled; `@metered` attribution; cost by feature. | S60 (reconcile with provider billing) | [Meter](../app/llm/meter.py) |
+| S49 | Provider failure experience | Registry validated at startup, explicit transport limits (earlier). A provider that is busy or down after the SDK's retries is a refusal: 503 with Retry-After on routes, a coded error ending a turn (no partial reply kept, same-id retry regenerates), background work deferred, spend rows record provider_busy/provider_down; chat's Try again waits out a busy provider. | S18 (the default wait) | [Failure classification](../app/llm/providers/failure.py), [design](superpowers/specs/2026-09-30-provider-failures-design.md), [RUNBOOK §18](RUNBOOK.md#18-spend-limits-s47-s48) |
 | S51 | Interrupted-turn lifecycle | Turn states, safe retries, stale-turn recovery. | S17 (restart) | [Turn](../app/services/turn.py) |
 | S52 | Pause, resume, skip practice | Intent gate on every reply; explicit resume/skip. | — | [Guidance design §4](superpowers/specs/2026-09-24-guidance-design.md) |
 | S54 | Flashcard reveal and self-rating | Think, reveal, rate; rating schedules review only. | — | [Flashcard panel](../frontend/src/components/lessons/FlashcardPanel.tsx) |

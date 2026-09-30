@@ -965,6 +965,16 @@ Every model call is recorded and admitted by `LLMClient` itself; no service logs
   (`POST /api/v1/conversations/{id}/turns/{turn_id}/stop`) ends the turn the same way with
   `interrupted = 'stopped'` and turn status `stopped`; it reaches another process as a Postgres
   `NOTIFY turn_stop` carrying only the turn id. Both limits are uncalibrated (S18).
+- **Provider failures (S49).** After the SDK's own retries (`GURU_LLM_MAX_RETRIES`), a 429 is
+  `provider_busy` and a 5xx, 529 overload, connection error or timeout is `provider_down`
+  (`app/llm/providers/failure.py`); anything else — a bad key, a bad request — stays an error
+  and a 500. A route answers 503 `{"detail": {"code", "message", "retry_after"}}` with
+  `Retry-After` when busy (the provider's own wait, else `GURU_PROVIDER_RETRY_AFTER_SECONDS`,
+  20, uncalibrated — S18); a turn ends with that error, keeps no partial reply, and is `failed`
+  with the code, so the same `client_turn_id` regenerates; background work logs
+  `provider.deferred task=…` and the sweep retries; an ingestion stays retryable with the
+  message as its error. Spend rows record `error_kind` `provider_busy`/`provider_down`, so
+  outages count apart from bugs.
 - **Reading it.** `/api/v1/ops/spend` and the Admin page break cost down by role, model and
   feature, with counts of failed, partial and estimated calls. Estimated rows carry their
   reservation, not the provider's numbers. Rows written before this change have feature
