@@ -612,3 +612,18 @@ async def test_existing_messages_are_not_interrupted() -> None:
             assert nullable == "YES"
         finally:
             await conn.close()
+
+
+async def test_existing_learners_have_no_profile_message_cut_off() -> None:
+    """0075 (O07): a nullable cut-off, so every existing learner's messages stay readable."""
+    async with database_at("0074_turn_stop") as connect:
+        await upgrade(SCRATCH, "0075_profile_messages_since")
+        conn = await connect()
+        try:
+            nullable = await conn.fetchval(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_name = 'learners' AND column_name = 'profile_messages_since'"
+            )
+            assert nullable == "YES"
+        finally:
+            await conn.close()

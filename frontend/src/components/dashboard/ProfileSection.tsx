@@ -54,6 +54,11 @@ export function ProfileSection() {
                 {d.observation && (
                   <p className="text-caption text-base-content/40 mt-0.5">{d.observation}</p>
                 )}
+                {d.paused && (
+                  <p className="text-caption text-base-content/60 mt-0.5">
+                    Paused — not updated while Guru isn&apos;t remembering your conversations
+                  </p>
+                )}
                 {pinned.has(OVERRIDDEN_DIMENSIONS[d.key]) && (
                   <p className="text-caption text-base-content/60 mt-0.5">
                     Your setting overrides this

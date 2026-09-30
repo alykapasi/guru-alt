@@ -299,7 +299,8 @@ async def set_remember(session: AsyncSession, learner_id: uuid.UUID, remember: b
 
     Resuming moves every conversation's cursor to its newest message, so what was said while
     memory was paused is never learned from — turning it back on is not consent to go back and
-    read the pause.
+    read the pause. The profile gets the same cut-off (O07): it reads only messages written
+    after the resume.
     """
     learner = await session.get(Learner, learner_id)
     assert learner is not None
@@ -321,6 +322,8 @@ async def set_remember(session: AsyncSession, learner_id: uuid.UUID, remember: b
         )
         for conversation in conversations.all():
             conversation.memory_watermark = newest[conversation.id]
+        # The database's clock, the one messages.created_at is written by.
+        learner.profile_messages_since = func.localtimestamp()
     learner.remember_conversations = remember
     await session.commit()
     await session.refresh(learner)  # `updated_at` is set by the database

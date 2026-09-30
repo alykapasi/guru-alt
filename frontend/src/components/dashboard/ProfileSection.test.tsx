@@ -7,6 +7,7 @@ vi.mock("../../api/hooks", () => ({
       dimensions: [
         { key: "pace", label: "Pace", observation: "Speeding up", value: { trend: "speeding_up" } },
         { key: "engagement", label: "Engagement", observation: null, value: 0.5 },
+        { key: "interests", label: "Topics", observation: null, value: ["chess"], paused: true },
       ],
     },
   }),
@@ -33,5 +34,10 @@ describe("ProfileSection", () => {
   it("says when the learner's own setting overrides an inferred dimension", () => {
     render(<ProfileSection />);
     expect(screen.getAllByText(/Your setting overrides this/)).toHaveLength(1);
+  });
+
+  it("says which dimensions wait while memory is paused", () => {
+    render(<ProfileSection />);
+    expect(screen.getAllByText(/Paused — not updated while/)).toHaveLength(1);
   });
 });

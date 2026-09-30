@@ -45,6 +45,8 @@ describe("Account", () => {
   it("says exactly what pausing memory does", () => {
     render(<Account />);
     expect(screen.getByText(/won't save new memories from your conversations/)).toBeInTheDocument();
-    expect(screen.getByText(/learner profile .* still reads your recent/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/stops reading what you type.*answers still count/),
+    ).toBeInTheDocument();
   });
 });

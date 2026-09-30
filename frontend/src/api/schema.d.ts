@@ -2939,6 +2939,11 @@ export interface components {
              * @default
              */
             observation: string;
+            /**
+             * Paused
+             * @default false
+             */
+            paused: boolean;
             /** Source */
             source: string;
             /** Uncertainty */

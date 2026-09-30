@@ -57,3 +57,6 @@ class Learner(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # The learner's switch for memory (S43). Off: nothing new is learned from their
     # conversations, by the scheduler or on request; what is already remembered stays usable.
     remember_conversations: Mapped[bool] = mapped_column(server_default=true(), default=True)
+    # When memory was last turned back on (O07). The profile reads only messages written after
+    # it, so what was typed during a pause is never read later; naive, like messages.created_at.
+    profile_messages_since: Mapped[datetime | None] = mapped_column(default=None)
