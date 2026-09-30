@@ -8,6 +8,7 @@ import { CitationPane } from "../components/chat/CitationPane";
 import { PracticeControls } from "../components/chat/PracticeControls";
 import { PracticePausedStrip } from "../components/chat/PracticePausedStrip";
 import type { Citation } from "../api/sse";
+import { TurnError } from "../components/chat/TurnError";
 
 export function Chat() {
   const { conversationId } = useParams<{ conversationId: string }>();
@@ -21,6 +22,7 @@ export function Chat() {
     pending,
     error,
     canRetry,
+    retryAfter,
     retry,
     awaitingGoalAccept,
     awaitingReply,
@@ -73,14 +75,12 @@ export function Chat() {
           />
         )}
         {error && (
-          <div className="text-caption text-error mx-auto flex w-full max-w-3xl items-center gap-3 px-6 pb-2">
-            <p>{error}</p>
-            {canRetry && (
-              <button type="button" className="btn btn-ghost btn-xs" onClick={() => void retry()}>
-                Try again
-              </button>
-            )}
-          </div>
+          <TurnError
+            error={error}
+            canRetry={canRetry}
+            retryAfter={retryAfter}
+            onRetry={() => void retry()}
+          />
         )}
         {conversation?.archived_at ? (
           // Read-only until unarchived (S61): the server refuses a message here with 409.

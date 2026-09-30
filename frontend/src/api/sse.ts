@@ -61,7 +61,7 @@ export interface Citation {
  * hand-maintained alongside the backend's `_sse()` calls. */
 export type TurnEvent =
   | { type: "token"; text: string }
-  | { type: "error"; detail: string; code?: string }
+  | { type: "error"; detail: string; code?: string; retry_after?: number | null }
   | {
       type: "done";
       message_id: string | null;

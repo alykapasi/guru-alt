@@ -36,6 +36,8 @@ export function useChatConversation(conversationId: string | undefined) {
   const messagesQuery = useMessages(conversationId);
   const [pending, setPending] = useState<PendingTurn | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Seconds a busy provider asked for before the retry (S49); null when nothing to wait for.
+  const [retryAfter, setRetryAfter] = useState<number | null>(null);
   const [failed, setFailed] = useState<FailedTurn | null>(null);
   // Every mode's `awaiting_reply`/`done` SSE event carries the practice item currently in play
   // (grounding-only in plain chat, the thing being graded in workflow mode) — tracked generically
@@ -96,6 +98,7 @@ export function useChatConversation(conversationId: string | undefined) {
     async (turn: FailedTurn) => {
       if (!conversationId) return;
       setError(null);
+      setRetryAfter(null);
       setFailed(null);
       setPending({ userContent: turn.content, assistantText: "", toolCalls: [] });
 
@@ -127,6 +130,7 @@ export function useChatConversation(conversationId: string | undefined) {
           } else if (ev.type === "error") {
             setError(ev.detail);
             setFailed(turn);
+            setRetryAfter(ev.code === "provider_busy" ? (ev.retry_after ?? null) : null);
           } else if (ev.type === "awaiting_reply") {
             setLiveItem(ev.item);
             setSessionDetail(ev.detail);
@@ -223,6 +227,7 @@ export function useChatConversation(conversationId: string | undefined) {
     loadEarlierMessages: messagesQuery.fetchNextPage,
     pending,
     error,
+    retryAfter,
     canRetry: failed !== null && !pending,
     retry,
     awaitingGoalAccept,

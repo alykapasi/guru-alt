@@ -10,6 +10,7 @@ import { PracticeControls } from "../components/chat/PracticeControls";
 import { PracticePausedStrip } from "../components/chat/PracticePausedStrip";
 import { RATINGS } from "../lib/flashcardRatings";
 import type { Citation } from "../api/sse";
+import { TurnError } from "../components/chat/TurnError";
 
 const PRACTICE_ENDED_NOTICE = "That question no longer fits your plan, so practice ended.";
 
@@ -28,6 +29,7 @@ export function Session() {
     pending,
     error,
     canRetry,
+    retryAfter,
     retry,
     item,
     sessionDetail,
@@ -122,14 +124,12 @@ export function Session() {
           />
         )}
         {error && (
-          <div className="text-caption text-error mx-auto flex w-full max-w-3xl items-center gap-3 px-6 pb-2">
-            <p>{error}</p>
-            {canRetry && (
-              <button type="button" className="btn btn-ghost btn-xs" onClick={() => void retry()}>
-                Try again
-              </button>
-            )}
-          </div>
+          <TurnError
+            error={error}
+            canRetry={canRetry}
+            retryAfter={retryAfter}
+            onRetry={() => void retry()}
+          />
         )}
         {endedNotice ? (
           <PracticePausedStrip onResume={handleResume} onSkip={handleSkip} notice={endedNotice} />

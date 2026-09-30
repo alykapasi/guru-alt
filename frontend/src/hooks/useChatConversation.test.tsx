@@ -24,7 +24,7 @@ vi.mock("../api/sse", async (importOriginal) => ({
         sse.frames.push(resolve as (ev: unknown) => void),
       );
       yield ev;
-      if (ev.type === "stopped") return;
+      if (ev.type === "stopped" || ev.type === "error") return;
     }
   },
 }));
@@ -67,5 +67,24 @@ describe("useChatConversation stop", () => {
 
     await nextFrame({ type: "stopped", message_id: null });
     await act(() => sending);
+  });
+  it("remembers how long a busy provider asked to wait", async () => {
+    const { result } = renderHook(() => useChatConversation("c-1"), { wrapper });
+
+    let sending: Promise<void> = Promise.resolve();
+    act(() => {
+      sending = result.current.send("Hi", { mode: "chat" });
+    });
+    await nextFrame({ type: "turn", turn_id: "t-2" });
+    await nextFrame({
+      type: "error",
+      detail: "The tutor is busy",
+      code: "provider_busy",
+      retry_after: 7,
+    });
+    await act(() => sending);
+
+    expect(result.current.error).toBe("The tutor is busy");
+    expect(result.current.retryAfter).toBe(7);
   });
 });
