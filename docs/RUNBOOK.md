@@ -190,6 +190,22 @@ Tuning knobs (`ocr_concurrency`, `embed_batch_size`, `embed_concurrency`, `kc_ta
 `kc_tag_min_confidence`, `max_upload_bytes`) all live in `app/core/config.py` with inline rationale.
 DB writes stay serialized regardless of concurrency settings — only network/CPU work parallelizes.
 
+### Stages, slots and resuming (S37)
+
+An ingestion job runs in stages that each commit, recorded in `sources.stage`:
+extract (text saved to `ingest/{source_id}/extract.json.gz` in the object store) → embed
+(chunks in `staged_chunks`, committed per window of `GURU_EMBED_BATCH_SIZE ×
+GURU_EMBED_CONCURRENCY`) → publish (one transaction: old chunks superseded, cited ones kept;
+staged rows become live; the source is `done`) → tag (concept tags). A retry or a reclaimed
+lease resumes at the recorded stage, so OCR, transcripts and embeddings are never paid twice;
+nothing reads `staged_chunks`, so retrieval never sees half a source. A refused tag stage
+leaves the source `done` and searchable with `stage = 'tag'`; the reconcile sweep retries it
+up to `GURU_INGEST_MAX_ATTEMPTS`, then logs `ingest.tagging_abandoned`. A job takes an exact
+global slot (`GURU_INGEST_MAX_CONCURRENT_JOBS`, 4) and one of its learner's
+(`GURU_INGEST_MAX_JOBS_PER_LEARNER`, 2) as advisory locks, or leaves the source `pending`; a
+finishing job dispatches the next waiting upload. Deleting a source or an account removes its
+saved extraction and staged rows.
+
 ---
 
 ## 6. The evaluation & experiment suite

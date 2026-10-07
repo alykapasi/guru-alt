@@ -130,7 +130,9 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   deleting them when something cites them, and re-processing a finished source is the
   learner's confirmed decision. `uv run poe reindex` re-embeds in place (ids kept) and only
   re-extracts when asked; staleness is read from the chunks, so a run resumes by running again.
-  See [docs/RUNBOOK.md](docs/RUNBOOK.md) §15.
+  See [docs/RUNBOOK.md](docs/RUNBOOK.md) §15. Ingestion runs in committed stages (extract →
+  embed → publish → tag) that resume where they stopped, under exact global and per-learner
+  slots (S37).
 - **Archive, delete and forget are three actions** (S61, S42; V11) — archive is reversible and
   out of use (retrieval drops archived sources, archived conversations are read-only); delete is
   immediate after an impact report of what stays; forget removes only what was derived — lessons
