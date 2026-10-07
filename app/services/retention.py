@@ -149,6 +149,11 @@ RETENTION: tuple[StoreRetention, ...] = (
     StoreRetention("sources", "deleted", "Cascades from the learner; chunks and tags with it."),
     StoreRetention("chunks", "deleted", "Cascades from the source."),
     StoreRetention(
+        "staged_chunks",
+        "deleted",
+        "Cascades from the source; empty once a source is published (S37).",
+    ),
+    StoreRetention(
         "blobs",
         "deleted",
         "Object storage, which no foreign key reaches — deleted explicitly, by key, after the "

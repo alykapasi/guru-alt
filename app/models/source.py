@@ -37,6 +37,13 @@ class SourceStatus(StrEnum):
     FAILED = "failed"
 
 
+class SourceStage(StrEnum):
+    """Where an interrupted ingestion resumes (S37); NULL means nothing to resume."""
+
+    EMBED = "embed"  # extracted and saved; chunks being embedded into staged_chunks
+    TAG = "tag"  # published; concept tags still to write
+
+
 class Source(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """One ingestible artifact (a file or a URL) and its ingestion status."""
 
@@ -83,6 +90,8 @@ class Source(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     content_type: Mapped[str | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(index=True, default=SourceStatus.PENDING)
+    # Where the job resumes (S37). Set by each committed stage; NULL once tagging is done.
+    stage: Mapped[str | None] = mapped_column(default=None)
     error: Mapped[str | None] = mapped_column(Text, default=None)
     # Optional upload-time scope, inherited by chunks for metadata filtering.
     subject_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -147,6 +156,28 @@ class Chunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     kc_links: Mapped[list["ChunkKC"]] = relationship(
         back_populates="chunk", cascade="all, delete-orphan"
     )
+
+
+class StagedChunk(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A chunk embedded but not yet published (S37).
+
+    Nothing but the embed and publish stages reads this table, so retrieval — and every query
+    filtering ``chunks.superseded_at IS NULL`` — never sees half a source. Publish copies the
+    rows into ``chunks`` in one transaction and deletes them.
+    """
+
+    __tablename__ = "staged_chunks"
+    __table_args__ = (UniqueConstraint("source_id", "ordinal", name="uq_staged_chunks_ordinal"),)
+
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sources.id", ondelete="CASCADE"), index=True
+    )
+    ordinal: Mapped[int]
+    text: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[Any] = mapped_column(Vector(_EMBED_DIM))
+    embedding_space: Mapped[str]
+    pipeline_version: Mapped[int]
+    provenance: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 
 class ChunkKC(UUIDPrimaryKeyMixin, Base):

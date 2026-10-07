@@ -627,3 +627,19 @@ async def test_existing_learners_have_no_profile_message_cut_off() -> None:
             assert nullable == "YES"
         finally:
             await conn.close()
+
+
+async def test_existing_sources_have_nothing_to_resume() -> None:
+    """0076 (S37): a nullable stage and an empty staging table."""
+    async with database_at("0075_profile_messages_since") as connect:
+        await upgrade(SCRATCH, "0076_resumable_ingestion")
+        conn = await connect()
+        try:
+            nullable = await conn.fetchval(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_name = 'sources' AND column_name = 'stage'"
+            )
+            staged = await conn.fetchval("SELECT count(*) FROM staged_chunks")
+            assert (nullable, staged) == ("YES", 0)
+        finally:
+            await conn.close()

@@ -70,7 +70,8 @@ class Settings(BaseSettings):
     # firing and the FAILED status landing.
     #
     # ``ingest_max_attempts`` stops a source that kills its worker every time from cycling
-    # forever. ``ingest_max_concurrent_jobs`` is a *soft* cap — see claim_source.
+    # forever. ``ingest_max_concurrent_jobs`` is an exact cap, taken as advisory-lock slots — see
+    # app/services/ingest_slots.py.
     ingest_job_timeout_seconds: int = 3600
     # The checkpointer's own pool (S17). Small on purpose: it is used only when a graph pauses
     # or resumes, which is a fraction of requests, and it is a second pool against the same
@@ -81,6 +82,9 @@ class Settings(BaseSettings):
     ingest_lease_grace_seconds: int = 120
     ingest_max_attempts: int = 3
     ingest_max_concurrent_jobs: int = 4
+    # How many of the concurrent ingestion jobs one learner may hold at once (S37), so one
+    # learner's pile of uploads cannot take every slot. Uncalibrated (S18).
+    ingest_max_jobs_per_learner: int = Field(default=2, gt=0, le=16)
     ingest_max_extracted_chars: int = 20_000_000
     ingest_max_chunks: int = 5_000
 
