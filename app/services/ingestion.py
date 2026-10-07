@@ -22,14 +22,14 @@ from datetime import timedelta
 from pathlib import Path
 
 from pydantic import BaseModel
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.core.config import Settings, get_settings
 from app.llm import LLMClient
 from app.models.erasure import ErasureKind
-from app.models.source import Chunk, Source, SourceKind, SourceStatus, StagedChunk
+from app.models.source import Chunk, Source, SourceKind, SourceStage, SourceStatus, StagedChunk
 from app.rag import pipeline
 from app.rag import simhash as simhash_mod
 from app.rag.demux import MediaDemuxer
@@ -319,7 +319,8 @@ async def claim_source(
     ``ingest_max_attempts``, or the concurrency cap is full. ``None`` is not an error: a
     duplicate delivery of an already-finished job is the *expected* case, not a failure.
 
-    Claimable means PENDING, or PROCESSING with a lapsed lease. Since the lease outlives the
+    Claimable means PENDING, PROCESSING with a lapsed lease, or DONE with its tag stage still
+    to run (S37; it stays DONE, since it is already searchable). Since the lease outlives the
     job timeout by construction, a lapsed lease can only mean the worker died — so re-claiming
     it is recovery, not a race with a running job.
 
@@ -346,12 +347,18 @@ async def claim_source(
                     Source.status == SourceStatus.PROCESSING,
                     Source.lease_expires_at < func.now(),
                 ),
+                # Published, concept tags still to write (S37): searchable already, so it stays
+                # DONE while the tag stage runs.
+                and_(Source.status == SourceStatus.DONE, Source.stage == SourceStage.TAG),
             ),
             Source.attempts < settings.ingest_max_attempts,
             live_jobs < settings.ingest_max_concurrent_jobs,
         )
         .values(
-            status=SourceStatus.PROCESSING,
+            status=case(
+                (Source.status == SourceStatus.DONE, SourceStatus.DONE),
+                else_=SourceStatus.PROCESSING,
+            ),
             attempts=Source.attempts + 1,
             lease_expires_at=func.now() + lease,
             error=None,
@@ -452,6 +459,11 @@ async def reconcile_stranded(
                     and_(
                         Source.status == SourceStatus.PROCESSING,
                         Source.lease_expires_at < func.now(),
+                    ),
+                    and_(
+                        Source.status == SourceStatus.DONE,
+                        Source.stage == SourceStage.TAG,
+                        Source.updated_at < func.now() - grace,
                     ),
                 ),
             )
@@ -646,26 +658,52 @@ async def ingest_source(
     if source is None:
         return None
 
-    try:
-        # Existing URL rows can still arrive through old queue messages or reconciliation.
-        # Even a previously downloaded blob must not be ingested as a URL in v0.
-        _require_file_source(source.kind)
-        async with asyncio.timeout(settings.ingest_job_timeout_seconds):
-            await pipeline.run(
-                session,
-                blobstore,
-                llm,
-                source,
-                transcriber=transcriber,
-                demuxer=demuxer,
-                settings=settings,
-            )
-    except Exception as exc:
-        await session.rollback()  # discard the unfinished stage's writes; earlier ones stand
-        return await _record_failure(session, source_id, exc, settings=settings)
+    if source.status != SourceStatus.DONE:  # a tag-only claim skips straight to tagging
+        try:
+            # Existing URL rows can still arrive through old queue messages or reconciliation.
+            # Even a previously downloaded blob must not be ingested as a URL in v0.
+            _require_file_source(source.kind)
+            async with asyncio.timeout(settings.ingest_job_timeout_seconds):
+                await pipeline.run(
+                    session,
+                    blobstore,
+                    llm,
+                    source,
+                    transcriber=transcriber,
+                    demuxer=demuxer,
+                    settings=settings,
+                )
+        except Exception as exc:
+            await session.rollback()  # discard this stage's uncommitted writes; earlier ones stand
+            return await _record_failure(session, source_id, exc, settings=settings)
+        await drop_artifact(session, blobstore, source_id)
+        source = await session.get(Source, source_id, populate_existing=True)
+        if source is None or source.stage != SourceStage.TAG:
+            return source  # a same-text duplicate has nothing to tag
+    return await _tag_stage(session, llm, source, settings)
 
-    await drop_artifact(session, blobstore, source_id)
-    return await session.get(Source, source_id, populate_existing=True)
+
+async def _tag_stage(
+    session: AsyncSession, llm: LLMClient, source: Source, settings: Settings
+) -> Source:
+    """Stage 4 (S37): write concept tags. A failure leaves the source DONE, searchable, and
+    ``stage = tag`` for the reconcile sweep; the last allowed attempt gives up once, loudly."""
+    source_id = source.id
+    try:
+        await pipeline.retag_source(session, llm, source, settings=settings)
+        source.stage = None
+    except Exception:
+        await session.rollback()
+        refreshed = await session.get(Source, source_id, populate_existing=True)
+        assert refreshed is not None
+        source = refreshed
+        if source.attempts >= settings.ingest_max_attempts:
+            logger.warning("ingest.tagging_abandoned source=%s", source_id)
+        else:
+            logger.info("ingest.tagging_deferred source=%s", source_id, exc_info=True)
+    source.lease_expires_at = None
+    await session.commit()
+    return source
 
 
 async def drop_artifact(session: AsyncSession, blobstore: BlobStore, source_id: uuid.UUID) -> None:

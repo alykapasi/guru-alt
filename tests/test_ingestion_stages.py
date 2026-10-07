@@ -1,17 +1,21 @@
 """Ingestion in committed stages, resumed where it stopped (S37)."""
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
+from app.learning.kc_tagging import KCCandidate, tag_chunk
 from app.llm import ModelRole
 from app.llm.meter import ProviderUnavailable
 from app.llm.providers.fake import FakeProvider
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
+from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
-from app.models.source import Chunk, SourceKind, SourceStatus, StagedChunk
+from app.models.source import Chunk, ChunkKC, SourceKind, SourceStatus, StagedChunk
 from app.rag import pipeline
 from app.services import ingestion
 from app.storage import InMemoryBlobStore
@@ -189,3 +193,127 @@ async def test_a_finished_source_is_done_with_its_chunks_and_nothing_staged(
     assert done.meta["chunk_count"] == len(await _live_chunks(db_session, source.id)) > 1
     assert await _staged(db_session, source.id) == 0
     assert not await store.exists(pipeline.artifact_key(source.id))
+
+
+TAGS = '{"tags": [{"kc": 1, "confidence": 0.9}]}'
+
+
+async def _scoped_source(session: AsyncSession, store: InMemoryBlobStore):
+    subject = Subject(slug=f"s-{uuid.uuid4().hex[:6]}", name="S")
+    session.add(subject)
+    await session.flush()
+    topic = Topic(subject_id=subject.id, slug="t", name="T")
+    session.add(topic)
+    await session.flush()
+    session.add(KC(topic_id=topic.id, slug="k", name="K"))
+    await session.flush()
+    return await _source(
+        session, store, data=b"Cells respire to release energy.", subject_id=subject.id
+    )
+
+
+async def _tags(session: AsyncSession, source_id: uuid.UUID) -> int:
+    return (
+        await session.scalar(
+            select(func.count())
+            .select_from(ChunkKC)
+            .join(Chunk, Chunk.id == ChunkKC.chunk_id)
+            .where(Chunk.source_id == source_id)
+        )
+        or 0
+    )
+
+
+async def test_a_tagging_refusal_is_not_swallowed() -> None:
+    llm = _llm(FakeProvider(refuse=ProviderUnavailable("busy", retry_after=5.0)))
+    with pytest.raises(ProviderUnavailable):
+        await tag_chunk(llm, "text", [KCCandidate(id=uuid.uuid4(), name="K", description=None)])
+
+
+async def test_a_parse_failure_still_tags_nothing_quietly() -> None:
+    tags, _usage = await tag_chunk(
+        fake_llm_client("not json"),
+        "text",
+        [KCCandidate(id=uuid.uuid4(), name="K", description=None)],
+    )
+    assert tags == []
+
+
+async def test_a_finished_ingest_is_tagged(db_session: AsyncSession) -> None:
+    store = InMemoryBlobStore()
+    source = await _scoped_source(db_session, store)
+
+    done = await ingestion.ingest_source(db_session, store, fake_llm_client(TAGS), source.id)
+
+    assert done is not None and (done.status, done.stage) == (SourceStatus.DONE, None)
+    assert await _tags(db_session, source.id) > 0
+
+
+async def test_a_refused_tag_leaves_the_source_done_and_searchable(
+    db_session: AsyncSession,
+) -> None:
+    store = InMemoryBlobStore()
+    source = await _scoped_source(db_session, store)
+    refusing = _llm(
+        FakeProvider(refuse=ProviderUnavailable("down"), refuse_calls=frozenset({"complete"}))
+    )
+
+    done = await ingestion.ingest_source(db_session, store, refusing, source.id)
+
+    assert done is not None and (done.status, done.stage) == (SourceStatus.DONE, "tag")
+    assert done.lease_expires_at is None
+    assert await _live_chunks(db_session, source.id)
+    assert await _tags(db_session, source.id) == 0
+
+
+async def test_the_sweep_requeues_a_source_waiting_to_be_tagged(db_session: AsyncSession) -> None:
+    store = InMemoryBlobStore()
+    source = await _scoped_source(db_session, store)
+    refusing = _llm(
+        FakeProvider(refuse=ProviderUnavailable("down"), refuse_calls=frozenset({"complete"}))
+    )
+    await ingestion.ingest_source(db_session, store, refusing, source.id)
+    source.updated_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=1)
+    await db_session.commit()
+    queued: list[uuid.UUID] = []
+
+    async def enqueue(source_id: uuid.UUID) -> None:
+        queued.append(source_id)
+
+    await ingestion.reconcile_stranded(db_session, enqueue, settings=Settings())
+
+    assert source.id in queued
+
+
+async def test_the_tag_retry_does_not_embed_again(db_session: AsyncSession) -> None:
+    store = _CountingStore()
+    source = await _scoped_source(db_session, store)
+    refusing = _llm(
+        FakeProvider(refuse=ProviderUnavailable("down"), refuse_calls=frozenset({"complete"}))
+    )
+    await ingestion.ingest_source(db_session, store, refusing, source.id)
+    tagger = _FlakyEmbed(fail_on=None)
+    tagger._reply = TAGS
+
+    done = await ingestion.ingest_source(db_session, store, _llm(tagger), source.id)
+
+    assert done is not None and (done.status, done.stage) == (SourceStatus.DONE, None)
+    assert tagger.embedded == [] and store.downloads == 1
+    assert await _tags(db_session, source.id) > 0
+
+
+async def test_tagging_that_runs_out_of_tries_leaves_the_source_done(
+    db_session: AsyncSession,
+) -> None:
+    store = InMemoryBlobStore()
+    source = await _scoped_source(db_session, store)
+    refusing = _llm(
+        FakeProvider(refuse=ProviderUnavailable("down"), refuse_calls=frozenset({"complete"}))
+    )
+    settings = Settings(ingest_max_attempts=1)
+    await ingestion.ingest_source(db_session, store, refusing, source.id, settings=settings)
+    again = await ingestion.ingest_source(db_session, store, refusing, source.id, settings=settings)
+
+    assert again is not None
+    assert (again.status, again.stage, again.attempts) == (SourceStatus.DONE, "tag", 1)
+    assert await ingestion.claim_source(db_session, source.id, settings=settings) is None

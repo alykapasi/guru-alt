@@ -23,7 +23,7 @@ from app.llm import build_llm_client
 from app.llm.attribution import attributed
 from app.llm.meter import CallRefused
 from app.models.learner import Learner
-from app.models.source import Source
+from app.models.source import Source, SourceStage
 from app.rag import pipeline
 from app.rag.demux import build_demuxer
 from app.rag.transcription import build_transcriber
@@ -126,7 +126,17 @@ async def _retag_source_task(source_id: str) -> None:
         source = await session.get(Source, uuid.UUID(source_id))
         if source is None:
             return
-        await pipeline.retag_source(session, llm, source, settings=settings)
+        try:
+            await pipeline.retag_source(session, llm, source, settings=settings)
+        except CallRefused as exc:
+            # Deferred, not dropped (S37): the sweep retries a source waiting to be tagged.
+            await session.rollback()
+            source = await session.get(Source, uuid.UUID(source_id), populate_existing=True)
+            if source is not None:
+                source.stage = SourceStage.TAG
+                source.attempts = 0
+                await session.commit()
+            logger.info("%s.deferred task=retag_source", exc.reason)
 
 
 async def _reconcile_once() -> None:
