@@ -117,16 +117,6 @@ async def test_a_source_that_has_burned_its_attempts_is_not_reclaimed(
     assert await ingestion.claim_source(db_session, source.id, settings=settings) is None
 
 
-async def test_the_concurrency_cap_refuses_a_further_claim(db_session: AsyncSession) -> None:
-    store = InMemoryBlobStore()
-    settings = Settings(ingest_max_concurrent_jobs=1)
-    busy = await _source(db_session, store)
-    await ingestion.claim_source(db_session, busy.id, settings=settings)
-    waiting = await _source(db_session, store)
-
-    assert await ingestion.claim_source(db_session, waiting.id, settings=settings) is None
-
-
 async def test_finishing_releases_the_lease(db_session: AsyncSession) -> None:
     store = InMemoryBlobStore()
     source = await _source(db_session, store)

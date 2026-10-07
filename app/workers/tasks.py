@@ -63,6 +63,7 @@ async def _ingest_source_task(source_id: str) -> None:
             uuid.UUID(source_id),
             transcriber=transcriber,
             demuxer=demuxer,
+            enqueue=_enqueue_ingestion,
         )
 
 

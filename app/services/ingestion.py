@@ -23,7 +23,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 from sqlalchemy import and_, case, delete, func, or_, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.core.config import Settings, get_settings
@@ -35,7 +35,7 @@ from app.rag import simhash as simhash_mod
 from app.rag.demux import MediaDemuxer
 from app.rag.fetch import FetchError, FetchTransportError
 from app.rag.transcription import Transcriber
-from app.services import knowledge
+from app.services import ingest_slots, knowledge
 from app.storage import DEFAULT_CONTENT_TYPE, BlobStore
 
 logger = logging.getLogger(__name__)
@@ -316,7 +316,7 @@ async def claim_source(
 
     Returns the claimed source, or ``None`` when there is nothing for this job to do — the
     source is already DONE, someone else holds a live lease, it has burned through
-    ``ingest_max_attempts``, or the concurrency cap is full. ``None`` is not an error: a
+    ``ingest_max_attempts``. ``None`` is not an error: a
     duplicate delivery of an already-finished job is the *expected* case, not a failure.
 
     Claimable means PENDING, PROCESSING with a lapsed lease, or DONE with its tag stage still
@@ -324,19 +324,10 @@ async def claim_source(
     job timeout by construction, a lapsed lease can only mean the worker died — so re-claiming
     it is recovery, not a race with a running job.
 
-    ``ingest_max_concurrent_jobs`` is enforced by a subquery inside this same UPDATE, which is
-    tighter than a read-then-write but still a **soft** cap: under READ COMMITTED two claims
-    racing can both see room and both take it. It bounds runaway concurrency; it is not a
-    semaphore. An exact one needs advisory locks over a fixed slot set, held on a dedicated
-    connection for the job's lifetime — worth doing when the cap has to be a guarantee.
+    The concurrency ceiling is not here: ``ingest_source`` takes exact slots
+    (``app/services/ingest_slots.py``) before claiming.
     """
     lease = timedelta(seconds=lease_seconds(settings))
-    live_jobs = (
-        select(func.count())
-        .select_from(Source)
-        .where(Source.status == SourceStatus.PROCESSING, Source.lease_expires_at > func.now())
-        .scalar_subquery()
-    )
     claimed = await session.execute(
         update(Source)
         .where(
@@ -352,7 +343,6 @@ async def claim_source(
                 and_(Source.status == SourceStatus.DONE, Source.stage == SourceStage.TAG),
             ),
             Source.attempts < settings.ingest_max_attempts,
-            live_jobs < settings.ingest_max_concurrent_jobs,
         )
         .values(
             status=case(
@@ -637,6 +627,7 @@ async def ingest_source(
     transcriber: Transcriber | None = None,
     demuxer: MediaDemuxer | None = None,
     settings: Settings | None = None,
+    enqueue: Callable[[uuid.UUID], Awaitable[None]] | None = None,
 ) -> Source | None:
     """Claim ``source_id`` and run the pipeline, recording DONE or FAILED.
 
@@ -654,6 +645,63 @@ async def ingest_source(
     expand into.
     """
     settings = settings or get_settings()
+    learner_id = await session.scalar(select(Source.learner_id).where(Source.id == source_id))
+    if learner_id is None:
+        return None
+    slots = await ingest_slots.take(_engine_of(session), learner_id, settings)
+    if slots is None:
+        return None  # full: the source stays pending; a finishing job or the sweep starts it
+    try:
+        return await _ingest_claimed(
+            session, blobstore, llm, source_id, transcriber, demuxer, settings
+        )
+    finally:
+        await slots.release()
+        if enqueue is not None:
+            await _start_next(session, enqueue, learner_id, settings)
+
+
+def _engine_of(session: AsyncSession) -> AsyncEngine:
+    """The engine behind ``session`` — slots need their own connection to the same database."""
+    bind = session.bind
+    return bind if isinstance(bind, AsyncEngine) else bind.engine
+
+
+async def _start_next(
+    session: AsyncSession,
+    enqueue: Callable[[uuid.UUID], Awaitable[None]],
+    learner_id: uuid.UUID,
+    settings: Settings,
+) -> None:
+    """Dispatch the oldest waiting upload — this learner's first — now that a slot is free."""
+    try:
+        next_id = await session.scalar(
+            select(Source.id)
+            .where(
+                Source.status == SourceStatus.PENDING,
+                Source.attempts < settings.ingest_max_attempts,
+                Source.kind == SourceKind.FILE,
+            )
+            .order_by((Source.learner_id != learner_id), Source.created_at, Source.id)
+            .limit(1)
+        )
+        if next_id is not None:
+            await enqueue(next_id)
+    except Exception:
+        # The sweep finds it anyway; a missed dispatch only costs a wait.
+        logger.warning("ingest.next_not_dispatched", exc_info=True)
+
+
+async def _ingest_claimed(
+    session: AsyncSession,
+    blobstore: BlobStore,
+    llm: LLMClient,
+    source_id: uuid.UUID,
+    transcriber: Transcriber | None,
+    demuxer: MediaDemuxer | None,
+    settings: Settings,
+) -> Source | None:
+    """Claim ``source_id`` (slots already held) and run its stages from where it stopped."""
     source = await claim_source(session, source_id, settings=settings)
     if source is None:
         return None
