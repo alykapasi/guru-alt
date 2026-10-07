@@ -198,12 +198,14 @@ extract (text saved to `ingest/{source_id}/extract.json.gz` in the object store)
 GURU_EMBED_CONCURRENCY`) → publish (one transaction: old chunks superseded, cited ones kept;
 staged rows become live; the source is `done`) → tag (concept tags). A retry or a reclaimed
 lease resumes at the recorded stage, so OCR, transcripts and embeddings are never paid twice;
-nothing reads `staged_chunks`, so retrieval never sees half a source. A refused tag stage
+nothing reads `staged_chunks`, so retrieval never sees half a source. The tag stage holds a
+lease like any job, so the sweep never starts a second one on a large source. A refused tag stage
 leaves the source `done` and searchable with `stage = 'tag'`; the reconcile sweep retries it
 up to `GURU_INGEST_MAX_ATTEMPTS`, then logs `ingest.tagging_abandoned`. A job takes an exact
 global slot (`GURU_INGEST_MAX_CONCURRENT_JOBS`, 4) and one of its learner's
 (`GURU_INGEST_MAX_JOBS_PER_LEARNER`, 2) as advisory locks, or leaves the source `pending`; a
-finishing job dispatches the next waiting upload. Deleting a source or an account removes its
+finishing job dispatches the waiting upload whose learner runs fewest jobs (none for a learner
+at their cap), so two busy learners cannot keep every slot between them. Deleting a source or an account removes its
 saved extraction and staged rows.
 
 ---
