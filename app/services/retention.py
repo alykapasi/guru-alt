@@ -48,6 +48,7 @@ from app.models.preference import LearnerPreference
 from app.models.profile import LearnerProfile, ProfileDimension
 from app.models.publication import Publication
 from app.models.source import Chunk, Source
+from app.rag import pipeline
 from app.services import auth as auth_svc
 from app.services import ingestion
 from app.storage.base import BlobStore
@@ -378,6 +379,9 @@ async def delete_learner(
         ).all()
         if key
     ]
+    source_ids = list(
+        (await session.scalars(select(Source.id).where(Source.learner_id == learner_id))).all()
+    )
     authored = await session.execute(
         delete(Item)
         .where(or_(Item.author_learner_id == learner_id, Item.owner_learner_id == learner_id))
@@ -420,6 +424,13 @@ async def delete_learner(
                 report.blobs_deleted += 1
             else:
                 report.blobs_retained += 1
+        except Exception:
+            report.blobs_failed.append(key)
+    for source_id in source_ids:
+        # Saved extractions of half-ingested sources (S37): per source, never shared.
+        key = pipeline.artifact_key(source_id)
+        try:
+            await blobstore.delete(key)
         except Exception:
             report.blobs_failed.append(key)
     if report.blobs_failed:

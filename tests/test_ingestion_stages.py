@@ -317,3 +317,38 @@ async def test_tagging_that_runs_out_of_tries_leaves_the_source_done(
     assert again is not None
     assert (again.status, again.stage, again.attempts) == (SourceStatus.DONE, "tag", 1)
     assert await ingestion.claim_source(db_session, source.id, settings=settings) is None
+
+
+async def test_deleting_a_half_ingested_source_removes_what_it_saved(
+    db_session: AsyncSession,
+) -> None:
+    from app.services import removal
+
+    store = InMemoryBlobStore()
+    source = await _source(db_session, store)
+    await ingestion.ingest_source(
+        db_session, store, _llm(_FlakyEmbed(fail_on=2)), source.id, settings=SETTINGS
+    )
+    assert await store.exists(pipeline.artifact_key(source.id))
+
+    await removal.delete_source(db_session, store, source.learner_id, source.id, forget=False)
+
+    assert not await store.exists(pipeline.artifact_key(source.id))
+    assert await _staged(db_session, source.id) == 0
+
+
+async def test_erasing_an_account_removes_a_half_ingested_extraction(
+    db_session: AsyncSession,
+) -> None:
+    from app.services import retention
+
+    store = InMemoryBlobStore()
+    source = await _source(db_session, store)
+    await ingestion.ingest_source(
+        db_session, store, _llm(_FlakyEmbed(fail_on=2)), source.id, settings=SETTINGS
+    )
+
+    report = await retention.delete_learner(db_session, store, source.learner_id)
+
+    assert not await store.exists(pipeline.artifact_key(source.id))
+    assert report.blobs_failed == []

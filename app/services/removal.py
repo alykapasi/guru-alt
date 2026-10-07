@@ -247,6 +247,8 @@ async def delete_source(
                 session, ErasureKind.BLOB, blob_key, "refused at source delete"
             )
             notes.append("The stored file could not be removed yet; it will be retried.")
+    # A half-ingested source's saved extraction (S37). Deleting a missing key is not an error.
+    await ingestion.drop_artifact(session, blobstore, source_id)
     return _after(impact, forget=forget, notes=notes)
 
 
