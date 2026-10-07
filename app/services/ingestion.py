@@ -340,7 +340,11 @@ async def claim_source(
                 ),
                 # Published, concept tags still to write (S37): searchable already, so it stays
                 # DONE while the tag stage runs.
-                and_(Source.status == SourceStatus.DONE, Source.stage == SourceStage.TAG),
+                and_(
+                    Source.status == SourceStatus.DONE,
+                    Source.stage == SourceStage.TAG,
+                    or_(Source.lease_expires_at.is_(None), Source.lease_expires_at < func.now()),
+                ),
             ),
             Source.attempts < settings.ingest_max_attempts,
         )
@@ -454,6 +458,9 @@ async def reconcile_stranded(
                         Source.status == SourceStatus.DONE,
                         Source.stage == SourceStage.TAG,
                         Source.updated_at < func.now() - grace,
+                        or_(
+                            Source.lease_expires_at.is_(None), Source.lease_expires_at < func.now()
+                        ),
                     ),
                 ),
             )
@@ -602,7 +609,8 @@ async def reset_for_reingest(session: AsyncSession, source_id: uuid.UUID) -> Sou
     if source is None:
         return None
     _require_file_source(source.kind)
-    if source.status == SourceStatus.PROCESSING and source.lease_expires_at is not None:
+    # A live lease is a running job — extraction, or a published source being tagged (S37).
+    if source.lease_expires_at is not None:
         live = await session.scalar(select(func.now() < source.lease_expires_at))
         if live:
             return None
@@ -658,7 +666,7 @@ async def ingest_source(
     finally:
         await slots.release()
         if enqueue is not None:
-            await _start_next(session, enqueue, learner_id, settings)
+            await _start_next(session, enqueue, settings)
 
 
 def _engine_of(session: AsyncSession) -> AsyncEngine:
@@ -670,10 +678,21 @@ def _engine_of(session: AsyncSession) -> AsyncEngine:
 async def _start_next(
     session: AsyncSession,
     enqueue: Callable[[uuid.UUID], Awaitable[None]],
-    learner_id: uuid.UUID,
     settings: Settings,
 ) -> None:
-    """Dispatch the oldest waiting upload — this learner's first — now that a slot is free."""
+    """Dispatch the waiting upload whose learner runs least, oldest first, now a slot is free.
+
+    Fewest live jobs first, and none for a learner already at their cap: preferring the
+    finishing learner let two heavy queues keep every slot between them while a third
+    learner's single upload waited for the sweep.
+    """
+    other = aliased(Source)
+    running = (
+        select(func.count())
+        .select_from(other)
+        .where(other.learner_id == Source.learner_id, other.lease_expires_at > func.now())
+        .scalar_subquery()
+    )
     try:
         next_id = await session.scalar(
             select(Source.id)
@@ -681,8 +700,9 @@ async def _start_next(
                 Source.status == SourceStatus.PENDING,
                 Source.attempts < settings.ingest_max_attempts,
                 Source.kind == SourceKind.FILE,
+                running < settings.ingest_max_jobs_per_learner,
             )
-            .order_by((Source.learner_id != learner_id), Source.created_at, Source.id)
+            .order_by(running, Source.created_at, Source.id)
             .limit(1)
         )
         if next_id is not None:
@@ -738,7 +758,9 @@ async def _tag_stage(
     ``stage = tag`` for the reconcile sweep; the last allowed attempt gives up once, loudly."""
     source_id = source.id
     try:
-        await pipeline.retag_source(session, llm, source, settings=settings)
+        # Under the job deadline, so the lease (deadline + grace) always outlasts the stage.
+        async with asyncio.timeout(settings.ingest_job_timeout_seconds):
+            await pipeline.retag_source(session, llm, source, settings=settings)
         source.stage = None
     except Exception:
         await session.rollback()

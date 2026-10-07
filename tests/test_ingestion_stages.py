@@ -15,7 +15,7 @@ from app.llm.providers.fake import FakeProvider
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
-from app.models.source import Chunk, ChunkKC, SourceKind, SourceStatus, StagedChunk
+from app.models.source import Chunk, ChunkKC, Source, SourceKind, SourceStatus, StagedChunk
 from app.rag import pipeline
 from app.services import ingestion
 from app.storage import InMemoryBlobStore
@@ -53,7 +53,6 @@ async def _staged(session: AsyncSession, source_id: uuid.UUID) -> int:
 
 
 async def test_staged_chunks_go_with_their_source(db_session: AsyncSession) -> None:
-    from app.models.source import Source
 
     store = InMemoryBlobStore()
     source = await _source(db_session, store)
@@ -352,3 +351,94 @@ async def test_erasing_an_account_removes_a_half_ingested_extraction(
 
     assert not await store.exists(pipeline.artifact_key(source.id))
     assert report.blobs_failed == []
+
+
+async def _tagging_in_progress(session: AsyncSession, store: InMemoryBlobStore):
+    """Published and being tagged by a live job, its last write long enough ago to look idle."""
+    source = await _scoped_source(session, store)
+    refusing = _llm(
+        FakeProvider(refuse=ProviderUnavailable("down"), refuse_calls=frozenset({"complete"}))
+    )
+    await ingestion.ingest_source(session, store, refusing, source.id)
+    source.lease_expires_at = func.now() + timedelta(hours=1)
+    source.updated_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=1)
+    await session.commit()
+    return source
+
+
+async def test_a_source_being_tagged_is_not_claimed_twice(db_session: AsyncSession) -> None:
+    """A long tag stage outlives the sweep's grace; its lease, not its age, says it is busy."""
+    store = InMemoryBlobStore()
+    source = await _tagging_in_progress(db_session, store)
+    queued: list[uuid.UUID] = []
+
+    async def enqueue(source_id: uuid.UUID) -> None:
+        queued.append(source_id)
+
+    await ingestion.reconcile_stranded(db_session, enqueue, settings=Settings())
+
+    assert source.id not in queued
+    assert await ingestion.claim_source(db_session, source.id, settings=Settings()) is None
+    assert await ingestion.reset_for_reingest(db_session, source.id) is None
+
+
+async def _waiting(session: AsyncSession, store: InMemoryBlobStore, learner_id: uuid.UUID):
+    return await ingestion.create_source(
+        session,
+        store,
+        learner_id=learner_id,
+        kind=SourceKind.FILE,
+        origin=f"{uuid.uuid4().hex}.txt",
+        content_type="text/plain",
+        data=uuid.uuid4().hex.encode() + b" The cell releases energy.",
+    )
+
+
+async def _running(session: AsyncSession, store: InMemoryBlobStore, learner_id: uuid.UUID):
+    source = await _waiting(session, store, learner_id)
+    source.status = SourceStatus.PROCESSING
+    source.lease_expires_at = func.now() + timedelta(hours=1)
+    await session.commit()
+    return source
+
+
+async def _two_learners(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
+    learners = [Learner(handle=f"n-{uuid.uuid4().hex[:8]}") for _ in range(2)]
+    session.add_all(learners)
+    await session.flush()
+    return learners[0].id, learners[1].id
+
+
+async def test_the_next_upload_goes_to_the_learner_running_least(
+    db_session: AsyncSession,
+) -> None:
+    """Preferring the finishing learner let two heavy queues hold every slot indefinitely."""
+    store = InMemoryBlobStore()
+    busy, quiet = await _two_learners(db_session)
+    await _running(db_session, store, busy)
+    await _waiting(db_session, store, busy)
+    theirs = await _waiting(db_session, store, quiet)  # newer, but its learner runs nothing
+    queued: list[uuid.UUID] = []
+
+    async def enqueue(source_id: uuid.UUID) -> None:
+        queued.append(source_id)
+
+    await ingestion._start_next(db_session, enqueue, Settings())
+
+    assert queued == [theirs.id]
+
+
+async def test_the_next_upload_skips_a_learner_at_their_cap(db_session: AsyncSession) -> None:
+    store = InMemoryBlobStore()
+    busy, _ = await _two_learners(db_session)
+    for _ in range(2):
+        await _running(db_session, store, busy)
+    await _waiting(db_session, store, busy)
+    queued: list[uuid.UUID] = []
+
+    async def enqueue(source_id: uuid.UUID) -> None:
+        queued.append(source_id)
+
+    await ingestion._start_next(db_session, enqueue, Settings(ingest_max_jobs_per_learner=2))
+
+    assert queued == []  # its only candidate could not get a slot; the sweep starts it later

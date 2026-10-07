@@ -15,6 +15,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Sequence
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -218,7 +219,7 @@ async def run(
         if not await _extract(session, blobstore, llm, source, transcriber, demuxer, settings):
             return 0  # a same-text duplicate: finished at extraction
     await _embed(session, blobstore, llm, source, settings)
-    return await _publish(session, source)
+    return await _publish(session, source, settings)
 
 
 async def _extract(
@@ -352,7 +353,7 @@ def _provenance(source: Source, unit: ExtractedUnit, adapter_name: str) -> dict:
     }
 
 
-async def _publish(session: AsyncSession, source: Source) -> int:
+async def _publish(session: AsyncSession, source: Source, settings: Settings) -> int:
     """Stage 3, one transaction: the staged chunks replace the live ones; the source is done."""
     await supersede_chunks(session, source)  # cited chunks kept as history (S29)
     columns = [
@@ -379,12 +380,16 @@ async def _publish(session: AsyncSession, source: Source) -> int:
     count = cast("CursorResult[Any]", result).rowcount
     await session.execute(delete(StagedChunk).where(StagedChunk.source_id == source.id))
     _finish(source, chunk_count=count, stage=SourceStage.TAG)
+    # The tag stage runs next in this same job, and it can outlast the sweep's grace on a large
+    # source: a fresh lease, not the row's age, is what keeps the sweep from starting a second.
+    lease = settings.ingest_job_timeout_seconds + settings.ingest_lease_grace_seconds
+    source.lease_expires_at = func.now() + timedelta(seconds=lease)
     await session.commit()
     return count
 
 
 def _finish(source: Source, *, chunk_count: int, stage: str | None) -> None:
-    """Done and nobody's job: attempts reset so a pending tag stage has its own tries."""
+    """Done and released: attempts reset so a pending tag stage has its own tries."""
     source.status = SourceStatus.DONE
     source.stage = stage
     source.error = None
