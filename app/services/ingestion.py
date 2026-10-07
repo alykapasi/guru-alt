@@ -22,13 +22,14 @@ from datetime import timedelta
 from pathlib import Path
 
 from pydantic import BaseModel
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.core.config import Settings, get_settings
 from app.llm import LLMClient
-from app.models.source import Chunk, Source, SourceKind, SourceStatus
+from app.models.erasure import ErasureKind
+from app.models.source import Chunk, Source, SourceKind, SourceStatus, StagedChunk
 from app.rag import pipeline
 from app.rag import simhash as simhash_mod
 from app.rag.demux import MediaDemuxer
@@ -607,6 +608,10 @@ async def reset_for_reingest(session: AsyncSession, source_id: uuid.UUID) -> Sou
     source.attempts = 0
     source.error = None
     source.lease_expires_at = None
+    # Starts over from extraction (S50): whatever an earlier run staged is discarded, and the
+    # saved extraction is overwritten when the new run extracts.
+    source.stage = None
+    await session.execute(delete(StagedChunk).where(StagedChunk.source_id == source_id))
     await session.commit()
     return source
 
@@ -646,7 +651,7 @@ async def ingest_source(
         # Even a previously downloaded blob must not be ingested as a URL in v0.
         _require_file_source(source.kind)
         async with asyncio.timeout(settings.ingest_job_timeout_seconds):
-            count = await pipeline.run(
+            await pipeline.run(
                 session,
                 blobstore,
                 llm,
@@ -656,15 +661,23 @@ async def ingest_source(
                 settings=settings,
             )
     except Exception as exc:
-        await session.rollback()  # discard partial chunk writes
+        await session.rollback()  # discard the unfinished stage's writes; earlier ones stand
         return await _record_failure(session, source_id, exc, settings=settings)
 
-    source.status = SourceStatus.DONE
-    source.error = None
-    source.lease_expires_at = None  # done: the row is nobody's job any more
-    source.meta = {**source.meta, "chunk_count": count}
-    await session.commit()
-    return source
+    await drop_artifact(session, blobstore, source_id)
+    return await session.get(Source, source_id, populate_existing=True)
+
+
+async def drop_artifact(session: AsyncSession, blobstore: BlobStore, source_id: uuid.UUID) -> None:
+    """Delete a source's saved extraction (S37); a refusal is retried as a pending erasure."""
+    from app.services import retention  # retention imports this module
+
+    key = pipeline.artifact_key(source_id)
+    try:
+        await blobstore.delete(key)
+    except Exception:
+        logger.warning("ingest.artifact_not_deleted source=%s", source_id, exc_info=True)
+        await retention.queue_erasure(session, ErasureKind.BLOB, key, "refused after publish")
 
 
 def blob_key_for(content_sha256: str) -> str:

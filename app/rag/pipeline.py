@@ -8,15 +8,29 @@ transaction and the source's status; the pipeline only flushes.
 """
 
 import asyncio
+import gzip
+import json
 import os
 import tempfile
 import time
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any, cast
 
 import structlog
-from sqlalchemy import ARRAY, String, bindparam, delete, func, select, text, update
+from sqlalchemy import (
+    ARRAY,
+    CursorResult,
+    String,
+    bindparam,
+    delete,
+    func,
+    insert,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -25,9 +39,9 @@ from app.llm import EmbedResult, LLMClient, ModelRole, Usage
 from app.llm.attribution import metered
 from app.llm.embedding_space import current_space
 from app.llm.meter import CallRefused
-from app.models.source import Chunk, ChunkKC, Source, SourceStatus
+from app.models.source import Chunk, ChunkKC, Source, SourceStage, SourceStatus, StagedChunk
 from app.rag import extraction_quality, simhash, textnorm
-from app.rag.adapters import ExtractContext, select_adapter
+from app.rag.adapters import ExtractContext, ExtractedUnit, select_adapter
 from app.rag.chunking import chunk_units
 from app.rag.concurrency import gather_bounded, gather_bounded_settled
 from app.rag.demux import MediaDemuxer
@@ -162,6 +176,19 @@ async def same_text_source(session: AsyncSession, source: Source) -> Source | No
     )
 
 
+def artifact_key(source_id: uuid.UUID) -> str:
+    """Where a source's extracted text waits between the extract and embed stages (S37)."""
+    return f"ingest/{source_id}/extract.json.gz"
+
+
+def _pack(units: Sequence[ExtractedUnit]) -> bytes:
+    return gzip.compress(json.dumps([u.model_dump() for u in units]).encode())
+
+
+def _unpack(data: bytes) -> list[ExtractedUnit]:
+    return [ExtractedUnit.model_validate(u) for u in json.loads(gzip.decompress(data))]
+
+
 @metered("ingestion", learner="source.learner_id")
 async def run(
     session: AsyncSession,
@@ -173,20 +200,43 @@ async def run(
     demuxer: MediaDemuxer | None = None,
     settings: Settings | None = None,
 ) -> int:
-    """Ingest one source into chunks. Returns the chunk count. Flushes; caller commits.
+    """Ingest one source into chunks, resuming at ``source.stage`` (S37). Returns the chunk count.
 
-    Two budgets bound the work (S37), both checked *before* the expensive step they guard:
-    extracted characters before chunking, and chunk count before embedding. The upload byte
-    cap does not bound either — a modest scanned PDF becomes millions of OCR'd characters and
-    thousands of embed calls, and it is those that cost money and hold the worker.
+    Each stage commits before the next: extract (the text is saved to the blob store), embed
+    (chunks staged in committed windows), publish (one transaction makes them live and marks
+    the source done). A retry, or a lapsed lease reclaimed by another worker, starts where the
+    last commit left it, so OCR, transcription and embeddings are never paid for twice.
+
+    Two budgets bound the work, both checked *before* the expensive step they guard:
+    extracted characters before the text is saved, and chunk count before embedding. The
+    upload byte cap does not bound either — a modest scanned PDF becomes millions of OCR'd
+    characters and thousands of embed calls, and it is those that cost money and hold the
+    worker.
     """
+    settings = settings or get_settings()
+    if source.stage is None:
+        if not await _extract(session, blobstore, llm, source, transcriber, demuxer, settings):
+            return 0  # a same-text duplicate: finished at extraction
+    await _embed(session, blobstore, llm, source, settings)
+    return await _publish(session, source)
+
+
+async def _extract(
+    session: AsyncSession,
+    blobstore: BlobStore,
+    llm: LLMClient,
+    source: Source,
+    transcriber: Transcriber | None,
+    demuxer: MediaDemuxer | None,
+    settings: Settings,
+) -> bool:
+    """Stage 1: extract, save the text, commit ``stage = embed``. ``False``: a duplicate, done."""
     if not source.blob_key:
         raise IngestionError("source has no stored blob")
     adapter = select_adapter(source.content_type or "")
     if adapter is None:
         raise UnsupportedContentType(f"no adapter for content type {source.content_type!r}")
 
-    settings = settings or get_settings()
     ctx = ExtractContext(
         content_type=source.content_type or "",
         origin=source.origin,
@@ -225,12 +275,25 @@ async def run(
         # retrieved — and a stale-version original would be queued by every reindex (S77, S50).
         await supersede_chunks(session, source)
         log.info("pipeline.duplicate_text", source_id=str(source.id), duplicate_of=str(twin.id))
-        await session.flush()
-        return 0
+        _finish(source, chunk_count=0, stage=None)
+        await session.commit()
+        return False
     # Answering for itself from here on, so no longer anyone's duplicate (S77).
     source.duplicate_of_id = None
+    await blobstore.put(artifact_key(source.id), _pack(units), content_type="application/gzip")
+    source.stage = SourceStage.EMBED
+    await session.commit()
+    return True
 
-    chunks = chunk_units(units)
+
+async def _embed(
+    session: AsyncSession, blobstore: BlobStore, llm: LLMClient, source: Source, settings: Settings
+) -> None:
+    """Stage 2: chunk the saved text and embed what is not staged yet, committing each window."""
+    adapter = select_adapter(source.content_type or "")
+    if adapter is None:
+        raise UnsupportedContentType(f"no adapter for content type {source.content_type!r}")
+    chunks = chunk_units(_unpack(await blobstore.get(artifact_key(source.id))))
     if not chunks:
         raise EmptyExtraction("no text extracted from source")
     if len(chunks) > settings.ingest_max_chunks:
@@ -238,48 +301,96 @@ async def run(
             f"source produced {len(chunks)} chunks, over the "
             f"{settings.ingest_max_chunks} per-job budget"
         )
-
-    # Every batch is recorded by the client as it completes, on accounting's own transaction,
-    # so a partial embedding's charged batches survive the rollback that discards this source.
-    embedded = await embed_in_batches(
-        llm,
-        [c.text for c in chunks],
-        batch_size=settings.embed_batch_size,
-        concurrency=settings.embed_concurrency,
+    staged = set(
+        (
+            await session.scalars(
+                select(StagedChunk.ordinal).where(StagedChunk.source_id == source.id)
+            )
+        ).all()
     )
-
-    # Replace the prior chunks, keeping any a citation still points at (S29).
-    await supersede_chunks(session, source)
-    rows: list[Chunk] = []
+    todo = [(ordinal, unit) for ordinal, unit in enumerate(chunks) if ordinal not in staged]
     space = current_space(llm, dim=settings.embed_dim)
-    for ordinal, (unit, vector) in enumerate(zip(chunks, embedded.vectors, strict=True)):
-        row = Chunk(
-            source_id=source.id,
-            embedding_space=space,
-            pipeline_version=PIPELINE_VERSION,
-            ordinal=ordinal,
-            text=unit.text,
-            embedding=vector,
-            provenance={
-                **unit.locator,
-                "source_id": str(source.id),
-                "method": unit.method or adapter.name,
-                # Measured indicators, where a hardcoded `"confidence": 1.0` used to sit (S27).
-                # Nothing computed that number and nothing read it, and it asserted the
-                # strongest possible claim — that this text is exactly what the document said
-                # — about a scanned page OCR'd into nonsense just as confidently as about a
-                # born-digital paragraph. These are signs of *damage*, deliberately not
-                # collapsed into a score: a clean reading means nothing was detected, which is
-                # not the same as the extraction being right.
-                "extraction": extraction_quality.measure(unit.text).model_dump(),
-            },
+    window = settings.embed_batch_size * settings.embed_concurrency
+    for start in range(0, len(todo), window):
+        part = todo[start : start + window]
+        # Every batch is recorded by the client as it completes, on accounting's own
+        # transaction, so a partial window's charged batches survive its rollback.
+        embedded = await embed_in_batches(
+            llm,
+            [unit.text for _, unit in part],
+            batch_size=settings.embed_batch_size,
+            concurrency=settings.embed_concurrency,
         )
-        session.add(row)
-        rows.append(row)
-    await session.flush()  # assign chunk ids so KC tags can reference them
+        for (ordinal, unit), vector in zip(part, embedded.vectors, strict=True):
+            session.add(
+                StagedChunk(
+                    source_id=source.id,
+                    ordinal=ordinal,
+                    text=unit.text,
+                    embedding=vector,
+                    embedding_space=space,
+                    pipeline_version=PIPELINE_VERSION,
+                    provenance=_provenance(source, unit, adapter.name),
+                )
+            )
+        await session.commit()  # this window survives a failure in the next
 
-    await _tag_chunks(session, llm, source, rows, settings)
-    return len(chunks)
+
+def _provenance(source: Source, unit: ExtractedUnit, adapter_name: str) -> dict:
+    return {
+        **unit.locator,
+        "source_id": str(source.id),
+        "method": unit.method or adapter_name,
+        # Measured indicators, where a hardcoded `"confidence": 1.0` used to sit (S27).
+        # Nothing computed that number and nothing read it, and it asserted the
+        # strongest possible claim — that this text is exactly what the document said
+        # — about a scanned page OCR'd into nonsense just as confidently as about a
+        # born-digital paragraph. These are signs of *damage*, deliberately not
+        # collapsed into a score: a clean reading means nothing was detected, which is
+        # not the same as the extraction being right.
+        "extraction": extraction_quality.measure(unit.text).model_dump(),
+    }
+
+
+async def _publish(session: AsyncSession, source: Source) -> int:
+    """Stage 3, one transaction: the staged chunks replace the live ones; the source is done."""
+    await supersede_chunks(session, source)  # cited chunks kept as history (S29)
+    columns = [
+        "id",
+        "source_id",
+        "ordinal",
+        "text",
+        "embedding",
+        "embedding_space",
+        "pipeline_version",
+        "provenance",
+    ]
+    staged = select(
+        func.gen_random_uuid(),
+        StagedChunk.source_id,
+        StagedChunk.ordinal,
+        StagedChunk.text,
+        StagedChunk.embedding,
+        StagedChunk.embedding_space,
+        StagedChunk.pipeline_version,
+        StagedChunk.provenance,
+    ).where(StagedChunk.source_id == source.id)
+    result = await session.execute(insert(Chunk).from_select(columns, staged))
+    count = cast("CursorResult[Any]", result).rowcount
+    await session.execute(delete(StagedChunk).where(StagedChunk.source_id == source.id))
+    _finish(source, chunk_count=count, stage=SourceStage.TAG)
+    await session.commit()
+    return count
+
+
+def _finish(source: Source, *, chunk_count: int, stage: str | None) -> None:
+    """Done and nobody's job: attempts reset so a pending tag stage has its own tries."""
+    source.status = SourceStatus.DONE
+    source.stage = stage
+    source.error = None
+    source.lease_expires_at = None
+    source.attempts = 0
+    source.meta = {**source.meta, "chunk_count": chunk_count}
 
 
 # Chunk ids a learner's own chat replies or lesson blocks cite. Scoped to the learner twice
@@ -335,7 +446,7 @@ async def supersede_chunks(session: AsyncSession, source: Source) -> tuple[int, 
 
 
 @metered("ingestion", learner="source.learner_id")
-async def _tag_chunks(
+async def tag_chunks(
     session: AsyncSession,
     llm: LLMClient,
     source: Source,
@@ -389,6 +500,6 @@ async def retag_source(
     if not rows:
         return 0
     await session.execute(delete(ChunkKC).where(ChunkKC.chunk_id.in_([r.id for r in rows])))
-    await _tag_chunks(session, llm, source, rows, settings)
+    await tag_chunks(session, llm, source, rows, settings)
     await session.commit()
     return len(rows)
