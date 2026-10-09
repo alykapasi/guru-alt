@@ -1059,3 +1059,20 @@ change to the grading prompt or model can be measured against real answers befor
 - **"Not re-gradable".** The event was written before schema v5 (no `grading` block; nothing
   is backfilled), has no stored response, or a snapshot it names is gone (erased with the
   account). Self-ratings are not selected at all: there is nothing to re-judge.
+
+## 20. Performance against a long history (S62)
+
+`uv run poe perf-report` seeds `guru_perf` (its own database) with a power user — five times a
+year of daily use — and twenty ordinary learners, then times every hot path in
+`tests/perf/paths.py` in process: p50, p95, max, statements, rows, and each path's slowest
+statements. A path whose p95 is over 250 ms is marked. The first seed takes about 17 minutes
+and is reused after; `--reseed` rebuilds it, `--runs N` changes the sample (30 by default),
+`--json PATH` saves results to compare. The table is on stdout; warnings go to stderr.
+
+It is a report, not a gate. The gate is `tests/test_history_budgets.py` in `poe check`: every
+path's statements and rows at four times the history must not exceed the small history's plus
+two. A path known to grow is a strict xfail naming its cause until it is fixed. A new hot path
+belongs in `tests/perf/paths.py`, which puts it under both.
+
+The conversation and source lists are pages (`limit`, `before`; 50/200 and 100/500); a
+conversation opens by id (`GET /conversations/{id}`).

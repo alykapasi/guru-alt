@@ -38,7 +38,7 @@ evidence links and in [Completed](#completed).
 
 | ID | Item | Status | Remaining | Evidence |
 | --- | --- | --- | --- | --- |
-| S62 | Measured long-history performance | Partial | Measure long-history latency and message-page growth; aggregate further only where measurements justify it. | [Query budgets](../tests/test_query_budgets.py) |
+| S62 | Measured long-history performance | Partial | Part A done: statement/row budgets for 13 hot paths at ×1 and ×4 history in `poe check`, `poe perf-report` against a 5× power user, conversation and source lists paged. Part B (selected by the 250 ms / growth rule): due reviews (p95 8.6 s, per-component statements), plan revision (1.9 s) and profile refresh (2.0 s, growth) share a transfer-evidence query and a per-component evidence count that read every event; activity reads one row per event in its window. | [Budgets](../tests/test_history_budgets.py), [report](../tests/perf/report.py), [design](superpowers/specs/2026-10-09-long-history-performance-design.md) |
 | S53 | Rendering edge cases and accessibility | Partial | Indented code vs LaTeX normalization; keyboard/screen-reader use and panel layout in the browser. | [Rich text](../frontend/src/components/content/RichText.tsx), [browser tests](../frontend/e2e/) |
 
 ### Workstream 6 — Evaluation and release gates
