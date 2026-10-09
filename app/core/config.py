@@ -302,6 +302,9 @@ class Settings(BaseSettings):
     # what the client renders, and the two answer to different costs.
     chat_transcript_page_size: int = 100
     chat_transcript_page_max: int = 500
+    # The conversation list a client renders (S62): a page, like the transcript.
+    chat_conversation_page_size: int = 50
+    chat_conversation_page_max: int = 200
 
     # Rolling 24h per-learner ceilings, checked before a turn starts. Both are enforced
     # because neither covers the other: cost is unknown for a model with no price entry (see

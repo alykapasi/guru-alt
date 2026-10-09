@@ -600,7 +600,7 @@ async def test_a_paused_session_records_the_item_it_is_waiting_on(
     awaiting = next(e for e in _parse_sse(r.text) if e["type"] == "awaiting_reply")
 
     # What a reload sees, with no live stream to read from.
-    listed = (await api_client.get(f"{API}/conversations")).json()
+    listed = (await api_client.get(f"{API}/conversations")).json()["conversations"]
     row = next(c for c in listed if c["id"] == conversation_id)
     assert row["phase"] == ConversationPhase.AWAITING_ANSWER
     assert row["active_item_id"] == awaiting["item"]["id"]
@@ -612,7 +612,7 @@ async def test_a_paused_session_records_the_item_it_is_waiting_on(
     assert next(e for e in _parse_sse(r.text) if e["type"] == "done")["detail"] == "mastered"
 
     # A finished run is no longer waiting on anything, and says so.
-    listed = (await api_client.get(f"{API}/conversations")).json()
+    listed = (await api_client.get(f"{API}/conversations")).json()["conversations"]
     row = next(c for c in listed if c["id"] == conversation_id)
     assert row["phase"] == ConversationPhase.CHATTING
     assert row["active_item_id"] is None

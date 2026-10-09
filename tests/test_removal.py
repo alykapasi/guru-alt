@@ -213,8 +213,10 @@ async def test_an_archived_conversation_is_listed_apart_and_read_only(
 
     r = await api_client.post(f"{API}/conversations/{cid}/archive")
     assert r.status_code == 200 and r.json()["archived_at"] is not None
-    assert cid not in [c["id"] for c in (await api_client.get(f"{API}/conversations")).json()]
-    archived = (await api_client.get(f"{API}/conversations?archived=true")).json()
+    assert cid not in [
+        c["id"] for c in (await api_client.get(f"{API}/conversations")).json()["conversations"]
+    ]
+    archived = (await api_client.get(f"{API}/conversations?archived=true")).json()["conversations"]
     assert [c["id"] for c in archived] == [cid]
     r = await api_client.post(f"{API}/conversations/{cid}/messages", json={"content": "hello"})
     assert r.status_code == 409 and r.json()["detail"]["code"] == "archived"

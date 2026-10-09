@@ -104,13 +104,42 @@ async def create_conversation(
     )
 
 
-@router.get("/conversations", response_model=list[ConversationRead])
+class ConversationPage(BaseModel):
+    """One page of the learner's conversations, newest first (S62)."""
+
+    conversations: list[ConversationRead]
+    has_more: bool
+
+
+@router.get("/conversations", response_model=ConversationPage)
 async def list_conversations(
     session: SessionDep,
+    settings: SettingsDep,
     learner: CurrentLearner,
     archived: Annotated[bool, Query()] = False,
+    limit: int | None = None,
+    before: uuid.UUID | None = None,
 ):
-    return await svc.list_conversations(session, learner.id, archived=archived)
+    """A page of conversations; ``before`` walks back. Bounded by default, clamped not refused."""
+    size = limit if limit is not None else settings.chat_conversation_page_size
+    size = max(1, min(size, settings.chat_conversation_page_max))
+    rows, has_more = await svc.list_conversations(
+        session, learner.id, archived=archived, limit=size, before=before
+    )
+    return ConversationPage(
+        conversations=[ConversationRead.model_validate(c) for c in rows], has_more=has_more
+    )
+
+
+@router.get("/conversations/{conversation_id}", response_model=ConversationRead)
+async def read_conversation(
+    conversation_id: uuid.UUID, session: SessionDep, learner: CurrentLearner
+):
+    """One conversation, archived or not — what the chat page opens, whatever page it is on."""
+    conversation = await svc.get_conversation(session, conversation_id, learner_id=learner.id)
+    if conversation is None or conversation.learner_id != learner.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    return conversation
 
 
 def _refuse_if_archived(conversation: Conversation) -> None:

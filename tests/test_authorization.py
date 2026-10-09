@@ -69,7 +69,7 @@ async def test_a_conversation_is_not_listed_to_anybody_else(
     assert r.status_code == 201
     listed = await other_client.get(f"{API}/conversations")
     assert listed.status_code == 200
-    assert r.json()["id"] not in [c["id"] for c in listed.json()]
+    assert r.json()["id"] not in [c["id"] for c in listed.json()["conversations"]]
 
 
 async def test_another_learners_conversation_cannot_be_read_by_id(

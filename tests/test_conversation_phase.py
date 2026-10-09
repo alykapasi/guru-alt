@@ -129,7 +129,7 @@ async def test_the_phase_is_exposed_so_a_reload_can_read_it(
         json={"content": "search my notes", "mode": "agentic"},
     )
 
-    listed = (await api_client.get(f"{API}/conversations")).json()
+    listed = (await api_client.get(f"{API}/conversations")).json()["conversations"]
     row = next(c for c in listed if c["id"] == conversation_id)
 
     assert row["phase"] == ConversationPhase.CHATTING
@@ -141,7 +141,7 @@ async def test_a_new_conversation_starts_with_nothing_pending(
 ) -> None:
     conversation_id = await _dev_conversation(api_client)
 
-    listed = (await api_client.get(f"{API}/conversations")).json()
+    listed = (await api_client.get(f"{API}/conversations")).json()["conversations"]
     row = next(c for c in listed if c["id"] == conversation_id)
 
     assert row["phase"] == ConversationPhase.CHATTING
