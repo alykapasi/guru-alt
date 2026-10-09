@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Upload } from "lucide-react";
 import { useAllSources } from "../../api/hooks";
 import { UploadForm } from "../uploads/UploadForm";
+import { LoadMore } from "../LoadMore";
 
 export interface MaterialsStepProps {
   value: string[];
@@ -15,7 +16,8 @@ export function MaterialsStep({ value, onChange, onNext }: MaterialsStepProps) {
   // it here meant the query never ran. The step rendered neither the list nor its own "no
   // materials yet" message — just a gap — and grounding a curriculum in your own document was
   // unreachable from the UI no matter how many you had uploaded.
-  const { data: sources, isLoading } = useAllSources(undefined);
+  const sourcesQuery = useAllSources(undefined);
+  const { data: sources, isLoading } = sourcesQuery;
   const [showUploadForm, setShowUploadForm] = useState(false);
 
   function toggleSource(id: string) {
@@ -71,6 +73,11 @@ export function MaterialsStep({ value, onChange, onNext }: MaterialsStepProps) {
                 <span className="truncate">{source.origin}</span>
               </label>
             ))}
+            <LoadMore
+              hasNextPage={sourcesQuery.hasNextPage}
+              isFetchingNextPage={sourcesQuery.isFetchingNextPage}
+              fetchNextPage={sourcesQuery.fetchNextPage}
+            />
           </div>
         )}
 

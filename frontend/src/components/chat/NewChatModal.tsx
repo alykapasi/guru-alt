@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { BookOpen, Check } from "lucide-react";
 import { useCreateConversation, useSources, useSubjects } from "../../api/hooks";
+import { LoadMore } from "../LoadMore";
 
 /** Picks a conversation's retrieval scope before creating it — a subject (hard content
  * boundary, see MASTERPLAN §7 "Content boundary") or "General" (no library grounding), then
@@ -11,7 +12,8 @@ export function NewChatModal({ open, onClose }: { open: boolean; onClose: () => 
   const navigate = useNavigate();
   const { data: subjects } = useSubjects();
   const [subjectId, setSubjectId] = useState<string | null>(null);
-  const { data: sources } = useSources(subjectId ?? undefined);
+  const sourcesQuery = useSources(subjectId ?? undefined);
+  const sources = sourcesQuery.data;
   const [sourceIds, setSourceIds] = useState<Set<string>>(new Set());
   const createConversation = useCreateConversation();
 
@@ -105,6 +107,11 @@ export function NewChatModal({ open, onClose }: { open: boolean; onClose: () => 
                 <span className="truncate">{s.origin}</span>
               </label>
             ))}
+            <LoadMore
+              hasNextPage={sourcesQuery.hasNextPage}
+              isFetchingNextPage={sourcesQuery.isFetchingNextPage}
+              fetchNextPage={sourcesQuery.fetchNextPage}
+            />
           </div>
         )}
 
