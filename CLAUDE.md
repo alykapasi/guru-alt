@@ -144,7 +144,9 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   and every session is revoked; signing in again within seven days reaches only the recovery
   routes (`AccountHolder`); then a worker erases every store and the identity provider's copy.
   What the object store or provider refuses becomes a `pending_erasures` row retried until done.
-  Diagnostic rows keep nothing pointing at a learner past 30 days. See
+  Diagnostic rows keep nothing pointing at a learner past 30 days. Paused practice state is
+  erased with its conversation, onboarding session or account, and a deploy that changes a
+  graph drops (never resumes) the old shape's paused state (S17). See
   [docs/RUNBOOK.md](docs/RUNBOOK.md) §16.
 - **An explicit setting pins; inference adapts only what is left to it** (S02; V09) — five
   settings (guidance, explanation level, note format, hints, pace), global with subject

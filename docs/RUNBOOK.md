@@ -94,6 +94,12 @@ uv run poe db-check                   # fail if a model has drifted from the mig
 would produce any operation — i.e. someone changed `app/models/` without writing the migration.
 CI runs it, so a drifted model is caught before it reaches anyone else's database.
 
+`db-upgrade` also creates and upgrades LangGraph's checkpoint tables
+(`python -m app.agent.checkpointing migrate`, under an advisory lock). Processes no longer run
+that DDL: a process whose checkpoint schema is missing or behind serves chat on volatile paused
+state and logs `checkpointer.schema_behind` (and `/ready` shows `durable_checkpoints: false`).
+**A LangGraph upgrade may need `poe db-upgrade` before it is deployed.**
+
 **Open a psql shell:**
 
 ```bash
@@ -906,6 +912,17 @@ creates them: a backup older than it can still hold an erased account.
 
 Learning history, notes, memories, sources, content and audit records are never expired; they
 live until the account is deleted.
+
+### Paused practice and negotiations (S17)
+
+Checkpoint threads are erased with their conversation, onboarding session or account; an erase
+the checkpointer refuses (volatile process, database error) becomes a `pending_erasures` row of
+kind `checkpoint`, retried by the worker, which always opens its own checkpointer. The worker's
+purge also expires onboarding sessions idle for `checkpoint_retention_days` and sweeps threads
+whose owner no longer exists (`checkpoints.orphans_swept`). It never prunes a conversation with
+a turn running. After a deploy that changes a graph, paused state from the old shape is dropped
+on first resume (`checkpointer.incompatible_dropped`); bump `WORKFLOW_GRAPH_VERSION` /
+`REFINEMENT_GRAPH_VERSION` when `tests/test_graph_versions.py` says so.
 
 ## 17. Refresh scheduling (S43)
 
