@@ -54,7 +54,7 @@ function ReviewCard({ publication }: { publication: PublicationReview }) {
     <article className="card bg-base-100 border-base-300 flex flex-col gap-3 border p-4">
       <header className="flex flex-col gap-1">
         <h3 className="text-h3">{snapshot.subject.name}</h3>
-        <p className="text-caption text-base-content/60">
+        <p className="text-caption text-base-content/70">
           Requested by {publication.author_handle ?? "a closed account"}
         </p>
         {publication.author_note && <p className="text-body">{publication.author_note}</p>}
@@ -64,7 +64,7 @@ function ReviewCard({ publication }: { publication: PublicationReview }) {
 
       {snapshot.items.length > 0 && (
         <section className="flex flex-col gap-2">
-          <h4 className="text-caption text-base-content/50">
+          <h4 className="text-caption text-base-content/70">
             Questions ({snapshot.items.length}) — untick any that should not be shared
           </h4>
           <ul className="flex flex-col gap-2">
@@ -80,7 +80,7 @@ function ReviewCard({ publication }: { publication: PublicationReview }) {
                 <div className="flex flex-col">
                   <span className="text-body">{item.stem}</span>
                   {item.answer_key && (
-                    <code className="text-caption text-base-content/60">
+                    <code className="text-caption text-base-content/70">
                       {JSON.stringify(item.answer_key)}
                     </code>
                   )}
@@ -91,7 +91,7 @@ function ReviewCard({ publication }: { publication: PublicationReview }) {
         </section>
       )}
 
-      <label className="text-caption text-base-content/60" htmlFor={`note-${publication.id}`}>
+      <label className="text-caption text-base-content/70" htmlFor={`note-${publication.id}`}>
         Note to the author
       </label>
       <textarea
@@ -128,7 +128,7 @@ function ReviewCard({ publication }: { publication: PublicationReview }) {
         {/* Disabled rather than hidden, with the reason stated: a rejection the author cannot
             act on is one they will simply send again. */}
         {note.trim().length === 0 && (
-          <span className="text-caption text-base-content/50 self-center">
+          <span className="text-caption text-base-content/70 self-center">
             Rejecting needs a note.
           </span>
         )}
@@ -206,10 +206,10 @@ function Published() {
   const live = (approved.data ?? []).filter((p) => p.published_subject_id !== null);
 
   if (approved.isLoading) {
-    return <p className="text-caption text-base-content/50">Loading…</p>;
+    return <p className="text-caption text-base-content/70">Loading…</p>;
   }
   if (live.length === 0) {
-    return <p className="text-caption text-base-content/50">Nothing has been shared yet.</p>;
+    return <p className="text-caption text-base-content/70">Nothing has been shared yet.</p>;
   }
   return (
     <ul className="flex flex-col">
@@ -226,17 +226,17 @@ export function PublicationQueue() {
   return (
     <section className="flex flex-col gap-3">
       <h2 className="text-h2">Waiting for review</h2>
-      <p className="text-caption text-base-content/60">
+      <p className="text-caption text-base-content/70">
         Approving copies the subject into the shared library, exactly as it is shown here. Nothing
         the author has changed since asking is included.
       </p>
 
       {queue.isLoading ? (
-        <p className="text-caption text-base-content/50">Loading…</p>
+        <p className="text-caption text-base-content/70">Loading…</p>
       ) : queue.isError || !queue.data ? (
         <p className="text-body text-error">Could not read the review queue.</p>
       ) : queue.data.length === 0 ? (
-        <p className="text-caption text-base-content/50">Nothing is waiting for review.</p>
+        <p className="text-caption text-base-content/70">Nothing is waiting for review.</p>
       ) : (
         <div className="flex flex-col gap-4">
           {queue.data.map((publication) => (
@@ -246,7 +246,7 @@ export function PublicationQueue() {
       )}
 
       <h2 className="text-h2">Shared</h2>
-      <p className="text-caption text-base-content/60">
+      <p className="text-caption text-base-content/70">
         Withdrawing unlists a subject from the catalog. It stays reachable by anyone already
         studying it — unlisting is not removal.
       </p>

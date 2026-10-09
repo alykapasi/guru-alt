@@ -43,7 +43,7 @@ export function Uploads() {
         />
         {archived && archived.length > 0 && (
           <details className="border-base-300 border-t pt-3">
-            <summary className="text-caption text-base-content/60 cursor-pointer">
+            <summary className="text-caption text-base-content/70 cursor-pointer">
               Archived ({archived.length}
               {archivedQuery.hasNextPage ? "+" : ""})
             </summary>

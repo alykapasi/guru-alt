@@ -13,7 +13,7 @@ export function Notes() {
   const { data: entries } = useNotesIndex(selectedId);
 
   if (isLoading) {
-    return <p className="text-caption text-base-content/50">Loading subjects…</p>;
+    return <p className="text-caption text-base-content/70">Loading subjects…</p>;
   }
 
   if (!subjects || subjects.length === 0) {
@@ -38,20 +38,20 @@ export function Notes() {
               className="border-base-300 hover:bg-base-200 flex items-center justify-between rounded-field border px-4 py-3 transition-colors"
             >
               <span className="flex items-center gap-3">
-                <BookOpen size={16} className="text-base-content/50" />
+                <BookOpen size={16} className="text-base-content/70" />
                 {entry.topic_name}
               </span>
               <span className="flex items-center gap-2">
                 {entry.stale && <span className="badge badge-warning badge-sm">new material</span>}
                 {!entry.has_note && !entry.stale && (
-                  <span className="text-caption text-base-content/40">no notes yet</span>
+                  <span className="text-caption text-base-content/70">no notes yet</span>
                 )}
               </span>
             </Link>
           </li>
         ))}
         {entries?.length === 0 && (
-          <p className="text-caption text-base-content/50">No topics in this subject yet.</p>
+          <p className="text-caption text-base-content/70">No topics in this subject yet.</p>
         )}
       </ul>
     </div>

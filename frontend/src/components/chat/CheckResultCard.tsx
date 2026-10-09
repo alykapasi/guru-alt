@@ -55,7 +55,7 @@ function Movement({ component }: { component: CheckComponent }) {
   // really have, so it is shown as unchanged instead.
   const moved = Math.abs(delta) >= 0.1;
   const Icon = !moved ? CircleDot : delta > 0 ? TrendingUp : TrendingDown;
-  const tone = !moved ? "text-base-content/40" : delta > 0 ? "text-success" : "text-warning";
+  const tone = !moved ? "text-base-content/70" : delta > 0 ? "text-success" : "text-warning";
 
   return (
     <span className={`text-caption inline-flex items-center gap-1 ${tone}`}>
@@ -80,13 +80,13 @@ export function CheckResultCard({ result }: { result: CheckResult }) {
       <div className="flex items-center gap-2">
         <CircleCheck
           size={16}
-          className={result.correct ? "text-success" : "text-base-content/40"}
+          className={result.correct ? "text-success" : "text-base-content/70"}
           aria-hidden
         />
         <p className="text-body text-base-content/90">
           {result.correct ? "Marked correct" : "Marked — not quite yet"}
         </p>
-        <span className="text-caption text-base-content/50 ml-auto">
+        <span className="text-caption text-base-content/70 ml-auto">
           scored {Math.round(result.score * 100)}%
         </span>
       </div>
@@ -97,17 +97,17 @@ export function CheckResultCard({ result }: { result: CheckResult }) {
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
               <span className="text-caption text-base-content/80">{component.kc_name}</span>
               {component.score !== null && (
-                <span className="text-caption text-base-content/50">
+                <span className="text-caption text-base-content/70">
                   {Math.round(component.score * 100)}% on this part
                 </span>
               )}
               <Movement component={component} />
-              <span className="text-caption text-base-content/40">
+              <span className="text-caption text-base-content/70">
                 {masteryQualifier(component.uncertainty)}
               </span>
             </div>
             {component.failure_kind && (
-              <p className="text-caption text-base-content/60 flex flex-wrap items-baseline gap-x-2">
+              <p className="text-caption text-base-content/70 flex flex-wrap items-baseline gap-x-2">
                 <span>
                   {FAILURE_COPY[component.failure_kind] ?? "Worth another look"}
                   {component.failure_detail ? ` — ${component.failure_detail}` : ""}
@@ -119,7 +119,7 @@ export function CheckResultCard({ result }: { result: CheckResult }) {
         ))}
       </ul>
 
-      <p className="text-caption text-base-content/40">
+      <p className="text-caption text-base-content/70">
         Percentages are your expected score on a question of average difficulty, not how much of the
         topic you know.
       </p>

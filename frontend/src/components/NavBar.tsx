@@ -96,7 +96,7 @@ export function NavBar() {
         </nav>
         <div className="flex items-center gap-2">
           {learner && (
-            <span className="text-caption text-base-content/60 hidden sm:inline">
+            <span className="text-caption text-base-content/70 hidden sm:inline">
               {learner.display_name || learner.handle}
             </span>
           )}

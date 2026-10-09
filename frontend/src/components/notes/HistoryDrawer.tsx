@@ -84,7 +84,7 @@ export function HistoryDrawer({ topicId, expectedRevisionOrdinal, open, onClose 
                   </button>
                 </span>
               </div>
-              <p className="text-caption text-base-content/50">
+              <p className="text-caption text-base-content/70">
                 {new Date(rev.created_at).toLocaleString()}
               </p>
               {viewing === rev.ordinal && source && (
@@ -95,7 +95,7 @@ export function HistoryDrawer({ topicId, expectedRevisionOrdinal, open, onClose 
             </li>
           ))}
         {revisions?.length === 0 && (
-          <p className="text-caption text-base-content/50">No revisions yet.</p>
+          <p className="text-caption text-base-content/70">No revisions yet.</p>
         )}
       </ul>
     </aside>

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { signIn } from "./journey";
+import { expectAccessible } from "./a11y";
 
 /** The fourth browser journey (S58): put a document in, and have it come back usable.
  *
@@ -60,6 +61,7 @@ test("an uploaded file is accepted, ingested, and listed as ready", async ({ pag
   // reach — it needs the queue to have delivered and a worker to have done the work.
   await expect(page.getByText("done")).toBeVisible({ timeout: INGESTION_TIMEOUT });
   await expect(page.getByText("failed")).toHaveCount(0);
+  await expectAccessible(page);
 });
 
 test("an ingested document can be built into a subject, and is filed under it", async ({

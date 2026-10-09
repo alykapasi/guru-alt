@@ -62,7 +62,7 @@ export function Chat() {
         <LiveAnnouncer message={announcement} />
         {isLoadingMessages ? (
           <div className="flex flex-1 items-center justify-center">
-            <p className="text-caption text-base-content/50">Loading conversation…</p>
+            <p className="text-caption text-base-content/70">Loading conversation…</p>
           </div>
         ) : (
           <MessageList

@@ -54,7 +54,7 @@ export function NewChatModal({ open, onClose }: { open: boolean; onClose: () => 
         <h2 className="text-h2">New chat</h2>
 
         <div className="flex flex-col gap-2">
-          <p className="text-caption text-base-content/60">What can this chat draw on?</p>
+          <p className="text-caption text-base-content/70">What can this chat draw on?</p>
           <button
             onClick={() => setSubjectId(null)}
             className={`text-body flex items-center justify-between rounded-field border px-3 py-2 text-left transition-colors ${
@@ -77,7 +77,7 @@ export function NewChatModal({ open, onClose }: { open: boolean; onClose: () => 
               }`}
             >
               <span className="flex items-center gap-2">
-                <BookOpen size={16} className="text-base-content/50" />
+                <BookOpen size={16} className="text-base-content/70" />
                 {s.name}
               </span>
               {subjectId === s.id && <Check size={16} className="text-primary" />}
@@ -87,11 +87,11 @@ export function NewChatModal({ open, onClose }: { open: boolean; onClose: () => 
 
         {subjectId && (
           <div className="flex flex-col gap-2">
-            <p className="text-caption text-base-content/60">
+            <p className="text-caption text-base-content/70">
               Narrow to specific sources (optional — leave empty for all materials in this subject)
             </p>
             {sources?.length === 0 && (
-              <p className="text-caption text-base-content/40">No sources in this subject yet.</p>
+              <p className="text-caption text-base-content/70">No sources in this subject yet.</p>
             )}
             {sources?.map((s) => (
               <label

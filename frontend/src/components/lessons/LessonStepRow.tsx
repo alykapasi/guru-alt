@@ -72,13 +72,13 @@ export function LessonStepRow({
         </span>
         <span
           className={`text-body flex-1 truncate ${
-            isSettled ? "text-base-content/40 line-through" : "text-base-content/90"
+            isSettled ? "text-base-content/70 line-through" : "text-base-content/90"
           }`}
         >
           {kc?.name ?? "…"}
         </span>
         <span
-          className={`text-caption shrink-0 ${isDetour ? "text-warning" : "text-base-content/50"}`}
+          className={`text-caption shrink-0 ${isDetour ? "text-warning" : "text-base-content/70"}`}
         >
           {isSkipped
             ? "Skipped"
@@ -93,7 +93,7 @@ export function LessonStepRow({
       </div>
       {isDetour && (
         <div className="flex items-center justify-between gap-2 pl-9">
-          <p className="text-caption text-base-content/60">
+          <p className="text-caption text-base-content/70">
             {isExternal
               ? blockedName
                 ? `Needed for ${blockedName}.`

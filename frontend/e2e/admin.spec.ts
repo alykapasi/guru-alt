@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { expect, test } from "@playwright/test";
 import { signIn } from "./journey";
+import { expectAccessible } from "./a11y";
 
 /** The operator's portal, and the door that is not shown to people who may not open it (P10).
  *
@@ -78,4 +79,5 @@ test("an administrator reads what the deployment costs and who is on it", async 
   // through the deterministic provider, so "not measured" is what the completion row honestly
   // says, and a page that rendered "0ms" there would be claiming an instantaneous model.
   await expect(page.getByText("Not measured").first()).toBeVisible();
+  await expectAccessible(page);
 });

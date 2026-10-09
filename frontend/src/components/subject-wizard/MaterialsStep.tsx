@@ -32,7 +32,7 @@ export function MaterialsStep({ value, onChange, onNext }: MaterialsStepProps) {
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-6 py-8">
       <div className="flex flex-col gap-2">
         <h2 className="text-h2">Add learning materials</h2>
-        <p className="text-caption text-base-content/60">
+        <p className="text-caption text-base-content/70">
           Select sources to personalize your learning path (optional).
         </p>
       </div>
@@ -49,10 +49,10 @@ export function MaterialsStep({ value, onChange, onNext }: MaterialsStepProps) {
           </button>
         </div>
 
-        {isLoading && <p className="text-caption text-base-content/50">Loading…</p>}
+        {isLoading && <p className="text-caption text-base-content/70">Loading…</p>}
 
         {!isLoading && sources && sources.length === 0 && (
-          <p className="text-caption text-base-content/50">
+          <p className="text-caption text-base-content/70">
             No materials yet. Upload one to get started, or proceed without materials.
           </p>
         )}

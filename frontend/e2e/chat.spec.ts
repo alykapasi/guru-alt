@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { signIn } from "./journey";
+import { expectAccessible } from "./a11y";
 
 /** Mirrors `TERMINAL_EVENTS` in `src/api/sse.ts`. Restated rather than imported because that
  * module reaches `import.meta.env`, which the Playwright runner has no equivalent of — and a
@@ -68,6 +69,7 @@ test("signing in, asking, and finding the answer still there after a reload", as
   await expect(page).toHaveURL(conversation);
   await expect(page.getByText("What is a derivative?")).toBeVisible();
   await expect(page.getByText("Hello from the fake tutor.")).toBeVisible();
+  await expectAccessible(page);
 });
 
 test("the reply is streamed into the page, not delivered in one piece", async ({ page }) => {

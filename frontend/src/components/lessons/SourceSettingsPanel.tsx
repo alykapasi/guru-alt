@@ -26,7 +26,7 @@ export function SourceSettingsPanel({
         />
         <span className="flex flex-col">
           <span className="text-body">Also use my untagged materials</span>
-          <span className="text-caption text-base-content/60">
+          <span className="text-caption text-base-content/70">
             Uploads without a subject are left out unless you turn this on.
           </span>
         </span>
@@ -41,7 +41,7 @@ export function SourceSettingsPanel({
         />
         <span className="flex flex-col">
           <span className="text-body">Teach only from my sources</span>
-          <span className="text-caption text-base-content/60">
+          <span className="text-caption text-base-content/70">
             Guru says when your sources don't cover something instead of filling in from general
             knowledge.
           </span>

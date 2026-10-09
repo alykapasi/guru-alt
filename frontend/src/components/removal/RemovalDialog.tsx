@@ -66,7 +66,7 @@ export function RemovalDialog({
           Delete {name}?
         </h3>
         {impact.isLoading ? (
-          <p className="text-caption text-base-content/50">Checking what this affects…</p>
+          <p className="text-caption text-base-content/70">Checking what this affects…</p>
         ) : (
           <>
             {kept.length > 0 && (
@@ -94,7 +94,7 @@ export function RemovalDialog({
                 />
                 <span className="text-body">
                   Also forget what was learned from this
-                  <span className="text-caption text-base-content/60 block">
+                  <span className="text-caption text-base-content/70 block">
                     Removes {forgettable.join(", ")}.
                   </span>
                 </span>

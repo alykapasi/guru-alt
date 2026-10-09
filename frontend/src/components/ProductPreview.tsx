@@ -34,7 +34,7 @@ export function ProductPreview() {
       <div className="border-base-300 mt-6 flex items-center gap-4 border-t pt-5">
         <MasteryRing value={0.72} size={44} />
         <div>
-          <p className="text-caption text-base-content/60">Chemistry mastery</p>
+          <p className="text-caption text-base-content/70">Chemistry mastery</p>
           <p className="text-h3">72%</p>
         </div>
       </div>

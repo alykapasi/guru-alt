@@ -69,15 +69,15 @@ function ago(iso: string | null): string {
 function Timing({ label, latency }: { label: string; latency: Latency }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-caption text-base-content/50">{label}</span>
+      <span className="text-caption text-base-content/70">{label}</span>
       {latency.calls === 0 ? (
-        <span className="text-body text-base-content/40">Not measured</span>
+        <span className="text-body text-base-content/70">Not measured</span>
       ) : (
         <span className="text-body tabular-nums">
           p50 {ms(latency.p50_ms)} · p95 {ms(latency.p95_ms)}
         </span>
       )}
-      <span className="text-caption text-base-content/40 tabular-nums">
+      <span className="text-caption text-base-content/70 tabular-nums">
         over {latency.calls} call{latency.calls === 1 ? "" : "s"}
       </span>
     </div>
@@ -94,7 +94,7 @@ function BucketRows({ buckets }: { buckets: SpendBucket[] }) {
           <td className="py-2 pr-4 text-right tabular-nums">
             {money(bucket.cost_usd)}
             {bucket.unpriced_calls > 0 && (
-              <span className="text-base-content/40" title={`${bucket.unpriced_calls} unpriced`}>
+              <span className="text-base-content/70" title={`${bucket.unpriced_calls} unpriced`}>
                 {" "}
                 +
               </span>
@@ -134,7 +134,7 @@ function RosterRow({
         {suspended && (
           <span className="badge badge-error badge-sm ml-2 align-middle">Suspended</span>
         )}
-        <span className="text-caption text-base-content/50 block">{learner.email ?? "—"}</span>
+        <span className="text-caption text-base-content/70 block">{learner.email ?? "—"}</span>
         {reinstate.error && (
           <span className="text-caption text-error block">{reinstate.error.message}</span>
         )}
@@ -142,7 +142,7 @@ function RosterRow({
       <td className="py-2 pr-4 text-right tabular-nums">{learner.calls}</td>
       <td className="py-2 pr-4 text-right tabular-nums">
         {money(learner.cost_usd)}
-        {learner.unpriced_calls > 0 && <span className="text-base-content/40"> +</span>}
+        {learner.unpriced_calls > 0 && <span className="text-base-content/70"> +</span>}
       </td>
       <td className="py-2 pr-4 text-right tabular-nums">{ago(learner.last_call_at)}</td>
       <td className="py-2 text-right">
@@ -261,12 +261,12 @@ function ActionLog({ visitId }: { visitId: string }) {
 function AccessLog() {
   const log = useImpersonations();
 
-  if (log.isLoading) return <p className="text-caption text-base-content/50">Loading…</p>;
+  if (log.isLoading) return <p className="text-caption text-base-content/70">Loading…</p>;
   if (log.isError || !log.data)
     return <p className="text-body text-error">Could not read the access log.</p>;
   if (!log.data.length)
     return (
-      <p className="text-body text-base-content/60">
+      <p className="text-body text-base-content/70">
         Nobody has viewed a learner&rsquo;s account. Every visit is recorded here, and stays
         recorded if viewing is switched off.
       </p>
@@ -275,7 +275,7 @@ function AccessLog() {
   return (
     <div className="overflow-x-auto">
       <table className="text-body w-full">
-        <thead className="text-caption text-base-content/50 text-left">
+        <thead className="text-caption text-base-content/70 text-left">
           <tr>
             <th className="pb-2 pr-4 font-normal">Administrator</th>
             <th className="pb-2 pr-4 font-normal">Account</th>
@@ -292,7 +292,7 @@ function AccessLog() {
               {/* Blank when the account has been closed: the id and handle are cleared and the
                   rest of the row is kept, which is the record outliving its subject. */}
               <td className="py-2 pr-4">
-                {row.learner_handle ?? <span className="text-base-content/40">account closed</span>}
+                {row.learner_handle ?? <span className="text-base-content/70">account closed</span>}
               </td>
               <td className="py-2 pr-4">{row.reason}</td>
               <td className="py-2 pr-4 tabular-nums">{ago(row.created_at)}</td>
@@ -300,7 +300,7 @@ function AccessLog() {
                 {row.ended_at ? (
                   ago(row.ended_at)
                 ) : (
-                  <span className="text-base-content/40">expired</span>
+                  <span className="text-base-content/70">expired</span>
                 )}
               </td>
               <td className="py-2">
@@ -390,7 +390,7 @@ function Invitations() {
   return (
     <section className="flex flex-col gap-2">
       <h2 className="text-h2">Who may join</h2>
-      <p className="text-caption text-base-content/60">
+      <p className="text-caption text-base-content/70">
         Guru is invite-only. An address with no open invitation cannot sign in, whichever provider
         it arrives from.
       </p>
@@ -413,15 +413,15 @@ function Invitations() {
       {revoke.error && <p className="text-caption text-error">{revoke.error.message}</p>}
 
       {invitations.isLoading ? (
-        <p className="text-caption text-base-content/50">Loading…</p>
+        <p className="text-caption text-base-content/70">Loading…</p>
       ) : invitations.isError || !invitations.data ? (
         <p className="text-body text-error">Could not read the invitation list.</p>
       ) : invitations.data.length === 0 ? (
-        <p className="text-caption text-base-content/50">Nobody has been invited yet.</p>
+        <p className="text-caption text-base-content/70">Nobody has been invited yet.</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="text-body w-full">
-            <thead className="text-caption text-base-content/50 text-left">
+            <thead className="text-caption text-base-content/70 text-left">
               <tr>
                 <th className="pb-2 pr-4 font-normal">Address</th>
                 <th className="pb-2 pr-4 font-normal">Status</th>
@@ -500,16 +500,16 @@ export function Admin() {
       </header>
 
       {spend.isLoading ? (
-        <p className="text-caption text-base-content/50">Loading…</p>
+        <p className="text-caption text-base-content/70">Loading…</p>
       ) : spend.isError || !spend.data ? (
         <p className="text-body text-error">Could not read the spend report.</p>
       ) : (
         <>
           <section className="border-base-300 flex flex-wrap gap-8 rounded-box border p-5">
             <div className="flex flex-col gap-1">
-              <span className="text-caption text-base-content/50">Model spend</span>
+              <span className="text-caption text-base-content/70">Model spend</span>
               <span className="text-h2 tabular-nums">{money(spend.data.cost_usd)}</span>
-              <span className="text-caption text-base-content/40 tabular-nums">
+              <span className="text-caption text-base-content/70 tabular-nums">
                 {spend.data.calls} call{spend.data.calls === 1 ? "" : "s"}
               </span>
             </div>
@@ -517,7 +517,7 @@ export function Admin() {
             <Timing label="Time to first token" latency={spend.data.first_token} />
             {spend.data.budget_usd !== null && (
               <div className="flex flex-col gap-1">
-                <span className="text-caption text-base-content/50">Budget</span>
+                <span className="text-caption text-base-content/70">Budget</span>
                 <span
                   className={`text-body tabular-nums ${spend.data.over_budget ? "text-error" : ""}`}
                 >
@@ -529,10 +529,10 @@ export function Admin() {
           </section>
 
           {spend.data.unpriced_calls > 0 && (
-            <p className="text-caption text-base-content/60">
+            <p className="text-caption text-base-content/70">
               {spend.data.unpriced_calls} call{spend.data.unpriced_calls === 1 ? "" : "s"} ran on a
               model with no known price, so the spend above is a floor rather than the figure. Rows
-              affected are marked <span className="text-base-content/40">+</span>.
+              affected are marked <span className="text-base-content/70">+</span>.
             </p>
           )}
 
@@ -540,7 +540,7 @@ export function Admin() {
             <h2 className="text-h2">By role and model</h2>
             <div className="overflow-x-auto">
               <table className="text-body w-full">
-                <thead className="text-caption text-base-content/50 text-left">
+                <thead className="text-caption text-base-content/70 text-left">
                   <tr>
                     <th className="pb-2 pr-4 font-normal">Name</th>
                     <th className="pb-2 pr-4 text-right font-normal">Calls</th>
@@ -561,13 +561,13 @@ export function Admin() {
             <h2 className="text-h2">By feature</h2>
             {/* What paid for it (S48). Failed and partial calls may still have been billed, and an
                 estimated row carries its reservation rather than the provider's numbers. */}
-            <p className="text-caption text-base-content/60">
+            <p className="text-caption text-base-content/70">
               Failed {spend.data.failed_calls} · partial {spend.data.partial_calls} · estimated{" "}
               {spend.data.estimated_calls}
             </p>
             <div className="overflow-x-auto">
               <table className="text-body w-full">
-                <thead className="text-caption text-base-content/50 text-left">
+                <thead className="text-caption text-base-content/70 text-left">
                   <tr>
                     <th className="pb-2 pr-4 font-normal">Feature</th>
                     <th className="pb-2 pr-4 text-right font-normal">Calls</th>
@@ -591,18 +591,18 @@ export function Admin() {
             the learners with no calls — the ones worth noticing — sort last and fall off
             first, and a truncated page otherwise looks exactly like a complete one. */}
         {roster.data && roster.data.learners.length < roster.data.total && (
-          <p className="text-caption text-base-content/60">
+          <p className="text-caption text-base-content/70">
             Showing the {roster.data.learners.length} costliest of {roster.data.total} accounts.
           </p>
         )}
         {roster.isLoading ? (
-          <p className="text-caption text-base-content/50">Loading…</p>
+          <p className="text-caption text-base-content/70">Loading…</p>
         ) : roster.isError || !roster.data ? (
           <p className="text-body text-error">Could not read the learner list.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="text-body w-full">
-              <thead className="text-caption text-base-content/50 text-left">
+              <thead className="text-caption text-base-content/70 text-left">
                 <tr>
                   <th className="pb-2 pr-4 font-normal">Learner</th>
                   <th className="pb-2 pr-4 text-right font-normal">Calls</th>
@@ -632,7 +632,7 @@ export function Admin() {
 
       <section className="flex flex-col gap-3">
         <h2 className="text-h2">Concept links</h2>
-        <p className="text-caption text-base-content/60">
+        <p className="text-caption text-base-content/70">
           Curated components that share a concept name. Endorsing does not link them for anyone — it
           makes the pair available for a learner to accept themselves, with your reason attached.
         </p>

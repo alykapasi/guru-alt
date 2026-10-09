@@ -29,9 +29,9 @@ export function ConversationSidebar() {
         <NewChatModal open={modalOpen} onClose={() => setModalOpen(false)} />
       </div>
       <nav className="flex-1 overflow-y-auto p-2">
-        {isLoading && <p className="text-caption text-base-content/50 px-3 py-2">Loading…</p>}
+        {isLoading && <p className="text-caption text-base-content/70 px-3 py-2">Loading…</p>}
         {conversations?.length === 0 && (
-          <p className="text-caption text-base-content/50 px-3 py-2">
+          <p className="text-caption text-base-content/70 px-3 py-2">
             No conversations yet — start one above.
           </p>
         )}
@@ -45,7 +45,7 @@ export function ConversationSidebar() {
         />
         {archived && archived.length > 0 && (
           <details className="mt-3">
-            <summary className="text-caption text-base-content/50 cursor-pointer px-3 py-1">
+            <summary className="text-caption text-base-content/70 cursor-pointer px-3 py-1">
               Archived ({archived.length}
               {archivedQuery.hasNextPage ? "+" : ""})
             </summary>

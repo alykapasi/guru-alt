@@ -60,7 +60,7 @@ export function PublishPanel({ subjectId, sourceDerived }: PublishPanelProps) {
           subject like this one, build it again without uploads.
         </p>
       ) : (
-        <p className="text-caption text-base-content/60">
+        <p className="text-caption text-base-content/70">
           An administrator reviews everything that would be shared — the topics, the components and
           your questions with their answers. Approving copies it; your own subject stays yours and
           stays private.
@@ -69,7 +69,7 @@ export function PublishPanel({ subjectId, sourceDerived }: PublishPanelProps) {
 
       {!sourceDerived && pending === null && (
         <form onSubmit={submit} className="flex flex-col gap-2">
-          <label className="text-caption text-base-content/60" htmlFor="publish-note">
+          <label className="text-caption text-base-content/70" htmlFor="publish-note">
             Anything the reviewer should know (optional)
           </label>
           <textarea
@@ -101,9 +101,9 @@ export function PublishPanel({ subjectId, sourceDerived }: PublishPanelProps) {
       )}
 
       {publications.isLoading ? (
-        <p className="text-caption text-base-content/50">Loading…</p>
+        <p className="text-caption text-base-content/70">Loading…</p>
       ) : latest === null ? (
-        <p className="text-caption text-base-content/50">You have not asked to share this yet.</p>
+        <p className="text-caption text-base-content/70">You have not asked to share this yet.</p>
       ) : (
         <ul className="flex flex-col gap-2">
           {history.map((publication) => (

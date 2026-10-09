@@ -41,7 +41,7 @@ export function Composer({
               className={`text-caption flex items-center gap-1.5 rounded-field px-2.5 py-1 transition-colors ${
                 mode === "chat"
                   ? "bg-primary/10 text-primary"
-                  : "text-base-content/50 hover:bg-base-200"
+                  : "text-base-content/70 hover:bg-base-200"
               }`}
             >
               <MessageCircle size={14} />
@@ -54,7 +54,7 @@ export function Composer({
               className={`text-caption flex items-center gap-1.5 rounded-field px-2.5 py-1 transition-colors ${
                 mode === "agentic"
                   ? "bg-primary/10 text-primary"
-                  : "text-base-content/50 hover:bg-base-200"
+                  : "text-base-content/70 hover:bg-base-200"
               }`}
             >
               <Bot size={14} />

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { seedSubjectWithPlan, signIn } from "./journey";
+import { expectAccessible } from "./a11y";
 
 /** The third browser journey (S58): answer a question and see what it did to you.
  *
@@ -64,6 +65,7 @@ test("a practice session asks a question about the component the plan is on", as
   // substring match resolves to both, which `toBeVisible` reports as a strict-mode violation
   // rather than retrying past.
   await expect(panel.getByText("Core vocabulary", { exact: true })).toBeVisible();
+  await expectAccessible(page);
 });
 
 test("a poor answer is marked, explained, and moves the estimate down", async ({ page }) => {

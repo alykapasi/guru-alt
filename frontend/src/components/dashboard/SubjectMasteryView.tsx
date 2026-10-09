@@ -13,7 +13,7 @@ function TopicMasteryRow({ topic }: { topic: TopicMastery }) {
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
         <p className="text-body">{topic.topic_name}</p>
-        <p className="text-caption text-base-content/60">
+        <p className="text-caption text-base-content/70">
           {assessed
             ? `${Math.round(percent)}% (${masteryQualifier(topic.uncertainty)})`
             : "not assessed"}
@@ -22,7 +22,7 @@ function TopicMasteryRow({ topic }: { topic: TopicMastery }) {
       <div className="bg-base-300 h-2 w-full overflow-hidden rounded-full">
         <div className="bg-primary h-full rounded-full" style={{ width: `${percent}%` }} />
       </div>
-      <p className="text-caption text-base-content/50 pl-4">
+      <p className="text-caption text-base-content/70 pl-4">
         {coverageLabel(topic.assessed_kcs, topic.total_kcs)}
       </p>
       <div className="flex flex-col gap-1 pl-4">
@@ -30,7 +30,7 @@ function TopicMasteryRow({ topic }: { topic: TopicMastery }) {
           <div key={kc.kc_id} className="flex flex-col gap-0.5">
             <div className="flex items-center justify-between">
               <span className="text-caption text-base-content/70">{kc.kc_name}</span>
-              <span className="text-caption text-base-content/50">
+              <span className="text-caption text-base-content/70">
                 {kc.assessed
                   ? `${Math.round(expectedScorePercent(kc.ability))}%${kc.mastered ? " · mastered" : ""}`
                   : "not assessed"}
@@ -55,7 +55,7 @@ function TopicMasteryRow({ topic }: { topic: TopicMastery }) {
 export function SubjectMasteryView({ subjectId }: { subjectId: string }) {
   const { data } = useSubjectMastery(subjectId);
   if (!data) {
-    return <p className="text-caption text-base-content/50">Loading mastery…</p>;
+    return <p className="text-caption text-base-content/70">Loading mastery…</p>;
   }
 
   return (
@@ -68,10 +68,10 @@ export function SubjectMasteryView({ subjectId }: { subjectId: string }) {
         />
         <div>
           <p className="text-h3">Expected score</p>
-          <p className="text-caption text-base-content/60">
+          <p className="text-caption text-base-content/70">
             On a question of average difficulty — not the share of the subject covered.
           </p>
-          <p className="text-caption text-base-content/60">
+          <p className="text-caption text-base-content/70">
             {data.topics.length} topic{data.topics.length === 1 ? "" : "s"} ·{" "}
             {coverageLabel(data.assessed_kcs, data.total_kcs)}
           </p>
@@ -79,7 +79,7 @@ export function SubjectMasteryView({ subjectId }: { subjectId: string }) {
       </div>
       <div className="flex flex-col gap-4">
         {data.topics.length === 0 ? (
-          <p className="text-caption text-base-content/50">No topics yet in this subject.</p>
+          <p className="text-caption text-base-content/70">No topics yet in this subject.</p>
         ) : (
           data.topics.map((topic) => <TopicMasteryRow key={topic.topic_id} topic={topic} />)
         )}

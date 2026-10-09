@@ -9,7 +9,7 @@ export function ChatIndex() {
   if (isLoading) {
     return (
       <main id="main" className="flex flex-1 items-center justify-center">
-        <p className="text-caption text-base-content/50">Loading…</p>
+        <p className="text-caption text-base-content/70">Loading…</p>
       </main>
     );
   }
@@ -20,7 +20,7 @@ export function ChatIndex() {
 
   return (
     <main id="main" className="flex flex-1 items-center justify-center">
-      <p className="text-body text-base-content/50">Start a conversation to begin.</p>
+      <p className="text-body text-base-content/70">Start a conversation to begin.</p>
     </main>
   );
 }

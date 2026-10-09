@@ -44,7 +44,7 @@ function NoPlanCard({ subjectId }: { subjectId: string }) {
         </p>
       ) : placementOpen ? (
         <div className="flex flex-col gap-2">
-          <p className="text-caption text-base-content/60">
+          <p className="text-caption text-base-content/70">
             {prompt?.question ?? "Tell us about your background with this subject."}
           </p>
           <textarea
@@ -99,7 +99,7 @@ export function LessonPlanPanel({ subjectId }: { subjectId: string }) {
   const { data: activeKC } = useKC(activeStep?.kc_id);
 
   if (isLoading) {
-    return <p className="text-caption text-base-content/50">Loading plan…</p>;
+    return <p className="text-caption text-base-content/70">Loading plan…</p>;
   }
   if (!plan) {
     return <NoPlanCard subjectId={subjectId} />;
@@ -121,7 +121,7 @@ export function LessonPlanPanel({ subjectId }: { subjectId: string }) {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between gap-4">
-        <p className="text-caption text-base-content/60">
+        <p className="text-caption text-base-content/70">
           {plan.goal ? `Goal: ${plan.goal}` : "No specific goal set."}
         </p>
         {activeStep ? (
@@ -134,7 +134,7 @@ export function LessonPlanPanel({ subjectId }: { subjectId: string }) {
             Start practice
           </button>
         ) : (
-          <p className="text-caption text-base-content/50 shrink-0">
+          <p className="text-caption text-base-content/70 shrink-0">
             Nothing due right now — nice work.
           </p>
         )}

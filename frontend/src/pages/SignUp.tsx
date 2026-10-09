@@ -31,7 +31,7 @@ export function SignUp() {
       title="Create your account"
       lede="Guru is invite-only while it is in alpha."
       footer={
-        <p className="text-caption text-base-content/50 max-w-sm text-center">
+        <p className="text-caption text-base-content/70 max-w-sm text-center">
           You will need an invitation for the address you sign up with. Without one, your account is
           created but Guru will not let you in.
         </p>

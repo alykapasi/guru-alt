@@ -32,11 +32,11 @@ export function ProfileSection() {
           Refresh
         </button>
       </div>
-      <p className="text-caption text-base-content/60">
+      <p className="text-caption text-base-content/70">
         Read from your most recent answers and messages.
       </p>
       {!data || data.dimensions.length === 0 ? (
-        <p className="text-caption text-base-content/50">
+        <p className="text-caption text-base-content/70">
           Nothing learned about how you learn yet — practice a bit, then refresh.
         </p>
       ) : (
@@ -48,19 +48,19 @@ export function ProfileSection() {
             >
               <div className="min-w-0">
                 <p className="text-body truncate">{d.label || humanizeKey(d.key)}</p>
-                <p className="text-caption text-base-content/60 truncate">
+                <p className="text-caption text-base-content/70 truncate">
                   {formatDimensionValue(d.value)}
                 </p>
                 {d.observation && (
-                  <p className="text-caption text-base-content/40 mt-0.5">{d.observation}</p>
+                  <p className="text-caption text-base-content/70 mt-0.5">{d.observation}</p>
                 )}
                 {d.paused && (
-                  <p className="text-caption text-base-content/60 mt-0.5">
+                  <p className="text-caption text-base-content/70 mt-0.5">
                     Paused — not updated while Guru isn&apos;t remembering your conversations
                   </p>
                 )}
                 {pinned.has(OVERRIDDEN_DIMENSIONS[d.key]) && (
-                  <p className="text-caption text-base-content/60 mt-0.5">
+                  <p className="text-caption text-base-content/70 mt-0.5">
                     Your setting overrides this
                   </p>
                 )}

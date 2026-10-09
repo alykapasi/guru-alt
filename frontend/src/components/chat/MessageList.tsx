@@ -48,7 +48,7 @@ export function MessageList({
       className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 overflow-y-auto px-4 py-8 sm:px-6"
     >
       {goal && (
-        <p className="text-caption text-base-content/50 border-base-300 -mt-2 border-b pb-4">
+        <p className="text-caption text-base-content/70 border-base-300 -mt-2 border-b pb-4">
           Goal: {goal}
         </p>
       )}
@@ -57,7 +57,7 @@ export function MessageList({
           type="button"
           onClick={onLoadEarlier}
           disabled={isLoadingEarlier}
-          className="text-caption text-base-content/60 hover:bg-base-200 hover:text-base-content rounded-field mx-auto px-3 py-2 transition-colors disabled:opacity-50"
+          className="text-caption text-base-content/70 hover:bg-base-200 hover:text-base-content rounded-field mx-auto px-3 py-2 transition-colors disabled:opacity-50"
         >
           {isLoadingEarlier ? "Loading…" : "Load earlier messages"}
         </button>

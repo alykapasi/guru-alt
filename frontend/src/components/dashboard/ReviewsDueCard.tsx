@@ -25,7 +25,7 @@ function ReviewRow({ review }: { review: ReviewItem }) {
         <span className="text-body truncate">{kc?.name ?? "…"}</span>
         {label && <span className="badge badge-sm badge-primary badge-soft shrink-0">{label}</span>}
       </div>
-      <span className="text-caption text-base-content/50 shrink-0">
+      <span className="text-caption text-base-content/70 shrink-0">
         {overdueDays === 0 ? "due today" : `due ${overdueDays}d ago`}
       </span>
     </div>
@@ -45,7 +45,7 @@ export function ReviewsDueCard() {
         Due for review
       </h2>
       {!data || data.length === 0 ? (
-        <p className="text-caption text-base-content/50">Nothing due right now.</p>
+        <p className="text-caption text-base-content/70">Nothing due right now.</p>
       ) : (
         <div className="flex flex-col gap-1">
           {data.map((review) => (

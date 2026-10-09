@@ -11,7 +11,7 @@ export function QuestionCard({ item, onShow }: { item: ItemEvent | null; onShow:
         {item ? (
           <RichText content={item.stem} className="text-base-content/90" />
         ) : (
-          <p className="text-caption text-base-content/50">Preparing your practice…</p>
+          <p className="text-caption text-base-content/70">Preparing your practice…</p>
         )}
       </div>
       <button type="button" className="btn btn-ghost btn-xs shrink-0" onClick={onShow}>

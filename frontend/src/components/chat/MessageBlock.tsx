@@ -37,7 +37,7 @@ export function MessageBlock({
   if (role === "user") {
     return (
       <div className="flex flex-col items-end gap-1">
-        {adminAttributed && <span className="text-caption text-base-content/50">Admin</span>}
+        {adminAttributed && <span className="text-caption text-base-content/70">Admin</span>}
         <p className="text-body text-base-content/70 max-w-[75%] whitespace-pre-wrap">{content}</p>
       </div>
     );
@@ -50,13 +50,13 @@ export function MessageBlock({
       </span>
       <div className="text-base-content/90 min-w-0 max-w-[75%]">
         {adminAttributed && (
-          <span className="text-caption text-base-content/50">Reply to admin</span>
+          <span className="text-caption text-base-content/70">Reply to admin</span>
         )}
         <RichText content={content} citations={citations} onCitationClick={onCitationClick} />
         {streaming && <span className="animate-pulse">▍</span>}
-        {interrupted === "stopped" && <p className="text-caption text-base-content/50">Stopped</p>}
+        {interrupted === "stopped" && <p className="text-caption text-base-content/70">Stopped</p>}
         {interrupted === "timed_out" && (
-          <p className="text-caption text-base-content/50">
+          <p className="text-caption text-base-content/70">
             This reply took too long and was cut off.
           </p>
         )}

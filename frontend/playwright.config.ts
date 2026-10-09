@@ -28,7 +28,24 @@ export default defineConfig({
     trace: "retain-on-failure",
     video: "retain-on-failure",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    {
+      name: "desktop",
+      use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 } },
+    },
+    {
+      // Only the accessibility journeys run twice: everything else is about the product behind
+      // the layout, and running it at two widths would double the suite to learn nothing.
+      // Chromium at phone size rather than an emulated iPhone: only Chromium is installed.
+      name: "phone",
+      testMatch: /a11y\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 390, height: 844 },
+        hasTouch: true,
+      },
+    },
+  ],
   webServer: [
     {
       command: "bash ../scripts/e2e-backend.sh",

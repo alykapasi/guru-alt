@@ -27,7 +27,7 @@ export function ConnectionsPanel({ subjectId }: { subjectId: string }) {
               {mine.kc_name} here looks like the same idea as {other.kc_name} in{" "}
               {other.subject_name}.
             </p>
-            {s.reason && <p className="text-caption text-base-content/60">{s.reason}</p>}
+            {s.reason && <p className="text-caption text-base-content/70">{s.reason}</p>}
             <div className="flex gap-1">
               {s.decision === "accepted" ? (
                 <button

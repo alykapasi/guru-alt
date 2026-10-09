@@ -14,7 +14,7 @@ export function RequireAdmin() {
   const { data: learner, isPending } = useCurrentLearner();
 
   if (isPending) {
-    return <p className="text-caption text-base-content/50 px-6 py-8">Loading…</p>;
+    return <p className="text-caption text-base-content/70 px-6 py-8">Loading…</p>;
   }
   if (!learner?.is_admin) {
     return <Navigate to="/app" replace />;

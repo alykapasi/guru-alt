@@ -32,18 +32,18 @@ export function CitationBody({
   note?: string | null;
 }) {
   if (missing) {
-    return <p className="text-body text-base-content/60">This passage is no longer available.</p>;
+    return <p className="text-body text-base-content/70">This passage is no longer available.</p>;
   }
   return (
     <>
       <div>
-        <p className="text-caption text-base-content/60 truncate">{origin}</p>
+        <p className="text-caption text-base-content/70 truncate">{origin}</p>
         {locator && <p className="text-caption text-primary">{locator}</p>}
         {superseded && (
           <p className="text-caption text-warning">From an earlier version of this source</p>
         )}
         {note && (
-          <p className="text-caption text-base-content/60">
+          <p className="text-caption text-base-content/70">
             {note.charAt(0).toUpperCase() + note.slice(1)}
           </p>
         )}
@@ -86,7 +86,7 @@ export function CitationPane({ citation, onClose }: { citation: Citation; onClos
       </div>
       <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
         {sourceLoading || chunkLoading ? (
-          <p className="text-caption text-base-content/50">Loading…</p>
+          <p className="text-caption text-base-content/70">Loading…</p>
         ) : (
           <CitationBody
             missing={chunkError || !chunk}

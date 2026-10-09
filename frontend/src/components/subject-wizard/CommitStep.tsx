@@ -51,7 +51,7 @@ export function CommitStep({ curriculum, sourceIds, onBack }: CommitStepProps) {
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-6 py-8">
       <div className="flex flex-col gap-2">
         <h2 className="text-h2">Create your subject</h2>
-        <p className="text-caption text-base-content/60">
+        <p className="text-caption text-base-content/70">
           Review the summary and create your personalized learning subject.
         </p>
       </div>
@@ -77,11 +77,11 @@ export function CommitStep({ curriculum, sourceIds, onBack }: CommitStepProps) {
 
           <div className="grid grid-cols-2 gap-4">
             <div className="flex flex-col gap-1">
-              <p className="text-caption text-base-content/60">Topics</p>
+              <p className="text-caption text-base-content/70">Topics</p>
               <p className="text-h3">{curriculum.topics.length}</p>
             </div>
             <div className="flex flex-col gap-1">
-              <p className="text-caption text-base-content/60">Knowledge components</p>
+              <p className="text-caption text-base-content/70">Knowledge components</p>
               <p className="text-h3">{totalKCs}</p>
             </div>
           </div>

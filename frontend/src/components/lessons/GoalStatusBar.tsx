@@ -62,7 +62,7 @@ export function GoalStatusBar({
       )}
 
       {deferredCount > 0 && (
-        <p className="text-caption text-base-content/60">
+        <p className="text-caption text-base-content/70">
           {deferredCount} more {deferredCount === 1 ? "component is" : "components are"} part of
           this goal but not in the current window.
         </p>
