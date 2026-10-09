@@ -22,12 +22,12 @@ older verification runs) lives in Git.
 
 | | Count | IDs |
 | --- | --- | --- |
-| Live, v0 | 16 | S17 S18 S20 S27 S28 S31 S50 S53 S58 S59 S60 S62 S65 S66 S76 S77 |
+| Live, v0 | 15 | S18 S20 S27 S28 S31 S50 S53 S58 S59 S60 S62 S65 S66 S76 S77 |
 | Live, proposed (not v0 gates) | 4 | S64 S80 S84 S85 |
 | Open questions | 2 | O02 O05 |
-| Done | 49 | [Completed](#completed) |
+| Done | 50 | [Completed](#completed) |
 
-**Next up: workstream 5** — S17, then S62, S53.
+**Next up: workstream 5** — S62, then S53.
 
 ## Live work
 
@@ -38,7 +38,6 @@ evidence links and in [Completed](#completed).
 
 | ID | Item | Status | Remaining | Evidence |
 | --- | --- | --- | --- | --- |
-| S17 | Durable practice lifecycle and restart verification | Partial | Checkpoint schema setup under migrations; verify real process restart/resume races; reconcile expiry with V12; safe onboarding cleanup and graph-state compatibility. | [Checkpoints](../app/services/checkpoints.py), [lifecycle tests](../tests/test_checkpoint_lifecycle.py) |
 | S62 | Measured long-history performance | Partial | Measure long-history latency and message-page growth; aggregate further only where measurements justify it. | [Query budgets](../tests/test_query_budgets.py) |
 | S53 | Rendering edge cases and accessibility | Partial | Indented code vs LaTeX normalization; keyboard/screen-reader use and panel layout in the browser. | [Rich text](../frontend/src/components/content/RichText.tsx), [browser tests](../frontend/e2e/) |
 
@@ -110,6 +109,7 @@ named in the "Hand-off" column and tracked under that ID.
 | S14 | Delayed retention and transfer evidence | Retention needs two unaided answers `retention_min_days` apart; a taught-first answer isn't unaided; due components get cold retention checks, then transfer checks in the next unpractised catalogue setting; dashboard shows "applied in `<setting>`". Transfer is evidence only. | — | [Retention design](superpowers/specs/2026-09-29-retention-checks-design.md), [transfer design](superpowers/specs/2026-09-29-transfer-evidence-design.md) |
 | S15 | Deliberate conversational assessment | Explicit checks, intent routing, help counts, persisted results. | S59 | [Conversation evidence](../app/learning/conversation_evidence.py) |
 | S16 | Shared learner context across modes | Shared context composition and memory controls. | — | [Context](../app/services/learner_context.py) |
+| S17 | Durable practice lifecycle | The deploy step (`poe db-upgrade`, the compose migrate service) owns the checkpoint schema and processes only check its version; paused state is erased with its conversation, onboarding session or account (refusals retried as `pending_erasures`), idle onboarding expires and ownerless threads are swept, never under a running turn; graphs stamp a version and a deploy drops the old shape's paused state; a real second process resumes paused practice. | Minors below. | [Checkpoints](../app/services/checkpoints.py), [design](superpowers/specs/2026-10-08-durable-practice-lifecycle-design.md) |
 | S21 | Invited access and account recovery | Hosted identity (Clerk) exchanged once for Guru's session; Guru keeps invitations, admin tier, suspension, audited visits. | S60 (mail, app name, authorized parties) | [RUNBOOK §11](RUNBOOK.md#11-identity-s21) |
 | S22 | Persist generated prerequisites | Stable keys, validation, commit revalidation. | — | [Curriculum](../app/learning/curriculum.py) |
 | S23 | Graph integrity under concurrent edits | Cycle check + insert under one advisory lock; Curriculum issues panel. | — | [Integrity design §3](superpowers/specs/2026-09-25-integrity-transfer-design.md) |
@@ -203,6 +203,17 @@ component answered once becomes a SMART-graded check within a week); practice ca
 generated for a transfer check, using up its setting; publishing doesn't copy `items.setting`;
 `correct` is item-level, so on a multi-component item a weak component can show transfer; no test
 of `/reviews/due` precedence when both checks are due, nor of the session-surface transfer branch.
+
+**S17** — the orphan sweep binds one parameter per thread (fails past ~32k threads in the
+window; batch or anti-join); it reads only `checkpoints`, so rows left only in
+`checkpoint_writes`/`checkpoint_blobs` are never swept; a delete during grading followed by a
+node error skips the `_gone` check and leaves the thread for the sweep; refinement has no `_gone`
+check (a mid-negotiation delete is a generic error); onboarding expiry is not conditional on
+`updated_at` at delete time (a learner returning exactly then loses the session); the
+delete-mid-answer test shares the turn's session rather than racing a second transaction; the
+migrate lock reuses turn_lock's namespace and waits without a bound; a volatile process stays
+volatile until restarted after `db-upgrade`, and a volatile worker's prune reports no-op
+discards and drops onboarding rows whose threads it cannot reach.
 
 **S24** — the judge runs only when a subject is committed; candidates re-scan on each Lessons load;
 an external step doesn't link to the other subject's plan; check-first doesn't apply in tutor chat;
