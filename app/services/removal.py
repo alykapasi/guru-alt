@@ -17,6 +17,7 @@ import structlog
 from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent import checkpointing
 from app.models.chat import Conversation, Message
 from app.models.content import ContentBlock
 from app.models.erasure import ErasureKind
@@ -279,6 +280,11 @@ async def delete_conversation(
         await _clear_profile_watermark(session, learner_id)
     await session.execute(delete(Conversation).where(Conversation.id == conversation_id))
     await session.commit()
+    # The paused practice or negotiation holds what they typed (S17, V12).
+    for thread_id in await checkpointing.erase_threads([str(conversation_id)]):
+        await retention.queue_erasure(
+            session, ErasureKind.CHECKPOINT, thread_id, "refused at conversation delete"
+        )
     return _after(impact, forget=forget, notes=impact.notes)
 
 

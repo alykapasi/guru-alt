@@ -34,6 +34,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import NullPool, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, create_async_engine
 
+from app.agent import checkpointing
 from app.api.deps import get_concept_link_judge_enqueuer, get_engine
 from app.core.config import get_settings
 from app.core.db import get_session
@@ -268,3 +269,16 @@ async def admin_client(db_session: AsyncSession, engine: AsyncEngine) -> AsyncIt
     async with _app_client(db_session, engine) as client:
         await sign_in(client, db_session, learner)
         yield client
+
+
+@pytest_asyncio.fixture
+async def durable_checkpointer() -> AsyncIterator[None]:
+    """The real Postgres saver for one test. Its writes commit on its own pool, so a test that
+    uses it removes the threads it made."""
+    await checkpointing.stop()
+    await checkpointing.start(get_settings())
+    assert checkpointing.is_durable()
+    try:
+        yield
+    finally:
+        await checkpointing.stop()

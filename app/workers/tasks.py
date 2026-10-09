@@ -423,13 +423,14 @@ async def _stop_diagnostic_expiry(state: TaskiqState) -> None:
 
 
 async def _start_checkpoint_purge(state: TaskiqState) -> None:
+    # The worker owns its own checkpointer pool, whether or not it purges: pruning and
+    # erasure retries go through the saver rather than through SQL (see
+    # ``app.agent.checkpointing.delete_thread``), and against the volatile fallback the purge
+    # would discard nothing and every queued checkpoint erasure would be refused.
+    await checkpointing.start()
     interval = get_settings().checkpoint_purge_interval_seconds
     if interval <= 0:
         return
-    # The worker owns its own checkpointer pool: pruning goes through the saver rather than
-    # through SQL (see ``app.agent.checkpointing.discard_thread``), and without this the
-    # sweep would run against the volatile fallback and silently discard nothing.
-    await checkpointing.start()
     state.checkpoint_purge = asyncio.create_task(_purge_checkpoints_loop(interval))
 
 

@@ -17,6 +17,7 @@ from app.models.mixins import UUIDPrimaryKeyMixin
 class ErasureKind(StrEnum):
     BLOB = "blob"
     IDENTITY = "identity"
+    CHECKPOINT = "checkpoint"
 
 
 class PendingErasure(UUIDPrimaryKeyMixin, Base):

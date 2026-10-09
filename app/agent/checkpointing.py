@@ -33,6 +33,7 @@ survivable; the old behaviour arriving unannounced is not.
 
 import asyncio
 import sys
+from collections.abc import Iterable
 from typing import Any
 
 import structlog
@@ -217,6 +218,28 @@ async def discard_thread(thread_id: str) -> bool:
         log.warning("checkpointer.discard_failed", thread_id=thread_id, error=str(exc))
         return False
     return True
+
+
+async def delete_thread(thread_id: str) -> None:
+    """Delete one thread's checkpoints, or raise. For erasure, where a refusal must be retried.
+
+    A volatile saver is a refusal: it cannot reach the durable rows a previous process wrote.
+    """
+    if not is_durable():
+        raise RuntimeError("checkpointer is volatile")
+    await checkpointer().adelete_thread(thread_id)
+
+
+async def erase_threads(thread_ids: Iterable[str]) -> list[str]:
+    """Erase each thread; returns the ids that could not be erased, for the caller to queue."""
+    failed: list[str] = []
+    for thread_id in thread_ids:
+        try:
+            await delete_thread(thread_id)
+        except Exception as exc:
+            log.warning("checkpointer.erase_failed", thread_id=thread_id, error=str(exc))
+            failed.append(thread_id)
+    return failed
 
 
 def is_durable() -> bool:

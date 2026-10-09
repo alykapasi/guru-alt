@@ -29,11 +29,19 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.agent import checkpointing
 from app.core.config import Settings
 from app.core.identity import IdentityProvider
 from app.models.assessment import Item, Rubric
 from app.models.auth import AccountAction, AdminAction, Impersonation, Invitation
-from app.models.chat import Conversation, LLMCall, Message, Turn, TurnStatus
+from app.models.chat import (
+    Conversation,
+    LLMCall,
+    Message,
+    OnboardingSession,
+    Turn,
+    TurnStatus,
+)
 from app.models.content import ContentBlock
 from app.models.decision import DecisionCall
 from app.models.erasure import ErasureKind, PendingErasure
@@ -50,7 +58,7 @@ from app.models.publication import Publication
 from app.models.source import Chunk, Source
 from app.rag import pipeline
 from app.services import auth as auth_svc
-from app.services import ingestion
+from app.services import ingestion, onboarding_sessions
 from app.storage.base import BlobStore
 
 log = structlog.get_logger(__name__)
@@ -116,9 +124,14 @@ RETENTION: tuple[StoreRetention, ...] = (
     StoreRetention(
         "onboarding_sessions",
         "deleted",
-        "Cascades from the learner. The row is only a record of who owns a paused goal "
-        "negotiation; without it the checkpoint it names can never be resumed by anyone, "
-        "because the thread key is derived from the learner id too.",
+        "Cascades from the learner, and expires after the same idle window as a paused "
+        "conversation, together with the negotiation it owns.",
+    ),
+    StoreRetention(
+        "checkpoints/checkpoint_blobs/checkpoint_writes",
+        "deleted",
+        "A paused practice question or goal negotiation. Erased with its conversation, its "
+        "onboarding session or the account; idle ones are pruned and ownerless ones swept.",
     ),
     StoreRetention(
         "memories",
@@ -261,6 +274,8 @@ class DeletionReport:
     # Keys the object store refused. The rows are already gone, so these cannot be found
     # again by walking the database — they are reported so a caller can retry or escalate.
     blobs_failed: list[str] = field(default_factory=list)
+    # Paused-state threads the checkpointer could not erase (volatile, or refused); queued.
+    threads_failed: list[str] = field(default_factory=list)
     items_deleted: int = 0
 
     @property
@@ -382,6 +397,24 @@ async def delete_learner(
     source_ids = list(
         (await session.scalars(select(Source.id).where(Source.learner_id == learner_id))).all()
     )
+    # Collected before the rows cascade: a thread key is derived from them (S17).
+    thread_ids = [
+        str(cid)
+        for cid in (
+            await session.scalars(
+                select(Conversation.id).where(Conversation.learner_id == learner_id)
+            )
+        ).all()
+    ] + [
+        onboarding_sessions.thread_key(sid, learner_id)
+        for sid in (
+            await session.scalars(
+                select(OnboardingSession.session_id).where(
+                    OnboardingSession.learner_id == learner_id
+                )
+            )
+        ).all()
+    ]
     authored = await session.execute(
         delete(Item)
         .where(or_(Item.author_learner_id == learner_id, Item.owner_learner_id == learner_id))
@@ -433,6 +466,7 @@ async def delete_learner(
             await blobstore.delete(key)
         except Exception:
             report.blobs_failed.append(key)
+    report.threads_failed = await checkpointing.erase_threads(thread_ids)
     if report.blobs_failed:
         log.error(
             "retention.blobs_not_deleted",
@@ -513,6 +547,8 @@ async def erase_learner(
     report = await delete_learner(session, blobstore, learner_id)
     for key in report.blobs_failed:
         await queue_erasure(session, ErasureKind.BLOB, key, "refused at account erase")
+    for thread_id in report.threads_failed:
+        await queue_erasure(session, ErasureKind.CHECKPOINT, thread_id, "refused at account erase")
     if subject:
         if provider is None:
             await queue_erasure(session, ErasureKind.IDENTITY, subject, "no provider configured")
@@ -622,6 +658,8 @@ async def _retry_one(
     try:
         if row.kind == ErasureKind.BLOB:
             await ingestion.unreference_blob(session, blobstore, row.target)
+        elif row.kind == ErasureKind.CHECKPOINT:
+            await checkpointing.delete_thread(row.target)
         elif provider is None:
             raise RuntimeError("no identity provider configured")
         else:
