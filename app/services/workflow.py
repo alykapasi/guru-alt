@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Sequence
 
 import structlog
 from langgraph.types import Command
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import checkpointing
@@ -59,6 +60,15 @@ CHECK_FIRST_SYSTEM_PROMPT = (
     "their own words — do not invent a different problem, since their answer is graded against "
     "this one. If they struggle, you will teach it afterwards. Keep it brief and friendly."
 )
+
+DELETED_DETAIL = "this conversation was deleted"
+
+
+async def _gone(session: AsyncSession, conversation_id: uuid.UUID) -> bool:
+    """Whether the conversation was deleted while this turn ran (asked of the database, not
+    of the identity map, which still holds the object)."""
+    found = await session.scalar(select(Conversation.id).where(Conversation.id == conversation_id))
+    return found is None
 
 
 async def paused_item_id(
@@ -309,6 +319,13 @@ async def run_workflow_turn(
     except Exception as exc:
         log.error("workflow.stream_failed", error=str(exc), model=spec.model)
         yield TurnEvent(type="error", detail="generation failed")
+        return
+
+    if await _gone(session, conversation.id):
+        # Deleted under the turn (S17): nothing to write to, and the graph has just written a
+        # checkpoint the delete already erased once — erase it again so nothing outlives it.
+        await checkpointing.discard_thread(str(conversation.id))
+        yield TurnEvent(type="error", detail=DELETED_DETAIL)
         return
 
     snapshot = await graph.aget_state(config)
