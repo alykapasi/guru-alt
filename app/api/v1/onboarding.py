@@ -121,6 +121,9 @@ async def goal_refinement_turn(
                             {"type": "committed", "goal": event.text, "detail": event.detail}
                         )
                     elif event.type == "error":
+                        if event.detail == onboarding.EXPIRED_DETAIL:
+                            # Nothing left to resume, so nothing left to own (S17).
+                            await onboarding_sessions.forget(session, request.session_id)
                         yield _sse(error_frame(event))
         except Exception as exc:
             yield _sse({"type": "error", "detail": str(exc)})

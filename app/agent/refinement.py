@@ -28,8 +28,17 @@ from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 __all__ = ["RefinementState", "build_refinement_graph", "refinement_config"]
 
 
+REFINEMENT_GRAPH_VERSION = 1
+"""Bump when this graph's nodes, edges or state keys change (S17); onboarding uses it too.
+Every checkpoint is stamped with it and one stamped otherwise is dropped on resume;
+``tests/test_graph_versions.py`` pins the shape so a change without a bump fails."""
+
+
 def refinement_config(thread_id: str) -> RunnableConfig:
-    return {"configurable": {"thread_id": thread_id}}
+    return {
+        "configurable": {"thread_id": thread_id},
+        "metadata": {"graph_version": REFINEMENT_GRAPH_VERSION},
+    }
 
 
 def build_refinement_graph(llm: LLMClient) -> CompiledStateGraph[Any, Any, Any, Any]:

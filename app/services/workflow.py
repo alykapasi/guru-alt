@@ -14,7 +14,12 @@ from langgraph.types import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import checkpointing
-from app.agent.workflow import WorkflowState, build_workflow_graph, workflow_config
+from app.agent.workflow import (
+    WORKFLOW_GRAPH_VERSION,
+    WorkflowState,
+    build_workflow_graph,
+    workflow_config,
+)
 from app.core.config import get_settings
 from app.llm.attribution import metered
 from app.llm.meter import CallRefused
@@ -82,9 +87,13 @@ async def paused_item_id(
     graph = build_workflow_graph(
         llm, session, learner_id=learner_id, subject_id=conversation.subject_id
     )
-    config = workflow_config(str(conversation_id))
-    snapshot = await graph.aget_state(config)
-    if not snapshot.next:
+    snapshot = await checkpoints.paused_state(
+        graph,
+        workflow_config(str(conversation_id)),
+        graph_name="workflow",
+        version=WORKFLOW_GRAPH_VERSION,
+    )
+    if snapshot is None:
         return None
     if await checkpoints.paused_practice_is_current(
         session,

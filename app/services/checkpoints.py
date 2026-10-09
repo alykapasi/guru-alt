@@ -20,8 +20,11 @@ system itself no longer thinks they should be answering.
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import structlog
+from langchain_core.runnables import RunnableConfig
+from langgraph.types import StateSnapshot
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -75,6 +78,44 @@ async def prune(session: AsyncSession, *, older_than: timedelta) -> int:
     if discarded:
         log.info("checkpoints.pruned", threads=discarded, candidates=len(ids))
     return discarded
+
+
+def compatible(snapshot: StateSnapshot, version: int) -> bool:
+    """Whether a checkpoint was written by the graph shape this code resumes."""
+    return (snapshot.metadata or {}).get("graph_version") == version
+
+
+async def paused_state(
+    graph: Any, config: RunnableConfig, *, graph_name: str, version: int
+) -> StateSnapshot | None:
+    """The paused snapshot this code can resume, or ``None``.
+
+    ``None`` when nothing is paused, and when something is but this code cannot resume it — a
+    checkpoint from another graph version, an unstamped one from before versions existed, or
+    one that cannot be read at all. Those are discarded here, once, so the caller's fallback
+    (ordinary chat, no negotiation, an expired session) is what the learner gets.
+    """
+    thread_id = config["configurable"]["thread_id"]
+    found: object
+    try:
+        snapshot = await graph.aget_state(config)
+    except Exception:
+        found = "unreadable"
+    else:
+        if not snapshot.next:
+            return None
+        if compatible(snapshot, version):
+            return snapshot
+        found = (snapshot.metadata or {}).get("graph_version")
+    log.warning(
+        "checkpointer.incompatible_dropped",
+        graph=graph_name,
+        expected=version,
+        found=found,
+        thread_id=thread_id,
+    )
+    await checkpointing.discard_thread(thread_id)
+    return None
 
 
 async def paused_practice_is_current(
