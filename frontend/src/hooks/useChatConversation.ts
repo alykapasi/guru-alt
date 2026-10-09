@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useArchivedConversations, useConversations, useItem, useMessages } from "../api/hooks";
+import { useConversation, useItem, useMessages } from "../api/hooks";
 import { isTerminal, stopTurn, streamTurn, type ItemEvent, type SendMessageBody } from "../api/sse";
 import type { components } from "../api/schema";
 
@@ -30,9 +30,9 @@ interface FailedTurn {
  * switching conversations remounts this hook fresh, rather than resetting state in an effect. */
 export function useChatConversation(conversationId: string | undefined) {
   const queryClient = useQueryClient();
-  const conversationsQuery = useConversations();
-  // An archived conversation is not in the main list but still opens, read-only (S61).
-  const archivedQuery = useArchivedConversations();
+  // Read by id, not found in the list: the list is a page now (S62), and the conversation
+  // being opened can be older than any page loaded — or archived, which still opens (S61).
+  const conversationQuery = useConversation(conversationId);
   const messagesQuery = useMessages(conversationId);
   const [pending, setPending] = useState<PendingTurn | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -60,9 +60,7 @@ export function useChatConversation(conversationId: string | undefined) {
   const stopQueuedRef = useRef(false);
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  const conversation = [...(conversationsQuery.data ?? []), ...(archivedQuery.data ?? [])].find(
-    (c) => c.id === conversationId,
-  );
+  const conversation = conversationQuery.data;
   // Pages come newest-block-first; the transcript reads oldest-first. Reverse the page list,
   // not the messages inside each page — each page is already chronological.
   const messages = useMemo(
@@ -169,6 +167,7 @@ export function useChatConversation(conversationId: string | undefined) {
       // stale cached phase is exactly the bug this replaced. These two change nothing the
       // transcript renders, so they are no longer between the learner and their reply.
       await queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      await queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
       await queryClient.invalidateQueries({ queryKey: ["turns", conversationId] });
     },
     [conversationId, queryClient],

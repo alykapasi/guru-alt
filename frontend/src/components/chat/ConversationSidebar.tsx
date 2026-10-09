@@ -6,7 +6,13 @@ import { ConversationRow } from "./ConversationRow";
 import { NewChatModal } from "./NewChatModal";
 
 export function ConversationSidebar() {
-  const { data: conversations, isLoading } = useConversations();
+  const {
+    data: conversations,
+    isLoading,
+    hasNextPage,
+    fetchNextPage,
+    isFetchingNextPage,
+  } = useConversations();
   const { data: archived } = useArchivedConversations();
   const activeId = useMatch("/app/chat/:conversationId")?.params.conversationId;
   const [modalOpen, setModalOpen] = useState(false);
@@ -30,6 +36,15 @@ export function ConversationSidebar() {
         {conversations?.map((c) => (
           <ConversationRow key={c.id} conversation={c} active={c.id === activeId} />
         ))}
+        {hasNextPage && (
+          <button
+            className="btn btn-ghost btn-xs mt-1 w-full"
+            onClick={() => fetchNextPage()}
+            disabled={isFetchingNextPage}
+          >
+            {isFetchingNextPage ? "Loading…" : "Load more"}
+          </button>
+        )}
         {archived && archived.length > 0 && (
           <details className="mt-3">
             <summary className="text-caption text-base-content/50 cursor-pointer px-3 py-1">

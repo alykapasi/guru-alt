@@ -49,7 +49,7 @@ describe("choosing material to build a subject from", () => {
   it("offers an uploaded document to select", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => Promise.resolve(jsonResponse([SOURCE]))),
+      vi.fn(() => Promise.resolve(jsonResponse({ sources: [SOURCE], has_more: false }))),
     );
 
     renderStep();
@@ -59,7 +59,7 @@ describe("choosing material to build a subject from", () => {
   });
 
   it("actually asks the server, rather than rendering a step that never loads", async () => {
-    const fetcher = vi.fn(() => Promise.resolve(jsonResponse([])));
+    const fetcher = vi.fn(() => Promise.resolve(jsonResponse({ sources: [], has_more: false })));
     vi.stubGlobal("fetch", fetcher);
 
     renderStep();
@@ -72,7 +72,7 @@ describe("choosing material to build a subject from", () => {
   it("says there is nothing yet, instead of showing an empty gap", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => Promise.resolve(jsonResponse([]))),
+      vi.fn(() => Promise.resolve(jsonResponse({ sources: [], has_more: false }))),
     );
 
     renderStep();

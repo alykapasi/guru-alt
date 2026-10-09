@@ -7,7 +7,13 @@ import { UploadForm } from "../components/uploads/UploadForm";
 export function Uploads() {
   const { data: subjects } = useSubjects();
   const [filterSubjectId, setFilterSubjectId] = useState<string | null>(null);
-  const { data: sources, isLoading } = useAllSources(filterSubjectId ?? undefined);
+  const {
+    data: sources,
+    isLoading,
+    hasNextPage,
+    fetchNextPage,
+    isFetchingNextPage,
+  } = useAllSources(filterSubjectId ?? undefined);
   const { data: archived } = useArchivedSources();
 
   return (
@@ -27,6 +33,15 @@ export function Uploads() {
           )}
         </div>
         <SourceList sources={sources ?? []} isLoading={isLoading} />
+        {hasNextPage && (
+          <button
+            className="btn btn-ghost btn-sm self-center"
+            onClick={() => fetchNextPage()}
+            disabled={isFetchingNextPage}
+          >
+            {isFetchingNextPage ? "Loading…" : "Load more"}
+          </button>
+        )}
         {archived && archived.length > 0 && (
           <details className="border-base-300 border-t pt-3">
             <summary className="text-caption text-base-content/60 cursor-pointer">

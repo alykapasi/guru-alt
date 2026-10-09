@@ -29,8 +29,7 @@ vi.mock("../api/sse", async (importOriginal) => ({
   },
 }));
 vi.mock("../api/hooks", () => ({
-  useConversations: () => ({ data: [] }),
-  useArchivedConversations: () => ({ data: [] }),
+  useConversation: () => ({ data: undefined, isLoading: false }),
   useItem: () => ({ data: undefined }),
   useMessages: () => ({
     data: undefined,
