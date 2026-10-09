@@ -23,7 +23,9 @@ export function useConversations() {
  * (which is a page now, S62) and whether or not it is archived (S61). */
 export function useConversation(conversationId: string | undefined) {
   return useQuery({
-    queryKey: ["conversation", conversationId],
+    // Under ["conversations"] so every action that refreshes the lists (pause, resume,
+    // archive, unarchive, delete) refreshes the open conversation too.
+    queryKey: ["conversations", "one", conversationId],
     enabled: conversationId !== undefined,
     queryFn: async () => {
       const { data, error } = await api.GET("/api/v1/conversations/{conversation_id}", {

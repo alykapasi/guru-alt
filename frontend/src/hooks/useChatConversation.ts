@@ -167,7 +167,6 @@ export function useChatConversation(conversationId: string | undefined) {
       // stale cached phase is exactly the bug this replaced. These two change nothing the
       // transcript renders, so they are no longer between the learner and their reply.
       await queryClient.invalidateQueries({ queryKey: ["conversations"] });
-      await queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
       await queryClient.invalidateQueries({ queryKey: ["turns", conversationId] });
     },
     [conversationId, queryClient],
