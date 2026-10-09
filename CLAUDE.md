@@ -194,6 +194,11 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   never produces a failing grade. Each question is off / shadow / live on its own and goes live
   only after a person reads `uv run poe decision-report`. `app/llm/decisions.py` is the only
   SDK importer. See [docs/RUNBOOK.md](docs/RUNBOOK.md) §14.
+- **Accessible at phone width** (S53) — one breakpoint (`WIDE_QUERY`, 1024 px); below it side
+  panels are native modal sheets (`SidePanel`), so focus, Escape and the backdrop come from the
+  browser. Every screen a journey reaches is scanned by axe, and serious or critical violations
+  fail `npm run e2e`; faded text stays at `text-base-content/70` or above. See
+  [docs/RUNBOOK.md](docs/RUNBOOK.md) §21.
 - **Pydantic at boundaries · async throughout · Alembic-tracked schema.**
 
 ## Performance & Conciseness Guidelines

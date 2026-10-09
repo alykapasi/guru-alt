@@ -22,12 +22,12 @@ older verification runs) lives in Git.
 
 | | Count | IDs |
 | --- | --- | --- |
-| Live, v0 | 15 | S18 S20 S27 S28 S31 S50 S53 S58 S59 S60 S62 S65 S66 S76 S77 |
+| Live, v0 | 14 | S18 S20 S27 S28 S31 S50 S58 S59 S60 S62 S65 S66 S76 S77 |
 | Live, proposed (not v0 gates) | 4 | S64 S80 S84 S85 |
 | Open questions | 2 | O02 O05 |
-| Done | 50 | [Completed](#completed) |
+| Done | 51 | [Completed](#completed) |
 
-**Next up: workstream 5** — S62, then S53.
+**Next up: workstream 5** — S62 part B.
 
 ## Live work
 
@@ -39,7 +39,6 @@ evidence links and in [Completed](#completed).
 | ID | Item | Status | Remaining | Evidence |
 | --- | --- | --- | --- | --- |
 | S62 | Measured long-history performance | Partial | Part A done: statement/row budgets for 13 hot paths at ×1 and ×4 history in `poe check`, `poe perf-report` against a 5× power user, conversation and source lists paged. Part B (selected by the 250 ms / growth rule): due reviews (p95 9.8 s, per-component statements), practice answer (2.3 s), plan revision (1.9 s) and profile refresh (2.0 s, growth) share a transfer-evidence query and a per-component evidence count that read every event; turn (299 ms) spends 148 ms on an item lookup; activity reads one row per event in its window. Review minors, deferred: the reused report seed drifts as timed runs commit; row budgets count rows returned, not scanned (and seeded spend is all older than a day); a stale cursor's first-page fallback can duplicate rows in an infinite list; the by-id read is not tested against another learner's real conversation. | [Budgets](../tests/test_history_budgets.py), [report](../tests/perf/report.py), [design](superpowers/specs/2026-10-09-long-history-performance-design.md) |
-| S53 | Rendering edge cases and accessibility | Partial | Indented code vs LaTeX normalization; keyboard/screen-reader use and panel layout in the browser. | [Rich text](../frontend/src/components/content/RichText.tsx), [browser tests](../frontend/e2e/) |
 
 ### Workstream 6 — Evaluation and release gates
 
@@ -138,6 +137,7 @@ named in the "Hand-off" column and tracked under that ID.
 | S49 | Provider failure experience | Registry validated at startup, explicit transport limits (earlier). A provider that is busy or down after the SDK's retries is a refusal: 503 with Retry-After on routes, a coded error ending a turn (no partial reply kept, same-id retry regenerates), background work deferred, spend rows record provider_busy/provider_down; chat's Try again waits out a busy provider. | S18 (the default wait). Review minors, deferred: OpenAI stream error codes other than numbers all read "down"; Anthropic in-stream `timeout_error` unclassified; `retry-after-ms` unread; a 503 before a turn opens gets no countdown; a mid-stream refusal is metered with no output tokens | [Failure classification](../app/llm/providers/failure.py), [design](superpowers/specs/2026-09-30-provider-failures-design.md), [RUNBOOK §18](RUNBOOK.md#18-spend-limits-s47-s48) |
 | S51 | Interrupted-turn lifecycle | Turn states, safe retries, stale-turn recovery. | S17 (restart) | [Turn](../app/services/turn.py) |
 | S52 | Pause, resume, skip practice | Intent gate on every reply; explicit resume/skip. | — | [Guidance design §4](superpowers/specs/2026-09-24-guidance-design.md) |
+| S53 | Rendering edge cases and accessibility | The Markdown parser locates code (fenced, indented, inline) before LaTeX delimiters are rewritten; below 1024 px the conversation list, citations and the practice question are modal sheets (`SidePanel`), with the question pinned above the composer; skip links, labelled and modal controls, a silent transcript log and one polite region announcing turn start, end, grade or error; faded text and the light primary raised to 4.5:1; axe gates every main screen at desktop and phone width. | Manual screen-reader pass before launch; minors below. | [SidePanel](../frontend/src/components/layout/SidePanel.tsx), [a11y journeys](../frontend/e2e/a11y.spec.ts), [design](superpowers/specs/2026-10-09-rendering-accessibility-design.md) |
 | S54 | Flashcard reveal and self-rating | Think, reveal, rate; rating schedules review only. | — | [Flashcard panel](../frontend/src/components/lessons/FlashcardPanel.tsx) |
 | S55 | Validate source scope, refresh tags | Reassignment validated, tags refreshed. | — | [Source API tests](../tests/test_sources_api.py) |
 | S56 | Evidence kinds and reproducible grading | Server-derived judged vs self-rated; `grading` block + frozen snapshots on every graded event; `poe regrade` reports agreement; declared checks get criteria and a difficulty band. Legacy events stay unreplayable. | S85 (optional band question) | [RUNBOOK §19](RUNBOOK.md), [provenance design](superpowers/specs/2026-09-28-grading-provenance-design.md), [criteria design](superpowers/specs/2026-09-28-declared-check-criteria-design.md) |
@@ -241,6 +241,11 @@ schemas; admission locks and sums even with learner limits off; no two-connectio
 
 **S48** — the extraction adapters' `usage_log` is dead code; the per-request attribution test
 orders by a timestamp that can tie.
+
+**S53** — `npm run e2e` builds with whatever `frontend/.env.local` holds, so a developer with a
+Clerk key gets a Clerk-mode bundle that ends the journeys' dev-login sessions (run with
+`VITE_CLERK_PUBLISHABLE_KEY=` until the config pins it); the admin journey's "Not measured"
+assertion depends on a fresh e2e database (a reused one holds curriculum calls recorded at 0 ms).
 
 **S56** — `poe regrade` counts pre-v5 events toward `--limit` and loads the whole window first; an
 admin's flashcard answer counts as not re-gradable instead of skipped; a grading path that forgets

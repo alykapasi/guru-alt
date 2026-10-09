@@ -1076,3 +1076,22 @@ belongs in `tests/perf/paths.py`, which puts it under both.
 
 The conversation and source lists are pages (`limit`, `before`; 50/200 and 100/500); a
 conversation opens by id (`GET /conversations/{id}`).
+
+## 21. Accessibility gate (S53)
+
+- `npm run e2e` runs every browser journey at 1280×800 and runs `e2e/a11y.spec.ts` again at
+  390×844. Each main screen — chat, practice, the wizard, the library, admin, and the phone
+  drawer, question sheet and menu — is scanned by axe (`e2e/a11y.ts`) for WCAG 2.1 A/AA once
+  animations have settled.
+- A failure lists `rule-id (impact): help` and, per element, the selector and what is wrong
+  (for contrast: the two colours and the ratio). Look the rule up at
+  `https://dequeuniversity.com/rules/axe/4.13/<rule-id>`, fix the markup or the theme token, and
+  add a unit test when the fix is in a component's markup.
+- Only `serious` and `critical` fail the run. Before a release, pass over chat and practice
+  with a real screen reader (VoiceOver on macOS: ⌘F5); the scan cannot hear what is announced.
+- Run the journeys keyless, as CI does: `VITE_CLERK_PUBLISHABLE_KEY= npm run e2e`. A Clerk key in
+  `frontend/.env.local` builds a bundle whose session watcher ends the journeys' dev-login.
+- Layout has one breakpoint, `WIDE_QUERY` (1024 px) in `src/hooks/useMediaQuery.ts`. Below it
+  side panels are native modal sheets (`src/components/layout/SidePanel.tsx`), so focus, Escape
+  and the backdrop come from the browser. Body text below `text-base-content/70` does not meet
+  4.5:1 on the light theme; use 70 or more for anything a learner reads.
