@@ -245,7 +245,14 @@ orders by a timestamp that can tie.
 **S53** — `npm run e2e` builds with whatever `frontend/.env.local` holds, so a developer with a
 Clerk key gets a Clerk-mode bundle that ends the journeys' dev-login sessions (run with
 `VITE_CLERK_PUBLISHABLE_KEY=` until the config pins it); the admin journey's "Not measured"
-assertion depends on a fresh e2e database (a reused one holds curriculum calls recorded at 0 ms).
+assertion depends on a fresh e2e database (a reused one holds curriculum calls recorded at 0 ms). ChatIndex's
+redirect, or Escape in the rename input, can close the phone drawer; a failed messages refetch
+could announce the previous turn's grade; a sheet left open re-opens after rotating to wide and
+back; the LaTeX rewrite re-parses on every render of a message with a delimiter (memoise on
+content); the phone menu's links sit outside a `nav` landmark and the menu doesn't close on Escape
+or an outside tap; the phone drawer journey never chooses an existing conversation, the keyboard
+journey accepts either ending, and `getByRole("status")` would be ambiguous beside the
+impersonation banner.
 
 **S56** — `poe regrade` counts pre-v5 events toward `--limit` and loads the whole window first; an
 admin's flashcard answer counts as not re-gradable instead of skipped; a grading path that forgets
