@@ -69,6 +69,9 @@ async def practice(session: AsyncSession, h: SeededHistory) -> object:
                 resume=resume,
             )
         ]
+    # A path that errors out measures the error, not the round (S62 review): refuse it.
+    errors = [e.detail for e in events if e.type == "error"]
+    assert not errors, f"practice did not run: {errors}"
     return events
 
 

@@ -28,7 +28,7 @@ import structlog
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
-SEED_VERSION = 1
+SEED_VERSION = 2
 BUDGET_MS = 250.0
 
 

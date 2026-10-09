@@ -39,7 +39,7 @@ class HistoryShape:
     subjects: int = 1
     topics_per_subject: int = 4
     kcs_per_topic: int = 5
-    events: int = 150
+    events: int = 500  # 25 per component: past every per-component cap (diagnoses read 20)
     memories: int = 30
     sources: int = 4
     chunks_per_source: int = 15
@@ -190,6 +190,27 @@ async def seed_history(
         text(
             "INSERT INTO item_kcs (id, item_id, kc_id, weight) "
             "SELECT gen_random_uuid(), md5('item' || k)::uuid, k, 1.0 "
+            "FROM unnest(CAST(:kcs AS uuid[])) k"
+        ),
+        p,
+    )
+    # And one never answered, in the first setting a transfer check moves to (S14): a bank a
+    # long-standing learner's components actually have, so a transfer step poses a question
+    # instead of asking a model to write one.
+    await session.execute(
+        text(
+            "INSERT INTO items (id, item_type, stem, difficulty, origin, owner_learner_id, "
+            "author_learner_id, setting) "
+            "SELECT md5('transfer' || k)::uuid, 'short', 'At home: explain component ' || k || "
+            "' in your own words.', 0.0, 'learner', :learner, :learner, 'everyday' "
+            "FROM unnest(CAST(:kcs AS uuid[])) k"
+        ),
+        p,
+    )
+    await session.execute(
+        text(
+            "INSERT INTO item_kcs (id, item_id, kc_id, weight) "
+            "SELECT gen_random_uuid(), md5('transfer' || k)::uuid, k, 1.0 "
             "FROM unnest(CAST(:kcs AS uuid[])) k"
         ),
         p,
