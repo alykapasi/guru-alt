@@ -221,14 +221,15 @@ async def _expire_diagnostics_once() -> None:
 
 
 async def _purge_checkpoints_once() -> None:
-    """Discard paused graph state for conversations nobody has come back to (S17)."""
+    """Discard paused state nobody came back to, and threads nothing owns any more (S17)."""
     settings = get_settings()
     async with SessionFactory() as session:
         discarded = await checkpoints_svc.prune(
             session, older_than=timedelta(days=settings.checkpoint_retention_days)
         )
-    if discarded:
-        logger.info("discarded %d abandoned checkpoint thread(s)", discarded)
+        swept = await checkpoints_svc.prune_orphans(session)
+    if discarded or swept:
+        logger.info("discarded %d idle and %d ownerless checkpoint thread(s)", discarded, swept)
 
 
 async def _refresh_due_once() -> None:

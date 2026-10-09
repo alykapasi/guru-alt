@@ -25,11 +25,13 @@ from typing import Any
 import structlog
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import StateSnapshot
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import checkpointing
-from app.models.chat import Conversation, Message
+from app.core.db import engine_of
+from app.models.chat import Conversation, Message, OnboardingSession
+from app.services import onboarding_sessions, turn_lock
 from app.services.assessment import get_item_for
 from app.services.lesson_plan import mastered_kc_ids
 
@@ -63,21 +65,91 @@ async def stale_conversation_ids(
     return list(rows)
 
 
-async def prune(session: AsyncSession, *, older_than: timedelta) -> int:
-    """Discard checkpoints for conversations nobody has touched since the cutoff.
+async def _discard_unless_busy(session: AsyncSession, conversation_id: uuid.UUID) -> bool:
+    """Discard a conversation's thread unless a turn is running in it right now.
 
-    Returns how many threads the saver accepted. Both graphs — the refinement gate and the
-    practice loop — key their thread on the conversation id, so one discard per conversation
-    covers whichever of them left state behind.
+    Taken through the same claim a turn takes, so a learner answering a weeks-old question at
+    the moment the sweep runs keeps their question.
+    """
+    claim = await turn_lock.claim(engine_of(session), conversation_id)
+    if claim is None:
+        return False
+    try:
+        return await checkpointing.discard_thread(str(conversation_id))
+    finally:
+        await claim.release()
+
+
+async def prune(session: AsyncSession, *, older_than: timedelta) -> int:
+    """Discard paused state nobody has touched since the cutoff; returns threads discarded.
+
+    Conversations: both graphs key their thread on the conversation id, so one discard covers
+    whichever left state behind. Onboarding sessions: the row goes with its negotiation.
     """
     ids = await stale_conversation_ids(session, older_than=older_than)
     discarded = 0
     for conversation_id in ids:
-        if await checkpointing.discard_thread(str(conversation_id)):
+        if await _discard_unless_busy(session, conversation_id):
             discarded += 1
+    cutoff = (datetime.now(UTC) - older_than).replace(tzinfo=None)
+    idle = (
+        await session.execute(
+            select(OnboardingSession.session_id, OnboardingSession.learner_id).where(
+                OnboardingSession.updated_at < cutoff
+            )
+        )
+    ).all()
+    for session_id, learner_id in idle:
+        await checkpointing.discard_thread(onboarding_sessions.thread_key(session_id, learner_id))
+        await onboarding_sessions.forget(session, session_id)
+        discarded += 1
     if discarded:
-        log.info("checkpoints.pruned", threads=discarded, candidates=len(ids))
+        log.info("checkpoints.pruned", threads=discarded, candidates=len(ids) + len(idle))
     return discarded
+
+
+async def prune_orphans(session: AsyncSession) -> int:
+    """Delete every thread whose conversation or onboarding session no longer exists.
+
+    The backstop for erasures that never ran — threads from before S17's erasure, or a crash
+    between a delete's commit and its erase. Reads thread ids with plain SQL; deletes through
+    the saver, so the library still owns every write to its tables. An owner row is always
+    committed before its thread is first written, so a thread created during the sweep is
+    never mistaken for an orphan.
+    """
+    if not checkpointing.is_durable():
+        return 0
+    threads = list(await session.scalars(text("SELECT DISTINCT thread_id FROM checkpoints")))
+    conversations: dict[uuid.UUID, str] = {}
+    negotiations: dict[tuple[uuid.UUID, str], str] = {}
+    orphans: list[str] = []
+    for thread in threads:
+        learner_part, colon, session_part = thread.partition(":")
+        try:
+            if colon:
+                negotiations[(uuid.UUID(learner_part), session_part)] = thread
+            else:
+                conversations[uuid.UUID(thread)] = thread
+        except ValueError:
+            orphans.append(thread)
+    live_conversations = set(
+        await session.scalars(select(Conversation.id).where(Conversation.id.in_(conversations)))
+    )
+    live_negotiations = {
+        (row.learner_id, row.session_id)
+        for row in await session.execute(
+            select(OnboardingSession.learner_id, OnboardingSession.session_id).where(
+                OnboardingSession.session_id.in_([sid for _lid, sid in negotiations])
+            )
+        )
+    }
+    orphans += [t for cid, t in conversations.items() if cid not in live_conversations]
+    orphans += [t for key, t in negotiations.items() if key not in live_negotiations]
+    failed = await checkpointing.erase_threads(orphans)
+    swept = len(orphans) - len(failed)
+    if swept:
+        log.info("checkpoints.orphans_swept", threads=swept)
+    return swept
 
 
 def compatible(snapshot: StateSnapshot, version: int) -> bool:

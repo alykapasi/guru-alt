@@ -23,10 +23,11 @@ from pathlib import Path
 
 from pydantic import BaseModel
 from sqlalchemy import and_, case, delete, func, or_, select, update
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.core.config import Settings, get_settings
+from app.core.db import engine_of
 from app.llm import LLMClient
 from app.models.erasure import ErasureKind
 from app.models.source import Chunk, Source, SourceKind, SourceStage, SourceStatus, StagedChunk
@@ -656,7 +657,7 @@ async def ingest_source(
     learner_id = await session.scalar(select(Source.learner_id).where(Source.id == source_id))
     if learner_id is None:
         return None
-    slots = await ingest_slots.take(_engine_of(session), learner_id, settings)
+    slots = await ingest_slots.take(engine_of(session), learner_id, settings)
     if slots is None:
         return None  # full: the source stays pending; a finishing job or the sweep starts it
     try:
@@ -667,12 +668,6 @@ async def ingest_source(
         await slots.release()
         if enqueue is not None:
             await _start_next(session, enqueue, settings)
-
-
-def _engine_of(session: AsyncSession) -> AsyncEngine:
-    """The engine behind ``session`` — slots need their own connection to the same database."""
-    bind = session.bind
-    return bind if isinstance(bind, AsyncEngine) else bind.engine
 
 
 async def _start_next(

@@ -41,3 +41,10 @@ async def get_session() -> AsyncIterator[AsyncSession]:
     """FastAPI dependency yielding a per-request session."""
     async with SessionFactory() as session:
         yield session
+
+
+def engine_of(session: AsyncSession) -> AsyncEngine:
+    """The engine behind ``session``, for work that needs its own connection to the same
+    database (advisory locks: ingestion slots, turn claims)."""
+    bind = session.bind
+    return bind if isinstance(bind, AsyncEngine) else bind.engine

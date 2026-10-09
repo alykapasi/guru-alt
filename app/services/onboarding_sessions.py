@@ -23,7 +23,7 @@ cannot be safely resumed, which discards it just as surely as losing the state d
 
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat import OnboardingSession
@@ -68,6 +68,13 @@ async def require(
     )
     if record is None:
         raise NotYourSession(session_id)
+    # A round is activity: the idle window that expires a session counts from here (S17).
+    await session.execute(
+        update(OnboardingSession)
+        .where(OnboardingSession.session_id == session_id)
+        .values(updated_at=func.now())
+    )
+    await session.commit()
     return record
 
 
