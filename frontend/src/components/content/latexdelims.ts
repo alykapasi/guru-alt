@@ -1,13 +1,45 @@
-/** Fenced blocks and inline spans, in source order — the regions a rewrite must not touch. */
-const CODE_REGION = /^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[^\n]*$|$)|(`+)[\s\S]*?\2/gm;
+import { fromMarkdown } from "mdast-util-from-markdown";
+import { gfm } from "micromark-extension-gfm";
+import { gfmFromMarkdown } from "mdast-util-gfm";
+import { math } from "micromark-extension-math";
+import { mathFromMarkdown } from "mdast-util-math";
 
 const INLINE = /\\\((.+?)\\\)/g;
 const DISPLAY = /\\\[([\s\S]+?)\\\]/g;
+
+/** Nodes whose text the learner is meant to read exactly as written. */
+const VERBATIM = new Set(["code", "inlineCode", "math", "inlineMath"]);
+
+interface Node {
+  type: string;
+  position?: { start: { offset?: number }; end: { offset?: number } };
+  children?: Node[];
+}
 
 function rewrite(prose: string): string {
   return prose
     .replace(DISPLAY, (_, body: string) => `$$${body.trim()}$$`)
     .replace(INLINE, (_, body: string) => `$${body.trim()}$`);
+}
+
+/** Source ranges of every code and math node, in document order. */
+function verbatimRanges(source: string): Array<[number, number]> {
+  const tree = fromMarkdown(source, {
+    extensions: [gfm(), math()],
+    mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()],
+  }) as Node;
+  const ranges: Array<[number, number]> = [];
+  const walk = (node: Node) => {
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    if (VERBATIM.has(node.type) && start !== undefined && end !== undefined) {
+      ranges.push([start, end]);
+      return;
+    }
+    node.children?.forEach(walk);
+  };
+  walk(tree);
+  return ranges;
 }
 
 /**
@@ -24,18 +56,17 @@ function rewrite(prose: string): string {
  * body with its own micromark extension, so `a_1` inside stays a subscript instead of being
  * read as Markdown emphasis.
  *
- * Code is skipped by scanning it out first: `\(` inside a fence is something the learner is
- * meant to read. Indented (four-space) code blocks are not detected — see the tracker entry.
+ * Where code is, the parser decides (S53): four spaces of indentation are a code block after a
+ * blank line and ordinary continuation text inside a list item, which no pattern can tell
+ * apart. Text with no delimiter is returned without parsing.
  */
 export function normaliseLatexDelimiters(source: string): string {
   if (!source.includes("\\(") && !source.includes("\\[")) return source;
   let out = "";
   let cut = 0;
-  CODE_REGION.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = CODE_REGION.exec(source)) !== null) {
-    out += rewrite(source.slice(cut, match.index)) + match[0];
-    cut = match.index + match[0].length;
+  for (const [start, end] of verbatimRanges(source)) {
+    out += rewrite(source.slice(cut, start)) + source.slice(start, end);
+    cut = end;
   }
   return out + rewrite(source.slice(cut));
 }
