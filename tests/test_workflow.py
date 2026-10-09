@@ -826,8 +826,10 @@ async def test_a_re_asked_flashcard_adds_nothing_to_the_transcript(
             select(Message).where(Message.conversation_id == conv.id).order_by(Message.created_at)
         )
     ).all()
-    assert [m.role for m in after] == ["user", "assistant", "user"]
-    assert [m.id for m in after[:2]] == [m.id for m in before]
+    # Compared as sets: `created_at` is the transaction's clock, identical for every row a test
+    # writes, so the order of tied rows is whatever the heap returns.
+    assert sorted(m.role for m in after) == ["assistant", "user", "user"]
+    assert {m.id for m in before} <= {m.id for m in after}
     # present only: the re-ask called no model, so it is billed for none.
     calls = (await db_session.scalars(select(LLMCall).where(LLMCall.role != "embed"))).all()
     assert len(calls) == 1
