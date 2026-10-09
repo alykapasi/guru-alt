@@ -82,6 +82,9 @@ def main() -> None:
     from alembic.config import Config
 
     command.upgrade(Config("alembic.ini"), "head")
+    from app.agent.checkpointing import migrate, psycopg_dsn
+
+    asyncio.run(migrate(psycopg_dsn(url)))
     name = make_url(url).database
     print(f"database {name!r} {'created and ' if created else ''}at head", file=sys.stderr)
     if "--print-url" in args:
