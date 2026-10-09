@@ -119,43 +119,59 @@ shape exactly; `scale` multiplies the small one.
 
 ## Results
 
-First run, 2026-10-09: `uv run poe perf-report` (30 timed runs per path after 3 warm-ups), arm64
-laptop, PostgreSQL 17.10 in Docker. `guru_perf` held the power user and 20 ordinary learners:
-300k messages, 225k learning events. Seeding took about 17 minutes; the seed is reused after.
+Recorded 2026-10-09 with `uv run poe perf-report --reseed` (seed version 2), 30 timed runs per
+path after 3 warm-ups, on an arm64 laptop with PostgreSQL 17.10 in Docker. `guru_perf` held the
+power user and 20 ordinary learners: 300k messages, 225k learning events, and two items per
+component. Seeding took about 17 minutes; later runs reuse the seed.
+
+This replaces a first run (seed version 1). The final review found that run's `practice` row
+measured an error exit: a transfer step had no item in a new setting. The seed now gives every
+component an unanswered item in the next setting.
 
 | path | p50 ms | p95 ms | max ms | statements | rows | budget |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| turn | 129.5 | 214.8 | 215.0 | 20 | 158 | ok |
-| practice | 101.7 | 113.2 | 114.4 | 14 | 16 | ok |
-| conversation_list | 2.9 | 3.4 | 3.4 | 2 | 51 | ok |
-| transcript | 2.9 | 3.1 | 3.2 | 2 | 117 | ok |
-| source_list | 2.8 | 3.2 | 3.4 | 1 | 101 | ok |
-| reviews_due | 7103.9 | 8585.3 | 9174.6 | 4432 | 36114 | over 250 |
-| activity | 47.8 | 130.8 | 132.2 | 1 | 18513 | ok |
-| subject_mastery | 71.9 | 83.3 | 153.9 | 5 | 1500 | ok |
-| memory_list | 12.4 | 13.3 | 13.5 | 1 | 50 | ok |
-| lesson_plan | 1.9 | 2.7 | 4.0 | 1 | 1 | ok |
-| plan_revision | 1738.1 | 1872.7 | 1956.0 | 17 | 32322 | over 250 |
-| notes_index | 38.8 | 43.9 | 44.6 | 9 | 92 | ok |
-| profile_refresh | 1907.5 | 2007.7 | 2036.8 | 37 | 36858 | over 250 |
+| turn | 290.5 | 298.9 | 307.9 | 18 | 157 | over 250 |
+| practice | 2187.5 | 2288.4 | 2305.0 | 62 | 32499 | over 250 |
+| conversation_list | 2.7 | 2.8 | 3.0 | 2 | 51 | ok |
+| transcript | 2.6 | 2.9 | 3.1 | 2 | 117 | ok |
+| source_list | 2.3 | 3.1 | 3.4 | 1 | 101 | ok |
+| reviews_due | 8452.8 | 9801.9 | 10108.2 | 4399 | 36157 | over 250 |
+| activity | 47.8 | 136.4 | 142.0 | 1 | 18545 | ok |
+| subject_mastery | 98.6 | 119.3 | 184.4 | 5 | 1533 | ok |
+| memory_list | 13.4 | 14.4 | 14.7 | 1 | 50 | ok |
+| lesson_plan | 1.5 | 1.7 | 1.8 | 1 | 1 | ok |
+| plan_revision | 1854.9 | 1945.1 | 1958.0 | 17 | 32388 | over 250 |
+| notes_index | 41.2 | 46.5 | 47.2 | 9 | 92 | ok |
+| profile_refresh | 1935.4 | 2034.5 | 2055.2 | 37 | 36924 | over 250 |
 
 Slowest statements:
 
-- **reviews_due:** 4,432 statements: per-due-component work over ~1,500 due components. The
-  two slowest are the transfer-evidence query (`anon_1.kc_id, anon_1.setting, min(CASE …)`,
-  ~500 ms each) and the per-component evidence count (`count(DISTINCT CASE …)`, ~230 ms).
-- **plan_revision:** the same transfer-evidence query twice (~480 ms each) and the evidence
-  count (~210 ms); 32k rows read.
-- **profile_refresh:** the same two queries (~500 ms, ~210 ms), plus every learning event and
-  message in its recency window.
-- **turn:** chunk retrieval 93 ms and memory retrieval 58 ms of a 215 ms p95; under budget.
+- **reviews_due:** 4,399 statements, doing work for each of ~1,500 due components. The slowest
+  two are the transfer-evidence query (`anon_1.kc_id, anon_1.setting, min(CASE …)`, ~500 ms
+  each). Next is the per-component evidence count (`count(DISTINCT CASE …)`, ~210 ms).
+- **practice:** answering grades the response and revises the plan. That runs the same
+  transfer-evidence query twice (~500 ms each) and the evidence count (~200 ms).
+- **plan_revision:** the same two queries (~550 ms each) and the evidence count (~220 ms).
+- **profile_refresh:** the same queries (~510 ms each, ~200 ms). It also reads every learning
+  event and message in its recency window.
+- **turn:** the item lookup for the turn's practice check takes 148 ms. Memory retrieval takes
+  79 ms.
 
-Growth found by the budgets (`tests/test_history_budgets.py`, strict xfail):
+Growth found by the budgets (`tests/test_history_budgets.py`, marked as expected failures):
 
-- **activity:** one row per learning event in the streak/momentum window (18.5k rows here).
-- **profile_refresh:** every learning event and message in its recency window.
+- **activity:** reads one row per learning event in the streak/momentum window (18.5k rows
+  here).
+- **profile_refresh:** reads every learning event and message in its recency window.
 
-**Selected for part B by the rule:** reviews_due (p95 8.6 s), plan_revision (1.9 s),
-profile_refresh (2.0 s, and growth), activity (growth). The shared cause of the three slow
-paths is the transfer-evidence query and the per-component evidence count, which read every
-learning event for the learner's components; reviews_due also issues per-component statements.
+**Selected for part B by the rule:**
+
+- reviews_due (p95 9.8 s)
+- practice (2.3 s)
+- plan_revision (1.9 s)
+- profile_refresh (2.0 s, and growth)
+- turn (299 ms)
+- activity (growth)
+
+Four of the slow paths share one cause: the transfer-evidence query and the per-component
+evidence count read every learning event for the learner's components. reviews_due also issues
+statements per component. turn's cost is the item lookup.
