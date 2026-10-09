@@ -42,9 +42,13 @@ class HistoryShape:
     events: int = 150
     memories: int = 30
     sources: int = 4
-    chunks_per_source: int = 10
+    chunks_per_source: int = 15
     note_revisions: int = 3
     llm_calls: int = 60
+    vector_pool: int = 0
+    """0: a fresh random vector per chunk and memory (what the report needs, for a realistic
+    vector index). N: reuse N vectors, which is all a statement-and-row budget needs and is
+    most of the seeding time saved."""
 
     def scaled(self, k: int) -> "HistoryShape":
         """``k`` times the history, on the same graph: history is evidence, not syllabus."""
@@ -98,6 +102,17 @@ class SeededHistory:
     practice_conversation_id: uuid.UUID  # empty, on the first subject
 
 
+def _vector(var: str, pool: int) -> str:
+    """The SQL for one embedding, per row or from the pool (see ``HistoryShape.vector_pool``)."""
+    if pool:
+        return f"(SELECT v FROM s62_vector_pool WHERE i = {var} % {pool})"
+    # The inner column keeps the aggregate inside the subquery; the outer one re-runs it per row.
+    return (
+        f"(SELECT array_agg(random() - 0.5 + 0 * d + 0 * {var}) "
+        "FROM generate_series(1, :dim) d)::vector"
+    )
+
+
 async def _ids(session: AsyncSession, sql: str, **params: object) -> list[uuid.UUID]:
     return list((await session.execute(text(sql), params)).scalars().all())
 
@@ -108,6 +123,19 @@ async def seed_history(
     """Seed ``shape`` for an existing learner and commit. Timestamps spread over the past year."""
     dim = get_settings().embed_dim
     p: dict[str, object] = {"learner": learner_id, "space": FAKE_SPACE, "dim": dim}
+    if shape.vector_pool:
+        await session.execute(
+            text("CREATE TEMP TABLE IF NOT EXISTS s62_vector_pool (i int PRIMARY KEY, v vector)")
+        )
+        await session.execute(text("TRUNCATE s62_vector_pool"))
+        await session.execute(
+            text(
+                "INSERT INTO s62_vector_pool (i, v) SELECT i, "
+                "(SELECT array_agg(random() - 0.5 + 0 * d + 0 * i) "
+                "FROM generate_series(1, :dim) d)::vector FROM generate_series(0, :n - 1) i"
+            ),
+            {"dim": dim, "n": shape.vector_pool},
+        )
 
     subjects = await _ids(
         session,
@@ -166,14 +194,16 @@ async def seed_history(
         ),
         p,
     )
-    # Roughly a third due now: a review queue a long-standing learner actually has.
+    # A third due now: a review queue a long-standing learner actually has. Deterministic, so
+    # two learners on the same graph differ only in history, never in luck.
     await session.execute(
         text(
             "INSERT INTO learner_kc_state (id, learner_id, kc_id, ability, uncertainty, "
             "last_seen_at, due_at) "
-            "SELECT gen_random_uuid(), :learner, k, random() * 2 - 1, 0.5, "
-            "now() - interval '2 days', now() + (random() * 20 - 6) * interval '1 day' "
-            "FROM unnest(CAST(:kcs AS uuid[])) k"
+            "SELECT gen_random_uuid(), :learner, k, ((i % 7) - 3) * 0.3, 0.5, "
+            "now() - interval '2 days', "
+            "now() + CASE WHEN i % 3 = 0 THEN interval '-1 day' ELSE interval '7 days' END "
+            "FROM unnest(CAST(:kcs AS uuid[])) WITH ORDINALITY AS u(k, i)"
         ),
         p,
     )
@@ -184,7 +214,7 @@ async def seed_history(
             "SELECT gen_random_uuid(), :learner, k, 'observation', gen_random_uuid(), "
             "jsonb_build_object('score', sc, 'item_score', sc, 'component_scored', false, "
             "'correct', sc >= 0.6, 'detail', null, 'diagnosis', null, 'response', "
-            "'answer ' || g, 'hints_used', 0, 'prior_attempts', 0, 'item_id', "
+            "jsonb_build_object('text', 'answer ' || g), 'hints_used', 0, 'prior_attempts', 0, 'item_id', "
             "md5('item' || k)::uuid::text, 'grading', null), "
             "timezone('utc', now()) - g * :step * interval '1 second' "
             "FROM (SELECT g, (CAST(:kcs AS uuid[]))[1 + g % :nk] AS k, "
@@ -228,7 +258,7 @@ async def seed_history(
             "INSERT INTO memories (id, learner_id, kind, content, embedding, embedding_space, "
             "status, origin_conversation_id, created_at, updated_at) "
             "SELECT gen_random_uuid(), :learner, 'fact', 'The learner remembers fact ' || g || '.', "
-            "(SELECT array_agg(random() - 0.5 + 0 * d + 0 * g) FROM generate_series(1, :dim) d)::vector, "
+            f"{_vector('g', shape.vector_pool)}, "
             ":space, 'current', (CAST(:convs AS uuid[]))[1 + g % :nc], ts, ts "
             "FROM (SELECT g, timezone('utc', now()) - g * :step * interval '1 second' AS ts "
             "FROM generate_series(1, :n) g) x"
@@ -252,7 +282,7 @@ async def seed_history(
             "embedding_space, created_at, updated_at) "
             "SELECT gen_random_uuid(), s.id, o, t.txt, "
             "jsonb_build_object('source_id', s.id::text, 'method', 'text'), "
-            "(SELECT array_agg(random() - 0.5 + 0 * d + 0 * o) FROM generate_series(1, :dim) d)::vector, "
+            f"{_vector('o', shape.vector_pool)}, "
             ":space, s.created_at, s.created_at "
             "FROM sources s, generate_series(0, :m - 1) o, "
             "LATERAL (SELECT 'Passage ' || o || ' of ' || s.origin || "
