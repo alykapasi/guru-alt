@@ -62,11 +62,17 @@ export function CitationPane({ citation, onClose }: { citation: Citation; onClos
   // Opening a citation is a request to read it: focus goes to the pane, and back to the marker
   // that opened it when the pane closes, so a keyboard user is not dropped at the top of the
   // page (S53). On a narrow screen the sheet's dialog does the same for itself.
+  // Per citation, not per mount: clicking a second marker while the pane is open is a new
+  // request to read, and closing should return to the marker clicked last. When that marker
+  // has since re-rendered away, focus goes to the content rather than to nowhere.
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
     headingRef.current?.focus();
-    return () => opener?.focus();
-  }, []);
+    return () => {
+      const target = opener?.isConnected ? opener : document.getElementById("main");
+      target?.focus();
+    };
+  }, [citation.chunk_id]);
 
   return (
     <div className="bg-base-100 flex min-h-0 flex-1 flex-col">

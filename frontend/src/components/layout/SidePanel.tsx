@@ -44,6 +44,9 @@ export function SidePanel({
     return (
       <aside
         aria-label={label}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onClose();
+        }}
         className={`border-base-300 bg-base-100 flex ${width} min-h-0 shrink-0 flex-col ${edge}`}
       >
         {children}
@@ -56,12 +59,16 @@ export function SidePanel({
     <dialog
       ref={dialogRef}
       aria-label={label}
+      // React hands these to every dialog up the tree, so a modal opened from inside this one
+      // (New chat, a delete confirmation) would otherwise close the sheet behind it and leave
+      // itself the top modal inside a hidden parent.
       onCancel={(e) => {
+        if (e.target !== e.currentTarget) return;
         e.preventDefault();
         onClose();
       }}
-      onClose={() => {
-        if (open) onClose();
+      onClose={(e) => {
+        if (e.target === e.currentTarget && open) onClose();
       }}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();

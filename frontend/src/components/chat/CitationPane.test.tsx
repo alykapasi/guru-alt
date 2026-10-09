@@ -65,3 +65,33 @@ describe("CitationPane focus", () => {
     expect(screen.getByRole("button", { name: "Close source" })).toBeInTheDocument();
   });
 });
+
+describe("CitationPane focus, edge cases", () => {
+  it("moves focus to the pane again when another citation replaces the open one", () => {
+    const { rerender } = render(<CitationPane citation={citation} onClose={() => {}} />);
+    const second = document.createElement("button");
+    document.body.appendChild(second);
+    second.focus();
+    rerender(<CitationPane citation={{ ...citation, chunk_id: "k2" }} onClose={() => {}} />);
+    expect(screen.getByRole("heading", { name: "Source" })).toHaveFocus();
+    // And closing now returns to the second marker, not the first.
+    rerender(<></>);
+    expect(second).toHaveFocus();
+    second.remove();
+  });
+
+  it("falls back to the main content when the marker that opened it is gone", () => {
+    const main = document.createElement("main");
+    main.id = "main";
+    main.tabIndex = -1;
+    document.body.appendChild(main);
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    const { unmount } = render(<CitationPane citation={citation} onClose={() => {}} />);
+    opener.remove();
+    unmount();
+    expect(main).toHaveFocus();
+    main.remove();
+  });
+});

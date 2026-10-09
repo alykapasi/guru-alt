@@ -58,7 +58,7 @@ export function Chat() {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
-      <main id="main" className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <main id="main" tabIndex={-1} className="outline-none flex min-h-0 min-w-0 flex-1 flex-col">
         <LiveAnnouncer message={announcement} />
         {isLoadingMessages ? (
           <div className="flex flex-1 items-center justify-center">

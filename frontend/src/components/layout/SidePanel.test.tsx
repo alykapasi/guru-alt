@@ -68,3 +68,29 @@ describe("SidePanel across the breakpoint", () => {
     expect(screen.getByRole("complementary", { name: "Source" })).toBeInTheDocument();
   });
 });
+
+describe("SidePanel with a dialog inside it", () => {
+  it("ignores cancel and close coming from a nested dialog", () => {
+    const onClose = vi.fn();
+    render(
+      <SidePanel open onClose={onClose} side="left" label="Conversations" width="w-72">
+        <dialog aria-label="New chat" open />
+      </SidePanel>,
+    );
+    const inner = screen.getByRole("dialog", { name: "New chat" });
+    fireEvent(inner, new Event("cancel", { cancelable: true }));
+    fireEvent(inner, new Event("close"));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Conversations" })).toHaveAttribute("data-modal");
+  });
+});
+
+describe("SidePanel, wide, from the keyboard", () => {
+  it("closes on Escape", () => {
+    setViewportWide(true);
+    const onClose = vi.fn();
+    render(element(true, onClose));
+    fireEvent.keyDown(screen.getByText("passage"), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});

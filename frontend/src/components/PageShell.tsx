@@ -13,7 +13,11 @@ export function PageShell() {
           that scrolls away (P10). */}
       <ImpersonationBanner />
       <NavBar />
-      <main id="main" className="mx-auto max-w-[1280px] px-4 py-12 sm:px-6">
+      <main
+        id="main"
+        tabIndex={-1}
+        className="outline-none mx-auto max-w-[1280px] px-4 py-12 sm:px-6"
+      >
         <Outlet />
       </main>
     </div>

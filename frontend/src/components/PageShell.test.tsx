@@ -15,5 +15,7 @@ describe("PageShell", () => {
     );
     expect(screen.getByRole("link", { name: "Skip to content" })).toHaveAttribute("href", "#main");
     expect(screen.getByRole("main")).toHaveAttribute("id", "main");
+    // Focusable from script, so the skip link and a closed citation can land focus there.
+    expect(screen.getByRole("main")).toHaveAttribute("tabindex", "-1");
   });
 });
