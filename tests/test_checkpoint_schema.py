@@ -107,3 +107,13 @@ async def test_start_stays_durable_when_the_schema_is_ahead(
         assert checkpointing.is_durable() is True
     finally:
         await checkpointing.stop()
+
+
+def test_the_deploy_migrates_the_checkpoint_schema() -> None:
+    """The compose overlay is the deploy that has actually been executed; if its migrate step
+    runs only Alembic, every process starts volatile and every paused conversation is lost."""
+    import yaml
+
+    with open("docker-compose.app.yml") as f:
+        command = yaml.safe_load(f)["services"]["migrate"]["command"]
+    assert "app.agent.checkpointing migrate" in " ".join(command)

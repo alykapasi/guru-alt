@@ -228,3 +228,26 @@ def test_a_graph_shape_change_bumps_its_version() -> None:
             f"the {name} graph changed shape: bump {name.upper()}_GRAPH_VERSION and update "
             f"PINNED[{name!r}] to {current[name]}"
         )
+
+
+async def test_a_database_error_does_not_drop_paused_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A saturated pool or a failover is not an unreadable checkpoint: the question must
+    survive it, so the error propagates instead of the thread being discarded."""
+    import psycopg
+
+    discarded: list[str] = []
+
+    async def record(thread_id: str) -> bool:
+        discarded.append(thread_id)
+        return True
+
+    class _Down:
+        async def aget_state(self, _config: Any) -> Any:
+            raise psycopg.OperationalError("server closed the connection unexpectedly")
+
+    monkeypatch.setattr(checkpointing, "discard_thread", record)
+    with pytest.raises(psycopg.OperationalError):
+        await checkpoints.paused_state(
+            _Down(), workflow_config("t-down"), graph_name="workflow", version=1
+        )
+    assert discarded == []

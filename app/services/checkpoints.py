@@ -25,6 +25,7 @@ from typing import Any
 import structlog
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import StateSnapshot
+from psycopg import OperationalError
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -171,6 +172,10 @@ async def paused_state(
     found: object
     try:
         snapshot = await graph.aget_state(config)
+    except OperationalError:
+        # The database, not the checkpoint (a saturated pool, a failover): the question is
+        # still there, so the request fails the way any other would and nothing is dropped.
+        raise
     except Exception:
         found = "unreadable"
     else:
