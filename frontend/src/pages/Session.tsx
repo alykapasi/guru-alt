@@ -9,11 +9,13 @@ import { CitationPane } from "../components/chat/CitationPane";
 import { PracticeControls } from "../components/chat/PracticeControls";
 import { PracticePausedStrip } from "../components/chat/PracticePausedStrip";
 import { RATINGS } from "../lib/flashcardRatings";
-import type { Citation } from "../api/sse";
+import type { CheckResult, Citation } from "../api/sse";
 import { TurnError } from "../components/chat/TurnError";
 import { QuestionCard } from "../components/lessons/QuestionCard";
 import { SidePanel } from "../components/layout/SidePanel";
 import { useMediaQuery, WIDE_QUERY } from "../hooks/useMediaQuery";
+import { LiveAnnouncer } from "../components/LiveAnnouncer";
+import { useTurnAnnouncement } from "../hooks/useTurnAnnouncement";
 
 const PRACTICE_ENDED_NOTICE = "That question no longer fits your plan, so practice ended.";
 
@@ -108,6 +110,13 @@ export function Session() {
     });
   }
 
+  // The persisted transcript is refetched before `pending` clears (useChatConversation), so
+  // when the turn ends the newest message is this turn's, and its grade is this answer's.
+  const newest = messages.length ? messages[messages.length - 1] : null;
+  const grade = (newest?.check_result ?? null) as CheckResult | null;
+  const notice = endedNotice ?? (practicePaused ? "Practice paused" : null);
+  const announcement = useTurnAnnouncement(!!pending, error, grade, notice);
+
   const itemPanel = (
     <ItemPanel
       item={item}
@@ -122,6 +131,7 @@ export function Session() {
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
       <main id="main" className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <LiveAnnouncer message={announcement} />
         {isLoadingMessages ? (
           <div className="flex flex-1 items-center justify-center">
             <p className="text-caption text-base-content/50">Loading session…</p>

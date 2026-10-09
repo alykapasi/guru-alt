@@ -41,7 +41,12 @@ export function MessageList({
   }, [newestId, pending?.assistantText, pending?.toolCalls.length]);
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 overflow-y-auto px-6 py-8">
+    <div
+      role="log"
+      aria-live="off"
+      aria-label="Conversation"
+      className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 overflow-y-auto px-4 py-8 sm:px-6"
+    >
       {goal && (
         <p className="text-caption text-base-content/50 border-base-300 -mt-2 border-b pb-4">
           Goal: {goal}

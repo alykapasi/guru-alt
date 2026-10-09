@@ -10,6 +10,8 @@ import { PracticePausedStrip } from "../components/chat/PracticePausedStrip";
 import type { Citation } from "../api/sse";
 import { TurnError } from "../components/chat/TurnError";
 import { SidePanel } from "../components/layout/SidePanel";
+import { LiveAnnouncer } from "../components/LiveAnnouncer";
+import { useTurnAnnouncement } from "../hooks/useTurnAnnouncement";
 
 export function Chat() {
   const { conversationId } = useParams<{ conversationId: string }>();
@@ -36,6 +38,7 @@ export function Chat() {
   const unarchive = useArchive("conversation");
   const practiceBusy = practiceAction.isPending || !!pending;
   const [citation, setCitation] = useState<Citation | null>(null);
+  const announcement = useTurnAnnouncement(!!pending, error);
 
   // A tutor check (S15) is already conversational — declining it is just another message, and
   // only Skip is offered here; Pause is a guided-practice-session concept (see Session.tsx).
@@ -56,6 +59,7 @@ export function Chat() {
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
       <main id="main" className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <LiveAnnouncer message={announcement} />
         {isLoadingMessages ? (
           <div className="flex flex-1 items-center justify-center">
             <p className="text-caption text-base-content/50">Loading conversation…</p>

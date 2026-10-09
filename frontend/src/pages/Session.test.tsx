@@ -99,9 +99,15 @@ describe("Session while practice is paused", () => {
         </Routes>
       </MemoryRouter>,
     );
+    // On screen in the strip, and said once to a screen reader through the status region (S53).
     expect(
-      await screen.findByText("That question no longer fits your plan, so practice ended."),
+      await screen.findByText("That question no longer fits your plan, so practice ended.", {
+        selector: "p",
+      }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "That question no longer fits your plan, so practice ended.",
+    );
     expect(screen.queryByText("Practice paused")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back to the question" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Skip it" })).not.toBeInTheDocument();
