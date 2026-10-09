@@ -17,4 +17,14 @@ describe("Composer", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
   });
+
+  it("says which mode is on, and names the message box", () => {
+    render(<Composer onSend={() => {}} disabled={false} />);
+    expect(screen.getByRole("button", { name: "Chat" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Agentic" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeInTheDocument();
+  });
 });

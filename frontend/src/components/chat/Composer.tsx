@@ -35,6 +35,8 @@ export function Composer({
         {!fixedMode && (
           <div className="flex items-center gap-1">
             <button
+              type="button"
+              aria-pressed={mode === "chat"}
               onClick={() => setMode("chat")}
               className={`text-caption flex items-center gap-1.5 rounded-field px-2.5 py-1 transition-colors ${
                 mode === "chat"
@@ -46,6 +48,8 @@ export function Composer({
               Chat
             </button>
             <button
+              type="button"
+              aria-pressed={mode === "agentic"}
               onClick={() => setMode("agentic")}
               className={`text-caption flex items-center gap-1.5 rounded-field px-2.5 py-1 transition-colors ${
                 mode === "agentic"
@@ -61,6 +65,7 @@ export function Composer({
         <div className="flex items-end gap-2">
           <textarea
             name="message"
+            aria-label="Message"
             value={content}
             onChange={(e) => setContent(e.target.value)}
             onKeyDown={(e) => {
@@ -75,11 +80,12 @@ export function Composer({
             className="textarea text-body max-h-40 flex-1 resize-none"
           />
           {streaming && onStop ? (
-            <button onClick={onStop} className="btn btn-square" aria-label="Stop">
+            <button type="button" onClick={onStop} className="btn btn-square" aria-label="Stop">
               <Square size={16} />
             </button>
           ) : (
             <button
+              type="button"
               onClick={submit}
               disabled={disabled || !content.trim()}
               className="btn btn-primary btn-square"
