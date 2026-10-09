@@ -80,6 +80,7 @@ export function ConversationRow({
             ? `/app/lessons/session/${conversation.id}`
             : `/app/chat/${conversation.id}`
         }
+        aria-current={active ? "page" : undefined}
         className={`text-caption flex items-center rounded-field py-2 pr-16 pl-3 transition-colors ${
           active
             ? "bg-primary/10 text-primary"
@@ -88,7 +89,7 @@ export function ConversationRow({
       >
         <span className="truncate">{name}</span>
       </Link>
-      <div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+      <div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 pointer-coarse:opacity-100">
         <button
           onClick={(e) => {
             e.preventDefault();

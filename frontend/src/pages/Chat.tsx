@@ -9,6 +9,7 @@ import { PracticeControls } from "../components/chat/PracticeControls";
 import { PracticePausedStrip } from "../components/chat/PracticePausedStrip";
 import type { Citation } from "../api/sse";
 import { TurnError } from "../components/chat/TurnError";
+import { SidePanel } from "../components/layout/SidePanel";
 
 export function Chat() {
   const { conversationId } = useParams<{ conversationId: string }>();
@@ -53,8 +54,8 @@ export function Chat() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1">
-      <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1">
+      <main id="main" className="flex min-h-0 min-w-0 flex-1 flex-col">
         {isLoadingMessages ? (
           <div className="flex flex-1 items-center justify-center">
             <p className="text-caption text-base-content/50">Loading conversation…</p>
@@ -114,12 +115,17 @@ export function Chat() {
             />
           </>
         )}
-      </div>
-      {citation && (
-        <aside className="border-base-300 flex w-80 shrink-0 flex-col border-l">
-          <CitationPane citation={citation} onClose={() => setCitation(null)} />
-        </aside>
-      )}
+      </main>
+      <SidePanel
+        open={citation !== null}
+        onClose={() => setCitation(null)}
+        side="right"
+        label="Source"
+        width="w-80"
+        showClose={false}
+      >
+        {citation && <CitationPane citation={citation} onClose={() => setCitation(null)} />}
+      </SidePanel>
     </div>
   );
 }

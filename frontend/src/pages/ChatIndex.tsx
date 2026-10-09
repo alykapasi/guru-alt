@@ -8,9 +8,9 @@ export function ChatIndex() {
 
   if (isLoading) {
     return (
-      <div className="flex flex-1 items-center justify-center">
+      <main id="main" className="flex flex-1 items-center justify-center">
         <p className="text-caption text-base-content/50">Loading…</p>
-      </div>
+      </main>
     );
   }
 
@@ -19,8 +19,8 @@ export function ChatIndex() {
   }
 
   return (
-    <div className="flex flex-1 items-center justify-center">
+    <main id="main" className="flex flex-1 items-center justify-center">
       <p className="text-body text-base-content/50">Start a conversation to begin.</p>
-    </div>
+    </main>
   );
 }

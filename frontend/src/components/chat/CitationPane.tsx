@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { FileText, X } from "lucide-react";
 import { useChunk, useSource } from "../../api/hooks";
 import type { Citation } from "../../api/sse";
@@ -56,15 +57,30 @@ export function CitationPane({ citation, onClose }: { citation: Citation; onClos
   const { data: chunk, isLoading: chunkLoading, isError: chunkError } = useChunk(citation.chunk_id);
   const { data: source, isLoading: sourceLoading } = useSource(citation.source_id);
   const locator = chunk ? locatorLabel(chunk.provenance) : null;
+  const headingRef = useRef<HTMLHeadingElement>(null);
+
+  // Opening a citation is a request to read it: focus goes to the pane, and back to the marker
+  // that opened it when the pane closes, so a keyboard user is not dropped at the top of the
+  // page (S53). On a narrow screen the sheet's dialog does the same for itself.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    headingRef.current?.focus();
+    return () => opener?.focus();
+  }, []);
 
   return (
     <div className="bg-base-100 flex min-h-0 flex-1 flex-col">
       <div className="border-base-300 flex items-center justify-between border-b p-4">
-        <h3 className="text-h3 flex items-center gap-2">
+        <h3 ref={headingRef} tabIndex={-1} className="text-h3 flex items-center gap-2 outline-none">
           <FileText size={16} className="text-primary" />
           Source
         </h3>
-        <button onClick={onClose} className="hover:bg-base-200 rounded-field p-1.5">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close source"
+          className="hover:bg-base-200 rounded-field p-1.5"
+        >
           <X size={16} />
         </button>
       </div>

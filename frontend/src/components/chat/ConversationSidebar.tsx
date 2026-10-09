@@ -20,7 +20,7 @@ export function ConversationSidebar() {
   const [modalOpen, setModalOpen] = useState(false);
 
   return (
-    <aside className="border-base-300 bg-base-100 flex w-72 shrink-0 flex-col border-r">
+    <div className="flex min-h-0 flex-1 flex-col">
       <div className="border-base-300 border-b p-4">
         <button onClick={() => setModalOpen(true)} className="btn btn-primary btn-sm w-full">
           <Plus size={16} />
@@ -60,6 +60,6 @@ export function ConversationSidebar() {
           </details>
         )}
       </nav>
-    </aside>
+    </div>
   );
 }
