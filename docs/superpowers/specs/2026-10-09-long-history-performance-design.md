@@ -119,4 +119,43 @@ shape exactly; `scale` multiplies the small one.
 
 ## Results
 
-Filled in by part A's first report run.
+First run, 2026-10-09: `uv run poe perf-report` (30 timed runs per path after 3 warm-ups), arm64
+laptop, PostgreSQL 17.10 in Docker. `guru_perf` held the power user and 20 ordinary learners:
+300k messages, 225k learning events. Seeding took about 17 minutes; the seed is reused after.
+
+| path | p50 ms | p95 ms | max ms | statements | rows | budget |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| turn | 129.5 | 214.8 | 215.0 | 20 | 158 | ok |
+| practice | 101.7 | 113.2 | 114.4 | 14 | 16 | ok |
+| conversation_list | 2.9 | 3.4 | 3.4 | 2 | 51 | ok |
+| transcript | 2.9 | 3.1 | 3.2 | 2 | 117 | ok |
+| source_list | 2.8 | 3.2 | 3.4 | 1 | 101 | ok |
+| reviews_due | 7103.9 | 8585.3 | 9174.6 | 4432 | 36114 | over 250 |
+| activity | 47.8 | 130.8 | 132.2 | 1 | 18513 | ok |
+| subject_mastery | 71.9 | 83.3 | 153.9 | 5 | 1500 | ok |
+| memory_list | 12.4 | 13.3 | 13.5 | 1 | 50 | ok |
+| lesson_plan | 1.9 | 2.7 | 4.0 | 1 | 1 | ok |
+| plan_revision | 1738.1 | 1872.7 | 1956.0 | 17 | 32322 | over 250 |
+| notes_index | 38.8 | 43.9 | 44.6 | 9 | 92 | ok |
+| profile_refresh | 1907.5 | 2007.7 | 2036.8 | 37 | 36858 | over 250 |
+
+Slowest statements:
+
+- **reviews_due:** 4,432 statements: per-due-component work over ~1,500 due components. The
+  two slowest are the transfer-evidence query (`anon_1.kc_id, anon_1.setting, min(CASE …)`,
+  ~500 ms each) and the per-component evidence count (`count(DISTINCT CASE …)`, ~230 ms).
+- **plan_revision:** the same transfer-evidence query twice (~480 ms each) and the evidence
+  count (~210 ms); 32k rows read.
+- **profile_refresh:** the same two queries (~500 ms, ~210 ms), plus every learning event and
+  message in its recency window.
+- **turn:** chunk retrieval 93 ms and memory retrieval 58 ms of a 215 ms p95; under budget.
+
+Growth found by the budgets (`tests/test_history_budgets.py`, strict xfail):
+
+- **activity:** one row per learning event in the streak/momentum window (18.5k rows here).
+- **profile_refresh:** every learning event and message in its recency window.
+
+**Selected for part B by the rule:** reviews_due (p95 8.6 s), plan_revision (1.9 s),
+profile_refresh (2.0 s, and growth), activity (growth). The shared cause of the three slow
+paths is the transfer-evidence query and the per-component evidence count, which read every
+learning event for the learner's components; reviews_due also issues per-component statements.
