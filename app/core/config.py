@@ -305,6 +305,10 @@ class Settings(BaseSettings):
     # The conversation list a client renders (S62): a page, like the transcript.
     chat_conversation_page_size: int = 50
     chat_conversation_page_max: int = 200
+    # The source library a client renders (S62). Larger than the conversation page: the
+    # picker shows many at once.
+    sources_page_size: int = 100
+    sources_page_max: int = 500
 
     # Rolling 24h per-learner ceilings, checked before a turn starts. Both are enforced
     # because neither covers the other: cost is unknown for a model with no price entry (see

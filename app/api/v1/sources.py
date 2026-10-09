@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Query, Response, UploadFile, status
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.api.deps import (
@@ -33,6 +34,7 @@ from app.schemas.source import (
 )
 from app.services import ingestion as svc
 from app.services import knowledge, removal
+from app.services import sources as sources_svc
 
 router = APIRouter(tags=["sources"])
 
@@ -176,26 +178,33 @@ async def retry_source(
     return reset
 
 
-@router.get("/sources", response_model=list[SourceRead])
+class SourcePage(BaseModel):
+    """One page of the learner's sources, newest first (S62)."""
+
+    sources: list[SourceRead]
+    has_more: bool
+
+
+@router.get("/sources", response_model=SourcePage)
 async def list_sources(
     session: SessionDep,
+    settings: SettingsDep,
     learner: CurrentLearner,
     subject_id: Annotated[uuid.UUID | None, Query()] = None,
     archived: Annotated[bool, Query()] = False,
+    limit: int | None = None,
+    before: uuid.UUID | None = None,
 ):
-    """List the learner's sources, optionally scoped to a subject — backs the conversation
-    creation modal's source picker (Phase 7). Archived sources are listed only with
-    ``archived=true`` (S61)."""
+    """A page of the learner's sources, optionally scoped to a subject — backs the source
+    picker and the Uploads page. Archived sources only with ``archived=true`` (S61)."""
     if subject_id is not None:
         await knowledge.require_visible_subject(session, subject_id, learner.id)
-    stmt = select(Source).where(
-        Source.learner_id == learner.id,
-        Source.archived_at.is_not(None) if archived else Source.archived_at.is_(None),
+    size = limit if limit is not None else settings.sources_page_size
+    size = max(1, min(size, settings.sources_page_max))
+    rows, has_more = await sources_svc.list_sources(
+        session, learner.id, subject_id=subject_id, archived=archived, limit=size, before=before
     )
-    if subject_id is not None:
-        stmt = stmt.where(Source.subject_id == subject_id)
-    sources = (await session.scalars(stmt.order_by(Source.created_at.desc()))).all()
-    return list(sources)
+    return SourcePage(sources=[SourceRead.model_validate(s) for s in rows], has_more=has_more)
 
 
 @router.get("/sources/{source_id}", response_model=SourceRead)
