@@ -135,7 +135,7 @@ named in the "Hand-off" column and tracked under that ID.
 | S55 | Validate source scope, refresh tags | Reassignment validated, tags refreshed. | — | [Source API tests](../tests/test_sources_api.py) |
 | S56 | Evidence kinds and reproducible grading | Server-derived judged vs self-rated; `grading` block + frozen snapshots on every graded event; `poe regrade` reports agreement; declared checks get criteria and a difficulty band. Legacy events stay unreplayable. | S85 (optional band question) | [RUNBOOK §19](RUNBOOK.md), [provenance design](superpowers/specs/2026-09-28-grading-provenance-design.md), [criteria design](superpowers/specs/2026-09-28-declared-check-criteria-design.md) |
 | S57 | Effective sweep settings | Supported knobs apply; unsupported fail; settings recorded. | S59 | [Sweep tests](../tests/eval/test_sweep_runner.py) |
-| S58 | End-to-end and release gates | Browser journeys for an administrator's audited visit, the files-only v0 library (and no browser request beyond the app and API during a tutoring turn), and exact note edits with a stale-save conflict; each backend start recreates the `_e2e` database; the mastery sitting test reads the database clock; `main` requires the `CI` check (admins bypass). The journeys found three defects, fixed: ending a visit left the learner's account on screen with no banner, and the note editor and its format menu had no accessible names. | S60 (real infrastructure, real Clerk) | [browser journeys](../frontend/e2e/), [design](superpowers/specs/2026-10-10-release-gates-design.md), [RUNBOOK §7](RUNBOOK.md#7-before-you-merge) |
+| S58 | End-to-end and release gates | Browser journeys for an administrator's audited visit, the files-only v0 library (and no browser request beyond the app and API during a tutoring turn), and exact note edits with a stale-save conflict; each backend start recreates the `_e2e` database; the mastery sitting test reads the database clock; `main` requires the `CI` check (admins bypass). The journeys and the final review found four defects, fixed: ending a visit left the learner's account on screen with no banner (and, if the request failed, kept it there), stopping inside a learner's conversation stranded the administrator on its URL, and the note editor and its format menu had no accessible names. The admin journey's timing check now follows the deployment's own totals instead of run order. | S60 (real infrastructure, real Clerk) | [browser journeys](../frontend/e2e/), [design](superpowers/specs/2026-10-10-release-gates-design.md), [RUNBOOK §7](RUNBOOK.md#7-before-you-merge) |
 | S61 | Archive, delete, forget, export, retention | Three removal actions; account deletion with 7-day recovery then full erase; diagnostic rows expire at 30 days. | S60 (backups) | [RUNBOOK §16](RUNBOOK.md) |
 | S62 | Measured long-history performance | Statement/row budgets for 13 hot paths at ×1 and ×4 history in `poe check` (none expected to grow); `poe perf-report` against a 5× power user; conversation and source lists paged; the review queue checks access once; retention and transfer checks start from one-way milestones on `learner_kc_state` and read evidence only for candidates; plan revision asks only about its subject; the last-answer lookup is one index read; activity aggregates by day. Due reviews 9.8 s → 208 ms p95. | Practice sits at the line (p95 265 ms, p50 213 ms: memory retrieval and the subject transfer read); minors below. | [Budgets](../tests/test_history_budgets.py), [milestones](../app/learning/mastery.py), [design](superpowers/specs/2026-10-09-long-history-performance-design.md) |
 | S63 | Show the whole goal | Lessons page shows window, deferred objectives and status. | — | [Status bar](../frontend/src/components/lessons/GoalStatusBar.tsx) |
@@ -277,6 +277,8 @@ slot under the transfer cap; a due read racing an answer on an unmarked row can 
 `CONCURRENTLY` (writes to `learning_events` block for the build); `test_a_foreign_component_is_skipped_in_one_query`
 does not count queries.
 
+**S58** — the notes journey could race the page's own auto-refresh if the note goes stale again after the explicit refresh (not observed in 9 runs); starting a visit still `clear()`s rather than resets, so the administrator's own nav and portal can linger briefly under the banner; the visit journey's two hand-made browser contexts are never closed and record no trace or video on failure; RUNBOOK §7 should name `poe dev` (same port 8000) as the likeliest reused backend.
+
 **S77** — the stranded-duplicate sweep has no batch limit; `requeued` includes `recovered`.
 
 ## Notes
@@ -302,10 +304,9 @@ top 50:
 
 They justify measuring the tradeoff on a real corpus, not changing retrieval.
 
-### Latest verification — 2026-10-10
+### Latest verification — 2026-10-11
 
-On `feat/workstream-2` (PR #45, merged), locally and in CI: `poe check` 2755 passed; format check and `db-check`
-clean; frontend 261 tests, build and lint pass; `npm run e2e` (keyless) passes except the admin
-latency check on a reused database. Each piece ended with a whole-branch review;
-Critical/Important findings were fixed test-first. Not run: real providers, worker processes, a
-manual screen-reader pass. Educational effect is not established by any of this (S18, S59).
+On `feat/workstream-6` (S58), locally: `poe check` 2765 passed; format check clean; frontend 264
+tests, build and lint pass; the full browser suite (`CI=1`, fresh `_e2e` database) 23 passed, and
+the four admin/notes/web journeys 21/21 over three repeats. Not run: real providers, real Clerk,
+real infrastructure. Educational effect is not established by any of this (S18, S59).
