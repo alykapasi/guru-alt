@@ -90,6 +90,10 @@ class LearningEvent(UUIDPrimaryKeyMixin, Base):
             "ix_learning_events_learner_item",
             "learner_id",
             text("(payload ->> 'item_id')"),
+            # Trailing, so "when did they last answer it" is read from the index (S62). Without
+            # it the planner chose a backward walk of created_at that, for an item the learner
+            # never answered, covered their whole history: 113 ms at a power user's size.
+            "created_at",
             postgresql_where=text("event_type IN ('observation', 'self_report')"),
         ),
     )

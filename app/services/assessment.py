@@ -298,7 +298,8 @@ async def find_item_for_kc(
     learner's practice — and the mastery observation it produced was traced to it.
     """
     # Correlated per candidate item, which is cheap because a KC's bank is small and
-    # ix_learning_events_learner_item makes each lookup an index probe.
+    # ix_learning_events_learner_item makes each lookup one index read — its trailing
+    # created_at is what lets max() stop at the first entry (S62).
     last_answered = (
         select(func.max(LearningEvent.created_at))
         .where(

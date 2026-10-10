@@ -372,3 +372,22 @@ async def test_one_unaided_answer_after_a_hinted_one_is_not_retention(
     assert ev.unassisted_attempts == 1
     assert ev.unassisted_span_days is None
     assert not ev.retention_shown(min_days=1.0)
+
+
+async def test_the_last_answer_lookup_is_served_by_the_item_index(db_session) -> None:
+    """`max(created_at)` for one learner and item must be an index read, not a scan (S62).
+
+    Without `created_at` in the index the planner walks `created_at` backwards hoping to meet
+    the item early, and when the learner never answered it, it walks their whole history.
+    """
+    from sqlalchemy import text
+
+    definition = (
+        await db_session.execute(
+            text(
+                "SELECT pg_get_indexdef(indexrelid) FROM pg_index "
+                "WHERE indexrelid = 'ix_learning_events_learner_item'::regclass"
+            )
+        )
+    ).scalar_one()
+    assert "learner_id, ((payload ->> 'item_id'::text)), created_at" in definition
