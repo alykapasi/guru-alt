@@ -173,3 +173,28 @@ async def test_due_checks_can_be_scoped_to_components(db_session) -> None:
     )
 
     assert [c.kc_id for c in due] == [kc1.id]
+
+
+async def test_plan_revision_asks_only_about_its_subject(db_session, monkeypatch) -> None:
+    from app.services import lesson_plan as plan_svc
+
+    asked: list[object] = []
+    real_r, real_t = mastery.due_retention_checks, mastery.due_transfer_checks
+
+    async def spy_r(session, learner_id, **kw):
+        asked.append(kw.get("kc_ids"))
+        return await real_r(session, learner_id, **kw)
+
+    async def spy_t(session, learner_id, **kw):
+        asked.append(kw.get("kc_ids"))
+        return await real_t(session, learner_id, **kw)
+
+    monkeypatch.setattr(mastery, "due_retention_checks", spy_r)
+    monkeypatch.setattr(mastery, "due_transfer_checks", spy_t)
+    learner = await _learner(db_session)
+    _subject, kc = await _kc(db_session)
+    subject_kcs = {kc.id}
+
+    await plan_svc._due_review_kc_ids(db_session, learner.id, subject_kcs)
+
+    assert asked == [subject_kcs, subject_kcs]
