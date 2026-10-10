@@ -1,6 +1,6 @@
 # Guru — Suggestions Tracker
 
-Last reviewed: 2026-09-29 · Branch state: `feat/workstream-2` (PR #44)
+Last reviewed: 2026-10-10 · Branch state: `feat/workstream-2` (PR #45; PR #44 merged 2026-09-29)
 
 What is still to do, and what is done. [V0_DECISIONS.md](V0_DECISIONS.md) owns v0 scope and the
 [delivery sequence](V0_DECISIONS.md#delivery-sequence); [MASTERPLAN.md](MASTERPLAN.md) and
@@ -306,9 +306,10 @@ top 50:
 
 They justify measuring the tradeoff on a real corpus, not changing retrieval.
 
-### Latest verification — 2026-09-29
+### Latest verification — 2026-10-10
 
-On `feat/workstream-2` (PR #44), locally: `poe check` 2574 passed; format check, `db-check` and API
-contract clean; frontend 206 tests, build and lint pass. Each piece ended with a whole-branch
-review; Critical/Important findings were fixed test-first. Not run: browser journeys, real
-providers, worker processes. Educational effect is not established by any of this (S18, S59).
+On `feat/workstream-2` (PR #45), locally: `poe check` 2755 passed; format check and `db-check`
+clean; frontend 261 tests, build and lint pass; `npm run e2e` (keyless) passes except the admin
+latency check on a reused database. Each piece ended with a whole-branch review;
+Critical/Important findings were fixed test-first. Not run: real providers, worker processes, a
+manual screen-reader pass. Educational effect is not established by any of this (S18, S59).
