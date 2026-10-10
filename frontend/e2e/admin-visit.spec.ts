@@ -71,7 +71,8 @@ test("an administrator views a learner's account for a stated reason, and it is 
   // The way back.
   await banner.getByRole("button", { name: "Stop viewing" }).click();
   await expect(banner).toHaveCount(0);
-  await admin.getByRole("link", { name: "Admin" }).click();
+  await expect(admin).toHaveURL(/\/app\/admin$/);
+  await expect(admin.getByRole("link", { name: "Admin" })).toBeVisible();
   const visit = admin.getByRole("row").filter({ hasText: reason });
   await expect(visit).toBeVisible();
   await visit.getByRole("button", { name: "Action log" }).click();
