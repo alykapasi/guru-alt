@@ -22,12 +22,12 @@ older verification runs) lives in Git.
 
 | | Count | IDs |
 | --- | --- | --- |
-| Live, v0 | 12 | S18 S27 S28 S31 S50 S58 S59 S60 S65 S66 S76 S77 |
+| Live, v0 | 11 | S18 S27 S28 S31 S50 S59 S60 S65 S66 S76 S77 |
 | Live, proposed (not v0 gates) | 4 | S64 S80 S84 S85 |
 | Open questions | 2 | O02 O05 |
-| Done | 53 | [Completed](#completed) |
+| Done | 54 | [Completed](#completed) |
 
-**Next up: workstream 6** — S58, S59, S18.
+**Next up: workstream 6** — S59, S18 (both need evaluation data and a paid-run budget).
 
 ## Live work
 
@@ -38,7 +38,6 @@ evidence links and in [Completed](#completed).
 
 | ID | Item | Status | Remaining | Evidence |
 | --- | --- | --- | --- | --- |
-| S58 | End-to-end and release gates | Partial | Browser coverage for broad sudo, v0 web restriction and durable note editing; verify changed boundaries together and required-check enforcement before release. Two order-dependent failures unfixed (see [notes](#s58-notes)). | [CI](../.github/workflows/ci.yml), [browser journeys](../frontend/e2e/) |
 | S59 | Reliability, model quality, and learning evaluation | Partial | Select permitted fixtures/founder examples, add independent grading comparisons and founder labels, measure before setting thresholds. Covers diagnosis, intent, source support, injection, extraction, difficulty. Owns S03/S67/S71/S72. Paid runs wait for data and budget. | [Reliability report](../tests/eval/reliability/report.py), [V14](V0_DECISIONS.md#accepted-product-decisions) |
 | S18 | Calibrate estimates and heuristics | Partial | With S59 data: calibrate placement, mastery bar, assistance, detour disproval, scaffolding, transfer seeds, goal freshness, retention spacing and probe days, the turn and request deadlines, the provider retry wait, the per-learner ingestion cap; measure requested vs delivered difficulty; set thresholds for the three stored-but-unread extraction ratios. | [Constants inventory](../tests/eval/reliability/knobs.py), [difficulty report](../tests/eval/reliability/difficulty.py) |
 
@@ -110,7 +109,7 @@ named in the "Hand-off" column and tracked under that ID.
 | S25 | Private ownership and reviewed publication | One visibility gate with a sweep guard; admin-reviewed frozen snapshots; upload-derived material never publishable. | Residual: pasted source text evades the flag — admin review is the control | [RUNBOOK §12](RUNBOOK.md#12-publication-review-s25b) |
 | S26 | Consistent source scope, sources-only | One `resolve_scope`; opt-in untagged sources; General chat reads none. | — | [Scope](../app/rag/scope.py) |
 | S29 | Citations survive re-ingest | Supersede instead of delete; confirmed re-processing. | — | [Pipeline](../app/rag/pipeline.py) |
-| S30 | Disable URL intake for v0 | URL import/retry rejected; tutor searches stored material only. | S58 (browser) | [Web-policy tests](../tests/test_v0_web_policy.py) |
+| S30 | Disable URL intake for v0 | URL import/retry rejected; tutor searches stored material only. | S58 (browser, done) | [Web-policy tests](../tests/test_v0_web_policy.py) |
 | S32 | Bind onboarding state to learner | Durable ownership checked against identity. | S17 (cleanup) | [Onboarding](../app/services/onboarding_sessions.py) |
 | S33 | Assessment authorship and privacy | Generated items/rubrics private with owner checks. | — | [Privacy tests](../tests/test_assessment_privacy.py) |
 | S34 | Concurrency-safe evidence and retries | State rows locked in sorted order; retried turns reuse the attempt id. | — | [Integrity design §2](superpowers/specs/2026-09-25-integrity-transfer-design.md) |
@@ -119,7 +118,7 @@ named in the "Hand-off" column and tracked under that ID.
 | S37 | Bounded, resumable ingestion | Extraction, embedding and publish commit as stages and resume where they stopped (no OCR or embedding paid twice); concept tagging is a retried stage a refusal cannot silently skip; exact global slots and a per-learner cap (2) as advisory locks; a finishing job starts the waiting upload whose learner runs least. | Per-job spend ceiling (deferred until daily caps prove too coarse); S18 (`ingest_max_jobs_per_learner`). Review minors, deferred: a tag-only resume (or a terminal failure at embed) leaves the saved extraction until the source is deleted; re-processing overwrites rather than deletes the old extraction; a refused subject-change retag marks a not-yet-done source `tag` (it then fails for want of an extraction); `_start_next` after an escaped error runs on a failed session (the sweep covers it); deleting a source mid-tag ends the task with a traceback; the learner slot key uses 28 bits of the id (a rare collision shares a cap). | [Stages](../app/rag/pipeline.py), [slots](../app/services/ingest_slots.py), [design](superpowers/specs/2026-09-30-resumable-ingestion-design.md) |
 | S38 | Note catch-up cursors | Separate bounded message/event cursors. | — | [Notes](../app/services/notes.py) |
 | S39 | Topic/concept provenance in notes | Topic-scoped distillation, validated references. | — | [Distillation](../app/learning/note_distill.py) |
-| S40 | Preserve exact note edits | Authored Markdown kept; revisions and guarded restore. | S58 (browser) | [Notes](../app/services/notes.py) |
+| S40 | Preserve exact note edits | Authored Markdown kept; revisions and guarded restore. | S58 (browser, done) | [Notes](../app/services/notes.py) |
 | S41 | Bounded note rewrites | Tail rewriting; deterministic fallback render. | — | [Distillation](../app/learning/note_distill.py) |
 | S42 | Memory correction and supersession | Explicit same/updates/coexists judgement, shown with Undo; durable forgetting. | S18 (distance threshold) | [Supersession](../app/memory/supersession.py) |
 | S43 | Refresh scheduling | Quiet-period worker sweep; recency window; estimators pay only on change; pause memory. | S18 (windows) | [RUNBOOK §17](RUNBOOK.md#17-refresh-scheduling-s43) |
@@ -136,6 +135,7 @@ named in the "Hand-off" column and tracked under that ID.
 | S55 | Validate source scope, refresh tags | Reassignment validated, tags refreshed. | — | [Source API tests](../tests/test_sources_api.py) |
 | S56 | Evidence kinds and reproducible grading | Server-derived judged vs self-rated; `grading` block + frozen snapshots on every graded event; `poe regrade` reports agreement; declared checks get criteria and a difficulty band. Legacy events stay unreplayable. | S85 (optional band question) | [RUNBOOK §19](RUNBOOK.md), [provenance design](superpowers/specs/2026-09-28-grading-provenance-design.md), [criteria design](superpowers/specs/2026-09-28-declared-check-criteria-design.md) |
 | S57 | Effective sweep settings | Supported knobs apply; unsupported fail; settings recorded. | S59 | [Sweep tests](../tests/eval/test_sweep_runner.py) |
+| S58 | End-to-end and release gates | Browser journeys for an administrator's audited visit, the files-only v0 library (and no browser request beyond the app and API during a tutoring turn), and exact note edits with a stale-save conflict; each backend start recreates the `_e2e` database; the mastery sitting test reads the database clock; `main` requires the `CI` check (admins bypass). The journeys and the final review found four defects, fixed: ending a visit left the learner's account on screen with no banner (and, if the request failed, kept it there), stopping inside a learner's conversation stranded the administrator on its URL, and the note editor and its format menu had no accessible names. The admin journey's timing check now follows the deployment's own totals instead of run order. | S60 (real infrastructure, real Clerk) | [browser journeys](../frontend/e2e/), [design](superpowers/specs/2026-10-10-release-gates-design.md), [RUNBOOK §7](RUNBOOK.md#7-before-you-merge) |
 | S61 | Archive, delete, forget, export, retention | Three removal actions; account deletion with 7-day recovery then full erase; diagnostic rows expire at 30 days. | S60 (backups) | [RUNBOOK §16](RUNBOOK.md) |
 | S62 | Measured long-history performance | Statement/row budgets for 13 hot paths at ×1 and ×4 history in `poe check` (none expected to grow); `poe perf-report` against a 5× power user; conversation and source lists paged; the review queue checks access once; retention and transfer checks start from one-way milestones on `learner_kc_state` and read evidence only for candidates; plan revision asks only about its subject; the last-answer lookup is one index read; activity aggregates by day. Due reviews 9.8 s → 208 ms p95. | Practice sits at the line (p95 265 ms, p50 213 ms: memory retrieval and the subject transfer read); minors below. | [Budgets](../tests/test_history_budgets.py), [milestones](../app/learning/mastery.py), [design](superpowers/specs/2026-10-09-long-history-performance-design.md) |
 | S63 | Show the whole goal | Lessons page shows window, deferred objectives and status. | — | [Status bar](../frontend/src/components/lessons/GoalStatusBar.tsx) |
@@ -143,7 +143,7 @@ named in the "Hand-off" column and tracked under that ID.
 | S81 | Shadow turn read | `intent` + `fully_correct` per check, never changes the outcome. | — | [Turn read](../app/learning/turn_read.py) |
 | S82 | Jev accounting and report | `decision_calls`, pricing, `poe decision-report`. | — | [Report](../app/services/decision_report.py) |
 | S83 | Live switch and rollback | Per-question live switch with threshold and deadline fallback; never fails an answer. | — | [Decisions service](../app/services/decisions.py) |
-| P10 | Admin portal and audited sudo | Reason-required short visits, durable audit, live revocation; off by default. | S58 (browser) | [Impersonation](../app/services/impersonation.py) |
+| P10 | Admin portal and audited sudo | Reason-required short visits, durable audit, live revocation; off by default. | S58 (browser, done) | [Impersonation](../app/services/impersonation.py) |
 
 **Merged or superseded:** S03 → S59 · S08 (shared acceptance criterion: diagnose, teach, apply
 independently, revisit) · S19 (standing principle: keep the modular app, role seam, continuous
@@ -277,15 +277,14 @@ slot under the transfer cap; a due read racing an answer on an unmarked row can 
 `CONCURRENTLY` (writes to `learning_events` block for the build); `test_a_foreign_component_is_skipped_in_one_query`
 does not count queries.
 
+**S58** — the notes journey could race the page's own auto-refresh if the note goes stale again after the explicit refresh (not observed in 9 runs); starting a visit still `clear()`s rather than resets, so the administrator's own nav and portal can linger briefly under the banner; the visit journey's two hand-made browser contexts are never closed and record no trace or video on failure; RUNBOOK §7 should name `poe dev` (same port 8000) as the likeliest reused backend.
+
 **S77** — the stranded-duplicate sweep has no batch limit; `requeued` includes `recovered`.
 
 ## Notes
 
 ### S58 notes
 
-- Order-dependent failures (unfixed): the admin journey asserts "Not measured" for completion
-  latency, true only on an e2e database with no non-streamed call in 24 hours; a mastery assertion
-  is clock-skew sensitive.
 - "Green locally, red in CI" is the symptom to look for: two suites once depended on the developer
   machine (a real object store; the Clerk key in `.env.local`) and now default to CI's environment.
 - Dev and CI run RustFS 1.0.0 (MinIO stopped publishing public images on 2026-09-26).
@@ -305,10 +304,9 @@ top 50:
 
 They justify measuring the tradeoff on a real corpus, not changing retrieval.
 
-### Latest verification — 2026-10-10
+### Latest verification — 2026-10-11
 
-On `feat/workstream-2` (PR #45, merged), locally and in CI: `poe check` 2755 passed; format check and `db-check`
-clean; frontend 261 tests, build and lint pass; `npm run e2e` (keyless) passes except the admin
-latency check on a reused database. Each piece ended with a whole-branch review;
-Critical/Important findings were fixed test-first. Not run: real providers, worker processes, a
-manual screen-reader pass. Educational effect is not established by any of this (S18, S59).
+On `feat/workstream-6` (S58), locally: `poe check` 2765 passed; format check clean; frontend 264
+tests, build and lint pass; the full browser suite (`CI=1`, fresh `_e2e` database) 23 passed, and
+the four admin/notes/web journeys 21/21 over three repeats. Not run: real providers, real Clerk,
+real infrastructure. Educational effect is not established by any of this (S18, S59).

@@ -29,6 +29,7 @@ from app.learning.item_generation import (
 )
 from app.learning.item_generation import _SYSTEM_PROMPT as _MCQ_SYSTEM_PROMPT
 from app.learning.lesson_plan import _OBJECTIVE_SYSTEM_PROMPT
+from app.learning.note_distill import DISTILL_SYSTEM_PROMPT, parse_atoms_payload
 from app.learning.rubric_grading import _COMPONENT_SYSTEM_PROMPT
 from app.learning.rubric_grading import _SYSTEM_PROMPT as _GRADE_SYSTEM_PROMPT
 from app.llm.providers.shaped import SHAPES, ShapedProvider, _verdict
@@ -47,6 +48,7 @@ REAL_PROMPTS = [
     ("grade", _GRADE_SYSTEM_PROMPT),
     ("per-component grade", _COMPONENT_SYSTEM_PROMPT),
     ("intent", _INTENT_SYSTEM_PROMPT),
+    ("note distill", DISTILL_SYSTEM_PROMPT),
 ]
 
 
@@ -375,3 +377,15 @@ async def test_embeddings_are_the_plain_fake_s_so_a_journey_indexes_real_vectors
 
     assert len(result.vectors) == 2
     assert result.vectors[0] != result.vectors[1]
+
+
+async def test_a_note_distill_reply_parses_into_one_concept_atom() -> None:
+    reply = await _client().complete(
+        ModelRole.SMART,
+        [ChatMessage(role=ChatRole.USER, content="Topic: 'Eigenvalues' in the subject 'LA'\n")],
+        system=DISTILL_SYSTEM_PROMPT,
+    )
+    payload = parse_atoms_payload(reply.content)
+    assert payload is not None
+    assert [a["kind"] for a in payload["atoms"]] == ["concept"]
+    assert "Eigenvalues" in payload["atoms"][0]["md"]

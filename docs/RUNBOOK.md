@@ -380,9 +380,17 @@ same database makes them fail for reasons that have nothing to do with the code.
 of unrelated failures, check you aren't overriding `GURU_DATABASE_URL` to a database something else
 is using.
 
-CI runs three gates: this suite, `alembic upgrade head` + `db-check` against a fresh pgvector
-service, and a separate **frontend** job (`npm ci && npm run lint && npm run build` — `build` is
-`tsc -b`, so it is the frontend's type-check too).
+CI runs ten gates: format and lint; type-check; this suite; migrations (applied, checked for
+drift, round-tripped); a real Redis queue test; the API contract against the frontend's generated
+types; frontend lint, tests and build (`build` is `tsc -b`, so it is the frontend's type-check
+too); and the Playwright browser journeys. One aggregate job, `CI`, is green only when all are.
+
+**`main` requires the `CI` check (S58).** A PR cannot merge until `CI` is green; administrators
+can still push directly (docs go straight to `main`). The browser journeys recreate their `_e2e`
+database at every backend start, so a local run begins empty like CI — unless Playwright reuses a
+backend you left running (`reuseExistingServer` outside CI); run with `CI=1` to be sure. The
+journeys run with administrator visits switched on (`GURU_IMPERSONATION_ENABLED=true` in
+`scripts/e2e-backend.sh`).
 
 > **Check the frontend with `npm run build`, never `npx tsc --noEmit`.** The root `tsconfig.json`
 > is solution-style (`"files": []` plus project references), so a bare `tsc --noEmit` type-checks

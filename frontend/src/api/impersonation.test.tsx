@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { ImpersonationBanner } from "../components/ImpersonationBanner";
 import { api, apiFetch } from "./client";
 import { endVisit, startVisit, visitToken } from "./impersonation";
@@ -89,19 +90,27 @@ describe("carrying the visit credential", () => {
   });
 });
 
-function renderBanner() {
+function Where() {
+  return <p data-testid="where">{useLocation().pathname}</p>;
+}
+
+function renderBanner(children: React.ReactNode = null) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <ImpersonationBanner />
+      <MemoryRouter initialEntries={["/app/chat/the-learners-conversation"]}>
+        <ImpersonationBanner />
+        {children}
+        <Where />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
 describe("the banner", () => {
   it("renders nothing when nobody is viewing an account", () => {
-    const { container } = renderBanner();
-    expect(container).toBeEmptyDOMElement();
+    renderBanner();
+    expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("names the account and says it is read only", () => {
@@ -130,5 +139,62 @@ describe("the banner", () => {
     expect(calls[0].headers.get("authorization")).toBeNull();
     expect(calls.some((c) => c.url.includes("/auth/logout"))).toBe(false);
     await waitFor(() => expect(visitToken()).toBeNull());
+  });
+
+  it("puts the administrator's own account back on screen when the visit ends", async () => {
+    // Clearing the cache is not enough: a page already on screen keeps rendering what it last
+    // read — the account that was being viewed — under no banner at all, which reads as the
+    // administrator's own account. Whatever is mounted must be read again, as the administrator.
+    let whose = "alice";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse({}))),
+    );
+    function Whose() {
+      const me = useQuery({ queryKey: ["me"], queryFn: async () => whose });
+      return <p>Signed in as {me.data}</p>;
+    }
+    startVisit(VISIT);
+    renderBanner(<Whose />);
+    await screen.findByText("Signed in as alice");
+
+    whose = "the-admin";
+    screen.getByRole("button", { name: "Stop viewing" }).click();
+
+    await screen.findByText("Signed in as the-admin");
+  });
+
+  it("takes the administrator back to the portal, off the learner's pages", async () => {
+    // Stopping inside the learner's conversation left the administrator on its URL: the page
+    // reloaded as them, the conversation 404'd, and an empty transcript sat under a live composer.
+    captureFetch();
+    startVisit(VISIT);
+    renderBanner();
+
+    screen.getByRole("button", { name: "Stop viewing" }).click();
+
+    await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/app/admin"));
+  });
+
+  it("puts the administrator's own account back even when ending the visit fails", async () => {
+    // The DELETE can fail outright (network, API down). Whatever is on screen still has to stop
+    // showing the learner's account the moment the banner goes, not only after a round trip.
+    let whose = "alice";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.reject(new TypeError("network down"))),
+    );
+    function Whose() {
+      const me = useQuery({ queryKey: ["me"], queryFn: async () => whose });
+      return <p>Signed in as {me.data}</p>;
+    }
+    startVisit(VISIT);
+    renderBanner(<Whose />);
+    await screen.findByText("Signed in as alice");
+
+    whose = "the-admin";
+    screen.getByRole("button", { name: "Stop viewing" }).click();
+
+    await screen.findByText("Signed in as the-admin");
   });
 });

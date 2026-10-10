@@ -1,6 +1,6 @@
-import { execFileSync } from "node:child_process";
 import { expect, test } from "@playwright/test";
-import { signIn } from "./journey";
+import { grantAdmin } from "./admin";
+import { apiGet, signIn } from "./journey";
 import { expectAccessible } from "./a11y";
 
 /** The operator's portal, and the door that is not shown to people who may not open it (P10).
@@ -10,34 +10,9 @@ import { expectAccessible } from "./a11y";
  * learner is *offered* the portal, and whether an administrator's one actually renders the
  * numbers rather than an error where they should be.
  *
- * It also drives `poe grant-admin`, which is the only way a deployment gets its first
- * administrator and had nothing exercising it end to end. Shelling out is the point rather
- * than a workaround: there is deliberately no API for this, because the API's own answer to
- * "who may grant admin" is "an administrator", and a deployment starts with none.
+ * It also drives `poe grant-admin` (see `./admin.ts`), which is the only way a deployment gets
+ * its first administrator.
  */
-
-const REPO = new URL("../..", import.meta.url).pathname;
-
-/** The database the e2e API is on — derived exactly as `scripts/e2e-backend.sh` derives it, so
- * there is no second DSN to keep in step with it. */
-function e2eDatabaseUrl(): string {
-  return execFileSync(
-    "uv",
-    ["run", "python", "-m", "tests.testdb", "--suffix", "_e2e", "--print-url"],
-    {
-      cwd: REPO,
-      encoding: "utf8",
-    },
-  ).trim();
-}
-
-function grantAdmin(email: string): void {
-  execFileSync("uv", ["run", "poe", "grant-admin", email], {
-    cwd: REPO,
-    encoding: "utf8",
-    env: { ...process.env, GURU_DATABASE_URL: e2eDatabaseUrl() },
-  });
-}
 
 test("an ordinary learner is not shown the portal, and cannot reach it by URL", async ({
   page,
@@ -75,9 +50,25 @@ test("an administrator reads what the deployment costs and who is on it", async 
   const roster = page.getByRole("heading", { name: "Who is here" }).locator("..");
   await expect(roster.getByRole("row").first()).toBeVisible();
 
-  // Neither timing should read as a measured zero. Every call this deployment has made was
-  // through the deterministic provider, so "not measured" is what the completion row honestly
-  // says, and a page that rendered "0ms" there would be claiming an instantaneous model.
-  await expect(page.getByText("Not measured").first()).toBeVisible();
+  // Each timing says what was measured: "Not measured" exactly when no call in the window was
+  // timed, and a p50/p95 otherwise — never a measured zero standing in for no data. Read from
+  // the deployment's own totals rather than assumed, because whether any call was timed
+  // depends on which journeys ran before this one in the same run (S58).
+  const spend = await apiGet<{ completion: { calls: number }; first_token: { calls: number } }>(
+    page,
+    "/ops/spend?hours=24",
+  );
+  for (const [label, timing] of [
+    ["Completion", spend.completion],
+    ["Time to first token", spend.first_token],
+  ] as const) {
+    const block = page.getByText(label, { exact: true }).locator("..");
+    if (timing.calls === 0) {
+      await expect(block.getByText("Not measured")).toBeVisible();
+    } else {
+      await expect(block.getByText(/p50 .* · p95 /)).toBeVisible();
+      await expect(block.getByText("Not measured")).toHaveCount(0);
+    }
+  }
   await expectAccessible(page);
 });

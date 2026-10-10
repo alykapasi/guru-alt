@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning import mastery
@@ -366,9 +366,14 @@ async def test_recent_attempts_counts_sittings_not_rows(db_session: AsyncSession
     assert await mastery.recent_attempts_at_item(db_session, learner.id, item_id) == 1
     # A different item is not this item.
     assert await mastery.recent_attempts_at_item(db_session, learner.id, uuid.uuid4()) == 0
-    # Meeting the question again in a later sitting is an independent demonstration.
+    # Meeting the question again in a later sitting is an independent demonstration. "Later"
+    # is measured on the database's clock: the event's created_at is Postgres's now(), and
+    # comparing it with this process's clock made the assertion flip under a few ms of drift.
+    db_now = await db_session.scalar(select(func.clock_timestamp()))
     assert (
-        await mastery.recent_attempts_at_item(db_session, learner.id, item_id, within_minutes=0)
+        await mastery.recent_attempts_at_item(
+            db_session, learner.id, item_id, within_minutes=0, now=db_now
+        )
         == 0
     )
 
