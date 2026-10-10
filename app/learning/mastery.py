@@ -12,7 +12,7 @@ tracer update + event together so an interaction is recorded atomically.
 """
 
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol, runtime_checkable
 
@@ -427,6 +427,41 @@ async def _record_achievements(
             state.achieved_at = now
 
 
+async def _mark_evidence(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    states: Sequence[LearnerKCState],
+    *,
+    now: datetime,
+) -> None:
+    """Record each component's evidence milestones from ``kc_evidence`` (S62).
+
+    The one definition of retention and transfer stays ``kc_evidence``; this stores its answer
+    to the three questions the due checks start from. Retention and transfer, once shown, stay
+    shown (more evidence cannot undo them), so a stored "yes" holds until something changes the
+    definition — and then clearing ``evidence_marked_at`` makes the next read recompute it.
+    """
+    if not states:
+        return
+    min_days = get_settings().retention_min_days
+    evidence = await kc_evidence(session, learner_id, [s.kc_id for s in states])
+    for state in states:
+        found = evidence.get(state.kc_id)
+        last = found.last_unassisted_at if found is not None else None
+        state.unaided_last_at = last.replace(tzinfo=UTC) if last is not None else None
+        shown = found is not None and found.retention_shown(min_days=min_days)
+        if not shown:
+            state.retention_shown_at = None
+        elif state.retention_shown_at is None:
+            state.retention_shown_at = now
+        transferred = found is not None and found.transfer_shown
+        if not transferred:
+            state.setting_transfer_at = None
+        elif state.setting_transfer_at is None:
+            state.setting_transfer_at = now
+        state.evidence_marked_at = now
+
+
 async def record_observation(
     session: AsyncSession,
     obs: Observation,
@@ -620,6 +655,8 @@ async def record_observation(
     await session.flush()
     await _confirm_transfers(session, obs.learner_id, demonstrated_states, now=now)
     await _record_achievements(session, obs.learner_id, demonstrated_states, now=now)
+    # Only demonstrated answers: a self-rating is not an unaided demonstration (S56).
+    await _mark_evidence(session, obs.learner_id, demonstrated_states, now=now)
     await session.flush()
     return updated
 
@@ -910,8 +947,31 @@ def naive_utc(value: datetime) -> datetime:
     return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
 
 
+async def _marked_states(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    kc_ids: Collection[uuid.UUID] | None,
+    *,
+    now: datetime,
+) -> list[LearnerKCState]:
+    """The learner's states (optionally only ``kc_ids``), milestones filled in where missing."""
+    stmt = select(LearnerKCState).where(LearnerKCState.learner_id == learner_id)
+    if kc_ids is not None:
+        stmt = stmt.where(LearnerKCState.kc_id.in_(list(kc_ids)))
+    states = list((await session.scalars(stmt)).all())
+    unmarked = [s for s in states if s.evidence_marked_at is None]
+    if unmarked:
+        await _mark_evidence(session, learner_id, unmarked, now=now)
+        await session.flush()
+    return states
+
+
 async def due_retention_checks(
-    session: AsyncSession, learner_id: uuid.UUID, *, now: datetime | None = None
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    *,
+    kc_ids: Collection[uuid.UUID] | None = None,
+    now: datetime | None = None,
 ) -> list[RetentionCheck]:
     """Components owed the second unaided demonstration retention needs, soonest first.
 
@@ -920,25 +980,21 @@ async def due_retention_checks(
     has brought its review up or ``retention_probe_days`` have passed. FSRS may bring a check
     forward; the interval makes sure one arrives. Derived, never stored, so a missed check
     stays due. Stops once retention is shown: keeping it fresh afterwards is not this.
+
+    Read from the milestones (S62): a component with an unaided answer and no retention shown
+    is a candidate, and its dates are all on the state row, so no event is read once the row is
+    marked. ``kc_ids`` limits the read to those components.
     """
     settings = get_settings()
-    now_naive = naive_utc(now or datetime.now(UTC))
+    now_aware = now or datetime.now(UTC)
+    now_naive = naive_utc(now_aware)
     min_days = settings.retention_min_days
     probe_days = max(settings.retention_probe_days, min_days)
-    states = (
-        await session.scalars(select(LearnerKCState).where(LearnerKCState.learner_id == learner_id))
-    ).all()
-    evidence = await kc_evidence(session, learner_id, [s.kc_id for s in states])
     due: list[RetentionCheck] = []
-    for state in states:
-        found = evidence.get(state.kc_id)
-        if (
-            found is None
-            or found.last_unassisted_at is None
-            or found.retention_shown(min_days=min_days)
-        ):
+    for state in await _marked_states(session, learner_id, kc_ids, now=now_aware):
+        if state.unaided_last_at is None or state.retention_shown_at is not None:
             continue
-        last = naive_utc(found.last_unassisted_at)
+        last = naive_utc(state.unaided_last_at)
         earliest = last + timedelta(days=min_days)
         by_interval = last + timedelta(days=probe_days)
         # The earlier of FSRS's date and the interval, never before a check could count.
@@ -1655,7 +1711,12 @@ class TransferCheck(BaseModel):
 
 
 async def due_transfer_checks(
-    session: AsyncSession, learner_id: uuid.UUID, *, now: datetime | None = None
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    *,
+    kc_ids: Collection[uuid.UUID] | None = None,
+    now: datetime | None = None,
+    limit: int | None = None,
 ) -> list[TransferCheck]:
     """Components owed a transfer check, soonest first (S14).
 
@@ -1663,47 +1724,47 @@ async def due_transfer_checks(
     and at least ``retention_min_days`` have passed since the component's latest judged answer
     — so it does not follow straight on from other practice, and a failed check waits before
     the next. Derived, never stored, like retention checks.
+
+    Candidates come from the milestones — retention shown, transfer not — and are due
+    ``retention_min_days`` after the latest judged answer (``last_seen_at``, which only a judged
+    answer moves). Evidence is read for the soonest ``limit`` of them (``due_reviews_limit`` by
+    default) to confirm a setting is still unpractised; the rest stay due and surface as the
+    queue drains (S62).
     """
     settings = get_settings()
-    now_naive = naive_utc(now or datetime.now(UTC))
+    now_aware = now or datetime.now(UTC)
+    now_naive = naive_utc(now_aware)
     min_days = settings.retention_min_days
-    states = (
-        await session.scalars(select(LearnerKCState).where(LearnerKCState.learner_id == learner_id))
-    ).all()
-    kc_ids = [s.kc_id for s in states]
-    evidence = await kc_evidence(session, learner_id, kc_ids)
-    latest: dict[uuid.UUID, datetime] = {
-        kc_id: when
-        for kc_id, when in await session.execute(
-            select(LearningEvent.kc_id, func.max(_observed_when()))
-            .where(
-                LearningEvent.learner_id == learner_id,
-                LearningEvent.kc_id.in_(kc_ids),
-                _demonstrated_clause(),
-            )
-            .group_by(LearningEvent.kc_id)
-        )
-        if kc_id is not None and when is not None
-    }
+    cap = limit if limit is not None else settings.due_reviews_limit
+    candidates: list[tuple[datetime, LearnerKCState]] = []
+    for state in await _marked_states(session, learner_id, kc_ids, now=now_aware):
+        if (
+            state.retention_shown_at is None
+            or state.setting_transfer_at is not None
+            or state.last_seen_at is None
+        ):
+            continue
+        when = naive_utc(state.last_seen_at) + timedelta(days=min_days)
+        if when <= now_naive:
+            candidates.append((when, state))
+    candidates.sort(key=lambda c: c[0])
+    candidates = candidates[:cap]
+    evidence = await kc_evidence(session, learner_id, [s.kc_id for _, s in candidates])
     due: list[TransferCheck] = []
-    for state in states:
+    for when, state in candidates:
         found = evidence.get(state.kc_id)
         if (
             found is None
-            or not found.retention_shown(min_days=min_days)
             or found.transfer_shown
             or transfer.next_setting(found.practised_settings) is None
-            or latest.get(state.kc_id) is None
         ):
             continue
-        when = naive_utc(latest[state.kc_id]) + timedelta(days=min_days)
-        if when <= now_naive:
-            due.append(
-                TransferCheck(
-                    kc_id=state.kc_id,
-                    due_at=when.replace(tzinfo=UTC),
-                    ability=state.ability,
-                    uncertainty=state.uncertainty,
-                )
+        due.append(
+            TransferCheck(
+                kc_id=state.kc_id,
+                due_at=when.replace(tzinfo=UTC),
+                ability=state.ability,
+                uncertainty=state.uncertainty,
             )
-    return sorted(due, key=lambda c: c.due_at)
+        )
+    return due

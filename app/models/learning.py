@@ -57,6 +57,23 @@ class LearnerKCState(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     transfer_confirmed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+    # Evidence milestones (S62). Which components *could* owe a retention or transfer check,
+    # so the checks read evidence only for those instead of every event the learner has.
+    # Each is recorded from `kc_evidence` when an answer lands; the checks still decide from
+    # the event log. Not to be confused with `transferred_at` above, which is the cross-subject
+    # head start (S24).
+    unaided_last_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    retention_shown_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    setting_transfer_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    # NULL until the milestones were computed for this row (every row before 0077, and any row
+    # cleared on purpose); the next due read computes and stores them.
+    evidence_marked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
 
 
 class LearningEvent(UUIDPrimaryKeyMixin, Base):

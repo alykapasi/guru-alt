@@ -17,6 +17,7 @@ depends_on = None
 
 _INDEX = "ix_learning_events_learner_item"
 _WHERE = sa.text("event_type IN ('observation', 'self_report')")
+_MILESTONES = ("unaided_last_at", "retention_shown_at", "setting_transfer_at", "evidence_marked_at")
 
 
 def upgrade() -> None:
@@ -28,9 +29,15 @@ def upgrade() -> None:
         unique=False,
         postgresql_where=_WHERE,
     )
+    for column in _MILESTONES:
+        op.add_column(
+            "learner_kc_state", sa.Column(column, sa.DateTime(timezone=True), nullable=True)
+        )
 
 
 def downgrade() -> None:
+    for column in reversed(_MILESTONES):
+        op.drop_column("learner_kc_state", column)
     op.drop_index(_INDEX, table_name="learning_events")
     op.create_index(
         _INDEX,
