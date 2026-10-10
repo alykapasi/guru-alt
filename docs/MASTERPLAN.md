@@ -261,7 +261,7 @@ abstraction only when it earns its keep.
 ```text
 app/
   core/      config (pydantic-settings), async DB session/engine, logging, deps,
-             stub-auth seam, beartype claw
+             identity seam (Clerk in prod, a fake in tests), beartype claw
   api/v1/    thin HTTP routers (versioned)
   schemas/   Pydantic request/response models
   models/    SQLAlchemy ORM
@@ -279,7 +279,7 @@ app/
              aggregation, FSRS scheduler, lesson-plan policy, assessment + grading,
              content generation/assembly, analytics
 db/migrations/   Alembic (first migration enables `vector`, `pg_trgm`)
-frontend/        React + TypeScript + Vite (later phase)
+frontend/        React 19 + TypeScript + Vite
 docs/            MASTERPLAN.md, ROADMAP.md, TECHNICAL_DESIGN.md
 ```
 

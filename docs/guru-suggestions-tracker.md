@@ -22,12 +22,12 @@ older verification runs) lives in Git.
 
 | | Count | IDs |
 | --- | --- | --- |
-| Live, v0 | 13 | S18 S20 S27 S28 S31 S50 S58 S59 S60 S65 S66 S76 S77 |
+| Live, v0 | 12 | S18 S27 S28 S31 S50 S58 S59 S60 S65 S66 S76 S77 |
 | Live, proposed (not v0 gates) | 4 | S64 S80 S84 S85 |
 | Open questions | 2 | O02 O05 |
-| Done | 52 | [Completed](#completed) |
+| Done | 53 | [Completed](#completed) |
 
-**Next up: workstream 6** — S58, S59, S18, S20.
+**Next up: workstream 6** — S58, S59, S18.
 
 ## Live work
 
@@ -41,7 +41,6 @@ evidence links and in [Completed](#completed).
 | S58 | End-to-end and release gates | Partial | Browser coverage for broad sudo, v0 web restriction and durable note editing; verify changed boundaries together and required-check enforcement before release. Two order-dependent failures unfixed (see [notes](#s58-notes)). | [CI](../.github/workflows/ci.yml), [browser journeys](../frontend/e2e/) |
 | S59 | Reliability, model quality, and learning evaluation | Partial | Select permitted fixtures/founder examples, add independent grading comparisons and founder labels, measure before setting thresholds. Covers diagnosis, intent, source support, injection, extraction, difficulty. Owns S03/S67/S71/S72. Paid runs wait for data and budget. | [Reliability report](../tests/eval/reliability/report.py), [V14](V0_DECISIONS.md#accepted-product-decisions) |
 | S18 | Calibrate estimates and heuristics | Partial | With S59 data: calibrate placement, mastery bar, assistance, detour disproval, scaffolding, transfer seeds, goal freshness, retention spacing and probe days, the turn and request deadlines, the provider retry wait, the per-learner ingestion cap; measure requested vs delivered difficulty; set thresholds for the three stored-but-unread extraction ratios. | [Constants inventory](../tests/eval/reliability/knobs.py), [difficulty report](../tests/eval/reliability/difficulty.py) |
-| S20 | Synchronize project documentation | Partial | README's private-ownership claim, CLAUDE's stub-auth/frontend descriptions, roadmap status, OPERATIONS' polling/history gaps. Keep historical milestones historical. | [README](../README.md), [CLAUDE.md](../CLAUDE.md), [ROADMAP](ROADMAP.md), [OPERATIONS](OPERATIONS.md) |
 
 ### Workstream 7 — Operated invited alpha
 
@@ -103,6 +102,7 @@ named in the "Hand-off" column and tracked under that ID.
 | S15 | Deliberate conversational assessment | Explicit checks, intent routing, help counts, persisted results. | S59 | [Conversation evidence](../app/learning/conversation_evidence.py) |
 | S16 | Shared learner context across modes | Shared context composition and memory controls. | — | [Context](../app/services/learner_context.py) |
 | S17 | Durable practice lifecycle | The deploy step (`poe db-upgrade`, the compose migrate service) owns the checkpoint schema and processes only check its version; paused state is erased with its conversation, onboarding session or account (refusals retried as `pending_erasures`), idle onboarding expires and ownerless threads are swept, never under a running turn; graphs stamp a version and a deploy drops the old shape's paused state; a real second process resumes paused practice. | Minors below. | [Checkpoints](../app/services/checkpoints.py), [design](superpowers/specs/2026-10-08-durable-practice-lifecycle-design.md) |
+| S20 | Synchronize project documentation | README status, commands and CI; CLAUDE's frontend, commands and role list; MASTERPLAN's identity seam and frontend; a ROADMAP note for workstreams 2–5 (S56/S14 no longer shown open); OPERATIONS describes the alert poller, `alert_transitions` and `/ops/alerts/history` instead of claiming nothing polls. Historical milestones left as written. | — | [README](../README.md), [ROADMAP](ROADMAP.md), [OPERATIONS](OPERATIONS.md) |
 | S21 | Invited access and account recovery | Hosted identity (Clerk) exchanged once for Guru's session; Guru keeps invitations, admin tier, suspension, audited visits. | S60 (mail, app name, authorized parties) | [RUNBOOK §11](RUNBOOK.md#11-identity-s21) |
 | S22 | Persist generated prerequisites | Stable keys, validation, commit revalidation. | — | [Curriculum](../app/learning/curriculum.py) |
 | S23 | Graph integrity under concurrent edits | Cycle check + insert under one advisory lock; Curriculum issues panel. | — | [Integrity design §3](superpowers/specs/2026-09-25-integrity-transfer-design.md) |
@@ -274,8 +274,7 @@ answer); deleting an item or editing its setting can leave `setting_transfer_at`
 component's next judged answer; a candidate with every setting practised and no transfer keeps a
 slot under the transfer cap; a due read racing an answer on an unmarked row can write an older
 `unaided_last_at`; migration 0077 rebuilds `ix_learning_events_learner_item` without
-`CONCURRENTLY` (writes to `learning_events` block for the build); the milestones are described
-as one-way but clear when `kc_evidence` says no; `test_a_foreign_component_is_skipped_in_one_query`
+`CONCURRENTLY` (writes to `learning_events` block for the build); `test_a_foreign_component_is_skipped_in_one_query`
 does not count queries.
 
 **S77** — the stranded-duplicate sweep has no batch limit; `requeued` includes `recovered`.

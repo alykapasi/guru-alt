@@ -202,8 +202,19 @@ its bill is high would be the wrong response to the right signal.
 | `erasures_stuck` | warning | A file delete or identity-provider delete has been refused `GURU_ALERT_STUCK_ERASURE_ATTEMPTS`+ times (default 10). Read `pending_erasures.last_error`; see [RUNBOOK §16](RUNBOOK.md#16-account-deletion-and-retention-s61). |
 | `refresh_stuck` | warning | A conversation or learner has had unprocessed evidence for over `GURU_REFRESH_STUCK_HOURS` (default 6). Check the worker and `GURU_REFRESH_POLL_INTERVAL_SECONDS`, then `learner_profiles.last_error` and `memory.write_back_failed` logs; see [RUNBOOK §17](RUNBOOK.md#17-refresh-scheduling-s43). |
 
-Point any HTTP poller at it and alert on `firing`. Nothing about which alerting system you use
-has to be decided for the thresholds to live in one place and be tested.
+**The worker already polls it.** Every `GURU_ALERT_POLL_INTERVAL_SECONDS` (default 60; 0
+disables it) the worker evaluates these conditions and stores each *change* — a condition
+starting or stopping firing — in `alert_transitions`, one row per event rather than per poll.
+Each change is also a log line: `alert firing: <name> — <detail> | action: <action>` at `ERROR`
+for critical and `WARNING` otherwise, and `alert resolved: <name>` at `INFO`. Shipping the
+worker's logs to anything that can match a line is therefore enough to be told; which pager or
+channel that is remains a deployment choice (S60).
+
+`/api/v1/ops/alerts/history` answers "was anything wrong overnight": transitions newest first,
+`?limit=` (default 100, at most 1000) and `?name=` to follow one condition. The diagnostic
+expiry sweep deletes rows older than `GURU_DIAGNOSTIC_RETENTION_DAYS`, except each condition's
+latest, which is its current state. An external poller
+can still read `/api/v1/ops/alerts` directly with the ops token.
 
 ## Deploying a release
 
@@ -283,14 +294,14 @@ Honest gaps, so nobody discovers them mid-incident:
   backup drill have all been executed — against the local compose stack. The managed-Postgres
   and real-S3 equivalents are untested, and so is anything about network policy, TLS
   termination or secret delivery.
-- **No paging, dashboard, or error tracker.** `/api/v1/ops/alerts` evaluates the conditions and
-  `/api/v1/ops/spend` totals the bill, but nothing *polls* either: no scheduler, no
-  notification channel, no history. The predicate exists; the delivery does not.
+- **No pager, dashboard, or error tracker.** The worker polls the alert conditions, keeps their
+  history and logs every change, but nothing routes those log lines to a person yet, and no
+  dashboard reads `/api/v1/ops/spend`. Choosing the channel is part of deployment (S60).
 - **No object-store backup mechanism.** `blob-check` verifies a restore; configuring bucket
   replication or a mirror schedule is yours to do, and nothing checks that you have.
 - **No blue/green or canary.** The procedure above is a rolling restart.
 - **Restore is not automated.** `backup-drill` proves a dump restores; promoting a restored
   database to primary is a manual decision and a manual DSN change.
-- **Migration coverage against existing data is partial.** Two revisions have a data case
+- **Migration coverage against existing data is partial.** Eight revisions have a data case
   (`tests/test_migrations_with_data.py`); nothing requires a new migration to come with one
   (tracker item S58).

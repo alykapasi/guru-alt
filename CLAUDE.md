@@ -32,7 +32,8 @@ upgrade later. See MASTERPLAN §4 for the full rationale (incl. why continuous I
 
 - **Backend:** Python 3.13+ with FastAPI, Uvicorn, Pydantic, asyncio; beartype (runtime types), ty
   (static types), ruff, pytest, poethepoet — all via `uv`.
-- **Frontend:** React + TypeScript + Vite (later phase).
+- **Frontend:** React 19 + TypeScript + Vite in `frontend/`; Vitest component tests, Playwright
+  browser journeys with axe.
 - **Database:** PostgreSQL with pgvector (HNSW), pg_trgm/GIN, tsvector full-text.
 - **LLM:** provider-agnostic abstraction, Claude by default with model routing.
 - **Principles:** Pragmatic Programmer, DRY, YAGNI, conciseness + performance.
@@ -42,7 +43,7 @@ upgrade later. See MASTERPLAN §4 for the full rationale (incl. why continuous I
 Layered FastAPI backend (see MASTERPLAN §6 and TECHNICAL_DESIGN for the full picture). Key
 non-obvious modules:
 
-- `app/llm/` — provider-agnostic LLM + **model-role registry** (`FAST`/`SMART`/`GENIUS`/`EMBED` →
+- `app/llm/` — provider-agnostic LLM + **model-role registry** (`FAST`/`SMART`/`GENIUS`/`VISION`/`EMBED` →
   `(provider, model)` per env). Providers: Ollama (dev), OpenRouter (prod), Anthropic, `FakeProvider`
   (tests). **Code references roles, never model names; services never call a provider SDK directly.**
 - `app/prompts/` — DSPy modules + the **interactive prompt-refinement gate** (HITL loop that
@@ -59,8 +60,8 @@ non-obvious modules:
 
 Cross-cutting: SSE for token streaming · `learner_id` threaded everywhere behind the **identity
 seam** (`app/core/identity.py`; Clerk in prod, a fake in tests) · **token/cost logged per LLM
-call** (tagged by role+model) from day one · Redis-backed job
-queue (taskiq/arq) introduced at the ingestion phase · heavy deps (LangGraph/DSPy) enter at the phase
+call** (tagged by role+model) from day one · Redis-backed taskiq job
+queue and worker (ingestion, write-back, refresh, erasure, alert polling) · heavy deps (LangGraph/DSPy) enter at the phase
 that needs them, behind thin seams.
 
 ## Development Workflow
@@ -86,16 +87,17 @@ All commands are orchestrated via `poethepoet`. Run `uv run poe --help` to list 
 - `uv run poe format` — Auto-format with ruff
 - `uv run poe format-check` — Check formatting without modifying
 - `uv run poe check` — Aggregate gate: lint + type-check + test (every phase ends green on this)
-- `uv run poe db-upgrade` — Run database migrations
+- `uv run poe db-upgrade` — Migrations, the checkpoint schema, then evidence milestones
 - `uv run poe db-downgrade` — Rollback one migration
+- `uv run poe db-check` — Fail on model/migration drift (CI runs it; `poe check` does not)
 
-> Note: `poe check` is introduced in Phase 0. Until then, run lint/type-check/test individually.
-
-**Frontend (when ready):**
+**Frontend (from `frontend/`):**
 
 - `npm run dev` — Vite dev server
-- `npm run build` — Production build
+- `npm run build` — Production build; also the type gate (`npx tsc --noEmit` checks nothing)
 - `npm run lint` — ESLint + Prettier
+- `npm test` — Vitest component tests
+- `npm run e2e` — Playwright browser journeys against their own API, worker and `_e2e` database
 
 ## Key Technical Decisions
 
@@ -157,7 +159,7 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
 - **Background work runs when things go quiet** (S43) — memory write-back and profile refresh
   are queued by a worker sweep (`app/services/refresh_schedule.py`) for conversations and
   learners with unread evidence and no activity for 20 minutes; due-ness is derived from the
-  data, so backlogs catch up by themselves. Retention and transfer checks start from one-way milestones on
+  data, so backlogs catch up by themselves. Retention and transfer checks start from milestones on
   `learner_kc_state` and read evidence only for candidates (S62); clearing
   `evidence_marked_at` recomputes them. The profile reads a recency window, and a
   model-backed estimator pays only when its input changed. Learners can pause memory, which

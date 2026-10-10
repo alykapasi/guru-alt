@@ -40,9 +40,11 @@ The full rationale is in [docs/MASTERPLAN.md](docs/MASTERPLAN.md) §4.
 
 ## Status
 
-Invited-alpha build, heading toward independent use by invited adults after founder testing. The
-roadmap's Phases 0–8 are complete, Phase 9 (evaluation suite) is in progress, and the v0 delivery
-sequence in [docs/V0_DECISIONS.md](docs/V0_DECISIONS.md) is being worked through.
+Invited-alpha build, heading toward independent use by invited adults after founder testing.
+Workstreams 1–5 of the v0 delivery sequence in [docs/V0_DECISIONS.md](docs/V0_DECISIONS.md) are
+built. Workstream 6 (evaluation and release gates) is next, then 7 (operating the invited alpha).
+Passing tests show the software works; they do not show that anyone learns from it, and no
+threshold has been calibrated on real learners yet.
 
 | Area | State |
 | ---- | ----- |
@@ -54,12 +56,17 @@ sequence in [docs/V0_DECISIONS.md](docs/V0_DECISIONS.md) is being worked through
 | Hosted identity (Clerk), invitations, suspension, audited admin visits | ✅ Built — verified against a Clerk dev instance, not yet a production deployment |
 | Private ownership + reviewed publication of subjects | ✅ Built |
 | Goals, guidance and detours; self-rating ≠ evidence; cross-subject links | ✅ Built — thresholds not yet calibrated |
+| Grading provenance and re-grading; delayed retention and transfer checks | ✅ Built |
 | Source scope + sources-only mode; versioned re-ingestion that keeps citations | ✅ Built |
 | Archive / delete / forget; account deletion with a 7-day recovery window | ✅ Built |
 | Metered LLM calls with per-learner and deployment spend caps | ✅ Built |
+| Request deadlines, Stop, and provider busy/down handling | ✅ Built — deadlines not yet calibrated |
+| Restart-safe paused practice; resumable, bounded ingestion | ✅ Built |
+| Phone-width layout and accessibility, checked by axe in browser tests | ✅ Built — manual screen-reader pass pending |
+| Query budgets for long histories; alert polling and history | ✅ Built |
 | Explicit learner preferences (global + per subject) | ✅ Built |
-| Evaluation: sweeps + MLflow, real-data datasets, DSPy compilation | 🚧 In progress |
-| Production deployment, mail, calibration | ☐ Open |
+| Evaluation: sweeps + MLflow, real-data datasets, DSPy compilation | 🚧 Partial — workstream 6 |
+| Production deployment, mail, alert delivery, calibration | ☐ Open — workstreams 6–7 |
 
 Per-phase detail lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -74,7 +81,8 @@ SDK.**
 ```text
 React app ─► API routers ─► services ─► { learning engine · agent graphs · rag · memory } ─► llm roles ─► provider
                                    │
-                                   └─► taskiq worker (Redis): ingestion, memory write-back, erasure
+                                   └─► taskiq worker (Redis): ingestion, memory write-back, profile
+                                       refresh, erasure, alert polling
 ```
 
 | Seam | What it hides |
@@ -168,8 +176,11 @@ Backend tasks run through poethepoet; `uv run poe --help` lists them all.
 | `uv run poe sweep <config.yaml>` ⚠️ | Prompt × model × config sweep, logged to MLflow |
 | `uv run poe compile-prompt <module>` ⚠️ | DSPy compile of a prompt module |
 | `uv run poe decision-report` | Read Jev's shadow decisions before switching one live |
+| `uv run poe perf-report` | Time the hot paths against a seeded long-history learner |
+| `uv run poe regrade` ⚠️ | Re-grade past answers and report agreement; never changes a grade |
 
-⚠️ calls real models and costs money; none of these are part of `poe check`.
+⚠️ calls the configured models, which costs money on a paid provider; none of these are part of
+`poe check`.
 
 Frontend, from `frontend/`: `npm run dev` · `npm run build` (the type gate) · `npm run lint` ·
 `npm test` · `npm run e2e` (Playwright) · `npm run gen:api` (regenerate API types from the running backend).
@@ -206,8 +217,10 @@ The frontend has Vitest component tests and Playwright browser journeys.
 `tests/eval/` is the measurement layer: a golden/live harness, a sweep runner with MLflow tracking,
 datasets mined from the real event log, and DSPy compilation with measured deltas.
 
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs format, lint, type-check, tests
-and a migration check against a pgvector service on every push to `main` and every PR.
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every push to `main` and every
+PR: format, lint, type-check and tests; migrations applied, checked for drift and round-tripped;
+a real Redis queue test; the API contract against the frontend's generated types; frontend lint,
+tests and build; and the Playwright browser journeys, with axe failing on serious violations.
 
 ---
 

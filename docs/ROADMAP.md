@@ -48,7 +48,29 @@
 > evidence. Concurrent answers and graph edits are serialized, and a concept link across subjects
 > takes an endorsement plus the learner's acceptance and gives only a provisional head start that
 > real answers must confirm. **Not established:** every new threshold is uncalibrated (S18), and
-> S56's grading provenance and S14's delayed probes remain open.
+> S56's grading provenance and S14's delayed probes remained open (both landed 2026-09-29; see
+> the next note).
+
+> **V0 workstreams 2 (remainder) through 5 implemented, 2026-09-29 to 2026-10-10:** tracker items,
+> designs and plans are in [the tracker](./guru-suggestions-tracker.md#completed) and
+> [docs/superpowers/](./superpowers/).
+> - *Evidence (rest of workstream 2):* every grade records what measured it and `poe regrade`
+>   re-checks past answers without changing them; a component owed a second unaided answer gets
+>   a cold retention check, and transfer to a new setting is shown as evidence.
+> - *Source and teaching quality (3):* one source scope and grounding policy for every
+>   generation path, sources-only mode, honest "nothing matched" replies, and citations that
+>   survive re-ingesting. Extraction quality, retrieval at corpus scale and duplicate recovery
+>   wait for real corpora.
+> - *Durable learner work (4):* explicit preferences that pin, correctable memories, quiet-time
+>   refresh, archive/delete/forget, and account deletion with a 7-day recovery window.
+> - *Reliability and limits (5):* exact spend caps, request deadlines and Stop, provider
+>   busy/down as a refusal, resumable bounded ingestion, restart-safe paused practice,
+>   phone-width accessibility checked by axe, and measured query budgets for long histories.
+>   The worker also polls the alert conditions and keeps their history (P11).
+>
+> **Not established:** no threshold is calibrated on real learners (S18, S59), no deployment
+> exists (S60), and no learning effect has been measured. Workstream 6 (evaluation and release
+> gates) is next.
 
 **Working agreement**
 
