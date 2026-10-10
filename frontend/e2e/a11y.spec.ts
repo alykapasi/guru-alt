@@ -37,7 +37,10 @@ test("chat can be used from the keyboard alone", async ({ page }) => {
   // closing the drawer rightly handed focus back to the button that opened it.
   await page.reload();
   // The shell renders once the session check answers; a Tab pressed before then goes nowhere.
+  // Wait for the transcript too: pinning it to the newest message once moved where Tab starts,
+  // and the first Tab skipped the link.
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
+  await expect(page.getByRole("log", { name: "Conversation" })).toBeVisible();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("link", { name: "Skip to content" })).toBeFocused();
   await page.keyboard.press("Enter");

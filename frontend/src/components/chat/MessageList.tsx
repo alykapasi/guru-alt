@@ -30,18 +30,22 @@ export function MessageList({
   isLoadingEarlier?: boolean;
   onLoadEarlier?: () => void;
 }) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const logRef = useRef<HTMLDivElement>(null);
 
   // Keyed on the *newest* message, not on how many there are (S62). Loading earlier messages
   // grows the list from the top, and a length-keyed effect read that as new activity and threw
   // the reader back to the bottom — away from the thing they had just asked to see.
   const newestId = messages.length ? messages[messages.length - 1].id : null;
+  // The log scrolls its own box rather than calling scrollIntoView: in Chromium that also moves
+  // where the next Tab starts, so a keyboard user's first Tab skipped the skip link (S53).
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
+    const log = logRef.current;
+    if (log) log.scrollTop = log.scrollHeight;
   }, [newestId, pending?.assistantText, pending?.toolCalls.length]);
 
   return (
     <div
+      ref={logRef}
       role="log"
       aria-live="off"
       aria-label="Conversation"
@@ -107,7 +111,6 @@ export function MessageList({
           Sounds good, let's start
         </button>
       )}
-      <div ref={bottomRef} />
     </div>
   );
 }
