@@ -12,6 +12,8 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_llm_client
+from app.main import app
 from app.models.chat import Conversation, LLMCall, Message
 from app.models.learner import Learner
 from app.services import memory as memory_svc
@@ -111,7 +113,13 @@ async def test_the_profile_marks_message_dimensions_paused(
 ) -> None:
     long_message = " ".join(["I like basketball and cooking pasta after school."] * 5)
     await _say(db_session, api_learner, long_message, _now())
-    await api_client.post(f"{API}/profile/refresh")
+    interests = json.dumps({"interests": ["basketball", "cooking"]})
+    app.dependency_overrides[get_llm_client] = lambda: _sequenced_client([interests])
+    try:
+        r = await api_client.post(f"{API}/profile/refresh")
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+    assert r.status_code == 200
     await api_client.put(f"{API}/me/memory-setting", json={"remember": False})
 
     dims = (await api_client.get(f"{API}/profile")).json()["dimensions"]
