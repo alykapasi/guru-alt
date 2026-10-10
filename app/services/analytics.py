@@ -8,7 +8,7 @@ plumbing over ``app.learning.mastery``'s already-tested tracer functions.
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -180,33 +180,39 @@ async def get_activity(session: AsyncSession, learner_id: uuid.UUID) -> Activity
     today = now.date()
     naive_now = now.replace(tzinfo=None)
     lookback_start = naive_now - timedelta(days=90)
+    last_7d_start = naive_now - timedelta(days=7)
+    prior_7d_start = naive_now - timedelta(days=14)
+    # One answer fans out into a row per tagged KC. Count the attempt, not the evidence, or
+    # momentum would reward broad KC tagging over learner effort. Rows written before
+    # attempt_id existed have none and each stand alone. An attempt's rows share one
+    # transaction's clock, so counting distinct attempts per day and summing is exact.
+    #
+    # Aggregated here rather than in Python (S62): one row per day of the 90-day window, not
+    # one per event in it.
+    attempt = func.coalesce(LearningEvent.attempt_id, LearningEvent.id)
+    day = func.date_trunc("day", LearningEvent.created_at)
     rows = (
         await session.execute(
-            select(LearningEvent.created_at, LearningEvent.attempt_id, LearningEvent.id).where(
+            select(
+                day,
+                func.count(distinct(attempt)).filter(LearningEvent.created_at >= last_7d_start),
+                func.count(distinct(attempt)).filter(
+                    LearningEvent.created_at >= prior_7d_start,
+                    LearningEvent.created_at < last_7d_start,
+                ),
+            )
+            .where(
                 LearningEvent.learner_id == learner_id,
                 # Both kinds: streak and momentum measure effort, not evidence.
                 LearningEvent.event_type.in_(mastery.ATTEMPT_EVENTS),
                 LearningEvent.created_at >= lookback_start,
             )
+            .group_by(day)
         )
     ).all()
-    # One answer fans out into a row per tagged KC. Count the attempt, not the evidence, or
-    # momentum would reward broad KC tagging over learner effort. Rows written before
-    # attempt_id existed have none and each stand alone.
-    seen: set[uuid.UUID] = set()
-    timestamps: list[datetime] = []
-    for created_at, attempt_id, _event_id in rows:
-        if attempt_id is not None:
-            if attempt_id in seen:
-                continue
-            seen.add(attempt_id)
-        timestamps.append(created_at)  # no attempt id: the row is its own attempt
-
-    active_days = {ts.date() for ts in timestamps}
-    last_7d_start = naive_now - timedelta(days=7)
-    prior_7d_start = naive_now - timedelta(days=14)
-    observations_last_7d = sum(1 for ts in timestamps if ts >= last_7d_start)
-    observations_prior_7d = sum(1 for ts in timestamps if prior_7d_start <= ts < last_7d_start)
+    active_days = {d.date() for d, _, _ in rows}
+    observations_last_7d = sum(int(n or 0) for _, n, _ in rows)
+    observations_prior_7d = sum(int(n or 0) for _, _, n in rows)
 
     return ActivityRead(
         streak_days=streak_days(active_days, today),

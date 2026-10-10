@@ -20,8 +20,6 @@ from tests.perf.paths import PATHS
 from tests.querycount import count_queries
 
 PART_B: dict[str, str] = {
-    "activity": "reads one row per learning event in the streak/momentum window, so a busier "
-    "learner reads more rows; aggregate by day in SQL",
     "profile_refresh": "reads every learning event and message in its recency window, so a "
     "busier learner reads more rows; bound the window by count as well as time",
 }
