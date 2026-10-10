@@ -228,6 +228,11 @@ never ship a migration that the *previous* version of the code cannot run agains
 2. Roll the API, then the worker.
 3. Watch `/api/v1/ready` on the new instances and `oldest_pending_age_seconds` for the queue.
 
+`main` is protected: the `CI` check must pass before a PR merges (administrators may push
+directly). The rule names the aggregate job, so renaming `CI` in `ci.yml` silently removes the
+gate — update the rule in the same change
+(`gh api repos/<owner>/<repo>/branches/main/protection`).
+
 ### Rolling back
 
 Roll the **code** back first and leave the schema alone. An expand-only migration is safe for
