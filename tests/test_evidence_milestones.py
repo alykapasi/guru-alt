@@ -179,22 +179,66 @@ async def test_plan_revision_asks_only_about_its_subject(db_session, monkeypatch
     from app.services import lesson_plan as plan_svc
 
     asked: list[object] = []
-    real_r, real_t = mastery.due_retention_checks, mastery.due_transfer_checks
+    real = mastery.due_checks
 
-    async def spy_r(session, learner_id, **kw):
+    async def spy(session, learner_id, **kw):
         asked.append(kw.get("kc_ids"))
-        return await real_r(session, learner_id, **kw)
+        return await real(session, learner_id, **kw)
 
-    async def spy_t(session, learner_id, **kw):
-        asked.append(kw.get("kc_ids"))
-        return await real_t(session, learner_id, **kw)
-
-    monkeypatch.setattr(mastery, "due_retention_checks", spy_r)
-    monkeypatch.setattr(mastery, "due_transfer_checks", spy_t)
+    monkeypatch.setattr(mastery, "due_checks", spy)
     learner = await _learner(db_session)
     _subject, kc = await _kc(db_session)
     subject_kcs = {kc.id}
 
     await plan_svc._due_review_kc_ids(db_session, learner.id, subject_kcs)
 
-    assert asked == [subject_kcs, subject_kcs]
+    assert asked == [subject_kcs]
+
+
+async def _retained(session, learner, n: int):
+    later = T0 + timedelta(days=get_settings().retention_min_days)
+    kcs = [(await _kc(session))[1] for _ in range(n)]
+    for kc in kcs:
+        await _answer(session, learner, kc, await _item(session, kc, "a"), when=T0)
+        await _answer(session, learner, kc, await _item(session, kc, "b"), when=later)
+    return kcs, later
+
+
+async def test_one_read_of_states_serves_both_checks(db_session) -> None:
+    learner = await _learner(db_session)
+    _kcs, later = await _retained(db_session, learner, 2)
+
+    with count_queries(db_session) as q:
+        retention, transfer_due = await mastery.due_checks(
+            db_session, learner.id, now=later + timedelta(days=365)
+        )
+
+    assert retention == [] and len(transfer_due) == 2
+    reads = [s for s in q.statements if s.lstrip().startswith("SELECT learner_kc_state")]
+    assert len(reads) == 1, q
+
+
+async def test_the_review_queue_reads_evidence_once(db_session, monkeypatch) -> None:
+    from app.llm.registry import fake_llm_client
+    from app.services import session_runner
+
+    learner = await _learner(db_session)
+    _kcs, later = await _retained(db_session, learner, 3)
+    calls: list[int] = []
+    real = mastery.kc_evidence
+
+    async def spy(session, learner_id, kc_ids):
+        calls.append(len(list(kc_ids)))
+        return await real(session, learner_id, kc_ids)
+
+    monkeypatch.setattr(mastery, "kc_evidence", spy)
+    queue = await session_runner.due_review_items(
+        db_session,
+        fake_llm_client(),
+        learner_id=learner.id,
+        item_limit=3,
+        now=later + timedelta(days=365),
+    )
+
+    assert [r.kind for r, _ in queue] == ["transfer_check"] * 3
+    assert len(calls) == 1, calls

@@ -985,13 +985,19 @@ async def due_retention_checks(
     is a candidate, and its dates are all on the state row, so no event is read once the row is
     marked. ``kc_ids`` limits the read to those components.
     """
-    settings = get_settings()
     now_aware = now or datetime.now(UTC)
-    now_naive = naive_utc(now_aware)
+    states = await _marked_states(session, learner_id, kc_ids, now=now_aware)
+    return _retention_due(states, now=now_aware)
+
+
+def _retention_due(states: Sequence[LearnerKCState], *, now: datetime) -> list[RetentionCheck]:
+    """The retention checks ``states`` owe at ``now`` — milestones and dates only, no reads."""
+    settings = get_settings()
+    now_naive = naive_utc(now)
     min_days = settings.retention_min_days
     probe_days = max(settings.retention_probe_days, min_days)
     due: list[RetentionCheck] = []
-    for state in await _marked_states(session, learner_id, kc_ids, now=now_aware):
+    for state in states:
         if state.unaided_last_at is None or state.retention_shown_at is not None:
             continue
         last = naive_utc(state.unaided_last_at)
@@ -1708,6 +1714,9 @@ class TransferCheck(BaseModel):
     due_at: datetime
     ability: float
     uncertainty: float
+    # The setting the check should be asked in — the next one never practised. Carried so the
+    # queue that found it does not read the component's evidence again to resolve its item.
+    setting: str
 
 
 async def due_transfer_checks(
@@ -1731,13 +1740,26 @@ async def due_transfer_checks(
     default) to confirm a setting is still unpractised; the rest stay due and surface as the
     queue drains (S62).
     """
-    settings = get_settings()
     now_aware = now or datetime.now(UTC)
-    now_naive = naive_utc(now_aware)
+    states = await _marked_states(session, learner_id, kc_ids, now=now_aware)
+    return await _transfer_due(session, learner_id, states, now=now_aware, limit=limit)
+
+
+async def _transfer_due(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    states: Sequence[LearnerKCState],
+    *,
+    now: datetime,
+    limit: int | None = None,
+) -> list[TransferCheck]:
+    """The transfer checks ``states`` owe at ``now``; one evidence read for the capped few."""
+    settings = get_settings()
+    now_naive = naive_utc(now)
     min_days = settings.retention_min_days
     cap = limit if limit is not None else settings.due_reviews_limit
     candidates: list[tuple[datetime, LearnerKCState]] = []
-    for state in await _marked_states(session, learner_id, kc_ids, now=now_aware):
+    for state in states:
         if (
             state.retention_shown_at is None
             or state.setting_transfer_at is not None
@@ -1753,11 +1775,8 @@ async def due_transfer_checks(
     due: list[TransferCheck] = []
     for when, state in candidates:
         found = evidence.get(state.kc_id)
-        if (
-            found is None
-            or found.transfer_shown
-            or transfer.next_setting(found.practised_settings) is None
-        ):
+        setting = transfer.next_setting(found.practised_settings) if found is not None else None
+        if found is None or found.transfer_shown or setting is None:
             continue
         due.append(
             TransferCheck(
@@ -1765,6 +1784,26 @@ async def due_transfer_checks(
                 due_at=when.replace(tzinfo=UTC),
                 ability=state.ability,
                 uncertainty=state.uncertainty,
+                setting=setting,
             )
         )
     return due
+
+
+async def due_checks(
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    *,
+    kc_ids: Collection[uuid.UUID] | None = None,
+    now: datetime | None = None,
+) -> tuple[list[RetentionCheck], list[TransferCheck]]:
+    """Retention and transfer checks from one read of the learner's states (S62).
+
+    What the review queue and plan revision both need; asked separately, each read every state.
+    """
+    now_aware = now or datetime.now(UTC)
+    states = await _marked_states(session, learner_id, kc_ids, now=now_aware)
+    return (
+        _retention_due(states, now=now_aware),
+        await _transfer_due(session, learner_id, states, now=now_aware),
+    )

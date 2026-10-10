@@ -254,10 +254,7 @@ async def _due_review_kc_ids(
     reviews = await mastery.due_reviews(session, learner_id, now=now)
     # Only this subject's components (S62): a learner with fifteen subjects revised one plan by
     # reading the evidence for all of them and throwing fourteen-fifteenths away.
-    retention = await mastery.due_retention_checks(
-        session, learner_id, kc_ids=subject_kc_ids, now=now
-    )
-    transfer = await mastery.due_transfer_checks(
+    retention, transfer = await mastery.due_checks(
         session, learner_id, kc_ids=subject_kc_ids, now=now
     )
     earliest: dict[uuid.UUID, datetime] = {}

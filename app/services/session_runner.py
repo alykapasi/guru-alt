@@ -316,11 +316,14 @@ async def due_review_items(
     ``review_item_type``). The struggle read is per resolved review, so it is bounded by
     ``item_limit`` along with everything else this loop does.
     """
+    retention, transfer_due = await mastery.due_checks(session, learner_id, now=now)
     reviews = _with_checks(
         await mastery.DEFAULT_TRACER.due_reviews(session, learner_id),
-        retention=await mastery.due_retention_checks(session, learner_id, now=now),
-        transfer=await mastery.due_transfer_checks(session, learner_id, now=now),
+        retention=retention,
+        transfer=transfer_due,
     )
+    # The setting each transfer check found, so resolving its item reads no evidence (S62).
+    transfer_settings = {c.kc_id: c.setting for c in transfer_due}
     # One query for the whole queue (S62): checked per review, a long backlog cost a
     # statement per due component before anything was resolved.
     allowed = await assessment_svc.authorized_kc_ids(
@@ -341,7 +344,13 @@ async def due_review_items(
                 # for this KC, and decay only widens uncertainty, so the undecayed row is the
                 # same ability estimate_kc would return — no second query to target.
                 if review.kind == "transfer_check":
-                    item = await transfer_item_for_kc(session, llm, learner_id=learner_id, kc=kc)
+                    item = await transfer_item_for_kc(
+                        session,
+                        llm,
+                        learner_id=learner_id,
+                        kc=kc,
+                        setting=transfer_settings.get(kc.id),
+                    )
                 elif review.kind == "retention_check":
                     # An unseen written question: a self-rating can never be the unaided
                     # demonstration a retention check exists to get (S14).
@@ -400,15 +409,23 @@ def _with_checks(
 
 
 async def transfer_item_for_kc(
-    session: AsyncSession, llm: LLMClient, *, learner_id: uuid.UUID, kc: KC
+    session: AsyncSession,
+    llm: LLMClient,
+    *,
+    learner_id: uuid.UUID,
+    kc: KC,
+    setting: str | None = None,
 ) -> Item | None:
     """A written question for ``kc`` in the next setting it was never practised in (S14).
 
     An unseen one already set there, else one generated there. ``None`` when every setting has
     been practised, or generation fails — the step then waits, like a review without an item.
     """
-    evidence = (await mastery.kc_evidence(session, learner_id, [kc.id])).get(kc.id)
-    setting = transfer.next_setting(evidence.practised_settings if evidence else ())
+    # A caller that already found the setting (the review queue) passes it; otherwise it is
+    # read from the component's evidence here.
+    if setting is None:
+        evidence = (await mastery.kc_evidence(session, learner_id, [kc.id])).get(kc.id)
+        setting = transfer.next_setting(evidence.practised_settings if evidence else ())
     if setting is None:
         return None
     target_difficulty = await practice_target_for_kc(session, learner_id=learner_id, kc_id=kc.id)
