@@ -33,7 +33,10 @@ export function ImpersonationBanner() {
     // Everything cached was fetched as somebody else. Clearing beats invalidating: a stale
     // read of another learner's data rendering for a moment is the exact confusion the banner
     // exists to prevent.
-    queryClient.clear();
+    // Reset, not clear: clearing empties the cache but leaves whatever is on screen showing the
+    // account that was being viewed — under no banner, so it reads as the administrator's own.
+    // Resetting refetches everything mounted, now as the administrator (S58).
+    await queryClient.resetQueries();
   }
 
   return (
