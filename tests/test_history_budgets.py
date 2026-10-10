@@ -19,10 +19,7 @@ from tests.perf import paths
 from tests.perf.paths import PATHS
 from tests.querycount import count_queries
 
-PART_B: dict[str, str] = {
-    "profile_refresh": "reads every learning event and message in its recency window, so a "
-    "busier learner reads more rows; bound the window by count as well as time",
-}
+PART_B: dict[str, str] = {}
 """Path → measured cause, for paths that grow and are fixed in S62 part B."""
 
 
@@ -38,6 +35,8 @@ def small_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "sources_page_size", 2)
     monkeypatch.setattr(settings, "chat_transcript_page_size", 10)
     monkeypatch.setattr(settings, "chat_history_max_messages", 10)
+    monkeypatch.setattr(settings, "profile_event_window", 100)
+    monkeypatch.setattr(settings, "profile_message_window", 50)
     monkeypatch.setattr(paths, "MEMORY_PAGE", 10)
 
 
