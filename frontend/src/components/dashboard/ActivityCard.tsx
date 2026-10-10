@@ -23,14 +23,14 @@ export function ActivityCard() {
         </span>
         <div>
           <p className="text-h2 leading-none">{data.streak_days}</p>
-          <p className="text-caption text-base-content/60">day streak</p>
+          <p className="text-caption text-base-content/70">day streak</p>
         </div>
       </div>
       <div className="border-base-300 flex items-center gap-2 border-l pl-8">
-        <momentum.icon size={16} className="text-base-content/50" />
+        <momentum.icon size={16} className="text-base-content/70" />
         <div>
           <p className="text-body">{momentum.label}</p>
-          <p className="text-caption text-base-content/50">
+          <p className="text-caption text-base-content/70">
             {data.observations_last_7d} practiced this week vs {data.observations_prior_7d} last
             week
           </p>

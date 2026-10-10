@@ -11,10 +11,15 @@ from app.services import profile as svc
 router = APIRouter(tags=["profile"])
 
 
+def _snapshot(dims, learner) -> ProfileSnapshotRead:
+    # Paused memory marks the dimensions read from messages, which then wait (O07).
+    paused = not learner.remember_conversations
+    return ProfileSnapshotRead(dimensions=[to_read(d, memory_paused=paused) for d in dims])
+
+
 @router.get("/profile", response_model=ProfileSnapshotRead)
 async def get_profile(session: SessionDep, learner: CurrentLearner):
-    dims = await svc.get_snapshot(session, learner.id)
-    return ProfileSnapshotRead(dimensions=[to_read(d) for d in dims])
+    return _snapshot(await svc.get_snapshot(session, learner.id), learner)
 
 
 @router.post("/profile/refresh", response_model=ProfileSnapshotRead)
@@ -29,8 +34,7 @@ async def refresh_profile(
     ``force=true`` recomputes anyway — the cursor tracks the learner's evidence and cannot
     know the estimators reading it have changed.
     """
-    dims = await svc.refresh_profile(session, learner.id, llm, force=force)
-    return ProfileSnapshotRead(dimensions=[to_read(d) for d in dims])
+    return _snapshot(await svc.refresh_profile(session, learner.id, llm, force=force), learner)
 
 
 @router.post("/profile/{key}/reset", status_code=status.HTTP_204_NO_CONTENT)

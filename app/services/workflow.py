@@ -11,13 +11,19 @@ from collections.abc import AsyncIterator, Sequence
 
 import structlog
 from langgraph.types import Command
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import checkpointing
-from app.agent.workflow import WorkflowState, build_workflow_graph, workflow_config
+from app.agent.workflow import (
+    WORKFLOW_GRAPH_VERSION,
+    WorkflowState,
+    build_workflow_graph,
+    workflow_config,
+)
 from app.core.config import get_settings
 from app.llm.attribution import metered
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import CallRefused
 from app.llm.pricing import price_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
@@ -55,6 +61,15 @@ CHECK_FIRST_SYSTEM_PROMPT = (
     "this one. If they struggle, you will teach it afterwards. Keep it brief and friendly."
 )
 
+DELETED_DETAIL = "this conversation was deleted"
+
+
+async def _gone(session: AsyncSession, conversation_id: uuid.UUID) -> bool:
+    """Whether the conversation was deleted while this turn ran (asked of the database, not
+    of the identity map, which still holds the object)."""
+    found = await session.scalar(select(Conversation.id).where(Conversation.id == conversation_id))
+    return found is None
+
 
 async def paused_item_id(
     llm: LLMClient, session: AsyncSession, conversation_id: uuid.UUID, *, learner_id: uuid.UUID
@@ -82,9 +97,13 @@ async def paused_item_id(
     graph = build_workflow_graph(
         llm, session, learner_id=learner_id, subject_id=conversation.subject_id
     )
-    config = workflow_config(str(conversation_id))
-    snapshot = await graph.aget_state(config)
-    if not snapshot.next:
+    snapshot = await checkpoints.paused_state(
+        graph,
+        workflow_config(str(conversation_id)),
+        graph_name="workflow",
+        version=WORKFLOW_GRAPH_VERSION,
+    )
+    if snapshot is None:
         return None
     if await checkpoints.paused_practice_is_current(
         session,
@@ -295,11 +314,18 @@ async def run_workflow_turn(
             elif mode == "values":
                 last_message = payload["last_message"]  # ty: ignore[invalid-argument-type]
                 usage = payload["usage"]  # ty: ignore[invalid-argument-type]
-    except BudgetExceeded:
+    except CallRefused:
         raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
         log.error("workflow.stream_failed", error=str(exc), model=spec.model)
         yield TurnEvent(type="error", detail="generation failed")
+        return
+
+    if await _gone(session, conversation.id):
+        # Deleted under the turn (S17): nothing to write to, and the graph has just written a
+        # checkpoint the delete already erased once — erase it again so nothing outlives it.
+        await checkpointing.discard_thread(str(conversation.id))
+        yield TurnEvent(type="error", detail=DELETED_DETAIL)
         return
 
     snapshot = await graph.aget_state(config)

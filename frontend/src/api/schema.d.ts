@@ -657,7 +657,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Conversations */
+        /**
+         * List Conversations
+         * @description A page of conversations; ``before`` walks back. Bounded by default, clamped not refused.
+         */
         get: operations["list_conversations_api_v1_conversations_get"];
         put?: never;
         /** Create Conversation */
@@ -675,7 +678,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Read Conversation
+         * @description One conversation, archived or not — what the chat page opens, whatever page it is on.
+         */
+        get: operations["read_conversation_api_v1_conversations__conversation_id__get"];
         put?: never;
         post?: never;
         /**
@@ -824,6 +831,29 @@ export interface paths {
         get: operations["list_turns_api_v1_conversations__conversation_id__turns_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/turns/{turn_id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop Turn
+         * @description Ask a running turn to stop (S47). Its text so far is kept as the reply.
+         *
+         *     409 when the turn is not running — it finished first, or the process running it is gone —
+         *     which a client racing a finishing turn can ignore: its ``done`` has arrived or will.
+         */
+        post: operations["stop_turn_api_v1_conversations__conversation_id__turns__turn_id__stop_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1634,9 +1664,8 @@ export interface paths {
         };
         /**
          * List Sources
-         * @description List the learner's sources, optionally scoped to a subject — backs the conversation
-         *     creation modal's source picker (Phase 7). Archived sources are listed only with
-         *     ``archived=true`` (S61).
+         * @description A page of the learner's sources, optionally scoped to a subject — backs the source
+         *     picker and the Uploads page. Archived sources only with ``archived=true`` (S61).
          */
         get: operations["list_sources_api_v1_sources_get"];
         put?: never;
@@ -2729,6 +2758,16 @@ export interface components {
             /** Title */
             title?: string | null;
         };
+        /**
+         * ConversationPage
+         * @description One page of the learner's conversations, newest first (S62).
+         */
+        ConversationPage: {
+            /** Conversations */
+            conversations: components["schemas"]["ConversationRead"][];
+            /** Has More */
+            has_more: boolean;
+        };
         /** ConversationRead */
         ConversationRead: {
             /** Active Item Id */
@@ -2916,6 +2955,11 @@ export interface components {
              * @default
              */
             observation: string;
+            /**
+             * Paused
+             * @default false
+             */
+            paused: boolean;
             /** Source */
             source: string;
             /** Uncertainty */
@@ -3766,6 +3810,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Interrupted */
+            interrupted?: string | null;
             /** Model */
             model: string | null;
             /** Role */
@@ -4313,6 +4359,16 @@ export interface components {
             /** Distance */
             distance: number;
             source: components["schemas"]["SourceRead"];
+        };
+        /**
+         * SourcePage
+         * @description One page of the learner's sources, newest first (S62).
+         */
+        SourcePage: {
+            /** Has More */
+            has_more: boolean;
+            /** Sources */
+            sources: components["schemas"]["SourceRead"][];
         };
         /**
          * SourceRead
@@ -5566,6 +5622,8 @@ export interface operations {
         parameters: {
             query?: {
                 archived?: boolean;
+                limit?: number | null;
+                before?: string | null;
             };
             header?: never;
             path?: never;
@@ -5579,7 +5637,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ConversationRead"][];
+                    "application/json": components["schemas"]["ConversationPage"];
                 };
             };
             /** @description Validation Error */
@@ -5608,6 +5666,37 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_conversation_api_v1_conversations__conversation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5911,6 +6000,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TurnRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stop_turn_api_v1_conversations__conversation_id__turns__turn_id__stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -7035,6 +7158,8 @@ export interface operations {
             query?: {
                 subject_id?: string | null;
                 archived?: boolean;
+                limit?: number | null;
+                before?: string | null;
             };
             header?: never;
             path?: never;
@@ -7048,7 +7173,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SourceRead"][];
+                    "application/json": components["schemas"]["SourcePage"];
                 };
             };
             /** @description Validation Error */

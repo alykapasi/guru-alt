@@ -77,7 +77,7 @@ export function FlashcardPanel({
           {/* Answering in prose sends the card straight back to be rated and adds nothing to
               the transcript (see run_workflow_turn), so a learner who types gets silence. The
               copy has to say which of the two things this card wants. */}
-          <p className="text-caption text-base-content/60">
+          <p className="text-caption text-base-content/70">
             Rate your recall to move on — this card is answered by rating, not by typing.
           </p>
           <div className="flex flex-wrap gap-2">
@@ -93,7 +93,7 @@ export function FlashcardPanel({
               </button>
             ))}
           </div>
-          <p className="text-caption text-base-content/50">
+          <p className="text-caption text-base-content/70">
             Sets when this comes back — not what Guru thinks you know.
           </p>
         </>

@@ -18,11 +18,12 @@ durable checkpointer with an in-process lock is strictly worse than what came be
 processes could then resume the *same* paused practice, grade one answer twice, and write two
 mastery observations for one piece of work.
 
-**Why a second connection pool.** The checkpointer is LangGraph's own schema, migrated by its
-own ``setup()``, and it speaks psycopg3 while the application speaks asyncpg through
-SQLAlchemy. Hand-writing its tables into Alembic would fork a schema the library owns and
-upgrades; pointing it at our engine is not possible across drivers. So it gets its own small
-pool against the same database, opened once and closed with the app.
+**Why a second connection pool.** The checkpointer is LangGraph's own schema and it speaks
+psycopg3 while the application speaks asyncpg through SQLAlchemy. Hand-writing its tables into
+Alembic would fork a schema the library owns and upgrades; pointing it at our engine is not
+possible across drivers. So it gets its own small pool against the same database, opened once
+and closed with the app. Its tables are created and upgraded by the deploy step
+(:func:`migrate`, run by ``poe db-upgrade``); a process only checks the version it finds.
 
 **Degradation is loud, not silent.** If the pool cannot open, the graphs fall back to
 ``InMemorySaver`` rather than the process refusing to serve chat at all — but ``is_durable()``
@@ -31,6 +32,9 @@ survivable; the old behaviour arriving unannounced is not.
 """
 
 import asyncio
+import sys
+from collections.abc import Iterable
+from typing import Any
 
 import structlog
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -46,6 +50,74 @@ _VOLATILE = InMemorySaver()
 _saver: BaseCheckpointSaver | None = None
 _pool: object | None = None
 _lock = asyncio.Lock()
+
+MIGRATE_LOCK = (0x47555255, 0x43484B50)
+"""The advisory lock ``migrate`` holds ("GURU", "CHKP"), so overlapping deploys take turns."""
+
+
+def expected_schema_version() -> int:
+    """The newest checkpoint migration this LangGraph release knows (``setup()`` stores it)."""
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+    return len(AsyncPostgresSaver.MIGRATIONS) - 1
+
+
+async def schema_version(conn: Any) -> int | None:
+    """The newest checkpoint migration applied, or ``None`` when the table is missing or empty.
+
+    ``conn`` is an autocommit psycopg connection, so a missing table costs nothing to ask about.
+    """
+    from psycopg import errors
+
+    try:
+        cursor = await conn.execute("SELECT v FROM checkpoint_migrations ORDER BY v DESC LIMIT 1")
+        row = await cursor.fetchone()
+    except errors.UndefinedTable:
+        return None
+    if row is None:
+        return None
+    return int(row["v"] if isinstance(row, dict) else row[0])
+
+
+async def _try_lock(conn: Any) -> bool:
+    row = await (
+        await conn.execute("SELECT pg_try_advisory_lock(%s, %s) AS taken", MIGRATE_LOCK)
+    ).fetchone()
+    return bool(row["taken"])
+
+
+async def migrate(conninfo: str) -> int:
+    """Create or upgrade LangGraph's checkpoint tables. Returns the version now applied.
+
+    The deploy step's job (``poe db-upgrade``), never a running process's: it is DDL, and two
+    callers at once would race on ``checkpoint_migrations`` — hence the advisory lock.
+    """
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from psycopg import AsyncConnection
+    from psycopg.rows import dict_row
+
+    # Typed loosely, like the pool in `start`: the row factory is set by keyword, which the
+    # connection's generic parameter does not track.
+    conn: Any = await AsyncConnection.connect(
+        conninfo,
+        autocommit=True,
+        prepare_threshold=0,
+        row_factory=dict_row,  # ty: ignore[invalid-argument-type]
+    )
+    async with conn:
+        # Polled rather than `pg_advisory_lock`: a session blocked in that call is an open
+        # transaction, and setup()'s `CREATE INDEX CONCURRENTLY` waits for every open
+        # transaction to end — so the waiter and the holder would deadlock.
+        while not await _try_lock(conn):
+            await asyncio.sleep(0.2)
+        try:
+            await AsyncPostgresSaver(conn).setup()
+            version = await schema_version(conn)
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock(%s, %s)", MIGRATE_LOCK)
+    if version is None:
+        raise RuntimeError("checkpoint migrations ran but recorded no version")
+    return version
 
 
 def psycopg_dsn(database_url: str) -> str:
@@ -63,7 +135,7 @@ def psycopg_dsn(database_url: str) -> str:
 
 
 async def start(settings: Settings | None = None) -> None:
-    """Open the checkpointer's pool and migrate its schema. Idempotent."""
+    """Open the checkpointer's pool and check its schema version. Idempotent."""
     global _saver, _pool
     settings = settings or get_settings()
     async with _lock:
@@ -84,15 +156,25 @@ async def start(settings: Settings | None = None) -> None:
                 open=False,
             )
             await pool.open(wait=True, timeout=settings.checkpointer_connect_timeout_seconds)
-            saver = AsyncPostgresSaver(pool)  # ty: ignore[invalid-argument-type]
-            await saver.setup()
+            async with pool.connection() as conn:
+                found = await schema_version(conn)
         except Exception as exc:
             # Chat still works; paused conversations still will not survive a restart. Both
             # halves of that are true and both are reported rather than one being assumed.
             log.error("checkpointer.durable_start_failed", error=str(exc))
             _saver, _pool = _VOLATILE, None
             return
-        _saver, _pool = saver, pool
+        expected = expected_schema_version()
+        if found is None or found < expected:
+            # Deployed without `poe db-upgrade` after a LangGraph upgrade, or never migrated.
+            log.error("checkpointer.schema_behind", expected=expected, found=found)
+            await pool.close()
+            _saver, _pool = _VOLATILE, None
+            return
+        if found > expected:
+            log.warning("checkpointer.schema_ahead", expected=expected, found=found)
+        _saver = AsyncPostgresSaver(pool)  # ty: ignore[invalid-argument-type]
+        _pool = pool
         log.info("checkpointer.durable", min_size=pool.min_size, max_size=pool.max_size)
 
 
@@ -138,6 +220,39 @@ async def discard_thread(thread_id: str) -> bool:
     return True
 
 
+async def delete_thread(thread_id: str) -> None:
+    """Delete one thread's checkpoints, or raise. For erasure, where a refusal must be retried.
+
+    A volatile saver is a refusal: it cannot reach the durable rows a previous process wrote.
+    """
+    if not is_durable():
+        raise RuntimeError("checkpointer is volatile")
+    await checkpointer().adelete_thread(thread_id)
+
+
+async def erase_threads(thread_ids: Iterable[str]) -> list[str]:
+    """Erase each thread; returns the ids that could not be erased, for the caller to queue."""
+    failed: list[str] = []
+    for thread_id in thread_ids:
+        try:
+            await delete_thread(thread_id)
+        except Exception as exc:
+            log.warning("checkpointer.erase_failed", thread_id=thread_id, error=str(exc))
+            failed.append(thread_id)
+    return failed
+
+
 def is_durable() -> bool:
     """Whether a paused conversation would survive a restart of this process."""
     return _saver is not None and _saver is not _VOLATILE
+
+
+def _main(argv: list[str]) -> None:
+    if argv != ["migrate"]:
+        raise SystemExit("usage: python -m app.agent.checkpointing migrate")
+    version = asyncio.run(migrate(psycopg_dsn(get_settings().database_url)))
+    print(f"checkpointer schema at version {version}")
+
+
+if __name__ == "__main__":
+    _main(sys.argv[1:])

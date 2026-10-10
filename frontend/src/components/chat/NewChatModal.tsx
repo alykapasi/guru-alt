@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { BookOpen, Check } from "lucide-react";
 import { useCreateConversation, useSources, useSubjects } from "../../api/hooks";
+import { LoadMore } from "../LoadMore";
 
 /** Picks a conversation's retrieval scope before creating it — a subject (hard content
  * boundary, see MASTERPLAN §7 "Content boundary") or "General" (no library grounding), then
@@ -11,7 +12,8 @@ export function NewChatModal({ open, onClose }: { open: boolean; onClose: () => 
   const navigate = useNavigate();
   const { data: subjects } = useSubjects();
   const [subjectId, setSubjectId] = useState<string | null>(null);
-  const { data: sources } = useSources(subjectId ?? undefined);
+  const sourcesQuery = useSources(subjectId ?? undefined);
+  const sources = sourcesQuery.data;
   const [sourceIds, setSourceIds] = useState<Set<string>>(new Set());
   const createConversation = useCreateConversation();
 
@@ -52,7 +54,7 @@ export function NewChatModal({ open, onClose }: { open: boolean; onClose: () => 
         <h2 className="text-h2">New chat</h2>
 
         <div className="flex flex-col gap-2">
-          <p className="text-caption text-base-content/60">What can this chat draw on?</p>
+          <p className="text-caption text-base-content/70">What can this chat draw on?</p>
           <button
             onClick={() => setSubjectId(null)}
             className={`text-body flex items-center justify-between rounded-field border px-3 py-2 text-left transition-colors ${
@@ -75,7 +77,7 @@ export function NewChatModal({ open, onClose }: { open: boolean; onClose: () => 
               }`}
             >
               <span className="flex items-center gap-2">
-                <BookOpen size={16} className="text-base-content/50" />
+                <BookOpen size={16} className="text-base-content/70" />
                 {s.name}
               </span>
               {subjectId === s.id && <Check size={16} className="text-primary" />}
@@ -85,11 +87,11 @@ export function NewChatModal({ open, onClose }: { open: boolean; onClose: () => 
 
         {subjectId && (
           <div className="flex flex-col gap-2">
-            <p className="text-caption text-base-content/60">
+            <p className="text-caption text-base-content/70">
               Narrow to specific sources (optional — leave empty for all materials in this subject)
             </p>
             {sources?.length === 0 && (
-              <p className="text-caption text-base-content/40">No sources in this subject yet.</p>
+              <p className="text-caption text-base-content/70">No sources in this subject yet.</p>
             )}
             {sources?.map((s) => (
               <label
@@ -105,6 +107,11 @@ export function NewChatModal({ open, onClose }: { open: boolean; onClose: () => 
                 <span className="truncate">{s.origin}</span>
               </label>
             ))}
+            <LoadMore
+              hasNextPage={sourcesQuery.hasNextPage}
+              isFetchingNextPage={sourcesQuery.isFetchingNextPage}
+              fetchNextPage={sourcesQuery.fetchNextPage}
+            />
           </div>
         )}
 

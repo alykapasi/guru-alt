@@ -3,10 +3,34 @@ import { api, apiFetch } from "./client";
 
 /** Newest-first, per the backend's ordering (app/services/chat.py::list_conversations). */
 export function useConversations() {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: ["conversations"],
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ pageParam }) => {
+      const { data, error } = await api.GET("/api/v1/conversations", {
+        params: { query: pageParam ? { before: pageParam } : {} },
+      });
+      if (error) throw error;
+      return data;
+    },
+    // The oldest conversation held is the next cursor; `has_more` is the server's answer (S62).
+    getNextPageParam: (last) => (last.has_more ? last.conversations.at(-1)?.id : undefined),
+    select: (d) => d.pages.flatMap((p) => p.conversations),
+  });
+}
+
+/** One conversation by id — the chat page's source of truth, wherever it sits in the list
+ * (which is a page now, S62) and whether or not it is archived (S61). */
+export function useConversation(conversationId: string | undefined) {
+  return useQuery({
+    // Under ["conversations"] so every action that refreshes the lists (pause, resume,
+    // archive, unarchive, delete) refreshes the open conversation too.
+    queryKey: ["conversations", "one", conversationId],
+    enabled: conversationId !== undefined,
     queryFn: async () => {
-      const { data, error } = await api.GET("/api/v1/conversations");
+      const { data, error } = await api.GET("/api/v1/conversations/{conversation_id}", {
+        params: { path: { conversation_id: conversationId! } },
+      });
       if (error) throw error;
       return data;
     },
@@ -99,16 +123,19 @@ export function useUpdateSourceSettings(subjectId: string) {
 
 /** For the "New chat" scope picker's per-source narrowing, once a subject is chosen. */
 export function useSources(subjectId: string | undefined) {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: ["sources", subjectId],
     enabled: subjectId !== undefined,
-    queryFn: async () => {
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ pageParam }) => {
       const { data, error } = await api.GET("/api/v1/sources", {
-        params: { query: { subject_id: subjectId } },
+        params: { query: { subject_id: subjectId, ...(pageParam ? { before: pageParam } : {}) } },
       });
       if (error) throw error;
       return data;
     },
+    getNextPageParam: (last) => (last.has_more ? last.sources.at(-1)?.id : undefined),
+    select: (d) => d.pages.flatMap((p) => p.sources),
   });
 }
 
@@ -137,16 +164,21 @@ export function stillIngesting(sources: { status: string }[] | undefined): boole
  * nothing.
  */
 export function useAllSources(subjectId: string | undefined) {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: ["sources", "all", subjectId],
-    queryFn: async () => {
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ pageParam }) => {
       const { data, error } = await api.GET("/api/v1/sources", {
-        params: { query: { subject_id: subjectId } },
+        params: { query: { subject_id: subjectId, ...(pageParam ? { before: pageParam } : {}) } },
       });
       if (error) throw error;
       return data;
     },
-    refetchInterval: (query) => (stillIngesting(query.state.data) ? INGESTION_POLL_MS : false),
+    getNextPageParam: (last) => (last.has_more ? last.sources.at(-1)?.id : undefined),
+    select: (d) => d.pages.flatMap((p) => p.sources),
+    // Every loaded page is refetched; polling stops once nothing loaded is in flight (S62).
+    refetchInterval: (query) =>
+      stillIngesting(query.state.data?.pages.flatMap((p) => p.sources)) ? INGESTION_POLL_MS : false,
   });
 }
 
@@ -669,28 +701,34 @@ type RemovalKind = "source" | "conversation";
 
 /** Archived sources, for the Uploads page's Archived section (S61). */
 export function useArchivedSources() {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: ["sources", "archived"],
-    queryFn: async () => {
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ pageParam }) => {
       const { data, error } = await api.GET("/api/v1/sources", {
-        params: { query: { archived: true } },
+        params: { query: { archived: true, ...(pageParam ? { before: pageParam } : {}) } },
       });
       if (error) throw error;
       return data;
     },
+    getNextPageParam: (last) => (last.has_more ? last.sources.at(-1)?.id : undefined),
+    select: (d) => d.pages.flatMap((p) => p.sources),
   });
 }
 
 export function useArchivedConversations() {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: ["conversations", "archived"],
-    queryFn: async () => {
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ pageParam }) => {
       const { data, error } = await api.GET("/api/v1/conversations", {
-        params: { query: { archived: true } },
+        params: { query: { archived: true, ...(pageParam ? { before: pageParam } : {}) } },
       });
       if (error) throw error;
       return data;
     },
+    getNextPageParam: (last) => (last.has_more ? last.conversations.at(-1)?.id : undefined),
+    select: (d) => d.pages.flatMap((p) => p.conversations),
   });
 }
 

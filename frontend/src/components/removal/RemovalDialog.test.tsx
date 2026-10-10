@@ -39,4 +39,13 @@ describe("RemovalDialog", () => {
     expect(screen.queryByText("1 lesson built from this")).not.toBeInTheDocument();
     expect(screen.getByText("Removes 1 lesson built from this.")).toBeInTheDocument();
   });
+
+  it("opens as a modal and closes on Escape", () => {
+    const onClose = vi.fn();
+    render(<RemovalDialog kind="source" id="s1" name="notes.pdf" open onClose={onClose} />);
+    const dialog = screen.getByRole("dialog", { name: "Delete notes.pdf?" });
+    expect(dialog).toHaveAttribute("data-modal", "true");
+    fireEvent(dialog, new Event("cancel", { cancelable: true }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

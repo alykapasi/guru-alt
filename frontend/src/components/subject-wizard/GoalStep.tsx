@@ -43,7 +43,7 @@ export function GoalStep({ sessionId, onGoalCommitted, onBack }: GoalStepProps) 
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-6 py-8">
       <div className="flex flex-col gap-2">
         <h2 className="text-h2">What's your learning goal?</h2>
-        <p className="text-caption text-base-content/60">
+        <p className="text-caption text-base-content/70">
           Tell us what you'd like to learn. We'll refine it together.
         </p>
       </div>
@@ -95,7 +95,7 @@ export function GoalStep({ sessionId, onGoalCommitted, onBack }: GoalStepProps) 
         {/* Initial prompt if no proposal yet */}
         {!proposal && !error && !isStreaming && (
           <div className="flex justify-end">
-            <p className="text-caption text-base-content/50">Share your goal to get started.</p>
+            <p className="text-caption text-base-content/70">Share your goal to get started.</p>
           </div>
         )}
       </div>

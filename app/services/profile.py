@@ -14,7 +14,7 @@ shape as the placement diagnostic, not the tracer's "update on every observation
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -26,8 +26,9 @@ from app.learning.profile_estimators import (
 )
 from app.llm import LLMClient
 from app.llm.attribution import metered
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import CallRefused
 from app.models.chat import Conversation, Message
+from app.models.learner import Learner
 from app.models.learning import LearningEvent
 from app.models.lesson_plan import LessonPlan
 from app.models.profile import LearnerProfile, ProfileDimension
@@ -46,18 +47,34 @@ async def _load_events(session: AsyncSession, learner_id: uuid.UUID) -> list[Lea
     return list(reversed(rows))
 
 
+def readable_own_messages() -> tuple[ColumnElement[bool], ...]:
+    """What the profile may read of a learner's messages; needs ``Conversation`` and
+    ``Learner`` joined.
+
+    Their own messages, never an administrator's (S43). None while memory is paused, and none
+    written before it was last resumed (O07): pausing "Remember things from my conversations"
+    stops the profile reading what they type, and resuming is not consent to read the pause.
+    """
+    return (
+        Message.role == "user",
+        Message.admin_actor_id.is_(None),
+        Message.admin_action_id.is_(None),
+        Learner.remember_conversations.is_(True),
+        or_(
+            Learner.profile_messages_since.is_(None),
+            Message.created_at > Learner.profile_messages_since,
+        ),
+    )
+
+
 async def _load_own_messages(session: AsyncSession, learner_id: uuid.UUID) -> list[Message]:
-    """The learner's most recent own messages, oldest first (S43: a window)."""
+    """The learner's most recent readable messages, oldest first (S43: a window)."""
     rows = (
         await session.scalars(
             select(Message)
             .join(Conversation, Message.conversation_id == Conversation.id)
-            .where(
-                Conversation.learner_id == learner_id,
-                Message.role == "user",
-                Message.admin_actor_id.is_(None),
-                Message.admin_action_id.is_(None),
-            )
+            .join(Learner, Learner.id == Conversation.learner_id)
+            .where(Conversation.learner_id == learner_id, *readable_own_messages())
             .order_by(Message.created_at.desc(), Message.id.desc())
             .limit(get_settings().profile_message_window)
         )
@@ -121,7 +138,8 @@ async def latest_evidence_at(session: AsyncSession, learner_id: uuid.UUID) -> da
     evidence for a recompute that provably cannot produce a different answer — a full pass
     over DIMENSION_SPECS, model-backed classifier included, plus ``_revise_lesson_plans``,
     per review batch (S56). Self-rating asks for a review, not for a re-read of the learner.
-    Admin-visit messages are excluded like everywhere else the learner's evidence is read (S43).
+    Admin-visit messages are excluded like everywhere else the learner's evidence is read (S43),
+    and so is anything the profile may not read while memory is paused (O07).
     """
     newest_event = await session.scalar(
         select(func.max(LearningEvent.created_at)).where(
@@ -132,12 +150,8 @@ async def latest_evidence_at(session: AsyncSession, learner_id: uuid.UUID) -> da
     newest_message = await session.scalar(
         select(func.max(Message.created_at))
         .join(Conversation, Message.conversation_id == Conversation.id)
-        .where(
-            Conversation.learner_id == learner_id,
-            Message.role == "user",
-            Message.admin_actor_id.is_(None),
-            Message.admin_action_id.is_(None),
-        )
+        .join(Learner, Learner.id == Conversation.learner_id)
+        .where(Conversation.learner_id == learner_id, *readable_own_messages())
     )
     stamps = [s for s in (newest_event, newest_message) if s is not None]
     return max(stamps) if stamps else None
@@ -186,14 +200,19 @@ async def refresh_profile(
                 )
             ).all()
         }
+        paused = not await session.scalar(
+            select(Learner.remember_conversations).where(Learner.id == learner_id)
+        )
         for spec in DIMENSION_SPECS:
+            if paused and spec.reads_messages:
+                continue  # O07: the last value stands, shown as paused
             fingerprint = await spec.fingerprint(context) if spec.fingerprint else None
             if not force and fingerprint is not None and stored.get(spec.key) == fingerprint:
                 continue  # the same input as last time: the stored answer stands, unpaid
             result, _usage = await spec.estimate(context)
             if result is not None:
                 await _upsert_dimension(session, learner_id, spec, result, fingerprint)
-    except BudgetExceeded:
+    except CallRefused:
         # Refused, not broken (S47): nothing to record against the profile. Retried when the
         # spend window allows, since the watermark has not moved.
         await session.rollback()

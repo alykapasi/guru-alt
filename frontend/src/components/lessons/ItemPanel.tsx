@@ -40,10 +40,10 @@ export function ItemPanel({
         Practice item
       </h3>
       {!item ? (
-        <p className="text-caption text-base-content/50">Preparing your practice…</p>
+        <p className="text-caption text-base-content/70">Preparing your practice…</p>
       ) : (
         <div className="flex flex-col gap-3">
-          <p className="text-caption text-base-content/60">{kc?.name ?? "…"}</p>
+          <p className="text-caption text-base-content/70">{kc?.name ?? "…"}</p>
           {item.item_type === "flashcard" ? (
             // Keyed on item.id so a new flashcard remounts FlashcardPanel fresh — its local
             // `back`/`busy` state (see FlashcardPanel) must not survive a prop change, or the

@@ -1,14 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { Session } from "./Session";
+import { setViewportWide } from "../test/viewport";
 
 /** The session page's own decisions about practice (S52): what it lets the learner do while
  * practice is paused, and what it shows once a resume finds the question gone. The hooks it
  * reads are stubbed — this pins the page's wiring, not the transport underneath it. */
 
-const chat = vi.hoisted(() => ({ state: {} as Record<string, unknown> }));
+const chat = vi.hoisted(() => ({
+  state: {} as Record<string, unknown>,
+  openCitation: undefined as undefined | ((c: unknown) => void),
+}));
 const practice = vi.hoisted(() => ({ mutate: vi.fn() }));
 
 vi.mock("../hooks/useChatConversation", () => ({
@@ -17,7 +21,13 @@ vi.mock("../hooks/useChatConversation", () => ({
 vi.mock("../api/hooks", () => ({
   usePracticeAction: () => ({ mutate: practice.mutate, isPending: false }),
 }));
-vi.mock("../components/chat/MessageList", () => ({ MessageList: () => null }));
+vi.mock("../components/chat/MessageList", () => ({
+  MessageList: ({ onCitationClick }: { onCitationClick: (c: unknown) => void }) => {
+    chat.openCitation = onCitationClick;
+    return null;
+  },
+}));
+vi.mock("../components/chat/CitationPane", () => ({ CitationPane: () => <p>citation</p> }));
 vi.mock("../components/lessons/ItemPanel", () => ({
   ItemPanel: ({ ratingDisabled }: { ratingDisabled?: boolean }) => (
     <div data-testid="item-panel" data-rating-disabled={String(!!ratingDisabled)} />
@@ -89,11 +99,46 @@ describe("Session while practice is paused", () => {
         </Routes>
       </MemoryRouter>,
     );
+    // On screen in the strip, and said once to a screen reader through the status region (S53).
     expect(
-      await screen.findByText("That question no longer fits your plan, so practice ended."),
+      await screen.findByText("That question no longer fits your plan, so practice ended.", {
+        selector: "p",
+      }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "That question no longer fits your plan, so practice ended.",
+    );
     expect(screen.queryByText("Practice paused")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back to the question" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Skip it" })).not.toBeInTheDocument();
+  });
+});
+
+const ITEM = { id: "i1", item_type: "free_response", stem: "What is an eigenvalue?", kcs: [] };
+
+describe("Session layout", () => {
+  it("keeps the question in the right-hand column when wide", () => {
+    setViewportWide(true);
+    conversation({ item: ITEM, awaitingReply: true });
+    renderSession();
+    expect(screen.getByRole("complementary", { name: "Practice question" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show question" })).toBeNull();
+  });
+
+  it("pins the question above the composer when narrow, with the full panel a tap away", async () => {
+    conversation({ item: ITEM, awaitingReply: true });
+    renderSession();
+    expect(await screen.findByText("What is an eigenvalue?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show question" }));
+    expect(screen.getByRole("dialog", { name: "Practice question" })).toHaveAttribute("data-modal");
+  });
+
+  it("stacks a citation sheet over an open question sheet", () => {
+    conversation({ item: ITEM, awaitingReply: true });
+    renderSession();
+    fireEvent.click(screen.getByRole("button", { name: "Show question" }));
+    act(() => chat.openCitation?.({ marker: 1, chunk_id: "k", source_id: "s" }));
+    expect(screen.getByRole("dialog", { name: "Source" })).toHaveAttribute("data-modal");
+    expect(screen.getByRole("dialog", { name: "Practice question" })).toHaveAttribute("data-modal");
   });
 });

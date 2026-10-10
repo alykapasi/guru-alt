@@ -33,7 +33,7 @@ function Origin({ memory }: { memory: Memory }) {
   const origin = memory.origin_conversation_id;
   if (!origin) return null;
   return (
-    <div className="text-caption text-base-content/50 flex items-center gap-2 pl-27">
+    <div className="text-caption text-base-content/70 flex items-center gap-2 pl-27">
       <span>
         {memory.origin_live
           ? `From: ${memory.origin_title ?? "an untitled conversation"}`
@@ -91,7 +91,7 @@ function Row({ memory }: { memory: Memory }) {
   return (
     <li className="border-base-300 flex flex-col gap-2 border-b py-3">
       <div className="flex items-start gap-3">
-        <span className="text-caption text-base-content/50 w-24 shrink-0 pt-1">
+        <span className="text-caption text-base-content/70 w-24 shrink-0 pt-1">
           {KIND_COPY[memory.kind] ?? memory.kind}
         </span>
         {editing ? (
@@ -152,7 +152,7 @@ function Row({ memory }: { memory: Memory }) {
         </div>
       </div>
       {memory.replaced && (
-        <p className="text-caption text-base-content/60 pl-24">
+        <p className="text-caption text-base-content/70 pl-24">
           Replaced: {memory.replaced.content}{" "}
           <button
             type="button"
@@ -212,9 +212,9 @@ export function Memory() {
       )}
 
       {isLoading ? (
-        <p className="text-caption text-base-content/50">Loading…</p>
+        <p className="text-caption text-base-content/70">Loading…</p>
       ) : !data?.length ? (
-        <p className="text-body text-base-content/60">
+        <p className="text-body text-base-content/70">
           Nothing yet. Guru records something here when a conversation says something durable about
           how you learn or what you already know.
         </p>

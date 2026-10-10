@@ -23,7 +23,7 @@ export function UploadForm({ subjects }: { subjects: Subject[] }) {
   return (
     <div className="border-base-300 flex flex-col gap-4 rounded-box border p-6">
       <div className="flex items-center gap-2">
-        <label className="text-caption text-base-content/60" htmlFor="upload-subject">
+        <label className="text-caption text-base-content/70" htmlFor="upload-subject">
           Subject
         </label>
         <select
@@ -40,7 +40,7 @@ export function UploadForm({ subjects }: { subjects: Subject[] }) {
           ))}
         </select>
       </div>
-      <p className="text-caption text-base-content/50 -mt-2">
+      <p className="text-caption text-base-content/70 -mt-2">
         Without a subject, a file is only used by subjects that opt in to untagged materials.
       </p>
       <div className="flex flex-wrap items-center gap-3">
@@ -54,7 +54,7 @@ export function UploadForm({ subjects }: { subjects: Subject[] }) {
         </button>
         <input ref={fileInputRef} type="file" onChange={handleFileChange} className="hidden" />
       </div>
-      {upload.isPending && <p className="text-caption text-base-content/50">Uploading…</p>}
+      {upload.isPending && <p className="text-caption text-base-content/70">Uploading…</p>}
       {upload.isError && <p className="text-caption text-error">Upload failed — try again.</p>}
     </div>
   );

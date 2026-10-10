@@ -13,12 +13,18 @@ import structlog
 from langgraph.types import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.refinement import RefinementState, build_refinement_graph, refinement_config
+from app.agent.refinement import (
+    REFINEMENT_GRAPH_VERSION,
+    RefinementState,
+    build_refinement_graph,
+    refinement_config,
+)
 from app.llm.attribution import metered
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import CallRefused
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
 from app.models.chat import Conversation
+from app.services import checkpoints
 from app.services.turn_common import TurnEvent, add_message, refusal_ends_turn
 
 log = structlog.get_logger(__name__)
@@ -32,14 +38,16 @@ REFINEMENT_SYSTEM_PROMPT = (
 
 
 async def is_awaiting_reply(llm: LLMClient, conversation_id: uuid.UUID) -> bool:
-    """Whether the gate is paused mid-negotiation for this conversation.
-
-    Only reflects state held by the process-local checkpointer — see the limitation noted in
-    ``app/agent/refinement.py``.
-    """
+    """Whether the gate is paused mid-negotiation for this conversation, in a shape this code
+    can resume (see ``checkpoints.paused_state``)."""
     graph = build_refinement_graph(llm)
-    snapshot = await graph.aget_state(refinement_config(str(conversation_id)))
-    return bool(snapshot.next)
+    snapshot = await checkpoints.paused_state(
+        graph,
+        refinement_config(str(conversation_id)),
+        graph_name="refinement",
+        version=REFINEMENT_GRAPH_VERSION,
+    )
+    return snapshot is not None
 
 
 @metered("goal_refinement", learner="learner_id", conversation="conversation.id")
@@ -96,7 +104,7 @@ async def run_refinement_turn(
                 yield TurnEvent(type="token", text=payload["token"])  # ty: ignore[invalid-argument-type]
             elif mode == "values":
                 proposal = payload["proposal"]  # ty: ignore[invalid-argument-type]
-    except BudgetExceeded:
+    except CallRefused:
         raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
         log.error("refinement.stream_failed", error=str(exc), model=spec.model)

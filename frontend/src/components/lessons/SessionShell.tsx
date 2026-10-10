@@ -1,6 +1,7 @@
 import { Outlet } from "react-router-dom";
 import { ImpersonationBanner } from "../ImpersonationBanner";
 import { NavBar } from "../NavBar";
+import { SkipLink } from "../layout/SkipLink";
 
 /** Full-height layout for a guided-practice session — like ChatShell, breaks out of PageShell's
  * centered column so the transcript + item side panel can use the full viewport, but with no
@@ -8,6 +9,7 @@ import { NavBar } from "../NavBar";
 export function SessionShell() {
   return (
     <div className="bg-base-100 flex h-svh flex-col">
+      <SkipLink />
       <ImpersonationBanner />
       <NavBar />
       <div className="flex min-h-0 flex-1">

@@ -78,3 +78,8 @@ describe("MessageList", () => {
     expect(screen.getByText("second")).toBeTruthy();
   });
 });
+
+it("is a log that does not read tokens aloud", () => {
+  renderList();
+  expect(screen.getByRole("log", { name: "Conversation" })).toHaveAttribute("aria-live", "off");
+});

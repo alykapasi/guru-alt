@@ -130,7 +130,9 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   deleting them when something cites them, and re-processing a finished source is the
   learner's confirmed decision. `uv run poe reindex` re-embeds in place (ids kept) and only
   re-extracts when asked; staleness is read from the chunks, so a run resumes by running again.
-  See [docs/RUNBOOK.md](docs/RUNBOOK.md) §15.
+  See [docs/RUNBOOK.md](docs/RUNBOOK.md) §15. Ingestion runs in committed stages (extract →
+  embed → publish → tag) that resume where they stopped, under exact global and per-learner
+  slots (S37).
 - **Archive, delete and forget are three actions** (S61, S42; V11) — archive is reversible and
   out of use (retrieval drops archived sources, archived conversations are read-only); delete is
   immediate after an impact report of what stays; forget removes only what was derived — lessons
@@ -142,7 +144,9 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   and every session is revoked; signing in again within seven days reaches only the recovery
   routes (`AccountHolder`); then a worker erases every store and the identity provider's copy.
   What the object store or provider refuses becomes a `pending_erasures` row retried until done.
-  Diagnostic rows keep nothing pointing at a learner past 30 days. See
+  Diagnostic rows keep nothing pointing at a learner past 30 days. Paused practice state is
+  erased with its conversation, onboarding session or account, and a deploy that changes a
+  graph drops (never resumes) the old shape's paused state (S17). See
   [docs/RUNBOOK.md](docs/RUNBOOK.md) §16.
 - **An explicit setting pins; inference adapts only what is left to it** (S02; V09) — five
   settings (guidance, explanation level, note format, hints, pace), global with subject
@@ -153,14 +157,21 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
 - **Background work runs when things go quiet** (S43) — memory write-back and profile refresh
   are queued by a worker sweep (`app/services/refresh_schedule.py`) for conversations and
   learners with unread evidence and no activity for 20 minutes; due-ness is derived from the
-  data, so backlogs catch up by themselves. The profile reads a recency window, and a
-  model-backed estimator pays only when its input changed. Learners can pause memory.
+  data, so backlogs catch up by themselves. Retention and transfer checks start from one-way milestones on
+  `learner_kc_state` and read evidence only for candidates (S62); clearing
+  `evidence_marked_at` recomputes them. The profile reads a recency window, and a
+  model-backed estimator pays only when its input changed. Learners can pause memory, which
+  also stops the profile reading what they type, then and afterwards (O07).
 - **Every paid call is recorded and admitted by the client** (S47, S48) — `LLMClient` writes a
   `pending` row before each call and settles it (`ok`/`failed`/`partial`);
   `app/services/spend_guard.py` refuses a call over the learner's daily caps (exact under
   concurrency) or the deployment ceiling, and background work stops at 90%. Services say what
   they are with `@metered(...)` (`app/llm/attribution.py`); nothing calls a logging function by
-  hand. See [docs/RUNBOOK.md](docs/RUNBOOK.md) §18.
+  hand. A streamed turn has a deadline and the learner can stop it, keeping its text
+  (`app/services/turn_control.py`); any other request answers 504 past its own. A provider
+  that is busy or down is a refusal too (`CallRefused`): 503, or a coded turn error, never
+  "generation failed" (S49). See
+  [docs/RUNBOOK.md](docs/RUNBOOK.md) §18.
 - **A grade says what measured it** (S56) — every graded event carries a `grading` block
   (grader, model, and hashes of frozen item/rubric/prompt snapshots in `grading_snapshots`, per
   learner, surviving item deletion); `uv run poe regrade` re-grades past answers under a current
@@ -185,6 +196,11 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   never produces a failing grade. Each question is off / shadow / live on its own and goes live
   only after a person reads `uv run poe decision-report`. `app/llm/decisions.py` is the only
   SDK importer. See [docs/RUNBOOK.md](docs/RUNBOOK.md) §14.
+- **Accessible at phone width** (S53) — one breakpoint (`WIDE_QUERY`, 1024 px); below it side
+  panels are native modal sheets (`SidePanel`), so focus, Escape and the backdrop come from the
+  browser. Every screen a journey reaches is scanned by axe, and serious or critical violations
+  fail `npm run e2e`; faded text stays at `text-base-content/70` or above. See
+  [docs/RUNBOOK.md](docs/RUNBOOK.md) §21.
 - **Pydantic at boundaries · async throughout · Alembic-tracked schema.**
 
 ## Performance & Conciseness Guidelines

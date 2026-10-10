@@ -19,7 +19,7 @@ export function MasteryEvidence({ kc }: { kc: KCMastery }) {
   const unassisted = `${kc.unassisted_items} unaided`;
 
   return (
-    <p className="text-caption text-base-content/40 pl-4">
+    <p className="text-caption text-base-content/70 pl-4">
       {problems}, {unassisted}
       {" · "}
       <span className={kc.retention_shown ? "text-success" : undefined}>

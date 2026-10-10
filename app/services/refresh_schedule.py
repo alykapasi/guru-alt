@@ -25,6 +25,7 @@ from app.models.chat import Conversation, Message
 from app.models.learner import Learner
 from app.models.learning import LearningEvent
 from app.models.profile import LearnerProfile
+from app.services.profile import readable_own_messages
 
 
 def utcnow() -> datetime:
@@ -113,7 +114,8 @@ async def due_learners(
         ).where(LearningEvent.event_type == "observation"),
         select(Conversation.learner_id.label("learner_id"), Message.created_at.label("at"))
         .join(Conversation, Message.conversation_id == Conversation.id)
-        .where(*_learners_own_message()),
+        .join(Learner, Learner.id == Conversation.learner_id)
+        .where(*readable_own_messages()),
     ).subquery()
     newest = (
         select(evidence.c.learner_id, func.max(evidence.c.at).label("at"))

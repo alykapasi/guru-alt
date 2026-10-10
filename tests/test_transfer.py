@@ -260,10 +260,11 @@ async def test_retention_wins_over_transfer_for_one_component(db_session, monkey
     learner, kc = await _retained(db_session)
     check = mastery.RetentionCheck(kc_id=kc.id, due_at=T0, ability=0.0, uncertainty=1.0)
 
-    async def also_retention(*_a, **_k) -> list[mastery.RetentionCheck]:
+    def also_retention(*_a, **_k) -> list[mastery.RetentionCheck]:
         return [check]
 
-    monkeypatch.setattr(mastery, "due_retention_checks", also_retention)
+    # Plan revision reads both checks through `due_checks` (S62); the retention half is this.
+    monkeypatch.setattr(mastery, "_retention_due", also_retention)
     due = await plan_svc._due_review_kc_ids(
         db_session, learner.id, {kc.id}, now=T0 + timedelta(days=9)
     )

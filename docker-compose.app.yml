@@ -9,7 +9,8 @@
 services:
   migrate:
     build: { context: ., target: api }
-    command: ["alembic", "upgrade", "head"]
+    # Alembic, then LangGraph's checkpoint schema, which processes no longer create (S17).
+    command: ["sh", "-c", "alembic upgrade head && python -m app.agent.checkpointing migrate && python -m app.learning.mastery mark-evidence"]
     environment: &app_env
       GURU_ENV: dev
       GURU_DATABASE_URL: postgresql+asyncpg://guru:guru@postgres:5432/guru

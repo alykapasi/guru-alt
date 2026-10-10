@@ -21,9 +21,9 @@ from app.core.identity import build_identity_provider
 from app.core.readiness import readiness
 from app.llm import build_llm_client
 from app.llm.attribution import attributed
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import CallRefused
 from app.models.learner import Learner
-from app.models.source import Source
+from app.models.source import Source, SourceStage
 from app.rag import pipeline
 from app.rag.demux import build_demuxer
 from app.rag.transcription import build_transcriber
@@ -63,6 +63,7 @@ async def _ingest_source_task(source_id: str) -> None:
             uuid.UUID(source_id),
             transcriber=transcriber,
             demuxer=demuxer,
+            enqueue=_enqueue_ingestion,
         )
 
 
@@ -78,9 +79,9 @@ async def _memory_write_back_task(conversation_id: str) -> None:
                 await memory_svc.write_back(
                     session, llm, conversation_id=uuid.UUID(conversation_id)
                 )
-            except BudgetExceeded:
-                # Deferred, not failed (S47): the claim stays, so the sweep retries it later.
-                logger.info("budget.deferred task=memory_write_back")
+            except CallRefused as exc:
+                # Deferred, not failed (S47, S49): the claim stays, so the sweep retries it later.
+                logger.info("%s.deferred task=memory_write_back", exc.reason)
                 return
             except Exception:
                 logger.exception("memory.write_back_failed conversation=%s", conversation_id)
@@ -98,8 +99,8 @@ async def _profile_refresh_task(learner_id: str) -> None:
                 return  # closed or suspended since it was queued: no model call
             try:
                 await profile_svc.refresh_profile(session, learner.id, llm)
-            except BudgetExceeded:
-                logger.info("budget.deferred task=profile_refresh")
+            except CallRefused as exc:
+                logger.info("%s.deferred task=profile_refresh", exc.reason)
 
 
 async def _judge_concept_links_task(learner_id: str) -> None:
@@ -109,8 +110,8 @@ async def _judge_concept_links_task(learner_id: str) -> None:
         async with SessionFactory() as session:
             try:
                 await concept_links_svc.judge_pending(session, llm, uuid.UUID(learner_id))
-            except BudgetExceeded:
-                logger.info("budget.deferred task=concept_links")
+            except CallRefused as exc:
+                logger.info("%s.deferred task=concept_links", exc.reason)
 
 
 async def _enqueue_ingestion(source_id: uuid.UUID) -> None:
@@ -126,7 +127,17 @@ async def _retag_source_task(source_id: str) -> None:
         source = await session.get(Source, uuid.UUID(source_id))
         if source is None:
             return
-        await pipeline.retag_source(session, llm, source, settings=settings)
+        try:
+            await pipeline.retag_source(session, llm, source, settings=settings)
+        except CallRefused as exc:
+            # Deferred, not dropped (S37): the sweep retries a source waiting to be tagged.
+            await session.rollback()
+            source = await session.get(Source, uuid.UUID(source_id), populate_existing=True)
+            if source is not None:
+                source.stage = SourceStage.TAG
+                source.attempts = 0
+                await session.commit()
+            logger.info("%s.deferred task=retag_source", exc.reason)
 
 
 async def _reconcile_once() -> None:
@@ -210,14 +221,15 @@ async def _expire_diagnostics_once() -> None:
 
 
 async def _purge_checkpoints_once() -> None:
-    """Discard paused graph state for conversations nobody has come back to (S17)."""
+    """Discard paused state nobody came back to, and threads nothing owns any more (S17)."""
     settings = get_settings()
     async with SessionFactory() as session:
         discarded = await checkpoints_svc.prune(
             session, older_than=timedelta(days=settings.checkpoint_retention_days)
         )
-    if discarded:
-        logger.info("discarded %d abandoned checkpoint thread(s)", discarded)
+        swept = await checkpoints_svc.prune_orphans(session)
+    if discarded or swept:
+        logger.info("discarded %d idle and %d ownerless checkpoint thread(s)", discarded, swept)
 
 
 async def _refresh_due_once() -> None:
@@ -412,13 +424,14 @@ async def _stop_diagnostic_expiry(state: TaskiqState) -> None:
 
 
 async def _start_checkpoint_purge(state: TaskiqState) -> None:
+    # The worker owns its own checkpointer pool, whether or not it purges: pruning and
+    # erasure retries go through the saver rather than through SQL (see
+    # ``app.agent.checkpointing.delete_thread``), and against the volatile fallback the purge
+    # would discard nothing and every queued checkpoint erasure would be refused.
+    await checkpointing.start()
     interval = get_settings().checkpoint_purge_interval_seconds
     if interval <= 0:
         return
-    # The worker owns its own checkpointer pool: pruning goes through the saver rather than
-    # through SQL (see ``app.agent.checkpointing.discard_thread``), and without this the
-    # sweep would run against the volatile fallback and silently discard nothing.
-    await checkpointing.start()
     state.checkpoint_purge = asyncio.create_task(_purge_checkpoints_loop(interval))
 
 

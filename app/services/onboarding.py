@@ -10,18 +10,25 @@ from collections.abc import AsyncIterator
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.refinement import RefinementState, build_refinement_graph, refinement_config
+from app.agent.refinement import (
+    REFINEMENT_GRAPH_VERSION,
+    RefinementState,
+    build_refinement_graph,
+    refinement_config,
+)
 from app.learning.curriculum import CurriculumProposal, generate_curriculum
 from app.llm.attribution import metered
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import CallRefused
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, Usage
 from app.rag import retrieval
 from app.rag.scope import SourceScope
-from app.services import onboarding_sessions
+from app.services import checkpoints, onboarding_sessions
 from app.services.turn_common import TurnEvent, refusal_ends_turn
 
 log = structlog.get_logger(__name__)
+
+EXPIRED_DETAIL = "this goal session has expired; start a new one"
 
 ONBOARDING_SYSTEM_PROMPT = (
     "You are Guru, helping a learner turn a rough idea into a clear, scoped learning goal "
@@ -68,10 +75,16 @@ async def run_goal_refinement_turn(
     if resume:
         # A thread can still genuinely be gone — this learner may be presenting an id that
         # was never theirs, or one whose negotiation was already committed — and a restart is
-        # no longer one of the ways (S17). Either way the graph would fail deep inside with a
-        # bare KeyError; say what happened instead.
-        if not (await graph.aget_state(config)).values:
-            yield TurnEvent(type="error", detail="this goal session has expired; start a new one")
+        # no longer one of the ways (S17), but a deploy that changed the graph is (its state is
+        # dropped rather than resumed). Either way the graph would fail deep inside with a bare
+        # KeyError; say what happened instead.
+        if (
+            await checkpoints.paused_state(
+                graph, config, graph_name="refinement", version=REFINEMENT_GRAPH_VERSION
+            )
+            is None
+        ):
+            yield TurnEvent(type="error", detail=EXPIRED_DETAIL)
             return
         run_input = Command(resume={"satisfied": satisfied, "feedback": user_content})
     else:
@@ -97,7 +110,7 @@ async def run_goal_refinement_turn(
                 yield TurnEvent(type="token", text=payload["token"])  # ty: ignore[invalid-argument-type]
             elif mode == "values":
                 proposal = payload["proposal"]  # ty: ignore[invalid-argument-type]
-    except BudgetExceeded:
+    except CallRefused:
         raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
         log.error("onboarding.refinement_failed", error=str(exc))

@@ -70,7 +70,8 @@ class Settings(BaseSettings):
     # firing and the FAILED status landing.
     #
     # ``ingest_max_attempts`` stops a source that kills its worker every time from cycling
-    # forever. ``ingest_max_concurrent_jobs`` is a *soft* cap — see claim_source.
+    # forever. ``ingest_max_concurrent_jobs`` is an exact cap, taken as advisory-lock slots — see
+    # app/services/ingest_slots.py.
     ingest_job_timeout_seconds: int = 3600
     # The checkpointer's own pool (S17). Small on purpose: it is used only when a graph pauses
     # or resumes, which is a fraction of requests, and it is a second pool against the same
@@ -81,6 +82,9 @@ class Settings(BaseSettings):
     ingest_lease_grace_seconds: int = 120
     ingest_max_attempts: int = 3
     ingest_max_concurrent_jobs: int = 4
+    # How many of the concurrent ingestion jobs one learner may hold at once (S37), so one
+    # learner's pile of uploads cannot take every slot. Uncalibrated (S18).
+    ingest_max_jobs_per_learner: int = Field(default=2, gt=0, le=16)
     ingest_max_extracted_chars: int = 20_000_000
     ingest_max_chunks: int = 5_000
 
@@ -248,6 +252,15 @@ class Settings(BaseSettings):
     # has stopped responding. Retries are the SDK's own (connection errors and 429/5xx only).
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 2
+    # How long a learner is asked to wait when a provider rate-limits a call and names no wait
+    # of its own (S49). Uncalibrated, listed in the S18 inventory.
+    provider_retry_after_seconds: float = Field(default=20.0, gt=0)
+
+    # Whole-request bounds (S47). A streamed turn ends at turn_deadline_seconds keeping its
+    # text; any other request answers 504 if it has not started responding by
+    # request_deadline_seconds. Uncalibrated guesses, listed in the S18 inventory.
+    turn_deadline_seconds: float = Field(default=120.0, gt=0)
+    request_deadline_seconds: float = Field(default=180.0, gt=0)
 
     ollama_base_url: str = "http://localhost:11434/v1"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
@@ -289,6 +302,13 @@ class Settings(BaseSettings):
     # what the client renders, and the two answer to different costs.
     chat_transcript_page_size: int = 100
     chat_transcript_page_max: int = 500
+    # The conversation list a client renders (S62): a page, like the transcript.
+    chat_conversation_page_size: int = 50
+    chat_conversation_page_max: int = 200
+    # The source library a client renders (S62). Larger than the conversation page: the
+    # picker shows many at once.
+    sources_page_size: int = 100
+    sources_page_max: int = 500
 
     # Rolling 24h per-learner ceilings, checked before a turn starts. Both are enforced
     # because neither covers the other: cost is unknown for a model with no price entry (see

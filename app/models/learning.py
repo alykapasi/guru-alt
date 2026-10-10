@@ -57,6 +57,23 @@ class LearnerKCState(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     transfer_confirmed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+    # Evidence milestones (S62). Which components *could* owe a retention or transfer check,
+    # so the checks read evidence only for those instead of every event the learner has.
+    # Each is recorded from `kc_evidence` when an answer lands; the checks still decide from
+    # the event log. Not to be confused with `transferred_at` above, which is the cross-subject
+    # head start (S24).
+    unaided_last_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    retention_shown_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    setting_transfer_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    # NULL until the milestones were computed for this row (every row before 0077, and any row
+    # cleared on purpose); the next due read computes and stores them.
+    evidence_marked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
 
 
 class LearningEvent(UUIDPrimaryKeyMixin, Base):
@@ -90,6 +107,10 @@ class LearningEvent(UUIDPrimaryKeyMixin, Base):
             "ix_learning_events_learner_item",
             "learner_id",
             text("(payload ->> 'item_id')"),
+            # Trailing, so "when did they last answer it" is read from the index (S62). Without
+            # it the planner chose a backward walk of created_at that, for an item the learner
+            # never answered, covered their whole history: 113 ms at a power user's size.
+            "created_at",
             postgresql_where=text("event_type IN ('observation', 'self_report')"),
         ),
     )

@@ -61,7 +61,7 @@ export interface Citation {
  * hand-maintained alongside the backend's `_sse()` calls. */
 export type TurnEvent =
   | { type: "token"; text: string }
-  | { type: "error"; detail: string }
+  | { type: "error"; detail: string; code?: string; retry_after?: number | null }
   | {
       type: "done";
       message_id: string | null;
@@ -84,7 +84,11 @@ export type TurnEvent =
       check_result: CheckResult | null;
     }
   | { type: "committed"; goal: string; detail: string }
-  | { type: "tool_call"; detail: string };
+  | { type: "tool_call"; detail: string }
+  /** The first frame of a chat stream: the server's id for this turn, so a Stop can name it. */
+  | { type: "turn"; turn_id: string }
+  /** The learner stopped the reply; `message_id` is the saved partial reply, if any text came. */
+  | { type: "stopped"; message_id: string | null };
 
 export interface SendMessageBody {
   content: string;
@@ -103,7 +107,7 @@ export interface SendMessageBody {
 /** The SSE frames that mean the turn reached an end the backend recorded. A stream that stops
  * without one of these did not finish — it was cut off — which is precisely what the old
  * "the generator ended, so we're done" reading could not tell apart. */
-export const TERMINAL_EVENTS = ["done", "awaiting_reply", "committed", "error"] as const;
+export const TERMINAL_EVENTS = ["done", "awaiting_reply", "committed", "error", "stopped"] as const;
 
 export function isTerminal(event: TurnEvent): boolean {
   return (TERMINAL_EVENTS as readonly string[]).includes(event.type);
@@ -143,5 +147,15 @@ export async function* streamTurn(
       if (!line) continue;
       yield JSON.parse(line.slice("data: ".length)) as TurnEvent;
     }
+  }
+}
+
+/** Ask the running turn to stop (S47). A 409 means it already finished — nothing to do. */
+export async function stopTurn(conversationId: string, turnId: string): Promise<void> {
+  const res = await apiFetch(`/api/v1/conversations/${conversationId}/turns/${turnId}/stop`, {
+    method: "POST",
+  });
+  if (!res.ok && res.status !== 409) {
+    throw new Error(await failureMessage(res, `stop failed: ${res.status} ${res.statusText}`));
   }
 }

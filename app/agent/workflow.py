@@ -42,8 +42,17 @@ from app.services.turn_common import build_check_result
 __all__ = ["WorkflowState", "build_workflow_graph", "workflow_config"]
 
 
+WORKFLOW_GRAPH_VERSION = 1
+"""Bump when this graph's nodes, edges or state keys change (S17). Every checkpoint is stamped
+with it and one stamped otherwise is dropped on resume; ``tests/test_graph_versions.py`` pins
+the shape so a change without a bump fails."""
+
+
 def workflow_config(thread_id: str) -> RunnableConfig:
-    return {"configurable": {"thread_id": thread_id}}
+    return {
+        "configurable": {"thread_id": thread_id},
+        "metadata": {"graph_version": WORKFLOW_GRAPH_VERSION},
+    }
 
 
 def build_workflow_graph(

@@ -112,7 +112,7 @@ async def test_list_sources(api_client: AsyncClient, fake_ingest) -> None:
 
     r = await api_client.get(f"{API}/sources")
     assert r.status_code == 200
-    ids = {s["id"] for s in r.json()}
+    ids = {s["id"] for s in r.json()["sources"]}
     assert {a["id"], b["id"]} <= ids
 
 
@@ -134,7 +134,7 @@ async def test_list_sources_filtered_by_subject(
 
     r = await api_client.get(f"{API}/sources", params={"subject_id": str(subject.id)})
     assert r.status_code == 200
-    ids = {s["id"] for s in r.json()}
+    ids = {s["id"] for s in r.json()["sources"]}
     assert scoped["id"] in ids
     assert unscoped["id"] not in ids
 

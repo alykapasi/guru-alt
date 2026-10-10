@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass, field
 
 from app.llm import ChatMessage, ChatRole, LLMClient, ModelRole, Usage
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import CallRefused
 
 JUDGE_ROLE = ModelRole.SMART
 """A judgement about meaning across contexts, with a learner's trust riding on it — not FAST."""
@@ -83,7 +83,7 @@ async def judge_pair(client: LLMClient, a: Side, b: Side) -> tuple[Verdict | Non
             system=_SYSTEM_PROMPT,
             max_tokens=200,
         )
-    except BudgetExceeded:
+    except CallRefused:
         raise  # refused, not undecided: the task defers (S47)
     except Exception:
         return None, Usage()

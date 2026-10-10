@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRemovalImpact, useRemove } from "../../api/hooks";
 import { FORGET_COPY, KEPT_COPY, describeCounts } from "./removalCopy";
 
@@ -40,13 +40,33 @@ export function RemovalDialog({
   );
   const forgettable = describeCounts(forgettableCounts, FORGET_COPY);
   const message = refusal(remove.error);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  // Modal, as NewChatModal is (S53): focus stays inside, Escape cancels, and focus returns to
+  // the delete button that opened it. `<dialog open>` gave none of the three.
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (open && !dialog.open) dialog.showModal();
+    else if (!open && dialog.open) dialog.close();
+  }, [open]);
 
   return (
-    <dialog className="modal" open={open}>
+    <dialog
+      ref={dialogRef}
+      className="modal"
+      aria-labelledby={`remove-${id}`}
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
+    >
       <div className="modal-box flex flex-col gap-3">
-        <h3 className="text-h3">Delete {name}?</h3>
+        <h3 id={`remove-${id}`} className="text-h3">
+          Delete {name}?
+        </h3>
         {impact.isLoading ? (
-          <p className="text-caption text-base-content/50">Checking what this affects…</p>
+          <p className="text-caption text-base-content/70">Checking what this affects…</p>
         ) : (
           <>
             {kept.length > 0 && (
@@ -74,7 +94,7 @@ export function RemovalDialog({
                 />
                 <span className="text-body">
                   Also forget what was learned from this
-                  <span className="text-caption text-base-content/60 block">
+                  <span className="text-caption text-base-content/70 block">
                     Removes {forgettable.join(", ")}.
                   </span>
                 </span>

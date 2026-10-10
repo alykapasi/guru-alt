@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm import LLMClient, ModelRole, Usage
+from app.llm.meter import CallRefused
 from app.models.knowledge import KC, Topic
 from app.models.source import Source
 from app.prompts.kc_tagging_program import TagPrediction, load_kc_tagging_program
@@ -58,7 +59,8 @@ async def tag_chunk(
 ) -> tuple[list[KCTag], Usage]:
     """Tag one chunk against ``candidates`` with the FAST model via the DSPy program.
 
-    Best-effort: no candidates ⇒ no call; any DSPy/exec/parse failure ⇒ no tags (never raises).
+    Best-effort: no candidates ⇒ no call; a DSPy/parse failure ⇒ no tags. A refused call (spend
+    or provider) is raised.
     Returns surviving tags (confidence ≥ ``min_confidence``, de-duped keeping the highest, in
     candidate order) plus the call's ``Usage`` for cost logging.
     """
@@ -76,9 +78,27 @@ async def tag_chunk(
         with dspy.context(lm=lm):
             prediction = await program.acall(passage=text, candidates=catalog)
         raw = list(prediction.tags)
-    except Exception:  # best-effort — a weak model/parse failure never fails the ingest
+    except Exception as exc:
+        # Best-effort about the *model's answer* — a weak model or a parse failure tags
+        # nothing. A refusal is not an answer (S37, S49): it is raised, so the tag stage is
+        # retried instead of the source being left untagged for good. DSPy may wrap it.
+        refusal = _refusal_in(exc)
+        if refusal is not None:
+            raise refusal from exc
         return [], lm.usage_sum
     return _surviving_tags(raw, candidates, min_confidence), lm.usage_sum
+
+
+def _refusal_in(exc: BaseException) -> CallRefused | None:
+    """The refusal ``exc`` is or wraps, if any — DSPy re-raises an LM error in its own type."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, CallRefused):
+            return current
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def _surviving_tags(

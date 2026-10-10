@@ -32,12 +32,12 @@ function SourceRow({
   return (
     <div className="hover:bg-base-200 flex items-center justify-between gap-4 rounded-field px-3 py-2">
       <div className="flex min-w-0 items-center gap-2">
-        <Icon size={16} className="text-base-content/50 shrink-0" />
+        <Icon size={16} className="text-base-content/70 shrink-0" />
         <div className="flex min-w-0 flex-col">
           <span className="text-body truncate" title={source.error ?? undefined}>
             {source.origin}
           </span>
-          {label && <span className="text-caption text-base-content/50">{label}</span>}
+          {label && <span className="text-caption text-base-content/70">{label}</span>}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
@@ -97,10 +97,10 @@ export function SourceList({
   archived?: boolean;
 }) {
   if (isLoading) {
-    return <p className="text-caption text-base-content/50">Loading…</p>;
+    return <p className="text-caption text-base-content/70">Loading…</p>;
   }
   if (sources.length === 0) {
-    return <p className="text-caption text-base-content/50">No materials yet.</p>;
+    return <p className="text-caption text-base-content/70">No materials yet.</p>;
   }
   return (
     <div className="flex flex-col gap-1">

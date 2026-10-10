@@ -10,8 +10,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.deps import CurrentLearner, LLMClientDep, SessionDep
+from app.core.config import get_settings
 from app.models.publication import CurriculumProposal
-from app.services import onboarding, onboarding_sessions
+from app.services import onboarding, onboarding_sessions, turn_control
+from app.services.turn_common import error_frame
+from app.services.turn_control import Interrupted
 
 router = APIRouter(tags=["onboarding"])
 
@@ -82,25 +85,46 @@ async def goal_refinement_turn(
         ) from exc
 
     async def event_stream() -> AsyncIterator[str]:
+        # The deadline only; onboarding has no Stop (S47).
+        control = turn_control.TurnControl(
+            uuid.uuid4(), deadline_s=get_settings().turn_deadline_seconds
+        )
         try:
-            async for event in onboarding.run_goal_refinement_turn(
-                llm=llm,
-                session_id=request.session_id,
-                user_content=request.content,
-                satisfied=request.satisfied,
-                resume=request.mode == "resume",
-                learner_id=learner.id,
-            ):
-                if event.type == "token":
-                    yield _sse({"type": "token", "text": event.text})
-                elif event.type == "awaiting_reply":
-                    yield _sse(
-                        {"type": "awaiting_reply", "text": event.text, "detail": event.detail}
+            async with control:
+                async for event in control.run(
+                    onboarding.run_goal_refinement_turn(
+                        llm=llm,
+                        session_id=request.session_id,
+                        user_content=request.content,
+                        satisfied=request.satisfied,
+                        resume=request.mode == "resume",
+                        learner_id=learner.id,
                     )
-                elif event.type == "committed":
-                    yield _sse({"type": "committed", "goal": event.text, "detail": event.detail})
-                elif event.type == "error":
-                    yield _sse({"type": "error", "detail": event.detail})
+                ):
+                    if isinstance(event, Interrupted):
+                        yield _sse(
+                            {
+                                "type": "error",
+                                "detail": turn_control.DEADLINE_DETAIL,
+                                "code": "deadline",
+                            }
+                        )
+                        break
+                    if event.type == "token":
+                        yield _sse({"type": "token", "text": event.text})
+                    elif event.type == "awaiting_reply":
+                        yield _sse(
+                            {"type": "awaiting_reply", "text": event.text, "detail": event.detail}
+                        )
+                    elif event.type == "committed":
+                        yield _sse(
+                            {"type": "committed", "goal": event.text, "detail": event.detail}
+                        )
+                    elif event.type == "error":
+                        if event.detail == onboarding.EXPIRED_DETAIL:
+                            # Nothing left to resume, so nothing left to own (S17).
+                            await onboarding_sessions.forget(session, request.session_id)
+                        yield _sse(error_frame(event))
         except Exception as exc:
             yield _sse({"type": "error", "detail": str(exc)})
 

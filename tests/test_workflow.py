@@ -600,7 +600,7 @@ async def test_a_paused_session_records_the_item_it_is_waiting_on(
     awaiting = next(e for e in _parse_sse(r.text) if e["type"] == "awaiting_reply")
 
     # What a reload sees, with no live stream to read from.
-    listed = (await api_client.get(f"{API}/conversations")).json()
+    listed = (await api_client.get(f"{API}/conversations")).json()["conversations"]
     row = next(c for c in listed if c["id"] == conversation_id)
     assert row["phase"] == ConversationPhase.AWAITING_ANSWER
     assert row["active_item_id"] == awaiting["item"]["id"]
@@ -612,7 +612,7 @@ async def test_a_paused_session_records_the_item_it_is_waiting_on(
     assert next(e for e in _parse_sse(r.text) if e["type"] == "done")["detail"] == "mastered"
 
     # A finished run is no longer waiting on anything, and says so.
-    listed = (await api_client.get(f"{API}/conversations")).json()
+    listed = (await api_client.get(f"{API}/conversations")).json()["conversations"]
     row = next(c for c in listed if c["id"] == conversation_id)
     assert row["phase"] == ConversationPhase.CHATTING
     assert row["active_item_id"] is None
@@ -826,8 +826,10 @@ async def test_a_re_asked_flashcard_adds_nothing_to_the_transcript(
             select(Message).where(Message.conversation_id == conv.id).order_by(Message.created_at)
         )
     ).all()
-    assert [m.role for m in after] == ["user", "assistant", "user"]
-    assert [m.id for m in after[:2]] == [m.id for m in before]
+    # Compared as sets: `created_at` is the transaction's clock, identical for every row a test
+    # writes, so the order of tied rows is whatever the heap returns.
+    assert sorted(m.role for m in after) == ["assistant", "user", "user"]
+    assert {m.id for m in before} <= {m.id for m in after}
     # present only: the re-ask called no model, so it is billed for none.
     calls = (await db_session.scalars(select(LLMCall).where(LLMCall.role != "embed"))).all()
     assert len(calls) == 1

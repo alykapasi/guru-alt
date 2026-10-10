@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { FileText, X } from "lucide-react";
 import { useChunk, useSource } from "../../api/hooks";
 import type { Citation } from "../../api/sse";
@@ -31,18 +32,18 @@ export function CitationBody({
   note?: string | null;
 }) {
   if (missing) {
-    return <p className="text-body text-base-content/60">This passage is no longer available.</p>;
+    return <p className="text-body text-base-content/70">This passage is no longer available.</p>;
   }
   return (
     <>
       <div>
-        <p className="text-caption text-base-content/60 truncate">{origin}</p>
+        <p className="text-caption text-base-content/70 truncate">{origin}</p>
         {locator && <p className="text-caption text-primary">{locator}</p>}
         {superseded && (
           <p className="text-caption text-warning">From an earlier version of this source</p>
         )}
         {note && (
-          <p className="text-caption text-base-content/60">
+          <p className="text-caption text-base-content/70">
             {note.charAt(0).toUpperCase() + note.slice(1)}
           </p>
         )}
@@ -56,21 +57,42 @@ export function CitationPane({ citation, onClose }: { citation: Citation; onClos
   const { data: chunk, isLoading: chunkLoading, isError: chunkError } = useChunk(citation.chunk_id);
   const { data: source, isLoading: sourceLoading } = useSource(citation.source_id);
   const locator = chunk ? locatorLabel(chunk.provenance) : null;
+  const headingRef = useRef<HTMLHeadingElement>(null);
+
+  // Opening a citation is a request to read it: focus goes to the pane, and back to the marker
+  // that opened it when the pane closes, so a keyboard user is not dropped at the top of the
+  // page (S53). On a narrow screen the sheet's dialog does the same for itself.
+  // Per citation, not per mount: clicking a second marker while the pane is open is a new
+  // request to read, and closing should return to the marker clicked last. When that marker
+  // has since re-rendered away, focus goes to the content rather than to nowhere.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    headingRef.current?.focus();
+    return () => {
+      const target = opener?.isConnected ? opener : document.getElementById("main");
+      target?.focus();
+    };
+  }, [citation.chunk_id]);
 
   return (
     <div className="bg-base-100 flex min-h-0 flex-1 flex-col">
       <div className="border-base-300 flex items-center justify-between border-b p-4">
-        <h3 className="text-h3 flex items-center gap-2">
+        <h3 ref={headingRef} tabIndex={-1} className="text-h3 flex items-center gap-2 outline-none">
           <FileText size={16} className="text-primary" />
           Source
         </h3>
-        <button onClick={onClose} className="hover:bg-base-200 rounded-field p-1.5">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close source"
+          className="hover:bg-base-200 rounded-field p-1.5"
+        >
           <X size={16} />
         </button>
       </div>
       <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
         {sourceLoading || chunkLoading ? (
-          <p className="text-caption text-base-content/50">Loading…</p>
+          <p className="text-caption text-base-content/70">Loading…</p>
         ) : (
           <CitationBody
             missing={chunkError || !chunk}

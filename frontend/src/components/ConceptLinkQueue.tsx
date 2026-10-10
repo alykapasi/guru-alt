@@ -9,7 +9,7 @@ type Row = components["schemas"]["ConceptLinkReviewRead"];
  * it is what a learner reads when deciding. Decided rows stay listed with their verdict. */
 export function ConceptLinkQueue() {
   const { data, isLoading, isError } = useConceptLinkQueue();
-  if (isLoading) return <p className="text-caption text-base-content/50">Loading concept links…</p>;
+  if (isLoading) return <p className="text-caption text-base-content/70">Loading concept links…</p>;
   // Checked before the empty case, and by shape rather than truthiness: a query error or an
   // unexpected response body is still a truthy, non-array `data` in the second case, and
   // `.map`-ing it below would take down the whole Admin page — there is no error boundary here.
@@ -21,7 +21,7 @@ export function ConceptLinkQueue() {
     );
   }
   if (data.length === 0) {
-    return <p className="text-caption text-base-content/50">No concept links to review.</p>;
+    return <p className="text-caption text-base-content/70">No concept links to review.</p>;
   }
   return (
     <div className="flex flex-col gap-2">
@@ -43,7 +43,7 @@ function LinkRow({ row }: { row: Row }) {
         {row.kc_a_name} ({row.subject_a_name}) ↔ {row.kc_b_name} ({row.subject_b_name})
       </p>
       {row.verdict ? (
-        <p className="text-caption text-base-content/60">
+        <p className="text-caption text-base-content/70">
           {row.verdict === "endorsed" ? "Endorsed" : "Rejected"} — {row.reason}
         </p>
       ) : (

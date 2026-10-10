@@ -41,7 +41,7 @@ export function NoteView() {
   }, [note?.stale, refresh]);
 
   if (!note) {
-    return <p className="text-caption text-base-content/50">Loading…</p>;
+    return <p className="text-caption text-base-content/70">Loading…</p>;
   }
 
   return (
@@ -105,7 +105,7 @@ export function NoteView() {
 
       {editing ? (
         <div className="flex flex-col gap-3">
-          <p className="text-caption text-base-content/60">
+          <p className="text-caption text-base-content/70">
             Your wording is saved exactly. Automatic additions stay separate until you include them.
           </p>
           {note.learner_authored_md !== null && note.generated_md && !includeGenerated && (
@@ -170,7 +170,7 @@ export function NoteView() {
         </article>
       ) : (
         !refresh.isPending && (
-          <p className="text-base-content/60">
+          <p className="text-base-content/70">
             No notes for this topic yet — they'll appear automatically once you've studied it.
           </p>
         )

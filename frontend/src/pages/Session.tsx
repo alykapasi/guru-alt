@@ -9,7 +9,13 @@ import { CitationPane } from "../components/chat/CitationPane";
 import { PracticeControls } from "../components/chat/PracticeControls";
 import { PracticePausedStrip } from "../components/chat/PracticePausedStrip";
 import { RATINGS } from "../lib/flashcardRatings";
-import type { Citation } from "../api/sse";
+import type { CheckResult, Citation } from "../api/sse";
+import { TurnError } from "../components/chat/TurnError";
+import { QuestionCard } from "../components/lessons/QuestionCard";
+import { SidePanel } from "../components/layout/SidePanel";
+import { useMediaQuery, WIDE_QUERY } from "../hooks/useMediaQuery";
+import { LiveAnnouncer } from "../components/LiveAnnouncer";
+import { useTurnAnnouncement } from "../hooks/useTurnAnnouncement";
 
 const PRACTICE_ENDED_NOTICE = "That question no longer fits your plan, so practice ended.";
 
@@ -28,6 +34,7 @@ export function Session() {
     pending,
     error,
     canRetry,
+    retryAfter,
     retry,
     item,
     sessionDetail,
@@ -39,6 +46,8 @@ export function Session() {
   const practiceAction = usePracticeAction(conversationId);
   const hasStartedRef = useRef(false);
   const [citation, setCitation] = useState<Citation | null>(null);
+  const wide = useMediaQuery(WIDE_QUERY);
+  const [questionOpen, setQuestionOpen] = useState(false);
   // Set only when a resume finds the paused question has gone stale (S52) — the one way
   // practice can end outside the workflow's own mastered/capped outcomes. Local, not derived
   // from `sessionDetail`: the strip that shows it must keep showing it after the phase has
@@ -101,12 +110,31 @@ export function Session() {
     });
   }
 
+  // The persisted transcript is refetched before `pending` clears (useChatConversation), so
+  // when the turn ends the newest message is this turn's, and its grade is this answer's.
+  const newest = messages.length ? messages[messages.length - 1] : null;
+  const grade = (newest?.check_result ?? null) as CheckResult | null;
+  const notice = endedNotice ?? (practicePaused ? "Practice paused" : null);
+  const announcement = useTurnAnnouncement(!!pending, error, grade, notice);
+
+  const itemPanel = (
+    <ItemPanel
+      item={item}
+      detail={sessionDetail}
+      onRate={handleRate}
+      // While paused a rating would go to the tutor, not the grader (spec §4.2), so the
+      // learner must go back to the question before rating it.
+      ratingDisabled={!!pending || practicePaused}
+    />
+  );
+
   return (
-    <div className="flex min-h-0 flex-1">
-      <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1">
+      <main id="main" tabIndex={-1} className="outline-none flex min-h-0 min-w-0 flex-1 flex-col">
+        <LiveAnnouncer message={announcement} />
         {isLoadingMessages ? (
           <div className="flex flex-1 items-center justify-center">
-            <p className="text-caption text-base-content/50">Loading session…</p>
+            <p className="text-caption text-base-content/70">Loading session…</p>
           </div>
         ) : (
           <MessageList
@@ -122,14 +150,12 @@ export function Session() {
           />
         )}
         {error && (
-          <div className="text-caption text-error mx-auto flex w-full max-w-3xl items-center gap-3 px-6 pb-2">
-            <p>{error}</p>
-            {canRetry && (
-              <button type="button" className="btn btn-ghost btn-xs" onClick={() => void retry()}>
-                Try again
-              </button>
-            )}
-          </div>
+          <TurnError
+            error={error}
+            canRetry={canRetry}
+            retryAfter={retryAfter}
+            onRetry={() => void retry()}
+          />
         )}
         {endedNotice ? (
           <PracticePausedStrip onResume={handleResume} onSkip={handleSkip} notice={endedNotice} />
@@ -145,27 +171,49 @@ export function Session() {
             <PracticeControls onPause={handlePause} onSkip={handleSkip} disabled={practiceBusy} />
           )
         )}
+        {!wide && <QuestionCard item={item} onShow={() => setQuestionOpen(true)} />}
         <Composer
           disabled={!!pending || ended}
           onSend={(content) => send(content, { mode: "workflow" })}
           fixedMode="workflow"
           placeholder={practicePaused ? "Ask anything…" : "Your answer…"}
         />
-      </div>
+      </main>
       {/* Evidence stacks above the question rather than replacing it: a learner opening a
           citation is checking a source *in order to answer*, so hiding the item they are
-          answering to show it would defeat the click. */}
-      <aside className="border-base-300 divide-base-300 flex w-80 shrink-0 flex-col divide-y border-l">
-        {citation && <CitationPane citation={citation} onClose={() => setCitation(null)} />}
-        <ItemPanel
-          item={item}
-          detail={sessionDetail}
-          onRate={handleRate}
-          // While paused a rating would go to the tutor, not the grader (spec §4.2), so the
-          // learner must go back to the question before rating it.
-          ratingDisabled={!!pending || practicePaused}
-        />
-      </aside>
+          answering to show it would defeat the click. On a narrow screen each is its own
+          sheet, and the citation's opens over the question's (S53). */}
+      {wide ? (
+        <aside
+          aria-label="Practice question"
+          className="border-base-300 divide-base-300 flex w-80 shrink-0 flex-col divide-y border-l"
+        >
+          {citation && <CitationPane citation={citation} onClose={() => setCitation(null)} />}
+          {itemPanel}
+        </aside>
+      ) : (
+        <>
+          <SidePanel
+            open={questionOpen}
+            onClose={() => setQuestionOpen(false)}
+            side="right"
+            label="Practice question"
+            width="w-80"
+          >
+            {itemPanel}
+          </SidePanel>
+          <SidePanel
+            open={citation !== null}
+            onClose={() => setCitation(null)}
+            side="right"
+            label="Source"
+            width="w-80"
+            showClose={false}
+          >
+            {citation && <CitationPane citation={citation} onClose={() => setCitation(null)} />}
+          </SidePanel>
+        </>
+      )}
     </div>
   );
 }

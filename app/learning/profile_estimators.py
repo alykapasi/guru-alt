@@ -100,6 +100,8 @@ class DimensionSpec:
     observation: str
     # Only model-backed estimators set it (S43).
     fingerprint: FingerprintFn | None = None
+    # Estimated from the text the learner typed, so it waits while memory is paused (O07).
+    reads_messages: bool = False
 
 
 def _uncertainty(n: int, *, floor: float = 0.15) -> float:
@@ -746,6 +748,7 @@ DIMENSION_SPECS: list[DimensionSpec] = [
         fingerprint=_fingerprint_interests,
         label="Topics in your messages",
         observation="Subjects a model picked out of the messages you have typed.",
+        reads_messages=True,
     ),
     DimensionSpec(
         key="message_writing_complexity",
@@ -757,6 +760,7 @@ DIMENSION_SPECS: list[DimensionSpec] = [
             "Readability grade of the text you have typed to the tutor. It measures how you "
             "write here — short, casual questions score low — not how well you read."
         ),
+        reads_messages=True,
     ),
     DimensionSpec(
         key="session_logistics",
@@ -803,3 +807,9 @@ def describe(key: str) -> tuple[str, str]:
     if spec is None:
         return key.replace("_", " ").capitalize(), "No description recorded for this dimension."
     return spec.label, spec.observation
+
+
+def reads_messages(key: str) -> bool:
+    """Whether ``key`` is estimated from what the learner typed (O07); False for an unknown key."""
+    spec = _SPECS_BY_KEY.get(key)
+    return spec is not None and spec.reads_messages

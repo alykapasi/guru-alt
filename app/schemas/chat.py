@@ -113,6 +113,8 @@ class MessageRead(BaseModel):
     created_at: datetime
     # Passages offered for this reply (S28); NULL = no library scope, or written before S28.
     grounding_count: int | None = None
+    # ``stopped`` | ``timed_out`` when the reply was cut short (S47); null otherwise.
+    interrupted: str | None = None
 
     @computed_field
     @property
@@ -139,7 +141,7 @@ class TurnRead(BaseModel):
     id: uuid.UUID
     client_turn_id: uuid.UUID | None
     flow: str  # refinement | tutor | agentic | workflow
-    status: str  # pending | completed | failed | cancelled
+    status: str  # pending | completed | failed | cancelled | stopped
     content: str
     assistant_message_id: uuid.UUID | None
     error: str | None

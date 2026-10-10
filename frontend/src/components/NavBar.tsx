@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   BookOpen,
@@ -6,6 +6,7 @@ import {
   Gauge,
   LayoutDashboard,
   LogOut,
+  Menu,
   MessageSquare,
   NotebookText,
   Upload,
@@ -33,11 +34,20 @@ const LINKS = [
  * how a product teaches people it is broken. */
 const ADMIN_LINK = { to: "/app/admin", label: "Admin", icon: Gauge };
 
+const linkClass = ({ isActive }: { isActive: boolean }) =>
+  `flex items-center gap-2 rounded-field px-3 py-2 text-caption transition-colors ${
+    isActive
+      ? "bg-primary/10 text-primary"
+      : "text-base-content/70 hover:bg-base-200 hover:text-base-content"
+  }`;
+
 export function NavBar() {
   const navigate = useNavigate();
   const { data: learner } = useCurrentLearner();
   const signOutEverywhere = useSignOutEverywhere();
   const [busy, setBusy] = useState(false);
+  const menuRef = useRef<HTMLDetailsElement>(null);
+  const links = [...LINKS, ...(learner?.is_admin ? [ADMIN_LINK] : [])];
 
   async function signOut() {
     setBusy(true);
@@ -51,33 +61,42 @@ export function NavBar() {
 
   return (
     <header className="border-base-300 bg-base-100 border-b">
-      <div className="mx-auto flex h-16 max-w-[1280px] items-center justify-between px-6">
+      <div className="mx-auto flex h-16 max-w-[1280px] items-center justify-between gap-2 px-4 sm:px-6">
         <NavLink to="/" className="shrink-0">
           <Logo />
         </NavLink>
-        <nav className="flex items-center gap-1">
-          {[...LINKS, ...(learner?.is_admin ? [ADMIN_LINK] : [])].map(
-            ({ to, label, icon: Icon }) => (
-              <NavLink
-                key={to}
-                to={to}
-                className={({ isActive }) =>
-                  `flex items-center gap-2 rounded-field px-3 py-2 text-caption transition-colors ${
-                    isActive
-                      ? "bg-primary/10 text-primary"
-                      : "text-base-content/70 hover:bg-base-200 hover:text-base-content"
-                  }`
-                }
-              >
-                <Icon size={16} />
-                {label}
-              </NavLink>
-            ),
-          )}
+        {/* Below `sm` the links do not fit beside the logo and account controls (S53); a
+            <details> disclosure opens and closes from the keyboard with no script of ours. */}
+        <details ref={menuRef} aria-label="Menu" className="dropdown sm:hidden">
+          <summary className="btn btn-ghost btn-sm" aria-label="Open menu">
+            <Menu size={18} />
+          </summary>
+          <ul className="dropdown-content menu bg-base-100 rounded-box border-base-300 z-50 mt-2 w-52 border p-2 shadow">
+            {links.map(({ to, label, icon: Icon }) => (
+              <li key={to}>
+                <NavLink
+                  to={to}
+                  className={linkClass}
+                  onClick={() => menuRef.current?.removeAttribute("open")}
+                >
+                  <Icon size={16} />
+                  {label}
+                </NavLink>
+              </li>
+            ))}
+          </ul>
+        </details>
+        <nav aria-label="Main" className="hidden items-center gap-1 sm:flex">
+          {links.map(({ to, label, icon: Icon }) => (
+            <NavLink key={to} to={to} className={linkClass}>
+              <Icon size={16} />
+              {label}
+            </NavLink>
+          ))}
         </nav>
         <div className="flex items-center gap-2">
           {learner && (
-            <span className="text-caption text-base-content/60 hidden sm:inline">
+            <span className="text-caption text-base-content/70 hidden sm:inline">
               {learner.display_name || learner.handle}
             </span>
           )}

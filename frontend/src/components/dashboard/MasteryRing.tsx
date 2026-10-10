@@ -50,12 +50,12 @@ export function MasteryRing({
         {assessed ? (
           <>
             <span className="text-h3">{Math.round(percent)}%</span>
-            <span className="text-base-content/50 text-[11px] tracking-wide uppercase">
+            <span className="text-base-content/70 text-[11px] tracking-wide uppercase">
               {masteryQualifier(uncertainty)}
             </span>
           </>
         ) : (
-          <span className="text-base-content/50 text-[11px] tracking-wide uppercase">
+          <span className="text-base-content/70 text-[11px] tracking-wide uppercase">
             not assessed
           </span>
         )}

@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 
 from app.core.config import get_settings
+from app.llm.meter import ProviderUnavailable
 from app.llm.types import (
     ChatChunk,
     ChatMessage,
@@ -43,8 +44,16 @@ class FakeProvider:
         reply: str = "Hello from the fake tutor.",
         *,
         script: Sequence[FakeTurn] | None = None,
+        refuse: ProviderUnavailable | None = None,
+        refuse_calls: frozenset[str] = frozenset({"complete", "stream", "embed"}),
+        refuse_after_words: int = 0,
     ) -> None:
         self._reply = reply
+        # Test-only: behave like a provider that is busy or down (S49), on the calls named — a
+        # stream after refuse_after_words words.
+        self._refuse = refuse
+        self._refuse_calls = refuse_calls
+        self._refuse_after_words = refuse_after_words
         self._script = list(script) if script is not None else None
         self._call_index = 0
         # Test-only affordance: lets a test assert what a caller actually sent (e.g. that a
@@ -53,6 +62,9 @@ class FakeProvider:
         # it. Named unlike the `calls`/`complete_calls` counters several subclasses in tests/
         # already define, so subclassing doesn't collide with this one's type.
         self.prompts_sent: list[tuple[str | None, Sequence[ChatMessage]]] = []
+
+    def _refusal(self, call: str) -> ProviderUnavailable | None:
+        return self._refuse if call in self._refuse_calls else None
 
     def _next_turn(self) -> FakeTurn:
         turn = (
@@ -78,6 +90,8 @@ class FakeProvider:
         max_tokens: int = 1024,
         tools: Sequence[ToolDef] | None = None,
     ) -> ChatResponse:
+        if (refusal := self._refusal("complete")) is not None:
+            raise refusal
         self.prompts_sent.append((system, messages))
         turn = self._next_turn()
         return ChatResponse(
@@ -97,11 +111,18 @@ class FakeProvider:
         tools: Sequence[ToolDef] | None = None,
     ) -> AsyncIterator[ChatChunk]:
         turn = self._next_turn()
+        refusal = self._refusal("stream")
         for i, word in enumerate(turn.text.split()):
+            if refusal is not None and i == self._refuse_after_words:
+                raise refusal
             yield ChatChunk(text=word if i == 0 else f" {word}")
+        if refusal is not None:
+            raise refusal
         yield ChatChunk(usage=self._usage(messages, turn), tool_calls=turn.tool_calls)
 
     async def embed(self, *, model: str, texts: Sequence[str]) -> EmbedResult:
+        if (refusal := self._refusal("embed")) is not None:
+            raise refusal
         # Match the configured embedding dim so fake vectors fit the pgvector column.
         dim = get_settings().embed_dim
         return EmbedResult(

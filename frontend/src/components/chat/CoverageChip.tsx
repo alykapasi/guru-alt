@@ -23,7 +23,7 @@ export function CoverageChip({
         ? "Your materials were searched but not used"
         : "Not from your materials";
   return (
-    <span className="text-caption text-base-content/60 flex items-center gap-1">
+    <span className="text-caption text-base-content/70 flex items-center gap-1">
       <BookOpen size={12} />
       {label}
     </span>

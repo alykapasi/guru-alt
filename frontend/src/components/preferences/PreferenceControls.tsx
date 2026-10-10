@@ -30,9 +30,9 @@ export function PreferenceControls({ subjectId }: { subjectId?: string }) {
               </select>
             </label>
             {VALUE_CAPTIONS[pref.value] && (
-              <p className="text-caption text-base-content/60">{VALUE_CAPTIONS[pref.value]}</p>
+              <p className="text-caption text-base-content/70">{VALUE_CAPTIONS[pref.value]}</p>
             )}
-            <p className="text-caption text-base-content/60">
+            <p className="text-caption text-base-content/70">
               {subjectId !== undefined && !overridden && pref.global_value !== null
                 ? `Using your default (${optionLabel(pref.global_value)}).`
                 : pref.value === "auto" && pref.inferred

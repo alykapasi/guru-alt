@@ -166,3 +166,60 @@ async def test_curriculum_endpoint_400_on_llm_failure(
     assert response.status_code == 400
     data = response.json()
     assert data["detail"] == "Curriculum generation failed. Please try again."
+
+
+async def test_goal_turns_have_a_deadline(
+    api_client: AsyncClient, fake_llm_goal: None, monkeypatch
+) -> None:
+    """A stuck refinement turn is cut off with the deadline error, not left hanging (S47)."""
+    import asyncio
+
+    from app.core.config import get_settings
+
+    async def stuck(**kwargs):
+        await asyncio.sleep(30)
+        yield None
+
+    settings = get_settings().model_copy(update={"turn_deadline_seconds": 0.1})
+    monkeypatch.setattr("app.api.v1.onboarding.get_settings", lambda: settings)
+    monkeypatch.setattr("app.services.onboarding.run_goal_refinement_turn", stuck)
+    session_id = (await api_client.post(f"{API}/onboarding/goal-sessions")).json()["session_id"]
+
+    response = await api_client.post(
+        f"{API}/onboarding/goal-turns",
+        json={"session_id": session_id, "content": "x", "satisfied": False, "mode": "start"},
+    )
+
+    assert _parse_sse(response.text)[-1] == {
+        "type": "error",
+        "detail": "This reply took too long and was cut off.",
+        "code": "deadline",
+    }
+
+
+async def test_a_goal_turn_the_provider_refused_says_so(
+    api_client: AsyncClient, fake_llm_goal: None, monkeypatch
+) -> None:
+    """The refinement stream carries the refusal's code, like chat (S49)."""
+    from app.llm.meter import PROVIDER_MESSAGES, ProviderUnavailable
+    from app.services.turn_common import refusal_ends_turn
+
+    @refusal_ends_turn
+    async def down(**kwargs):
+        raise ProviderUnavailable("down")
+        yield  # an async generator
+
+    monkeypatch.setattr("app.services.onboarding.run_goal_refinement_turn", down)
+    session_id = (await api_client.post(f"{API}/onboarding/goal-sessions")).json()["session_id"]
+
+    response = await api_client.post(
+        f"{API}/onboarding/goal-turns",
+        json={"session_id": session_id, "content": "x", "satisfied": False, "mode": "start"},
+    )
+
+    assert _parse_sse(response.text)[-1] == {
+        "type": "error",
+        "detail": PROVIDER_MESSAGES["down"],
+        "code": "provider_down",
+        "retry_after": None,
+    }

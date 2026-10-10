@@ -191,8 +191,10 @@ async def test_the_api_lists_archived_sources_apart_and_refuses_retry(
 
     r = await api_client.post(f"{API}/sources/{source_id}/archive")
     assert r.status_code == 200 and r.json()["archived_at"] is not None
-    listed = [s["id"] for s in (await api_client.get(f"{API}/sources")).json()]
-    archived = [s["id"] for s in (await api_client.get(f"{API}/sources?archived=true")).json()]
+    listed = [s["id"] for s in (await api_client.get(f"{API}/sources")).json()["sources"]]
+    archived = [
+        s["id"] for s in (await api_client.get(f"{API}/sources?archived=true")).json()["sources"]
+    ]
     assert str(source_id) not in listed and archived == [str(source_id)]
     r = await api_client.post(f"{API}/sources/{source_id}/retry", json={"confirm": True})
     assert r.status_code == 409 and r.json()["detail"]["code"] == "archived"
@@ -213,8 +215,10 @@ async def test_an_archived_conversation_is_listed_apart_and_read_only(
 
     r = await api_client.post(f"{API}/conversations/{cid}/archive")
     assert r.status_code == 200 and r.json()["archived_at"] is not None
-    assert cid not in [c["id"] for c in (await api_client.get(f"{API}/conversations")).json()]
-    archived = (await api_client.get(f"{API}/conversations?archived=true")).json()
+    assert cid not in [
+        c["id"] for c in (await api_client.get(f"{API}/conversations")).json()["conversations"]
+    ]
+    archived = (await api_client.get(f"{API}/conversations?archived=true")).json()["conversations"]
     assert [c["id"] for c in archived] == [cid]
     r = await api_client.post(f"{API}/conversations/{cid}/messages", json={"content": "hello"})
     assert r.status_code == 409 and r.json()["detail"]["code"] == "archived"

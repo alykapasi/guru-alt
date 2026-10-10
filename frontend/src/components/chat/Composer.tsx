@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { ArrowUp, Bot, MessageCircle } from "lucide-react";
+import { ArrowUp, Bot, MessageCircle, Square } from "lucide-react";
 
 export function Composer({
   disabled,
   onSend,
   fixedMode,
   placeholder = "Message Guru…",
+  streaming = false,
+  onStop,
 }: {
   disabled: boolean;
   onSend: (content: string, mode: "chat" | "agentic" | "workflow") => void;
@@ -13,6 +15,9 @@ export function Composer({
    * guided-practice session, where "chat vs. agentic" isn't a choice the learner makes. */
   fixedMode?: "chat" | "agentic" | "workflow";
   placeholder?: string;
+  /** A reply is being written; with `onStop`, Send becomes Stop (S47). */
+  streaming?: boolean;
+  onStop?: () => void;
 }) {
   const [content, setContent] = useState("");
   const [mode, setMode] = useState<"chat" | "agentic">("chat");
@@ -30,22 +35,26 @@ export function Composer({
         {!fixedMode && (
           <div className="flex items-center gap-1">
             <button
+              type="button"
+              aria-pressed={mode === "chat"}
               onClick={() => setMode("chat")}
               className={`text-caption flex items-center gap-1.5 rounded-field px-2.5 py-1 transition-colors ${
                 mode === "chat"
                   ? "bg-primary/10 text-primary"
-                  : "text-base-content/50 hover:bg-base-200"
+                  : "text-base-content/70 hover:bg-base-200"
               }`}
             >
               <MessageCircle size={14} />
               Chat
             </button>
             <button
+              type="button"
+              aria-pressed={mode === "agentic"}
               onClick={() => setMode("agentic")}
               className={`text-caption flex items-center gap-1.5 rounded-field px-2.5 py-1 transition-colors ${
                 mode === "agentic"
                   ? "bg-primary/10 text-primary"
-                  : "text-base-content/50 hover:bg-base-200"
+                  : "text-base-content/70 hover:bg-base-200"
               }`}
             >
               <Bot size={14} />
@@ -56,6 +65,7 @@ export function Composer({
         <div className="flex items-end gap-2">
           <textarea
             name="message"
+            aria-label="Message"
             value={content}
             onChange={(e) => setContent(e.target.value)}
             onKeyDown={(e) => {
@@ -69,14 +79,21 @@ export function Composer({
             placeholder={placeholder}
             className="textarea text-body max-h-40 flex-1 resize-none"
           />
-          <button
-            onClick={submit}
-            disabled={disabled || !content.trim()}
-            className="btn btn-primary btn-square"
-            aria-label="Send"
-          >
-            <ArrowUp size={18} />
-          </button>
+          {streaming && onStop ? (
+            <button type="button" onClick={onStop} className="btn btn-square" aria-label="Stop">
+              <Square size={16} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={submit}
+              disabled={disabled || !content.trim()}
+              className="btn btn-primary btn-square"
+              aria-label="Send"
+            >
+              <ArrowUp size={18} />
+            </button>
+          )}
         </div>
       </div>
     </div>

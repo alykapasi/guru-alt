@@ -107,7 +107,7 @@ export function ReviewStep({
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-6 py-8">
       <div className="flex flex-col gap-2">
         <h2 className="text-h2">Review your curriculum</h2>
-        <p className="text-caption text-base-content/60">
+        <p className="text-caption text-base-content/70">
           Edit the subject, topics, and knowledge components. You can rename, remove, or regenerate.
         </p>
       </div>
@@ -140,7 +140,7 @@ export function ReviewStep({
             <p className="text-body font-medium">Topics ({curriculum.topics.length})</p>
 
             {curriculum.topics.length === 0 && (
-              <p className="text-caption text-base-content/50">No topics yet.</p>
+              <p className="text-caption text-base-content/70">No topics yet.</p>
             )}
 
             {curriculum.topics.map((topic, topicIndex) => (
@@ -182,7 +182,7 @@ export function ReviewStep({
                   </p>
 
                   {topic.kcs.length === 0 && (
-                    <p className="text-caption text-base-content/50">No KCs yet.</p>
+                    <p className="text-caption text-base-content/70">No KCs yet.</p>
                   )}
 
                   {topic.kcs.map((kc, kcIndex) => (

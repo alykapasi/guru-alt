@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useArchivedConversations, useConversations, useItem, useMessages } from "../api/hooks";
-import { isTerminal, streamTurn, type ItemEvent, type SendMessageBody } from "../api/sse";
+import { useConversation, useItem, useMessages } from "../api/hooks";
+import { isTerminal, stopTurn, streamTurn, type ItemEvent, type SendMessageBody } from "../api/sse";
 import type { components } from "../api/schema";
 
 type PracticeStateRead = components["schemas"]["PracticeStateRead"];
@@ -30,12 +30,14 @@ interface FailedTurn {
  * switching conversations remounts this hook fresh, rather than resetting state in an effect. */
 export function useChatConversation(conversationId: string | undefined) {
   const queryClient = useQueryClient();
-  const conversationsQuery = useConversations();
-  // An archived conversation is not in the main list but still opens, read-only (S61).
-  const archivedQuery = useArchivedConversations();
+  // Read by id, not found in the list: the list is a page now (S62), and the conversation
+  // being opened can be older than any page loaded — or archived, which still opens (S61).
+  const conversationQuery = useConversation(conversationId);
   const messagesQuery = useMessages(conversationId);
   const [pending, setPending] = useState<PendingTurn | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Seconds a busy provider asked for before the retry (S49); null when nothing to wait for.
+  const [retryAfter, setRetryAfter] = useState<number | null>(null);
   const [failed, setFailed] = useState<FailedTurn | null>(null);
   // Every mode's `awaiting_reply`/`done` SSE event carries the practice item currently in play
   // (grounding-only in plain chat, the thing being graded in workflow mode) — tracked generically
@@ -52,11 +54,13 @@ export function useChatConversation(conversationId: string | undefined) {
   // and its state setters ran against an unmounted tree. The backend sees the disconnect and
   // records the turn as cancelled rather than leaving it pending forever.
   const abortRef = useRef<AbortController | null>(null);
+  // The server's id for the turn now streaming — the first frame names it — so Stop can.
+  const turnIdRef = useRef<string | null>(null);
+  // Stop pressed before that frame arrived — sent as soon as the turn has a name.
+  const stopQueuedRef = useRef(false);
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  const conversation = [...(conversationsQuery.data ?? []), ...(archivedQuery.data ?? [])].find(
-    (c) => c.id === conversationId,
-  );
+  const conversation = conversationQuery.data;
   // Pages come newest-block-first; the transcript reads oldest-first. Reverse the page list,
   // not the messages inside each page — each page is already chronological.
   const messages = useMemo(
@@ -92,6 +96,7 @@ export function useChatConversation(conversationId: string | undefined) {
     async (turn: FailedTurn) => {
       if (!conversationId) return;
       setError(null);
+      setRetryAfter(null);
       setFailed(null);
       setPending({ userContent: turn.content, assistantText: "", toolCalls: [] });
 
@@ -104,6 +109,8 @@ export function useChatConversation(conversationId: string | undefined) {
       };
       const controller = new AbortController();
       abortRef.current = controller;
+      turnIdRef.current = null;
+      stopQueuedRef.current = false;
       // A stream can stop for reasons that are not an ending: the connection drops, the server
       // restarts, a proxy times out. Until this was tracked, the generator simply running out
       // was read as success, so a half-written explanation was left on screen looking finished.
@@ -111,13 +118,17 @@ export function useChatConversation(conversationId: string | undefined) {
       try {
         for await (const ev of streamTurn(conversationId, body, controller.signal)) {
           if (isTerminal(ev)) sawTerminal = true;
-          if (ev.type === "token") {
+          if (ev.type === "turn") {
+            turnIdRef.current = ev.turn_id;
+            if (stopQueuedRef.current) void stopTurn(conversationId, ev.turn_id).catch(() => {});
+          } else if (ev.type === "token") {
             setPending((p) => (p ? { ...p, assistantText: p.assistantText + ev.text } : p));
           } else if (ev.type === "tool_call") {
             setPending((p) => (p ? { ...p, toolCalls: [...p.toolCalls, ev.detail] } : p));
           } else if (ev.type === "error") {
             setError(ev.detail);
             setFailed(turn);
+            setRetryAfter(ev.code === "provider_busy" ? (ev.retry_after ?? null) : null);
           } else if (ev.type === "awaiting_reply") {
             setLiveItem(ev.item);
             setSessionDetail(ev.detail);
@@ -140,6 +151,8 @@ export function useChatConversation(conversationId: string | undefined) {
         }
       } finally {
         abortRef.current = null;
+        turnIdRef.current = null;
+        stopQueuedRef.current = false;
       }
 
       // The pending buffer is dropped as soon as the persisted transcript has landed, and not
@@ -189,6 +202,19 @@ export function useChatConversation(conversationId: string | undefined) {
     setSessionDetail(null);
   }, []);
 
+  /** Stop the reply being written (S47). The stream keeps going until the server's `stopped`
+   * event, so what stays on screen is exactly what was saved. Pressed before the stream has
+   * named its turn, it waits for the name rather than being dropped. */
+  const stop = useCallback(() => {
+    const turnId = turnIdRef.current;
+    if (!conversationId) return;
+    if (!turnId) {
+      if (abortRef.current) stopQueuedRef.current = true;
+      return;
+    }
+    void stopTurn(conversationId, turnId).catch(() => {});
+  }, [conversationId]);
+
   return {
     conversation,
     messages,
@@ -199,6 +225,7 @@ export function useChatConversation(conversationId: string | undefined) {
     loadEarlierMessages: messagesQuery.fetchNextPage,
     pending,
     error,
+    retryAfter,
     canRetry: failed !== null && !pending,
     retry,
     awaitingGoalAccept,
@@ -208,5 +235,6 @@ export function useChatConversation(conversationId: string | undefined) {
     practicePaused,
     applyPracticeState,
     send,
+    stop,
   };
 }

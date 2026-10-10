@@ -170,6 +170,13 @@ KNOBS: list[Knob] = [
         settled_by="the run length at which confirmed transfers predict unaided success at the next delayed check",
     ),
     Knob(
+        id="ingest.max_jobs_per_learner",
+        where="app.core.config.Settings.ingest_max_jobs_per_learner",
+        value=2.0,
+        governs="how many ingestion jobs one learner may run at once (S37)",
+        settled_by="alpha upload patterns: how many files learners add at once, and the wait that causes",
+    ),
+    Knob(
         id="ingest.ocr_min_text_chars",
         where="app.rag.adapters.pdf._MIN_TEXT_CHARS",
         value=16.0,
@@ -178,6 +185,32 @@ KNOBS: list[Knob] = [
             "the character count below which a page's own text layer is worse than OCR of it, "
             "measured on pages where both are available (S27)"
         ),
+    ),
+    Knob(
+        id="deadline.turn_seconds",
+        where="app.core.config.Settings.turn_deadline_seconds",
+        value=120.0,
+        governs="how long a streamed turn may run before it is cut off, keeping its text (S47)",
+        settled_by=(
+            "the turn-duration distribution from founder use: the 99th percentile of turns "
+            "that finished"
+        ),
+    ),
+    Knob(
+        id="deadline.request_seconds",
+        where="app.core.config.Settings.request_deadline_seconds",
+        value=180.0,
+        governs="how long a non-streamed request may run before it answers 504 (S47)",
+        settled_by="measured generation times of lessons and curricula on the chosen providers",
+    ),
+    Knob(
+        id="provider.retry_after_seconds",
+        where="app.core.config.Settings.provider_retry_after_seconds",
+        value=20.0,
+        governs=(
+            "how long a learner is asked to wait when a provider rate-limits without saying (S49)"
+        ),
+        settled_by="the retry-after values the chosen providers actually send, from alpha logs",
     ),
 ]
 
@@ -218,6 +251,10 @@ def live() -> dict[str, float]:
         "transfer.uncertainty_floor": float(s.transfer_uncertainty_floor),
         "transfer.confirm_passes": float(s.transfer_confirm_passes),
         "ingest.ocr_min_text_chars": float(pdf._MIN_TEXT_CHARS),
+        "ingest.max_jobs_per_learner": float(s.ingest_max_jobs_per_learner),
+        "deadline.turn_seconds": float(s.turn_deadline_seconds),
+        "deadline.request_seconds": float(s.request_deadline_seconds),
+        "provider.retry_after_seconds": float(s.provider_retry_after_seconds),
     }
 
 

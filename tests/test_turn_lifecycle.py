@@ -21,7 +21,7 @@ from app.main import app
 from app.models.chat import Conversation, Message, Turn, TurnStatus
 from app.services import turn as turn_svc
 from app.services import turn_lock
-from app.services.turn_common import TurnEvent
+from app.services.turn_common import TurnEvent, add_message
 
 API = "/api/v1"
 REPLY = "Let us explore this together."
@@ -309,3 +309,22 @@ async def test_turns_without_a_client_key_stay_independent(
     assert len(turns) == 2
     assert {t.status for t in turns} == {TurnStatus.COMPLETED}
     assert len(await _messages(db_session, conversation_id)) == 4
+
+
+# --- cut-short replies (S47) ---------------------------------------------------------------
+
+
+async def test_a_message_can_carry_how_it_was_interrupted(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None
+) -> None:
+    conversation_id = await _goal_conversation(api_client, db_session)
+    await add_message(
+        db_session, uuid.UUID(conversation_id), "assistant", "half an ans", interrupted="stopped"
+    )
+    await db_session.commit()
+
+    r = await api_client.get(f"{API}/conversations/{conversation_id}/messages")
+
+    rows = r.json()["messages"]
+    assert [m["interrupted"] for m in rows if m["role"] == "assistant"] == ["stopped"]
+    assert TurnStatus.STOPPED == "stopped"

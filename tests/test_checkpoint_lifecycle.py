@@ -11,17 +11,20 @@ from datetime import UTC, datetime, timedelta
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import Checkpoint, CheckpointMetadata
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.agent import checkpointing
 from app.models.assessment import ItemType
-from app.models.chat import Conversation, Message
+from app.models.chat import Conversation, Message, OnboardingSession
 from app.models.knowledge import KC, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState
 from app.schemas.assessment import ItemCreate, ItemKCRef
 from app.services import assessment as assessment_svc
 from app.services import checkpoints as svc
+from app.services import onboarding_sessions, turn_lock
+from tests.checkpoint_helpers import has_checkpoint, put_checkpoint
 
 
 def _naive(age: timedelta) -> datetime:
@@ -255,3 +258,93 @@ async def test_another_learners_item_does_not_resume(db_session: AsyncSession) -
     assert not await svc.paused_practice_is_current(
         db_session, learner_id=learner.id, item_id=str(item.id)
     )
+
+
+# --- what else ends: onboarding, orphans, and never a running turn ---------------------------
+
+
+async def test_prune_skips_a_conversation_with_a_turn_running(
+    db_session: AsyncSession, engine: AsyncEngine
+) -> None:
+    """A learner answering a weeks-old question right now is not an abandoned conversation."""
+    learner = await _learner(db_session)
+    stale = await _conversation(db_session, learner, age=timedelta(days=40))
+    await put_checkpoint(str(stale.id))
+
+    claim = await turn_lock.claim(engine, stale.id)
+    assert claim is not None
+    try:
+        assert await svc.prune(db_session, older_than=timedelta(days=30)) == 0
+        assert await has_checkpoint(str(stale.id))
+    finally:
+        await claim.release()
+
+
+async def test_an_idle_onboarding_session_expires_with_its_negotiation(
+    db_session: AsyncSession,
+) -> None:
+    learner = await _learner(db_session)
+    record = await onboarding_sessions.issue(db_session, learner.id)
+    thread = onboarding_sessions.thread_key(record.session_id, learner.id)
+    await put_checkpoint(thread)
+    await db_session.execute(
+        update(OnboardingSession)
+        .where(OnboardingSession.session_id == record.session_id)
+        .values(updated_at=_naive(timedelta(days=40)))
+    )
+
+    assert await svc.prune(db_session, older_than=timedelta(days=30)) == 1
+    assert not await has_checkpoint(thread)
+    assert (
+        await db_session.scalar(
+            select(OnboardingSession).where(OnboardingSession.session_id == record.session_id)
+        )
+        is None
+    )
+
+
+async def test_a_live_onboarding_session_is_left_alone(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    record = await onboarding_sessions.issue(db_session, learner.id)
+    assert await svc.prune(db_session, older_than=timedelta(days=30)) == 0
+    assert await db_session.get(OnboardingSession, record.session_id) is not None
+
+
+async def test_taking_a_round_keeps_an_onboarding_session_alive(db_session: AsyncSession) -> None:
+    learner = await _learner(db_session)
+    record = await onboarding_sessions.issue(db_session, learner.id)
+    old = _naive(timedelta(days=40))
+    await db_session.execute(
+        update(OnboardingSession)
+        .where(OnboardingSession.session_id == record.session_id)
+        .values(updated_at=old)
+    )
+
+    found = await onboarding_sessions.require(db_session, record.session_id, learner.id)
+    await db_session.refresh(found)
+    assert found.updated_at > old
+
+
+async def test_the_sweep_removes_threads_nothing_owns(
+    db_session: AsyncSession, durable_checkpointer: None
+) -> None:
+    learner = await _learner(db_session)
+    conversation = await _conversation(db_session, learner, age=timedelta(hours=1))
+    record = await onboarding_sessions.issue(db_session, learner.id)
+    owned = [str(conversation.id), onboarding_sessions.thread_key(record.session_id, learner.id)]
+    orphans = [str(uuid.uuid4()), f"{learner.id}:never-issued", "not-a-thread-we-make"]
+    for thread in owned + orphans:
+        await put_checkpoint(thread)
+    try:
+        assert await svc.prune_orphans(db_session) >= len(orphans)
+        for thread in orphans:
+            assert not await has_checkpoint(thread)
+        for thread in owned:
+            assert await has_checkpoint(thread)
+    finally:
+        await checkpointing.erase_threads(owned + orphans)
+
+
+async def test_the_sweep_does_nothing_without_a_durable_saver(db_session: AsyncSession) -> None:
+    await checkpointing.stop()
+    assert await svc.prune_orphans(db_session) == 0

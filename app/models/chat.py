@@ -51,6 +51,7 @@ class TurnStatus(StrEnum):
     COMPLETED = "completed"  # a terminal event was produced and its reply committed
     FAILED = "failed"  # the flow reported an error, or generation raised
     CANCELLED = "cancelled"  # the stream ended with no terminal event (client gone, restart)
+    STOPPED = "stopped"  # the learner stopped it; the text so far is kept as the reply (S47)
 
 
 class Turn(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -210,6 +211,9 @@ class Message(UUIDPrimaryKeyMixin, Base):
     # library scope — a General conversation, a refinement reply, or a row from before this was
     # recorded — which is different from 0, "searched and found nothing".
     grounding_count: Mapped[int | None] = mapped_column(default=None)
+    # How this reply was cut short (S47): ``stopped`` by the learner or ``timed_out`` by the turn
+    # deadline. NULL is a reply that finished. The text is what the learner saw, kept as is.
+    interrupted: Mapped[str | None] = mapped_column(Text, default=None)
     # The learner-facing grade for an answer this turn marked, if it marked one (S15) — a
     # ``CheckResultRead`` dumped to JSON. It lives on the message rather than only in the
     # stream because the stream is gone the moment the page reloads: the grade moved the

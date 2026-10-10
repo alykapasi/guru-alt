@@ -22,7 +22,7 @@ from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult, InvalidResponse
 from app.learning.turn_read import FULLY_CORRECT, INTENT, ReadContext
 from app.llm.attribution import metered
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import CallRefused
 from app.llm.pricing import price_usd
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
@@ -191,21 +191,39 @@ async def update_conversation_title(
 
 
 async def list_conversations(
-    session: AsyncSession, learner_id: uuid.UUID, *, archived: bool = False
-) -> Sequence[Conversation]:
-    """Newest first; archived conversations only when ``archived`` (S61)."""
-    result = await session.scalars(
-        select(Conversation)
-        .where(
-            Conversation.learner_id == learner_id,
-            Conversation.archived_at.is_not(None)
-            if archived
-            else Conversation.archived_at.is_(None),
-        )
-        .order_by(Conversation.created_at.desc())
-        .options(selectinload(Conversation.conversation_sources))
+    session: AsyncSession,
+    learner_id: uuid.UUID,
+    *,
+    archived: bool = False,
+    limit: int,
+    before: uuid.UUID | None = None,
+) -> tuple[list[Conversation], bool]:
+    """One page, newest first; archived conversations only when ``archived`` (S61, S62).
+
+    Returns ``(conversations, has_more)``, keyed on ``(created_at, id)`` for the same reason as
+    :func:`list_messages`: conversations made in one transaction share a timestamp. A stale or
+    foreign cursor yields the first page.
+    """
+    stmt = select(Conversation).where(
+        Conversation.learner_id == learner_id,
+        Conversation.archived_at.is_not(None) if archived else Conversation.archived_at.is_(None),
     )
-    return result.all()
+    if before is not None:
+        anchor = await session.get(Conversation, before)
+        if anchor is not None and anchor.learner_id == learner_id:
+            stmt = stmt.where(
+                tuple_(Conversation.created_at, Conversation.id) < (anchor.created_at, anchor.id)
+            )
+    rows = list(
+        (
+            await session.scalars(
+                stmt.order_by(Conversation.created_at.desc(), Conversation.id.desc())
+                .limit(limit + 1)
+                .options(selectinload(Conversation.conversation_sources))
+            )
+        ).all()
+    )
+    return rows[:limit], len(rows) > limit
 
 
 async def list_messages(
@@ -340,7 +358,7 @@ async def _resolve_check(
         # is over budget, so nothing is recorded and the question stays open.
         try:
             item = await check_criteria_svc.ensure_criteria(session, llm, learner_id, item)
-        except BudgetExceeded:
+        except CallRefused:
             return item, None
         except Exception as exc:
             log.warning(
@@ -623,7 +641,7 @@ async def run_tutor_turn(
             elif mode == "values":
                 reply = payload["reply"]  # ty: ignore[invalid-argument-type]
                 usage = payload["usage"]  # ty: ignore[invalid-argument-type]
-    except BudgetExceeded:
+    except CallRefused:
         raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
         log.error("tutor.stream_failed", error=str(exc), model=spec.model)

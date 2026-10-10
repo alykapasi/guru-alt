@@ -21,6 +21,7 @@ from app.models.chat import Conversation, LLMCall, Message
 from app.models.learner import Learner
 from app.models.memory import Memory
 from app.models.source import Source, SourceKind, SourceStatus
+from app.rag import pipeline
 from app.services import ingestion as ingestion_svc
 from app.services import memory as memory_svc
 from app.services import retention as svc
@@ -197,13 +198,14 @@ async def test_a_failed_blob_delete_is_reported_not_swallowed(
             raise RuntimeError("object store unavailable")
 
     learner = await _learner(db_session)
-    await _source(db_session, learner, blob_key="blobs/notes.pdf")
+    source = await _source(db_session, learner, blob_key="blobs/notes.pdf")
     await db_session.commit()
 
     report = await svc.delete_learner(db_session, _RefusingStore(), learner.id)
 
     assert not report.complete
-    assert report.blobs_failed == ["blobs/notes.pdf"]
+    # The upload, and the saved-extraction key every source may have (S37) — retried either way.
+    assert report.blobs_failed == ["blobs/notes.pdf", pipeline.artifact_key(source.id)]
 
 
 # --- enqueued work cannot put it back --------------------------------------------------------

@@ -20,14 +20,14 @@ export function PracticePausedStrip({
   if (notice) {
     return (
       <div className="border-base-300 mx-auto flex w-full max-w-3xl flex-col gap-1 border-t px-6 pt-3 pb-2">
-        <p className="text-caption text-base-content/60">{notice}</p>
+        <p className="text-caption text-base-content/70">{notice}</p>
       </div>
     );
   }
   return (
     <div className="border-base-300 mx-auto flex w-full max-w-3xl flex-col gap-1 border-t px-6 pt-3 pb-2">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-caption text-base-content/60">Practice paused</p>
+        <p className="text-caption text-base-content/70">Practice paused</p>
         <div className="flex items-center gap-2">
           <button
             type="button"

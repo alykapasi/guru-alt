@@ -33,7 +33,7 @@ export function Lessons() {
   const selected = subjects?.find((s) => s.id === selectedId) ?? null;
 
   if (isLoading) {
-    return <p className="text-caption text-base-content/50">Loading subjects…</p>;
+    return <p className="text-caption text-base-content/70">Loading subjects…</p>;
   }
 
   if (!subjects || subjects.length === 0) {

@@ -54,7 +54,7 @@ export function SignIn() {
       ) : (
         <div className="flex flex-col gap-2">
           <p className="text-body text-base-content">Sign-in is not configured for this build.</p>
-          <p className="text-caption text-base-content/60">
+          <p className="text-caption text-base-content/70">
             No identity provider key is set, so there is no sign-in form to show. In development,
             use the button below.
           </p>
@@ -78,7 +78,7 @@ function DeveloperEntrance({
   return (
     <div className="flex w-full flex-col items-center gap-2">
       <div className="border-base-300 w-full border-t" />
-      <p className="text-caption text-base-content/50">Development only</p>
+      <p className="text-caption text-base-content/70">Development only</p>
       <button
         type="button"
         className="btn btn-outline btn-sm"

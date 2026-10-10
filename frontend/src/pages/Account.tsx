@@ -114,11 +114,12 @@ function MemorySwitch() {
       />
       <span className="flex flex-col">
         <span className="text-body">Remember things from my conversations</span>
-        <span className="text-caption text-base-content/60">
+        <span className="text-caption text-base-content/70">
           When this is off, Guru won&apos;t save new memories from your conversations, and nothing
           you say while it&apos;s off is saved later. What it already remembers stays until you
-          forget it on the Memory page. Your learner profile on the Dashboard is separate and still
-          reads your recent answers and messages.
+          forget it on the Memory page. Your learner profile on the Dashboard also stops reading
+          what you type, and never reads what you typed while this was off; your answers still
+          count.
         </span>
       </span>
     </label>

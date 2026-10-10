@@ -37,16 +37,19 @@ class TurnAlreadyCompleted(Exception):
 
 
 def history_without(history: Sequence[Message], turn: Turn | None) -> Sequence[Message]:
-    """``history`` with the learner message ``turn`` already wrote removed.
+    """``history`` with the messages ``turn`` already wrote removed.
 
     A retry finds its own message in the transcript, but every flow appends the turn's content
     to the model context itself — so without this the model is shown the question twice, and
     the "is this conversation empty?" test that routes a first turn to the refinement gate
-    would route the retry of that same first turn somewhere else.
+    would route the retry of that same first turn somewhere else. A reply the earlier attempt
+    kept when it was cut off (S47) goes too: left in, the model would see an answer ahead of
+    the question it answers.
     """
-    if turn is None or turn.user_message_id is None:
+    if turn is None:
         return history
-    return [m for m in history if m.id != turn.user_message_id]
+    written = {turn.user_message_id, turn.assistant_message_id} - {None}
+    return [m for m in history if m.id not in written]
 
 
 def attempt_id_for_turn(client_turn_id: uuid.UUID | None) -> uuid.UUID | None:

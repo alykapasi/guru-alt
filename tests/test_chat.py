@@ -154,7 +154,7 @@ async def test_rename_conversation(api_client: AsyncClient) -> None:
     assert r.json()["title"] == "Renamed"
 
     r = await api_client.get(f"{API}/conversations")
-    renamed = next(c for c in r.json() if c["id"] == conversation_id)
+    renamed = next(c for c in r.json()["conversations"] if c["id"] == conversation_id)
     assert renamed["title"] == "Renamed"
 
 
@@ -198,7 +198,7 @@ async def test_delete_conversation_cascades_messages(
     assert remaining == []
 
     r = await api_client.get(f"{API}/conversations")
-    assert conversation_id not in [c["id"] for c in r.json()]
+    assert conversation_id not in [c["id"] for c in r.json()["conversations"]]
 
 
 async def test_delete_missing_conversation_404(api_client: AsyncClient) -> None:

@@ -9,14 +9,14 @@ import re
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.learning.diagnosis import FailureKind
 from app.learning.grading import GradeResult
 from app.learning.mastery import Estimate
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import CallRefused
 from app.llm.types import ChatMessage, ChatRole, Usage
 from app.models.chat import Message
 from app.models.knowledge import KC
@@ -37,6 +37,7 @@ async def add_message(
     citations: list[dict] | None = None,
     check_result: CheckResultRead | None = None,
     grounding_count: int | None = None,
+    interrupted: str | None = None,
 ) -> Message:
     actor = session.info.get("admin_actor_id")
     action = session.info.get("admin_action_id")
@@ -52,6 +53,7 @@ async def add_message(
         # report in two shapes.
         check_result=check_result.model_dump(mode="json") if check_result is not None else None,
         grounding_count=grounding_count,
+        interrupted=interrupted,
     )
     session.add(message)
     await session.flush()
@@ -108,12 +110,17 @@ class TurnEvent:
     # (S15). Set on "done". The tutor's reply already reflects the grade; this is the part the
     # learner can check it against, because a reply is not a record.
     check_result: CheckResultRead | None = None
+    # Set on an "error" a refusal produced (S47, S49): what refused, and — for a busy
+    # provider — how long to wait before trying again.
+    code: str | None = None
+    retry_after: float | None = None
 
 
 def refusal_ends_turn[**P](
     turn: Callable[P, AsyncIterator[TurnEvent]],
 ) -> Callable[P, AsyncIterator[TurnEvent]]:
-    """A paid call refused by the spend guard ends the turn with the reason (S47).
+    """A paid call refused — by the spend guard (S47) or by a provider that is busy or down
+    (S49) — ends the turn with the reason.
 
     Any model call in a turn can be refused — the intent check, grading, a retrieval embedding,
     the reply itself — and most happen before the turn's own ``try`` around generation, so the
@@ -126,10 +133,20 @@ def refusal_ends_turn[**P](
         try:
             async for event in turn(*args, **kwargs):
                 yield event
-        except BudgetExceeded as exc:
-            yield TurnEvent(type="error", detail=exc.message)
+        except CallRefused as exc:
+            yield TurnEvent(
+                type="error", detail=exc.message, code=exc.code, retry_after=exc.retry_after
+            )
 
     return guarded
+
+
+def error_frame(ev: TurnEvent) -> dict[str, Any]:
+    """The SSE frame for an ``error`` event; a refusal's code and wait ride along (S49)."""
+    frame: dict[str, Any] = {"type": "error", "detail": ev.detail}
+    if ev.code is not None:
+        frame |= {"code": ev.code, "retry_after": ev.retry_after}
+    return frame
 
 
 def build_check_result(

@@ -252,8 +252,11 @@ async def _due_review_kc_ids(
     filtered to this subject's KCs (every source is global). A KC due several ways is one
     entry, at its earliest date."""
     reviews = await mastery.due_reviews(session, learner_id, now=now)
-    retention = await mastery.due_retention_checks(session, learner_id, now=now)
-    transfer = await mastery.due_transfer_checks(session, learner_id, now=now)
+    # Only this subject's components (S62): a learner with fifteen subjects revised one plan by
+    # reading the evidence for all of them and throwing fourteen-fifteenths away.
+    retention, transfer = await mastery.due_checks(
+        session, learner_id, kc_ids=subject_kc_ids, now=now
+    )
     earliest: dict[uuid.UUID, datetime] = {}
     for kc_id, due_at in [(r.kc_id, r.due_at) for r in reviews] + [
         (c.kc_id, c.due_at) for c in [*retention, *transfer]

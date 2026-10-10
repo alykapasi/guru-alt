@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { signIn } from "./journey";
+import { expectAccessible } from "./a11y";
 
 /** The second browser journey (S58): turn a sentence into a subject you own.
  *
@@ -57,6 +58,7 @@ test("a goal becomes a curriculum, and the curriculum becomes a subject", async 
   // Generation is a single blocking call behind a spinner, so the wait is for the step to
   // change rather than for a stream to end.
   await expect(page.getByRole("heading", { name: "Review your curriculum" })).toBeVisible();
+  await expectAccessible(page);
 
   // What flows on is the *agreed* goal — the gate's refined proposal, which is what "Looks
   // good" accepts — not the sentence the learner typed. The first version of this test asserted

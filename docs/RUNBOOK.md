@@ -94,6 +94,12 @@ uv run poe db-check                   # fail if a model has drifted from the mig
 would produce any operation — i.e. someone changed `app/models/` without writing the migration.
 CI runs it, so a drifted model is caught before it reaches anyone else's database.
 
+`db-upgrade` also creates and upgrades LangGraph's checkpoint tables
+(`python -m app.agent.checkpointing migrate`, under an advisory lock). Processes no longer run
+that DDL: a process whose checkpoint schema is missing or behind serves chat on volatile paused
+state and logs `checkpointer.schema_behind` (and `/ready` shows `durable_checkpoints: false`).
+**A LangGraph upgrade may need `poe db-upgrade` before it is deployed.**
+
 **Open a psql shell:**
 
 ```bash
@@ -189,6 +195,24 @@ searches stored material. Markdown images cannot automatically request external 
 Tuning knobs (`ocr_concurrency`, `embed_batch_size`, `embed_concurrency`, `kc_tag_concurrency`,
 `kc_tag_min_confidence`, `max_upload_bytes`) all live in `app/core/config.py` with inline rationale.
 DB writes stay serialized regardless of concurrency settings — only network/CPU work parallelizes.
+
+### Stages, slots and resuming (S37)
+
+An ingestion job runs in stages that each commit, recorded in `sources.stage`:
+extract (text saved to `ingest/{source_id}/extract.json.gz` in the object store) → embed
+(chunks in `staged_chunks`, committed per window of `GURU_EMBED_BATCH_SIZE ×
+GURU_EMBED_CONCURRENCY`) → publish (one transaction: old chunks superseded, cited ones kept;
+staged rows become live; the source is `done`) → tag (concept tags). A retry or a reclaimed
+lease resumes at the recorded stage, so OCR, transcripts and embeddings are never paid twice;
+nothing reads `staged_chunks`, so retrieval never sees half a source. The tag stage holds a
+lease like any job, so the sweep never starts a second one on a large source. A refused tag stage
+leaves the source `done` and searchable with `stage = 'tag'`; the reconcile sweep retries it
+up to `GURU_INGEST_MAX_ATTEMPTS`, then logs `ingest.tagging_abandoned`. A job takes an exact
+global slot (`GURU_INGEST_MAX_CONCURRENT_JOBS`, 4) and one of its learner's
+(`GURU_INGEST_MAX_JOBS_PER_LEARNER`, 2) as advisory locks, or leaves the source `pending`; a
+finishing job dispatches the waiting upload whose learner runs fewest jobs (none for a learner
+at their cap), so two busy learners cannot keep every slot between them. Deleting a source or an account removes its
+saved extraction and staged rows.
 
 ---
 
@@ -889,6 +913,17 @@ creates them: a backup older than it can still hold an erased account.
 Learning history, notes, memories, sources, content and audit records are never expired; they
 live until the account is deleted.
 
+### Paused practice and negotiations (S17)
+
+Checkpoint threads are erased with their conversation, onboarding session or account; an erase
+the checkpointer refuses (volatile process, database error) becomes a `pending_erasures` row of
+kind `checkpoint`, retried by the worker, which always opens its own checkpointer. The worker's
+purge also expires onboarding sessions idle for `checkpoint_retention_days` and sweeps threads
+whose owner no longer exists (`checkpoints.orphans_swept`). It never prunes a conversation with
+a turn running. After a deploy that changes a graph, paused state from the old shape is dropped
+on first resume (`checkpointer.incompatible_dropped`); bump `WORKFLOW_GRAPH_VERSION` /
+`REFINEMENT_GRAPH_VERSION` when `tests/test_graph_versions.py` says so.
+
 ## 17. Refresh scheduling (S43)
 
 Memory write-back and profile refresh run on their own when things go quiet.
@@ -918,8 +953,11 @@ Memory write-back and profile refresh run on their own when things go quiet.
 - **Pausing memory** is the learner's choice (Account → Preferences). No new memories are
   saved, by the sweep or on request (the write-back endpoint answers 409 `memory_paused`), and
   resuming moves every conversation's `memory_watermark` to its newest message, so nothing said
-  while paused is ever extracted. Existing memories stay in use until forgotten. The switch is
-  about memories only: profile refresh still reads the learner's recent answers and messages.
+  while paused is ever extracted. Existing memories stay in use until forgotten. The profile
+  stops reading message text too (O07): the dimensions marked `reads_messages` (interests,
+  writing complexity) keep their last value and show as paused, a message alone makes no
+  refresh due, and resuming sets `learners.profile_messages_since` so nothing typed during the
+  pause is read. Answer-based dimensions keep refreshing.
 
 ## 18. Spend limits (S47, S48)
 
@@ -954,6 +992,24 @@ Every model call is recorded and admitted by `LLMClient` itself; no service logs
   marked failed, so it can be retried; a refused upload fails with the message as its error; a
   refused background task logs `budget.deferred task=…` at info and keeps its claim, so the sweep
   retries it later.
+- **Deadlines and Stop.** A streamed chat or onboarding turn runs for at most
+  `GURU_TURN_DEADLINE_SECONDS` (120); past it the text so far is saved with
+  `messages.interrupted = 'timed_out'`, the cut-off call settles `partial`, and the turn is
+  `failed` with error `deadline`. Any other request answers 504 `deadline_exceeded` if it has not
+  started responding within `GURU_REQUEST_DEADLINE_SECONDS` (180). A learner's Stop
+  (`POST /api/v1/conversations/{id}/turns/{turn_id}/stop`) ends the turn the same way with
+  `interrupted = 'stopped'` and turn status `stopped`; it reaches another process as a Postgres
+  `NOTIFY turn_stop` carrying only the turn id. Both limits are uncalibrated (S18).
+- **Provider failures (S49).** After the SDK's own retries (`GURU_LLM_MAX_RETRIES`), a 429 is
+  `provider_busy` and a 5xx, 529 overload, connection error or timeout is `provider_down`
+  (`app/llm/providers/failure.py`); anything else — a bad key, a bad request — stays an error
+  and a 500. A route answers 503 `{"detail": {"code", "message", "retry_after"}}` with
+  `Retry-After` when busy (the provider's own wait, else `GURU_PROVIDER_RETRY_AFTER_SECONDS`,
+  20, uncalibrated — S18); a turn ends with that error, keeps no partial reply, and is `failed`
+  with the code, so the same `client_turn_id` regenerates; background work logs
+  `provider.deferred task=…` and the sweep retries; an ingestion stays retryable with the
+  message as its error. Spend rows record `error_kind` `provider_busy`/`provider_down`, so
+  outages count apart from bugs.
 - **Reading it.** `/api/v1/ops/spend` and the Admin page break cost down by role, model and
   feature, with counts of failed, partial and estimated calls. Estimated rows carry their
   reservation, not the provider's numbers. Rows written before this change have feature
@@ -1003,3 +1059,50 @@ change to the grading prompt or model can be measured against real answers befor
 - **"Not re-gradable".** The event was written before schema v5 (no `grading` block; nothing
   is backfilled), has no stored response, or a snapshot it names is gone (erased with the
   account). Self-ratings are not selected at all: there is nothing to re-judge.
+
+## 20. Performance against a long history (S62)
+
+`uv run poe perf-report` seeds `guru_perf` (its own database) with a power user — five times a
+year of daily use — and twenty ordinary learners, then times every hot path in
+`tests/perf/paths.py` in process: p50, p95, max, statements, rows, and each path's slowest
+statements. A path whose p95 is over 250 ms is marked. The first seed takes about 17 minutes
+and is reused after; `--reseed` rebuilds it, `--runs N` changes the sample (30 by default),
+`--json PATH` saves results to compare. The table is on stdout; warnings go to stderr.
+
+It is a report, not a gate. The gate is `tests/test_history_budgets.py` in `poe check`: every
+path's statements and rows at four times the history must not exceed the small history's plus
+two. A path known to grow is a strict xfail naming its cause until it is fixed. A new hot path
+belongs in `tests/perf/paths.py`, which puts it under both.
+
+The conversation and source lists are pages (`limit`, `before`; 50/200 and 100/500); a
+conversation opens by id (`GET /conversations/{id}`).
+
+Retention and transfer checks start from four columns on `learner_kc_state`
+(`unaided_last_at`, `retention_shown_at`, `setting_transfer_at`, `evidence_marked_at`), written
+from `kc_evidence` whenever a judged answer lands. A row with `evidence_marked_at` NULL is
+recomputed on the next due read, which is how rows from before migration 0077 fill in. After
+changing `retention_min_days` or the transfer setting catalogue, clear them so they are
+recomputed: `UPDATE learner_kc_state SET evidence_marked_at = NULL` (add `WHERE learner_id = …`
+to do one learner), then run `uv run python -m app.learning.mastery mark-evidence`, which fills
+every unmarked row and commits per learner. `poe db-upgrade` and the compose migrate step run it
+after every migration. A due read also fills a missing row, but a GET never commits, so without
+the command a learner would pay a full-history read on every queue load.
+
+## 21. Accessibility gate (S53)
+
+- `npm run e2e` runs every browser journey at 1280×800 and runs `e2e/a11y.spec.ts` again at
+  390×844. Each main screen — chat, practice, the wizard, the library, admin, and the phone
+  drawer, question sheet and menu — is scanned by axe (`e2e/a11y.ts`) for WCAG 2.1 A/AA once
+  animations have settled.
+- A failure lists `rule-id (impact): help` and, per element, the selector and what is wrong
+  (for contrast: the two colours and the ratio). Look the rule up at
+  `https://dequeuniversity.com/rules/axe/4.13/<rule-id>`, fix the markup or the theme token, and
+  add a unit test when the fix is in a component's markup.
+- Only `serious` and `critical` fail the run. Before a release, pass over chat and practice
+  with a real screen reader (VoiceOver on macOS: ⌘F5); the scan cannot hear what is announced.
+- Run the journeys keyless, as CI does: `VITE_CLERK_PUBLISHABLE_KEY= npm run e2e`. A Clerk key in
+  `frontend/.env.local` builds a bundle whose session watcher ends the journeys' dev-login.
+- Layout has one breakpoint, `WIDE_QUERY` (1024 px) in `src/hooks/useMediaQuery.ts`. Below it
+  side panels are native modal sheets (`src/components/layout/SidePanel.tsx`), so focus, Escape
+  and the backdrop come from the browser. Body text below `text-base-content/70` does not meet
+  4.5:1 on the light theme; use 70 or more for anything a learner reads.

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Upload } from "lucide-react";
 import { useAllSources } from "../../api/hooks";
 import { UploadForm } from "../uploads/UploadForm";
+import { LoadMore } from "../LoadMore";
 
 export interface MaterialsStepProps {
   value: string[];
@@ -15,7 +16,8 @@ export function MaterialsStep({ value, onChange, onNext }: MaterialsStepProps) {
   // it here meant the query never ran. The step rendered neither the list nor its own "no
   // materials yet" message — just a gap — and grounding a curriculum in your own document was
   // unreachable from the UI no matter how many you had uploaded.
-  const { data: sources, isLoading } = useAllSources(undefined);
+  const sourcesQuery = useAllSources(undefined);
+  const { data: sources, isLoading } = sourcesQuery;
   const [showUploadForm, setShowUploadForm] = useState(false);
 
   function toggleSource(id: string) {
@@ -30,7 +32,7 @@ export function MaterialsStep({ value, onChange, onNext }: MaterialsStepProps) {
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-6 py-8">
       <div className="flex flex-col gap-2">
         <h2 className="text-h2">Add learning materials</h2>
-        <p className="text-caption text-base-content/60">
+        <p className="text-caption text-base-content/70">
           Select sources to personalize your learning path (optional).
         </p>
       </div>
@@ -47,10 +49,10 @@ export function MaterialsStep({ value, onChange, onNext }: MaterialsStepProps) {
           </button>
         </div>
 
-        {isLoading && <p className="text-caption text-base-content/50">Loading…</p>}
+        {isLoading && <p className="text-caption text-base-content/70">Loading…</p>}
 
         {!isLoading && sources && sources.length === 0 && (
-          <p className="text-caption text-base-content/50">
+          <p className="text-caption text-base-content/70">
             No materials yet. Upload one to get started, or proceed without materials.
           </p>
         )}
@@ -71,6 +73,11 @@ export function MaterialsStep({ value, onChange, onNext }: MaterialsStepProps) {
                 <span className="truncate">{source.origin}</span>
               </label>
             ))}
+            <LoadMore
+              hasNextPage={sourcesQuery.hasNextPage}
+              isFetchingNextPage={sourcesQuery.isFetchingNextPage}
+              fetchNextPage={sourcesQuery.fetchNextPage}
+            />
           </div>
         )}
 

@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.learning import mastery, note_distill
 from app.llm import LLMClient
-from app.llm.meter import BudgetExceeded
+from app.llm.meter import BudgetExceeded, ProviderUnavailable
 from app.llm.providers.fake import FakeProvider, FakeTurn
 from app.llm.registry import ModelSpec, fake_llm_client
 from app.llm.types import ChatMessage, ChatResponse, ModelRole, ToolDef
@@ -842,6 +842,33 @@ async def test_a_refused_render_is_shown_but_not_kept(db_session: AsyncSession) 
 
     view = await notes_svc.refresh_note(
         db_session, _client(_RefusedRender(ATOMS)), learner.id, topic
+    )
+
+    assert "Vectors add tip-to-tail." in (view.content_md or "")
+    assert (await db_session.scalars(select(NoteRender))).all() == []
+
+
+class _DroppedRender(_BrokenRender):
+    """Distils normally, then the provider is down for the render (S49)."""
+
+    async def complete(self, **kwargs) -> ChatResponse:
+        self._calls += 1
+        if self._calls > 1:
+            raise ProviderUnavailable("down")
+        return await FakeProvider.complete(self, **kwargs)
+
+
+async def test_a_render_the_provider_dropped_is_shown_but_not_kept(
+    db_session: AsyncSession,
+) -> None:
+    """Cached, the fallback would stand in for a real render after the provider is back."""
+    from app.models.note import NoteRender
+
+    learner, topic, kc = await _seed(db_session)
+    await _add_observation(db_session, learner, kc)
+
+    view = await notes_svc.refresh_note(
+        db_session, _client(_DroppedRender(ATOMS)), learner.id, topic
     )
 
     assert "Vectors add tip-to-tail." in (view.content_md or "")

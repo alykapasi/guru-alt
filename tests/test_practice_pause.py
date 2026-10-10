@@ -254,7 +254,11 @@ async def _started(api_client: AsyncClient, db_session: AsyncSession, api_learne
 
 
 async def _row(api_client: AsyncClient, cid: str) -> dict:
-    return next(c for c in (await api_client.get(f"{API}/conversations")).json() if c["id"] == cid)
+    return next(
+        c
+        for c in (await api_client.get(f"{API}/conversations")).json()["conversations"]
+        if c["id"] == cid
+    )
 
 
 async def _graded_events(session: AsyncSession, learner_id: uuid.UUID) -> list[LearningEvent]:
