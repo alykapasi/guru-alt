@@ -1077,6 +1077,15 @@ belongs in `tests/perf/paths.py`, which puts it under both.
 The conversation and source lists are pages (`limit`, `before`; 50/200 and 100/500); a
 conversation opens by id (`GET /conversations/{id}`).
 
+Retention and transfer checks start from four columns on `learner_kc_state`
+(`unaided_last_at`, `retention_shown_at`, `setting_transfer_at`, `evidence_marked_at`), written
+from `kc_evidence` whenever a judged answer lands. A row with `evidence_marked_at` NULL is
+recomputed on the next due read, which is how rows from before migration 0077 fill in. After
+changing `retention_min_days` or the transfer setting catalogue, clear them so they are
+recomputed: `UPDATE learner_kc_state SET evidence_marked_at = NULL` (add `WHERE learner_id = …`
+to do one learner). The first due read per learner afterwards reads that learner's whole event
+log once.
+
 ## 21. Accessibility gate (S53)
 
 - `npm run e2e` runs every browser journey at 1280×800 and runs `e2e/a11y.spec.ts` again at

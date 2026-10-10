@@ -157,7 +157,9 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
 - **Background work runs when things go quiet** (S43) — memory write-back and profile refresh
   are queued by a worker sweep (`app/services/refresh_schedule.py`) for conversations and
   learners with unread evidence and no activity for 20 minutes; due-ness is derived from the
-  data, so backlogs catch up by themselves. The profile reads a recency window, and a
+  data, so backlogs catch up by themselves. Retention and transfer checks start from one-way milestones on
+  `learner_kc_state` and read evidence only for candidates (S62); clearing
+  `evidence_marked_at` recomputes them. The profile reads a recency window, and a
   model-backed estimator pays only when its input changed. Learners can pause memory, which
   also stops the profile reading what they type, then and afterwards (O07).
 - **Every paid call is recorded and admitted by the client** (S47, S48) — `LLMClient` writes a

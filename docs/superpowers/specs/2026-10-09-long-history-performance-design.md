@@ -175,3 +175,39 @@ Growth found by the budgets (`tests/test_history_budgets.py`, marked as expected
 Four of the slow paths share one cause: the transfer-evidence query and the per-component
 evidence count read every learning event for the learner's components. reviews_due also issues
 statements per component. turn's cost is the item lookup.
+
+### Part B rerun (2026-10-10)
+
+Measured causes and fixes are in `docs/superpowers/plans/2026-10-10-long-history-performance-part-b.md`.
+Same seed (version 2), 30 timed runs after 3 warm-ups, after migration 0077:
+
+| path | p50 ms | p95 ms | max ms | statements | rows | budget |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| turn | 190.6 | 196.9 | 201.8 | 18 | 157 | ok |
+| practice | 213.0 | 265.0 | 281.2 | 63 | 1639 | over 250 |
+| conversation_list | 3.0 | 4.7 | 6.2 | 2 | 51 | ok |
+| transcript | 3.4 | 3.9 | 4.4 | 2 | 202 | ok |
+| source_list | 2.4 | 2.6 | 2.8 | 1 | 101 | ok |
+| reviews_due | 130.1 | 207.5 | 214.2 | 45 | 5508 | ok |
+| activity | 13.2 | 17.5 | 19.0 | 1 | 91 | ok |
+| subject_mastery | 99.4 | 112.9 | 175.9 | 5 | 1603 | ok |
+| memory_list | 11.7 | 12.2 | 12.3 | 1 | 50 | ok |
+| lesson_plan | 2.1 | 2.2 | 2.2 | 1 | 1 | ok |
+| plan_revision | 53.2 | 93.5 | 133.3 | 13 | 1522 | ok |
+| notes_index | 37.0 | 40.3 | 42.1 | 9 | 92 | ok |
+| profile_refresh | 161.6 | 240.2 | 242.9 | 34 | 6056 | ok |
+
+- **reviews_due** 9.8 s → 208 ms: one access check for the queue (was 4,364); retention and
+  transfer checks start from milestones on `learner_kc_state` and share one state read; a transfer
+  check carries its setting, so resolving its item reads no evidence.
+- **plan_revision** 1.9 s → 94 ms and **profile_refresh** 2.0 s → 240 ms: due checks only for the
+  plan's subject.
+- **turn** 299 ms → 197 ms: `ix_learning_events_learner_item` gained `created_at`, so the
+  last-answer lookup is one index read (113 ms → under 1 ms).
+- **activity**: counts attempts per day in SQL; 18.5k rows → 91.
+- **practice** 2.3 s → 265 ms p95 (213 ms p50): at the line, its largest pieces memory retrieval
+  (~55 ms) and the subject's capped transfer read (~50 ms). Recorded rather than chased further
+  (decided in conversation 2026-10-10).
+
+No path's statements or rows grow with history (`tests/test_history_budgets.py`, no expected
+failures left). S62 is closed.

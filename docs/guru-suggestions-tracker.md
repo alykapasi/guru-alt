@@ -22,25 +22,19 @@ older verification runs) lives in Git.
 
 | | Count | IDs |
 | --- | --- | --- |
-| Live, v0 | 14 | S18 S20 S27 S28 S31 S50 S58 S59 S60 S62 S65 S66 S76 S77 |
+| Live, v0 | 13 | S18 S20 S27 S28 S31 S50 S58 S59 S60 S65 S66 S76 S77 |
 | Live, proposed (not v0 gates) | 4 | S64 S80 S84 S85 |
 | Open questions | 2 | O02 O05 |
-| Done | 51 | [Completed](#completed) |
+| Done | 52 | [Completed](#completed) |
 
-**Next up: workstream 5** — S62 part B.
+**Next up: workstream 6** — S58, S59, S18, S20.
 
 ## Live work
 
 Ordered by the delivery sequence. "Remaining" is only what is left; what exists is in the
 evidence links and in [Completed](#completed).
 
-### Workstream 5 — Reliability and resource limits (next)
-
-| ID | Item | Status | Remaining | Evidence |
-| --- | --- | --- | --- | --- |
-| S62 | Measured long-history performance | Partial | Part A done: statement/row budgets for 13 hot paths at ×1 and ×4 history in `poe check`, `poe perf-report` against a 5× power user, conversation and source lists paged. Part B (selected by the 250 ms / growth rule): due reviews (p95 9.8 s, per-component statements), practice answer (2.3 s), plan revision (1.9 s) and profile refresh (2.0 s, growth) share a transfer-evidence query and a per-component evidence count that read every event; turn (299 ms) spends 148 ms on an item lookup; activity reads one row per event in its window. Review minors, deferred: the reused report seed drifts as timed runs commit; row budgets count rows returned, not scanned (and seeded spend is all older than a day); a stale cursor's first-page fallback can duplicate rows in an infinite list; the by-id read is not tested against another learner's real conversation. | [Budgets](../tests/test_history_budgets.py), [report](../tests/perf/report.py), [design](superpowers/specs/2026-10-09-long-history-performance-design.md) |
-
-### Workstream 6 — Evaluation and release gates
+### Workstream 6 — Evaluation and release gates (next)
 
 | ID | Item | Status | Remaining | Evidence |
 | --- | --- | --- | --- | --- |
@@ -143,6 +137,7 @@ named in the "Hand-off" column and tracked under that ID.
 | S56 | Evidence kinds and reproducible grading | Server-derived judged vs self-rated; `grading` block + frozen snapshots on every graded event; `poe regrade` reports agreement; declared checks get criteria and a difficulty band. Legacy events stay unreplayable. | S85 (optional band question) | [RUNBOOK §19](RUNBOOK.md), [provenance design](superpowers/specs/2026-09-28-grading-provenance-design.md), [criteria design](superpowers/specs/2026-09-28-declared-check-criteria-design.md) |
 | S57 | Effective sweep settings | Supported knobs apply; unsupported fail; settings recorded. | S59 | [Sweep tests](../tests/eval/test_sweep_runner.py) |
 | S61 | Archive, delete, forget, export, retention | Three removal actions; account deletion with 7-day recovery then full erase; diagnostic rows expire at 30 days. | S60 (backups) | [RUNBOOK §16](RUNBOOK.md) |
+| S62 | Measured long-history performance | Statement/row budgets for 13 hot paths at ×1 and ×4 history in `poe check` (none expected to grow); `poe perf-report` against a 5× power user; conversation and source lists paged; the review queue checks access once; retention and transfer checks start from one-way milestones on `learner_kc_state` and read evidence only for candidates; plan revision asks only about its subject; the last-answer lookup is one index read; activity aggregates by day. Due reviews 9.8 s → 208 ms p95. | Practice sits at the line (p95 265 ms, p50 213 ms: memory retrieval and the subject transfer read); minors below. | [Budgets](../tests/test_history_budgets.py), [milestones](../app/learning/mastery.py), [design](superpowers/specs/2026-10-09-long-history-performance-design.md) |
 | S63 | Show the whole goal | Lessons page shows window, deferred objectives and status. | — | [Status bar](../frontend/src/components/lessons/GoalStatusBar.tsx) |
 | S78 | Jev decision contract and adapter | Sole SDK importer, off by default, fake client. | — | [Decisions](../app/llm/decisions.py) |
 | S81 | Shadow turn read | `intent` + `fully_correct` per check, never changes the outcome. | — | [Turn read](../app/learning/turn_read.py) |
@@ -268,6 +263,12 @@ banner. Slice B: two workers can take the same pending erasure (needs `SKIP LOCK
 racing an erase answers 500; Clerk sessions on other devices survive deletion; only `/auth/me`
 routes to recovery; `DELETE /me?now=true` omits the report; downloads read whole files into memory
 and a store outage answers 404; delete-with-forget still shows "memories stay".
+
+**S62** — the reused report seed drifts as timed runs commit; row budgets count rows returned,
+not scanned; a stale cursor's first-page fallback can duplicate rows in an infinite list; the
+by-id conversation read is not tested against another learner's real conversation; practice is at
+the 250 ms line (memory retrieval ~55 ms, the subject's capped transfer read ~50 ms); a changed
+`retention_min_days` or transfer catalogue needs `evidence_marked_at` cleared by hand.
 
 **S77** — the stranded-duplicate sweep has no batch limit; `requeued` includes `recovered`.
 
