@@ -321,11 +321,16 @@ async def due_review_items(
         retention=await mastery.due_retention_checks(session, learner_id, now=now),
         transfer=await mastery.due_transfer_checks(session, learner_id, now=now),
     )
+    # One query for the whole queue (S62): checked per review, a long backlog cost a
+    # statement per due component before anything was resolved.
+    allowed = await assessment_svc.authorized_kc_ids(
+        session, [r.kc_id for r in reviews], learner_id
+    )
     results: list[tuple[ReviewItem, Item | None]] = []
     # Sequential, not gathered: item_for_kc can call session.commit() on this one shared
     # AsyncSession, and concurrent operations on a single session are unsafe.
     for review in reviews:
-        if not await assessment_svc._kcs_authorized(session, [review.kc_id], learner_id):
+        if review.kc_id not in allowed:
             continue
         i = len(results)
         item = None

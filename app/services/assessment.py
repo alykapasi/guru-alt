@@ -16,7 +16,7 @@ plan pays it (``_revise_plans``).
 """
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 
 import structlog
 from sqlalchemy import String, and_, cast, func, or_, select
@@ -176,21 +176,28 @@ async def get_item_for(
     return item
 
 
+async def authorized_kc_ids(
+    session: AsyncSession, kc_ids: Collection[uuid.UUID], learner_id: uuid.UUID
+) -> set[uuid.UUID]:
+    """The subset of ``kc_ids`` this learner may use: curated, or in a subject they own."""
+    if not kc_ids:
+        return set()
+    allowed = await session.scalars(
+        select(KC.id)
+        .join(Topic)
+        .join(Subject)
+        .where(
+            KC.id.in_(list(kc_ids)),
+            or_(Subject.owner_learner_id.is_(None), Subject.owner_learner_id == learner_id),
+        )
+    )
+    return set(allowed)
+
+
 async def _kcs_authorized(
     session: AsyncSession, kc_ids: list[uuid.UUID], learner_id: uuid.UUID
 ) -> bool:
-    allowed = (
-        await session.scalars(
-            select(KC.id)
-            .join(Topic)
-            .join(Subject)
-            .where(
-                KC.id.in_(kc_ids),
-                or_(Subject.owner_learner_id.is_(None), Subject.owner_learner_id == learner_id),
-            )
-        )
-    ).all()
-    return set(allowed) == set(kc_ids)
+    return await authorized_kc_ids(session, kc_ids, learner_id) == set(kc_ids)
 
 
 async def ensure_kcs_authorized(
