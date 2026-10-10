@@ -15,7 +15,7 @@ runbook, because it is read for the first time during an incident.
 | --- | --- | --- |
 | API | `api` | `uvicorn app.main:app --host 0.0.0.0 --port 8000` |
 | Worker | `worker` | `taskiq worker app.workers.broker:broker app.workers.tasks` |
-| Migrations | `api` | `alembic upgrade head && python -m app.agent.checkpointing migrate` |
+| Migrations | `api` | `alembic upgrade head && python -m app.agent.checkpointing migrate && python -m app.learning.mastery mark-evidence` |
 
 One image, two commands. Building them separately is how the worker ends up running a job
 against a schema it does not have.
@@ -211,7 +211,8 @@ Migrations are expand-then-contract, which is what makes a rollback possible: a 
 never ship a migration that the *previous* version of the code cannot run against.
 
 1. `alembic upgrade head`, then `python -m app.agent.checkpointing migrate` (LangGraph's
-   checkpoint schema, S17) — as its own step, to completion, before any new instance serves. The
+   checkpoint schema, S17), then `python -m app.learning.mastery mark-evidence` (fills the
+   evidence milestones a migration or a manual clear left empty, S62) — as its own step, to completion, before any new instance serves. The
    compose overlay enforces this with `service_completed_successfully`.
 2. Roll the API, then the worker.
 3. Watch `/api/v1/ready` on the new instances and `oldest_pending_age_seconds` for the queue.

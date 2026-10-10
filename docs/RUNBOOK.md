@@ -1083,8 +1083,10 @@ from `kc_evidence` whenever a judged answer lands. A row with `evidence_marked_a
 recomputed on the next due read, which is how rows from before migration 0077 fill in. After
 changing `retention_min_days` or the transfer setting catalogue, clear them so they are
 recomputed: `UPDATE learner_kc_state SET evidence_marked_at = NULL` (add `WHERE learner_id = …`
-to do one learner). The first due read per learner afterwards reads that learner's whole event
-log once.
+to do one learner), then run `uv run python -m app.learning.mastery mark-evidence`, which fills
+every unmarked row and commits per learner. `poe db-upgrade` and the compose migrate step run it
+after every migration. A due read also fills a missing row, but a GET never commits, so without
+the command a learner would pay a full-history read on every queue load.
 
 ## 21. Accessibility gate (S53)
 

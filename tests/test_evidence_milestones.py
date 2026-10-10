@@ -242,3 +242,42 @@ async def test_the_review_queue_reads_evidence_once(db_session, monkeypatch) -> 
 
     assert [r.kind for r, _ in queue] == ["transfer_check"] * 3
     assert len(calls) == 1, calls
+
+
+async def test_the_deploy_backfill_marks_and_keeps_the_marks(db_session) -> None:
+    """A due read fills missing milestones but does not commit them (a GET never does), so the
+    deploy fills them once, committed, for every row the migration left unmarked."""
+    learner = await _learner(db_session)
+    _subject, kc = await _kc(db_session)
+    await _answer(db_session, learner, kc, await _item(db_session, kc, "a"), when=T0)
+    await db_session.execute(
+        update(LearnerKCState)
+        .where(LearnerKCState.learner_id == learner.id)
+        .values(unaided_last_at=None, evidence_marked_at=None)
+    )
+    await db_session.flush()
+
+    learner_id, kc_id = learner.id, kc.id
+    assert await mastery.mark_unmarked(db_session) >= 1
+    db_session.expire_all()
+    state = await db_session.scalar(
+        select(LearnerKCState).where(
+            LearnerKCState.learner_id == learner_id, LearnerKCState.kc_id == kc_id
+        )
+    )
+    assert state is not None
+    assert state.evidence_marked_at is not None and state.unaided_last_at is not None
+    assert await mastery.mark_unmarked(db_session) == 0
+
+
+def test_the_deploy_runs_the_backfill() -> None:
+    import tomllib
+
+    import yaml
+
+    with open("docker-compose.app.yml") as f:
+        command = " ".join(yaml.safe_load(f)["services"]["migrate"]["command"])
+    with open("pyproject.toml", "rb") as f:
+        upgrade = tomllib.load(f)["tool"]["poe"]["tasks"]["db-upgrade"]["sequence"]
+    assert "app.learning.mastery mark-evidence" in command
+    assert any("app.learning.mastery mark-evidence" in step["cmd"] for step in upgrade)

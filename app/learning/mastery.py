@@ -11,6 +11,8 @@ but leave ``commit`` to the caller — the answer-an-item endpoint (slice 3) com
 tracer update + event together so an interaction is recorded atomically.
 """
 
+import asyncio
+import sys
 import uuid
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
@@ -1807,3 +1809,51 @@ async def due_checks(
         _retention_due(states, now=now_aware),
         await _transfer_due(session, learner_id, states, now=now_aware),
     )
+
+
+async def mark_unmarked(session: AsyncSession) -> int:
+    """Fill the evidence milestones of every unmarked state, committing per learner (S62).
+
+    Run by the deploy after migrations (``poe db-upgrade``, the compose migrate service). A due
+    read also fills missing milestones, but a GET never commits, so a learner left to it would
+    pay a full-history evidence read on every queue load. Returns how many states it marked;
+    a second run marks nothing.
+    """
+    learners = (
+        await session.scalars(
+            select(LearnerKCState.learner_id)
+            .where(LearnerKCState.evidence_marked_at.is_(None))
+            .distinct()
+        )
+    ).all()
+    marked = 0
+    for learner_id in learners:
+        states = (
+            await session.scalars(
+                select(LearnerKCState).where(
+                    LearnerKCState.learner_id == learner_id,
+                    LearnerKCState.evidence_marked_at.is_(None),
+                )
+            )
+        ).all()
+        await _mark_evidence(session, learner_id, states, now=datetime.now(UTC))
+        await session.commit()
+        marked += len(states)
+    return marked
+
+
+def _main(argv: list[str]) -> None:
+    if argv != ["mark-evidence"]:
+        raise SystemExit("usage: python -m app.learning.mastery mark-evidence")
+
+    async def run() -> int:
+        from app.core.db import SessionFactory
+
+        async with SessionFactory() as session:
+            return await mark_unmarked(session)
+
+    print(f"evidence milestones marked for {asyncio.run(run())} component states")
+
+
+if __name__ == "__main__":
+    _main(sys.argv[1:])

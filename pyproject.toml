@@ -75,7 +75,7 @@ type-check = "ty check"
 lint = "ruff check ."
 format = "ruff format ."
 format-check = "ruff format --check ."
-db-upgrade = { sequence = [{ cmd = "alembic upgrade head" }, { cmd = "python -m app.agent.checkpointing migrate" }], help = "Apply Alembic migrations, then LangGraph's checkpoint schema" }
+db-upgrade = { sequence = [{ cmd = "alembic upgrade head" }, { cmd = "python -m app.agent.checkpointing migrate" }, { cmd = "python -m app.learning.mastery mark-evidence" }], help = "Apply Alembic migrations, LangGraph's checkpoint schema, then fill evidence milestones" }
 db-downgrade = "alembic downgrade -1"
 db-check = "alembic check"
 eval = "python -m tests.eval.harness"

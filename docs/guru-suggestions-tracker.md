@@ -268,7 +268,15 @@ and a store outage answers 404; delete-with-forget still shows "memories stay".
 not scanned; a stale cursor's first-page fallback can duplicate rows in an infinite list; the
 by-id conversation read is not tested against another learner's real conversation; practice is at
 the 250 ms line (memory retrieval ~55 ms, the subject's capped transfer read ~50 ms); a changed
-`retention_min_days` or transfer catalogue needs `evidence_marked_at` cleared by hand.
+`retention_min_days` or transfer catalogue needs `evidence_marked_at` cleared by hand (and
+lowering it is not covered: components keep an unneeded retention check until their next
+answer); deleting an item or editing its setting can leave `setting_transfer_at` stale until the
+component's next judged answer; a candidate with every setting practised and no transfer keeps a
+slot under the transfer cap; a due read racing an answer on an unmarked row can write an older
+`unaided_last_at`; migration 0077 rebuilds `ix_learning_events_learner_item` without
+`CONCURRENTLY` (writes to `learning_events` block for the build); the milestones are described
+as one-way but clear when `kc_evidence` says no; `test_a_foreign_component_is_skipped_in_one_query`
+does not count queries.
 
 **S77** — the stranded-duplicate sweep has no batch limit; `requeued` includes `recovered`.
 
