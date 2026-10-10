@@ -27,6 +27,9 @@ export GURU_MODEL_SMART=shaped:shaped-1
 export GURU_MODEL_GENIUS=shaped:shaped-1
 export GURU_MODEL_VISION=shaped:shaped-1
 export GURU_MODEL_EMBED=shaped:shaped-1
+# Administrator visits (P10) are default-off in every real deployment; the journeys turn them
+# on so the visit itself can be driven (S58). Nothing else in the journeys depends on it off.
+export GURU_IMPERSONATION_ENABLED=true
 # Deliberately no GURU_DEV_AUTO_LOGIN. The journeys register through the form, which is both
 # the path a first user takes and the only one available: the development sign-in button is
 # compiled out of the production bundle these run against. Leaving the seam off also lets the

@@ -52,6 +52,13 @@ export async function api<T>(page: Page, method: "post", path: string, body: unk
   return (await response.json()) as T;
 }
 
+/** A GET as the signed-in learner — the read twin of `api`. */
+export async function apiGet<T>(page: Page, path: string): Promise<T> {
+  const response = await page.request.get(`${API_BASE}/api/v1${path}`);
+  expect(response.ok(), `GET ${path} → ${response.status()}`).toBeTruthy();
+  return (await response.json()) as T;
+}
+
 /** A committed subject with a lesson plan, arranged over the API rather than through the UI.
  *
  * Deliberate: the wizard has its own journey, and repeating all four of its steps here would
