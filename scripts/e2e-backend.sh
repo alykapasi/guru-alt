@@ -18,7 +18,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 export GURU_ENV=dev
-GURU_DATABASE_URL="$(uv run python -m tests.testdb --suffix _e2e --print-url)"
+# `--fresh`: every start begins on an empty database, as CI does, so no journey depends on what
+# an earlier run left behind (S58). It refuses any database not named *_e2e.
+GURU_DATABASE_URL="$(uv run python -m tests.testdb --suffix _e2e --fresh --print-url)"
 export GURU_DATABASE_URL
 export GURU_MODEL_FAST=shaped:shaped-1
 export GURU_MODEL_SMART=shaped:shaped-1
