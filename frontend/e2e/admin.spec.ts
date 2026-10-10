@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { grantAdmin } from "./admin";
-import { signIn } from "./journey";
+import { apiGet, signIn } from "./journey";
 import { expectAccessible } from "./a11y";
 
 /** The operator's portal, and the door that is not shown to people who may not open it (P10).
@@ -50,9 +50,25 @@ test("an administrator reads what the deployment costs and who is on it", async 
   const roster = page.getByRole("heading", { name: "Who is here" }).locator("..");
   await expect(roster.getByRole("row").first()).toBeVisible();
 
-  // Neither timing should read as a measured zero. Every call this deployment has made was
-  // through the deterministic provider, so "not measured" is what the completion row honestly
-  // says, and a page that rendered "0ms" there would be claiming an instantaneous model.
-  await expect(page.getByText("Not measured").first()).toBeVisible();
+  // Each timing says what was measured: "Not measured" exactly when no call in the window was
+  // timed, and a p50/p95 otherwise — never a measured zero standing in for no data. Read from
+  // the deployment's own totals rather than assumed, because whether any call was timed
+  // depends on which journeys ran before this one in the same run (S58).
+  const spend = await apiGet<{ completion: { calls: number }; first_token: { calls: number } }>(
+    page,
+    "/ops/spend?hours=24",
+  );
+  for (const [label, timing] of [
+    ["Completion", spend.completion],
+    ["Time to first token", spend.first_token],
+  ] as const) {
+    const block = page.getByText(label, { exact: true }).locator("..");
+    if (timing.calls === 0) {
+      await expect(block.getByText("Not measured")).toBeVisible();
+    } else {
+      await expect(block.getByText(/p50 .* · p95 /)).toBeVisible();
+      await expect(block.getByText("Not measured")).toHaveCount(0);
+    }
+  }
   await expectAccessible(page);
 });
