@@ -32,7 +32,9 @@ class EvalExample(UUIDPrimaryKeyMixin, Base):
     source_id: Mapped[uuid.UUID] = mapped_column()
     snapshot: Mapped[dict] = mapped_column(JSONB)
     decision: Mapped[dict] = mapped_column(JSONB)
-    label: Mapped[dict | None] = mapped_column(JSONB, default=None)
+    # none_as_null: an explicit ``label=None`` must be SQL NULL, not JSON ``null`` — "is it
+    # labelled?" is ``label IS NULL`` everywhere, and a JSON null would read as labelled.
+    label: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), default=None)
     note: Mapped[str | None] = mapped_column(Text, default=None)
     labelled_by_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("learners.id", ondelete="SET NULL"), default=None
