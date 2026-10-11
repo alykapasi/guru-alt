@@ -13,7 +13,7 @@ const VOCAB = {
     ["none", "notation", "procedural", "conceptual", "prerequisite", "incomplete"],
   ],
   intent: ["intent", ["attempt", "deferral", "withdrawal"]],
-  source_support: ["coverage", ["cited", "retrieved_not_cited", "none"]],
+  source_support: ["support", ["supported", "partly", "unsupported"]],
 } as const;
 
 const COUNTS = [
@@ -41,7 +41,19 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-function serve({ next = BLIND as unknown }: { next?: unknown } = {}) {
+const REVEALED = {
+  ...BLIND,
+  decision: { intent: "deferral" },
+  label: { intent: "deferral" },
+  note: null,
+  labelled_at: "2026-10-11T00:01:00Z",
+};
+
+function serve({
+  next = BLIND as unknown,
+  labelled = [] as unknown[],
+  saved = REVEALED as unknown,
+}: { next?: unknown; labelled?: unknown[]; saved?: unknown } = {}) {
   const calls: Request[] = [];
   vi.stubGlobal(
     "fetch",
@@ -52,18 +64,8 @@ function serve({ next = BLIND as unknown }: { next?: unknown } = {}) {
       if (url.endsWith("/eval/areas")) return Promise.resolve(json(COUNTS));
       if (url.includes("/draw")) return Promise.resolve(json({ drawn: 3 }));
       if (url.includes("/next")) return Promise.resolve(json(next));
-      if (url.includes("/labelled")) return Promise.resolve(json([]));
-      if (request.method === "PUT") {
-        return Promise.resolve(
-          json({
-            ...BLIND,
-            decision: { intent: "deferral" },
-            label: { intent: "deferral" },
-            note: null,
-            labelled_at: "2026-10-11T00:01:00Z",
-          }),
-        );
-      }
+      if (url.includes("/labelled")) return Promise.resolve(json(labelled));
+      if (request.method === "PUT") return Promise.resolve(json(saved));
       return Promise.resolve(json({}, 404));
     }),
   );
@@ -142,5 +144,58 @@ describe("reviewing evaluation examples", () => {
     renderTab();
     fireEvent.click(await screen.findByRole("button", { name: /Intent/ }));
     expect(await screen.findByRole("button", { name: "Save label" })).toBeDisabled();
+  });
+
+  it("lets a saved label be changed", async () => {
+    const calls = serve();
+    renderTab();
+    fireEvent.click(await screen.findByRole("button", { name: /Intent/ }));
+    fireEvent.click(await screen.findByRole("radio", { name: "deferral" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save label" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Change label" }));
+
+    fireEvent.click(screen.getByRole("radio", { name: "attempt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save label" }));
+
+    await waitFor(() => expect(calls.filter((c) => c.method === "PUT")).toHaveLength(2));
+    const last = calls.filter((c) => c.method === "PUT")[1];
+    expect(JSON.parse(await last.clone().text()).label).toEqual({ intent: "attempt" });
+  });
+
+  it("lists labelled examples so a mistake can be relabelled later", async () => {
+    serve({ next: null, labelled: [{ ...REVEALED, label: { intent: "attempt" } }] });
+    renderTab();
+    fireEvent.click(await screen.findByRole("button", { name: /Intent/ }));
+    fireEvent.click(await screen.findByText("Labelled (1)"));
+    expect(await screen.findByText(/Model decided: deferral — you differed/)).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "attempt" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Change label" })).toBeInTheDocument();
+  });
+
+  it("shows source support's coverage label as the rule's, not an agreement", async () => {
+    const example = {
+      id: "22222222-2222-2222-2222-222222222222",
+      area: "source_support",
+      snapshot: { question: "Why?", reply: "Because [1].", passages: [{ marker: "1", text: "P" }] },
+      created_at: "2026-10-11T00:00:00Z",
+    };
+    serve({
+      next: example,
+      saved: {
+        ...example,
+        decision: { coverage: "cited", offered: 3 },
+        label: { support: "unsupported" },
+        note: null,
+        labelled_at: "2026-10-11T00:01:00Z",
+      },
+    });
+    renderTab();
+    fireEvent.click(await screen.findByRole("button", { name: /Source support/ }));
+    fireEvent.click(await screen.findByRole("radio", { name: "unsupported" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save label" }));
+    expect(
+      await screen.findByText("The reply carried the coverage label: cited."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/you differed|you agreed/)).toBeNull();
   });
 });

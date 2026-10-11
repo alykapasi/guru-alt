@@ -34,6 +34,19 @@ export function useNextExample(area: string | null, skip: string[]) {
   });
 }
 
+export function useLabelled(area: string) {
+  return useQuery({
+    queryKey: ["admin", "eval", "labelled", area],
+    queryFn: async () => {
+      const { data, error } = await api.GET("/api/v1/admin/eval/{area}/labelled", {
+        params: { path: { area } },
+      });
+      if (error || !data) throw new Error("Could not read the labelled examples.");
+      return data;
+    },
+  });
+}
+
 export function useDraw(area: string) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -60,6 +73,10 @@ export function useSaveLabel() {
       if (error || !data) throw new Error("Could not save the label.");
       return data;
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", "eval", "areas"] }),
+    // Not the next example: refetching it would replace the one whose decision is on screen.
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "eval", "areas"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "eval", "labelled"] });
+    },
   });
 }

@@ -41,11 +41,14 @@ test("an eligible learner's graded answer is labelled blind in the portal", asyn
   await admin.getByRole("button", { name: /^Grading/ }).click();
   await admin.getByRole("button", { name: "Draw 10" }).click();
   await expect(admin.getByText(/^Drew \d+\.$/)).toBeVisible();
-  await expect(admin.getByText("An eigenvalue scales its eigenvector.")).toBeVisible();
-  await expect(admin.getByText(/Model decided/)).toHaveCount(0);
+  // Earlier runs' examples sit in the labelled list below; this is the one being labelled.
+  const current = admin.getByRole("region", { name: "Next example" });
+  await expect(current.getByText("An eigenvalue scales its eigenvector.")).toBeVisible();
+  await expect(current.getByText(/Model decided/)).toHaveCount(0);
 
-  await admin.getByRole("radio", { name: "pass" }).check();
-  await admin.getByRole("button", { name: "Save label" }).click();
-  await expect(admin.getByText(/^Model decided: /)).toBeVisible();
+  await current.getByRole("radio", { name: "pass" }).check();
+  await current.getByRole("button", { name: "Save label" }).click();
+  await expect(current.getByText(/^Model decided: /)).toBeVisible();
+  await expect(current.getByRole("button", { name: "Change label" })).toBeVisible();
   await expectAccessible(admin);
 });

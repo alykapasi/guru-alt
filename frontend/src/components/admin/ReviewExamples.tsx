@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
   useDraw,
   useEvalAreas,
+  useLabelled,
   useNextExample,
   useSaveLabel,
   type BlindExample,
@@ -65,23 +66,52 @@ function Snapshot({ snapshot }: { snapshot: Record<string, unknown> }) {
   );
 }
 
+/** What the model decided, once the founder's label is saved. Source support's decision is the
+ * coverage rule's label, in another vocabulary than the founder's, so it is shown, not compared. */
+function Decision({
+  area,
+  revealed,
+  choice,
+}: {
+  area: EvalArea;
+  revealed: RevealedExample;
+  choice: string | null;
+}) {
+  if (area.area === "source_support") {
+    return (
+      <p className="text-body">{`The reply carried the coverage label: ${String(revealed.decision.coverage ?? "none")}.`}</p>
+    );
+  }
+  const decided = String(revealed.decision[area.label_key] ?? "—");
+  return (
+    <p className="text-body">
+      {`Model decided: ${decided}${decided === choice ? " — you agreed." : " — you differed."}`}
+    </p>
+  );
+}
+
 function Labeller({
   area,
   example,
+  initial = null,
   onNext,
   onSkip,
 }: {
   area: EvalArea;
   example: BlindExample;
-  onNext: () => void;
-  onSkip: () => void;
+  initial?: RevealedExample | null;
+  onNext?: () => void;
+  onSkip?: () => void;
 }) {
-  const [choice, setChoice] = useState<string | null>(null);
-  const [note, setNote] = useState("");
-  const [revealed, setRevealed] = useState<RevealedExample | null>(null);
+  const [choice, setChoice] = useState<string | null>(
+    initial ? String(initial.label?.[area.label_key] ?? "") || null : null,
+  );
+  const [note, setNote] = useState(initial?.note ?? "");
+  const [revealed, setRevealed] = useState<RevealedExample | null>(initial);
+  const [editing, setEditing] = useState(false);
   const save = useSaveLabel();
-
-  const decided = revealed ? String(revealed.decision[area.label_key] ?? "—") : null;
+  const group = useId();
+  const locked = revealed !== null && !editing;
 
   return (
     <div className="flex flex-col gap-3">
@@ -91,10 +121,10 @@ function Labeller({
           <label key={value} className="flex items-center gap-1 text-body">
             <input
               type="radio"
-              name={`label-${example.id}`}
+              name={group}
               value={value}
               checked={choice === value}
-              disabled={revealed !== null}
+              disabled={locked}
               onChange={() => setChoice(value)}
             />
             {value}
@@ -105,18 +135,21 @@ function Labeller({
         aria-label="Note"
         className="textarea textarea-bordered w-full"
         value={note}
-        disabled={revealed !== null}
+        disabled={locked}
         onChange={(e) => setNote(e.target.value)}
       />
       {save.error && <p className="text-caption text-error">{save.error.message}</p>}
-      {revealed ? (
-        <div className="flex items-center gap-3">
-          <p className="text-body">
-            {`Model decided: ${decided}${decided === choice ? " — you agreed." : " — you differed."}`}
-          </p>
-          <button type="button" className="btn btn-sm" onClick={onNext}>
-            Next
+      {revealed && locked ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <Decision area={area} revealed={revealed} choice={choice} />
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditing(true)}>
+            Change label
           </button>
+          {onNext && (
+            <button type="button" className="btn btn-sm" onClick={onNext}>
+              Next
+            </button>
+          )}
         </div>
       ) : (
         <div className="flex gap-2">
@@ -128,18 +161,42 @@ function Labeller({
               choice &&
               save.mutate(
                 { id: example.id, label: { [area.label_key]: choice }, note },
-                { onSuccess: setRevealed },
+                {
+                  onSuccess: (saved) => {
+                    setRevealed(saved);
+                    setEditing(false);
+                  },
+                },
               )
             }
           >
             Save label
           </button>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={onSkip}>
-            Skip
-          </button>
+          {onSkip && !revealed && (
+            <button type="button" className="btn btn-ghost btn-sm" onClick={onSkip}>
+              Skip
+            </button>
+          )}
         </div>
       )}
     </div>
+  );
+}
+
+function Labelled({ area }: { area: EvalArea }) {
+  const labelled = useLabelled(area.area);
+  if (!labelled.data || labelled.data.length === 0) return null;
+  return (
+    <details>
+      <summary className="cursor-pointer text-body">{`Labelled (${labelled.data.length})`}</summary>
+      <ul className="mt-3 flex flex-col gap-6">
+        {labelled.data.map((e) => (
+          <li key={e.id}>
+            <Labeller area={area} example={e} initial={e} />
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 
@@ -170,16 +227,19 @@ function AreaPanel({ area }: { area: EvalArea }) {
       ) : next.isError ? (
         <p className="text-body text-error">{next.error.message}</p>
       ) : next.data ? (
-        <Labeller
-          key={next.data.id}
-          area={area}
-          example={next.data}
-          onNext={() => next.refetch()}
-          onSkip={() => setSkip([...skip, next.data!.id])}
-        />
+        <section aria-label="Next example">
+          <Labeller
+            key={next.data.id}
+            area={area}
+            example={next.data}
+            onNext={() => next.refetch()}
+            onSkip={() => setSkip([...skip, next.data!.id])}
+          />
+        </section>
       ) : (
         <p className="text-body text-base-content/70">Nothing to label — draw some examples.</p>
       )}
+      <Labelled area={area} />
     </div>
   );
 }
