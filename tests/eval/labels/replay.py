@@ -19,7 +19,6 @@ from app.llm import LLMClient
 from app.llm.attribution import attributed
 from app.llm.types import ModelRole
 from app.models.assessment import Rubric
-from app.rag.coverage import coverage
 from app.services.eval_areas import grading_band
 
 FREE_PROVIDERS = frozenset({"ollama", "shaped", "fake"})
@@ -84,7 +83,5 @@ async def current_decision(llm: LLMClient, area: str, snapshot: dict) -> str | N
                 llm, question=snapshot["stem"], message=snapshot["message"]
             )
             return intent.value
-        # Source support is a rule over what was offered and cited, not a model call.
-        cited = [p for p in snapshot.get("passages", [])]
-        label = coverage(snapshot.get("offered"), cited)
-        return label.value if label is not None else None
+        # Source support's decision is a rule, not a prompt: there is nothing to replay.
+        return None

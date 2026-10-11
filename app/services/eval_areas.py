@@ -24,16 +24,20 @@ from app.models.grading import GradingSnapshot
 from app.models.learner import Learner
 from app.models.learning import LearningEvent
 from app.models.source import Chunk
-from app.rag.coverage import Coverage, coverage
+from app.rag.coverage import coverage
 
 GRADING_BANDS = ("fail", "partial", "pass")
+SUPPORT = ("supported", "partly", "unsupported")
 
 # The label each area takes: one key, and the values it may hold.
 VOCABULARY: dict[str, tuple[str, tuple[str, ...]]] = {
     "grading": ("band", GRADING_BANDS),
     "diagnosis": ("kind", tuple(k.value for k in FailureKind)),
     "intent": ("intent", tuple(i.value for i in TurnIntent)),
-    "source_support": ("coverage", tuple(c.value for c in Coverage)),
+    # Not the coverage label itself: that is a rule over what was offered and cited, so a label
+    # in its own vocabulary could only echo it. The founder judges whether the reply is
+    # supported by the passages it cited; the report reads that against the coverage label.
+    "source_support": ("support", SUPPORT),
 }
 
 
@@ -283,10 +287,12 @@ async def source_support_candidates(session: AsyncSession, limit: int) -> list[F
                 snapshot={
                     "question": question or "",
                     "reply": message.content,
-                    "offered": message.grounding_count,
                     "passages": passages,
                 },
-                decision={"coverage": label.value if label is not None else None},
+                decision={
+                    "coverage": label.value if label is not None else None,
+                    "offered": message.grounding_count,
+                },
             )
         )
     return out

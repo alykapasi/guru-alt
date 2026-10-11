@@ -117,7 +117,42 @@ async def test_a_deleted_source_leaves_the_example_readable(db_session: AsyncSes
     assert example is not None
     assert example.snapshot["reply"] == "Because."
     assert example.snapshot["question"] == "Why?"
-    assert example.decision == {"coverage": "retrieved_not_cited"}
+    assert example.decision == {"coverage": "retrieved_not_cited", "offered": 2}
+
+
+async def test_source_support_is_judged_on_support_and_hides_the_rules_inputs(
+    db_session: AsyncSession,
+) -> None:
+    # Showing how many passages were offered beside the cited ones would let the labeller read
+    # the coverage label off the screen; the founder judges whether the reply is supported.
+    learner = await _learner(db_session)
+    conversation = Conversation(learner_id=learner.id)
+    db_session.add(conversation)
+    await db_session.flush()
+    db_session.add(Message(conversation_id=conversation.id, role="user", content="Why?"))
+    db_session.add(
+        Message(
+            conversation_id=conversation.id,
+            role="assistant",
+            content="Because [1].",
+            grounding_count=3,
+            citations=[{"marker": "1", "chunk_id": None}],
+        )
+    )
+    await db_session.flush()
+    await svc.draw(db_session, "source_support")
+    example = await svc.next_unlabelled(db_session, "source_support")
+    assert example is not None
+    assert "offered" not in example.snapshot
+    assert example.decision == {"coverage": "cited", "offered": 3}
+    saved = await svc.save_label(
+        db_session, example.id, label={"support": "unsupported"}, note=None, by=learner.id
+    )
+    assert saved.label == {"support": "unsupported"}
+    with pytest.raises(ValueError):
+        await svc.save_label(
+            db_session, example.id, label={"coverage": "cited"}, note=None, by=learner.id
+        )
 
 
 async def test_revoking_keeps_existing_examples_and_stops_new_ones(

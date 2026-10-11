@@ -12,7 +12,7 @@ from app.models.evaluation import EvalExample
 from app.models.learner import Learner
 from app.workers import eval_export
 from tests.eval.labels.metrics import MIN_READABLE
-from tests.eval.labels.report import render_area
+from tests.eval.labels.report import _pair, render_area
 
 
 async def _example(session: AsyncSession, *, label: dict | None) -> EvalExample:
@@ -72,3 +72,26 @@ def test_enough_labels_are_read_and_grading_states_its_bands() -> None:
     assert "too few to read" not in text
     assert "accuracy 0.750" in text
     assert "fail < 0.4 ≤ partial < 0.8 ≤ pass" in text
+
+
+def test_source_support_is_read_as_a_table_of_coverage_against_support() -> None:
+    # The coverage label is a rule, not a judgement: what is measured is whether a reply that
+    # carried "cited" was in fact supported, so there is no agreement figure to print.
+    pairs = (
+        [("cited", "supported")] * 15
+        + [("cited", "unsupported")] * 3
+        + [("retrieved_not_cited", "partly")] * 2
+    )
+    text = render_area("source_support", pairs)
+    assert "kappa" not in text and "accuracy" not in text
+    assert "cited" in text and "supported 15" in text and "unsupported 3" in text
+    assert "cited replies judged supported: 15 of 18" in text
+
+
+def test_a_source_support_example_pairs_its_coverage_with_the_judged_support() -> None:
+    example = EvalExample(
+        area="source_support",
+        decision={"coverage": "cited", "offered": 2},
+        label={"support": "unsupported"},
+    )
+    assert _pair("source_support", example) == ("cited", "unsupported")
