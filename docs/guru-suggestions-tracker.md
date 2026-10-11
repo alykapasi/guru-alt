@@ -38,7 +38,7 @@ evidence links and in [Completed](#completed).
 
 | ID | Item | Status | Remaining | Evidence |
 | --- | --- | --- | --- | --- |
-| S59 | Reliability, model quality, and learning evaluation | Partial | Built offline (2026-10-11): eval-eligible accounts (`poe eval-eligible`); frozen examples in four areas (grading, diagnosis, intent, source support) drawn and labelled blind in the admin portal; the practice gate now records its intent for eligible accounts; `poe label-report` (accuracy, kappa, confusion, "too few to read" under 20), `--replay` on local models only unless `--allow-paid`, 20 planted-instruction cases; `poe eval-export`. **Remaining:** label ≥ 20 founder examples per area and read the report; paid and independent-grader comparisons once a budget is approved; real-document extraction fixtures (S27); difficulty stays the computed report. Owns S03/S67/S71/S72. | [Design](superpowers/specs/2026-10-11-founder-labelled-evaluation-design.md), [RUNBOOK §22](RUNBOOK.md#22-founder-labelled-evaluation-s59), [Reliability report](../tests/eval/reliability/report.py) |
+| S59 | Reliability, model quality, and learning evaluation | Partial | Built offline (2026-10-11): eval-eligible accounts (`poe eval-eligible`); frozen examples in four areas (grading, diagnosis, intent, source support — judged supported / partly / unsupported, read against the coverage label) drawn and labelled blind in the admin portal, relabelled with Change label; the practice gate now records its intent for eligible accounts; `poe label-report` (accuracy, kappa, confusion, "too few to read" under 20), `--replay` on local models only unless `--allow-paid`, 20 planted-instruction cases; `poe eval-export`. **Remaining:** label ≥ 20 founder examples per area and read the report; paid and independent-grader comparisons once a budget is approved; real-document extraction fixtures (S27); difficulty stays the computed report. Owns S03/S67/S71/S72. | [Design](superpowers/specs/2026-10-11-founder-labelled-evaluation-design.md), [RUNBOOK §22](RUNBOOK.md#22-founder-labelled-evaluation-s59), [Reliability report](../tests/eval/reliability/report.py) |
 | S18 | Calibrate estimates and heuristics | Partial | With S59 data: calibrate placement, mastery bar, assistance, detour disproval, scaffolding, transfer seeds, goal freshness, retention spacing and probe days, the turn and request deadlines, the provider retry wait, the per-learner ingestion cap; measure requested vs delivered difficulty; set thresholds for the three stored-but-unread extraction ratios. | [Constants inventory](../tests/eval/reliability/knobs.py), [difficulty report](../tests/eval/reliability/difficulty.py) |
 
 ### Workstream 7 — Operated invited alpha
@@ -186,6 +186,12 @@ use first (D11); founder time available, funding unspecified (D12).
 
 Small defects found in final reviews and left on purpose. Pick them up when working nearby or in
 the testing phase.
+
+**S59** — two simultaneous draws can 500 on the unique constraint; "available" counts candidates
+a draw skips for want of an item snapshot; non-grading draws freeze ten times what they keep;
+each practice turn opens a second session to read `eval_eligible`; practice while impersonating
+an eligible account is recorded as theirs; the learner data export omits `eval_examples` and
+`intent_records`; revocation shows only in the CLI.
 
 **S02** — a database error reading settings still fails the turn; a subject following global
 "Adapt to me" doesn't show what adaptation chose; a failed save isn't shown; downgrading 0068
