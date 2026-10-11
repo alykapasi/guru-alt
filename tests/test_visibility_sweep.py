@@ -880,6 +880,8 @@ _NOT_GRAPH_IDS = frozenset(
         "chunk_id",  # a source chunk id
         "block_id",  # a content block id
         "memory_id",  # a learner memory row id
+        "example_id",  # an evaluation example row id (admin-only, S59)
+        "skip",  # evaluation example ids passed over in the review tab (admin-only, S59)
     }
 )
 
