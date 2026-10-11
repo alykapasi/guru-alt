@@ -21,12 +21,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 
 from sqlalchemy import select
 
 from app.core.db import SessionFactory
 from app.models.source import Chunk
-from app.rag.extraction_quality import ExtractionIndicators
+from app.rag.extraction_quality import ExtractionIndicators, measure
 
 RATIOS = ("isolated_letter_ratio", "vowelless_word_ratio", "runaway_token_ratio")
 COUNTS = ("replacement_chars", "control_chars")
@@ -137,12 +138,30 @@ async def collect(limit: int | None) -> list[Row]:
     return rows
 
 
+FIXTURE_SUFFIXES = (".txt", ".md")
+
+
+def collect_fixtures(directory: Path) -> list[Row]:
+    """Measure each text fixture in ``directory`` as if it were one extracted chunk (S59).
+
+    For fixtures whose extraction is already known — real documents with equations, tables and
+    code belong to S27 — so the indicators can be read against files rather than the corpus.
+    """
+    return [
+        Row(chunk_id=path.name, method="fixture", indicators=measure(path.read_text("utf-8")))
+        for path in sorted(directory.iterdir())
+        if path.suffix in FIXTURE_SUFFIXES
+    ]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Extraction-damage indicators over the corpus (S27).")
     ap.add_argument("--limit", type=int, default=None, help="only the oldest N chunks")
+    ap.add_argument("--fixtures", type=Path, default=None, help="measure text files instead")
     args = ap.parse_args()
     print()
-    print(render(asyncio.run(collect(args.limit))))
+    rows = collect_fixtures(args.fixtures) if args.fixtures else asyncio.run(collect(args.limit))
+    print(render(rows))
 
 
 if __name__ == "__main__":

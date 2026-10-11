@@ -20,6 +20,7 @@ from app.core.db import SessionFactory
 from app.llm.registry import build_llm_client
 from app.models.evaluation import AREAS, EvalExample
 from app.services.eval_areas import VOCABULARY
+from tests.eval.labels import injection as injection_cases
 from tests.eval.labels.metrics import MIN_READABLE, categorical
 from tests.eval.labels.replay import ROLES, PaidProviderRefused, current_decision, require_free
 
@@ -50,7 +51,9 @@ def _pair(area: str, example: EvalExample) -> tuple[str, str] | None:
     return (str(model), str(label)) if model is not None and label is not None else None
 
 
-async def run(areas: Sequence[str], *, replay: bool, allow_paid: bool) -> str:
+async def run(
+    areas: Sequence[str], *, replay: bool, allow_paid: bool, injection: bool = False
+) -> str:
     out: list[str] = []
     async with SessionFactory() as session:
         llm = build_llm_client(get_settings()) if replay else None
@@ -73,6 +76,14 @@ async def run(areas: Sequence[str], *, replay: bool, allow_paid: bool) -> str:
                     if decided is not None and e.label and key in e.label:
                         current.append((decided, str(e.label[key])))
                 out.append(render_area(area, current, heading="current prompt"))
+        if injection:
+            if llm is None:
+                out.append("injection — runs only with --replay")
+            else:
+                require_free(llm, [injection_cases.ROLE], allow_paid=allow_paid)
+                out.append(
+                    injection_cases.render(await injection_cases.run(llm, injection_cases.load()))
+                )
     return "\n\n".join(out)
 
 
@@ -81,11 +92,17 @@ def main() -> None:
     parser.add_argument("--area", choices=AREAS, action="append")
     parser.add_argument("--replay", action="store_true", help="re-run today's prompts locally")
     parser.add_argument("--allow-paid", action="store_true", help="let --replay spend money")
+    parser.add_argument("--injection", action="store_true", help="with --replay: planted cases")
     args = parser.parse_args()
     try:
         print(
             asyncio.run(
-                run(args.area or list(AREAS), replay=args.replay, allow_paid=args.allow_paid)
+                run(
+                    args.area or list(AREAS),
+                    replay=args.replay,
+                    allow_paid=args.allow_paid,
+                    injection=args.injection,
+                )
             )
         )
     except PaidProviderRefused as exc:
