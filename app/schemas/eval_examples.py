@@ -17,6 +17,8 @@ class EvalAreaCounts(BaseModel):
     unlabelled: int
     labelled: int
     available: int
+    label_key: str
+    values: list[str]
 
 
 class EvalDrawRequest(BaseModel):

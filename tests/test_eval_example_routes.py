@@ -32,6 +32,10 @@ async def test_counts_cover_every_area(admin_client: AsyncClient, db_session: As
     by_area = {a["area"]: a for a in r.json()}
     assert set(by_area) == {"grading", "diagnosis", "intent", "source_support"}
     assert by_area["intent"]["available"] == 1
+    # The labels each area takes come from the server, so the page cannot drift from it.
+    assert by_area["grading"]["label_key"] == "band"
+    assert by_area["grading"]["values"] == ["fail", "partial", "pass"]
+    assert "deferral" in by_area["intent"]["values"]
 
 
 async def test_an_example_is_served_blind_and_revealed_once_labelled(

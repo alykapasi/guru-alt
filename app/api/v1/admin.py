@@ -58,6 +58,7 @@ from app.services import concept_links as concept_links_svc
 from app.services import eval_examples as eval_svc
 from app.services import publication as publication_svc
 from app.services.admin import LearnerRoster, learner_usage
+from app.services.eval_areas import VOCABULARY
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -414,7 +415,15 @@ def _area_or_404(area: str) -> str:
 @router.get("/eval/areas", response_model=list[EvalAreaCounts])
 async def eval_areas(session: SessionDep, _: CurrentAdmin):
     counts = await eval_svc.counts(session)
-    return [EvalAreaCounts(area=area, **counts[area]) for area in AREAS]
+    return [
+        EvalAreaCounts(
+            area=area,
+            **counts[area],
+            label_key=VOCABULARY[area][0],
+            values=list(VOCABULARY[area][1]),
+        )
+        for area in AREAS
+    ]
 
 
 @router.post("/eval/{area}/draw", response_model=EvalDrawResult)

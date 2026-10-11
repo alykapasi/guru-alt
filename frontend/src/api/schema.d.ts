@@ -3063,10 +3063,14 @@ export interface components {
             area: string;
             /** Available */
             available: number;
+            /** Label Key */
+            label_key: string;
             /** Labelled */
             labelled: number;
             /** Unlabelled */
             unlabelled: number;
+            /** Values */
+            values: string[];
         };
         /** EvalDrawRequest */
         EvalDrawRequest: {
