@@ -39,6 +39,9 @@ class Learner(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # because there is no such thing as an administrator who is not also an account — the
     # portal is read with the same session everything else is.
     is_admin: Mapped[bool] = mapped_column(server_default=false(), default=False)
+    # S59: may this account's activity be copied into evaluation examples? Off unless an
+    # operator sets it (`poe eval-eligible`); nothing samples an account that has not.
+    eval_eligible: Mapped[bool] = mapped_column(server_default=false(), default=False)
     # The provider's id for this person (S21). NULL for a learner nobody has signed in as yet:
     # an account created by an import before its owner arrives, or the dev learner. Unique,
     # because one provider identity resolving to two learners is one sign-in with two answers.
