@@ -1114,3 +1114,47 @@ the command a learner would pay a full-history read on every queue load.
   side panels are native modal sheets (`src/components/layout/SidePanel.tsx`), so focus, Escape
   and the backdrop come from the browser. Body text below `text-base-content/70` does not meet
   4.5:1 on the light theme; use 70 or more for anything a learner reads.
+
+## 22. Founder-labelled evaluation (S59)
+
+Turns the founder's own use into labelled evaluation examples, and measures the models'
+decisions against those labels — offline. Four areas: **grading** (the band of a graded
+answer), **diagnosis** (the failure kind on a failed component), **intent** (what the practice
+gate decided a reply did) and **source support** (the coverage label on a grounded reply).
+
+1. **Mark an account eligible.** Only eligible accounts are sampled, and only theirs have their
+   practice intent recorded (`intent_records`):
+
+   ```bash
+   uv run poe eval-eligible you@example.com          # --revoke stops new sampling
+   ```
+
+   Revoking keeps examples already drawn. Erasing the account deletes them with it.
+2. **Draw and label** in the admin portal, under *Review examples*: pick an area, **Draw 10**
+   (grading draws are spread across fail / partial / pass), then label each example. The model's
+   decision is **not shown until your label is saved** — the route that serves an unlabelled
+   example has no decision field — so the figures measure agreement, not deference. Each
+   example is a frozen copy: later edits to the source do not change it.
+3. **Read the report:**
+
+   ```bash
+   uv run poe label-report                     # recorded decisions vs your labels
+   uv run poe label-report --replay            # also today's prompts on the frozen inputs
+   uv run poe label-report --replay --injection  # plus the 20 planted-instruction cases
+   ```
+
+   Grading compares bands (fail < 0.4 ≤ partial < 0.8 ≤ pass — the report's convention, not
+   the product's). Every figure shows its `n`; below 20 it says **too few to read**. There is
+   no pass mark: setting thresholds is S18's decision.
+4. **Export** a labelled set (traceable by example and source id, git-ignored):
+
+   ```bash
+   uv run poe eval-export grading   # → tests/eval/datasets/private/grading.jsonl
+   ```
+
+**Nothing here pays by accident.** `--replay` refuses to start unless every model role it needs
+is on `ollama` or the stand-in; `--allow-paid` is the only way past, and it is an evaluation
+run under the usual rules. Source support's replay is a rule, not a model call.
+
+`uv run poe extraction-report --fixtures <dir>` measures a folder of `.txt`/`.md` files the way
+it measures the corpus; real-document fixtures (equations, tables, code) belong to S27.

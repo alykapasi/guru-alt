@@ -203,6 +203,10 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
   browser. Every screen a journey reaches is scanned by axe, and serious or critical violations
   fail `npm run e2e`; faded text stays at `text-base-content/70` or above. See
   [docs/RUNBOOK.md](docs/RUNBOOK.md) §21.
+- **Evaluation reads only eligible accounts, labelled blind** (S59) — examples are frozen copies
+  from accounts an operator marked `eval_eligible`; the portal hides the model's decision until
+  a label is saved, and nothing in the eval path calls a paid model unless `--allow-paid`. See
+  [docs/RUNBOOK.md](docs/RUNBOOK.md) §22.
 - **Pydantic at boundaries · async throughout · Alembic-tracked schema.**
 
 ## Performance & Conciseness Guidelines

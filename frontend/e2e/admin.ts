@@ -30,3 +30,12 @@ export function grantAdmin(email: string): void {
     env: { ...process.env, GURU_DATABASE_URL: e2eDatabaseUrl() },
   });
 }
+
+/** Mark an account eligible for evaluation sampling, the way an operator does (S59). */
+export function markEligible(email: string): void {
+  execFileSync("uv", ["run", "poe", "eval-eligible", email], {
+    cwd: REPO,
+    encoding: "utf8",
+    env: { ...process.env, GURU_DATABASE_URL: e2eDatabaseUrl() },
+  });
+}
