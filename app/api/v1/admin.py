@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from app.api.deps import CurrentAdmin, IdentityProviderDep, SessionDep, SettingsDep
 from app.core.identity import ProviderError
+from app.models.evaluation import AREAS
 from app.models.knowledge import Subject
 from app.models.publication import Publication
 from app.schemas.admin import (
@@ -36,6 +37,14 @@ from app.schemas.admin import (
     SuspendRequest,
 )
 from app.schemas.concept_links import ConceptLinkReviewRead, ConceptLinkVerdictSubmit
+from app.schemas.eval_examples import (
+    EvalAreaCounts,
+    EvalDrawRequest,
+    EvalDrawResult,
+    EvalExampleBlind,
+    EvalExampleRevealed,
+    EvalLabelRequest,
+)
 from app.schemas.knowledge import SubjectRead
 from app.schemas.publication import (
     ApproveRequest,
@@ -46,6 +55,7 @@ from app.schemas.publication import (
 )
 from app.services import accounts, impersonation
 from app.services import concept_links as concept_links_svc
+from app.services import eval_examples as eval_svc
 from app.services import publication as publication_svc
 from app.services.admin import LearnerRoster, learner_usage
 
@@ -111,7 +121,7 @@ async def impersonate(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such learner") from None
     except impersonation.ReasonRequired:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "say why, in a sentence"
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "say why, in a sentence"
         ) from None
     except impersonation.CannotImpersonateSelf:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "that is your own account") from None
@@ -269,7 +279,7 @@ async def suspend_learner(
         # whitespace-padded reason Pydantic counted before it was stripped) — the same relationship
         # `ImpersonationRequest.reason` has to `impersonation.begin`'s own check.
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "say why, in a sentence"
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "say why, in a sentence"
         ) from None
 
 
@@ -390,3 +400,63 @@ async def decide_concept_link(
         raise HTTPException(status.HTTP_409_CONFLICT, "this link has already been decided") from exc
     await session.commit()
     return next(r for r in await concept_links_svc.review_rows(session) if r.id == link_id)
+
+
+# --- evaluation examples (S59) ----------------------------------------------------------------
+
+
+def _area_or_404(area: str) -> str:
+    if area not in AREAS:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown evaluation area")
+    return area
+
+
+@router.get("/eval/areas", response_model=list[EvalAreaCounts])
+async def eval_areas(session: SessionDep, _: CurrentAdmin):
+    counts = await eval_svc.counts(session)
+    return [EvalAreaCounts(area=area, **counts[area]) for area in AREAS]
+
+
+@router.post("/eval/{area}/draw", response_model=EvalDrawResult)
+async def eval_draw(area: str, body: EvalDrawRequest, session: SessionDep, _: CurrentAdmin):
+    drawn = await eval_svc.draw(session, _area_or_404(area), body.limit)
+    await session.commit()
+    return EvalDrawResult(drawn=drawn)
+
+
+@router.get("/eval/{area}/next", response_model=EvalExampleBlind | None)
+async def eval_next(
+    area: str,
+    session: SessionDep,
+    _: CurrentAdmin,
+    skip: Annotated[list[uuid.UUID] | None, Query()] = None,
+):
+    example = await eval_svc.next_unlabelled(session, _area_or_404(area), skip=skip)
+    return EvalExampleBlind.model_validate(example, from_attributes=True) if example else None
+
+
+@router.get("/eval/{area}/labelled", response_model=list[EvalExampleRevealed])
+async def eval_labelled(
+    area: str,
+    session: SessionDep,
+    _: CurrentAdmin,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+):
+    return await eval_svc.labelled(session, _area_or_404(area), limit)
+
+
+@router.put("/eval/examples/{example_id}/label", response_model=EvalExampleRevealed)
+async def eval_label(
+    example_id: uuid.UUID, body: EvalLabelRequest, session: SessionDep, admin: CurrentAdmin
+):
+    try:
+        example = await eval_svc.save_label(
+            session, example_id, label=body.label, note=body.note, by=admin.id
+        )
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such example") from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    await session.commit()
+    await session.refresh(example)
+    return example
