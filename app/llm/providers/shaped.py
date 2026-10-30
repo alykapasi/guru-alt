@@ -258,6 +258,22 @@ def _grade_components(prompt: str) -> str:
     )
 
 
+# --- notes ------------------------------------------------------------------------------------
+
+
+def _note_distill(prompt: str) -> str:
+    """One concept atom naming the topic, so a note exists and can be edited (S58).
+
+    No KC tags and no provenance: the distiller validates both against the topic and the
+    evidence labels, and an empty list is always valid. Rendering is left to prose, which the
+    renderer accepts as-is.
+    """
+    match = re.search(r"^Topic: '([^']*)'", prompt, re.M)
+    topic = match.group(1) if match else "this topic"
+    md = f"**{topic}** — the idea in one sentence, from your practice."
+    return json.dumps({"atoms": [{"kind": "concept", "kc_ids": [], "md": md}]})
+
+
 # Markers are chosen to identify one caller each. The two graders share an opening sentence, so
 # neither is matched on it: they are told apart by the clause that differs.
 SHAPES: tuple[Shape, ...] = (
@@ -271,6 +287,7 @@ SHAPES: tuple[Shape, ...] = (
     Shape("per-component grade", "several numbered knowledge components", _grade_components),
     Shape("grade", "against the question and rubric", _grade),
     Shape("intent", "Classify what the learner's reply does about that question", _intent),
+    Shape("note distill", "You maintain a learner's personal study notes", _note_distill),
 )
 
 

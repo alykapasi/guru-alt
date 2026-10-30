@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ReviewExamples } from "../components/admin/ReviewExamples";
 import { PublicationQueue } from "../components/PublicationQueue";
 import { ConceptLinkQueue } from "../components/ConceptLinkQueue";
 import { Gauge } from "lucide-react";
@@ -637,6 +638,15 @@ export function Admin() {
           makes the pair available for a learner to accept themselves, with your reason attached.
         </p>
         <ConceptLinkQueue />
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <h2 className="text-h2">Review examples</h2>
+        <p className="text-caption text-base-content/70">
+          Examples copied from accounts marked eligible for evaluation. Label each before you see
+          what the model decided; <code>uv run poe label-report</code> compares the two.
+        </p>
+        <ReviewExamples />
       </section>
 
       <section className="flex flex-col gap-2">

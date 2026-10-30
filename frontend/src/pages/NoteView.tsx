@@ -52,6 +52,7 @@ export function NoteView() {
         </Link>
         <div className="flex items-center gap-2">
           <select
+            aria-label="Note format"
             className="select select-sm"
             value={note.format ?? "auto"}
             onChange={(e) => {
@@ -121,6 +122,7 @@ export function NoteView() {
             </button>
           )}
           <textarea
+            aria-label="Your note"
             className="textarea textarea-bordered min-h-96 w-full font-mono"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}

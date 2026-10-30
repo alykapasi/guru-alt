@@ -83,6 +83,18 @@ class StoreRetention:
 RETENTION: tuple[StoreRetention, ...] = (
     StoreRetention("learners", "deleted", "The account itself."),
     StoreRetention(
+        "eval_examples",
+        "deleted",
+        "Evaluation copies drawn from an eval-eligible account's own activity (S59). They are "
+        "the learner's data, so they go with the account, and so does any label written about it.",
+    ),
+    StoreRetention(
+        "intent_records",
+        "deleted",
+        "What the practice gate decided a reply did, kept only for eval-eligible accounts so it "
+        "can be sampled (S59). Goes with the account and with the conversation.",
+    ),
+    StoreRetention(
         "learner_sessions",
         "deleted",
         "Cascades from the learner (S21). Deleting the account has to stop every session "

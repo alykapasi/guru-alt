@@ -39,6 +39,7 @@ from app.llm.decisions import (
     YesNoAnswer,
     build_decision_client,
 )
+from app.services import intent_records
 from app.services.decision_log import record_decision
 
 
@@ -223,12 +224,15 @@ async def decide_intent(
         answer = await read.answer(INTENT, deadline_s=policy.live_deadline_s)
         if isinstance(answer, ChoiceAnswer) and answer.confidence >= policy.intent_threshold:
             await _settle(read, INTENT, mode=mode, used=True, answer=answer)
-            return TurnIntent(answer.label)
+            decided = TurnIntent(answer.label)
+            await intent_records.record(context, stem=question, message=message, intent=decided)
+            return decided
     intent = await _fast_intent(llm, question=question, message=message, context=context)
     if read is not None:
         await _settle(
             read, INTENT, mode=mode, used=False, answer=answer, baseline_intent=intent.value
         )
+    await intent_records.record(context, stem=question, message=message, intent=intent)
     return intent
 
 

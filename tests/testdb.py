@@ -61,8 +61,40 @@ async def _create_if_missing(url: str) -> bool:
         await conn.close()
 
 
+def refuse_unless_e2e(url: str) -> str:
+    """The database name, if ``--fresh`` may drop it; otherwise ``ValueError``.
+
+    Dropping is only ever for the browser journeys' database, which nothing else writes to and
+    every run recreates (S58). Checked on the *resolved* URL, so a ``GURU_DATABASE_URL`` that
+    already names the dev or suite database cannot slip through.
+    """
+    name = make_url(url).database or ""
+    if not name.endswith(E2E_SUFFIX) or name == E2E_SUFFIX or '"' in name:
+        raise ValueError(f"refusing to drop {name!r}: only a *{E2E_SUFFIX} database is recreated")
+    return name
+
+
+async def _drop(url: str) -> None:
+    """Drop the database (after the guard), closing any connection a dead run left open."""
+    name = refuse_unless_e2e(url)
+    parsed = make_url(url)
+    conn = await asyncpg.connect(
+        host=parsed.host,
+        port=parsed.port,
+        user=parsed.username,
+        password=parsed.password,
+        database="postgres",
+    )
+    try:
+        await conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+    finally:
+        await conn.close()
+
+
 def main() -> None:
-    """``python -m tests.testdb [--suffix _e2e] [--print-url]``.
+    """``python -m tests.testdb [--suffix _e2e] [--fresh] [--print-url]``.
+
+    ``--fresh`` drops the database first, and only ever a ``*_e2e`` one (S58).
 
     ``--print-url`` puts the DSN on stdout and everything else on stderr, so a shell can
     capture it — which is how the browser-journey stack learns where its database is without
@@ -73,6 +105,8 @@ def main() -> None:
     args = sys.argv[1:]
     suffix = args[args.index("--suffix") + 1] if "--suffix" in args else TEST_SUFFIX
     url = test_database_url(Settings().database_url, suffix)
+    if "--fresh" in args:
+        asyncio.run(_drop(url))
     created = asyncio.run(_create_if_missing(url))
     # Alembic's env.py reads the URL from settings, so hand it over the same way the root
     # conftest does rather than setting it on the Config (which env.py would overwrite).

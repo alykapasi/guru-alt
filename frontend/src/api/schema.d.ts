@@ -61,6 +61,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/eval/areas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Eval Areas */
+        get: operations["eval_areas_api_v1_admin_eval_areas_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/eval/examples/{example_id}/label": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Eval Label */
+        put: operations["eval_label_api_v1_admin_eval_examples__example_id__label_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/eval/{area}/draw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Eval Draw */
+        post: operations["eval_draw_api_v1_admin_eval__area__draw_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/eval/{area}/labelled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Eval Labelled */
+        get: operations["eval_labelled_api_v1_admin_eval__area__labelled_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/eval/{area}/next": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Eval Next */
+        get: operations["eval_next_api_v1_admin_eval__area__next_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/impersonate": {
         parameters: {
             query?: never;
@@ -2972,6 +3057,93 @@ export interface components {
             /** Value */
             value: unknown;
         };
+        /** EvalAreaCounts */
+        EvalAreaCounts: {
+            /** Area */
+            area: string;
+            /** Available */
+            available: number;
+            /** Label Key */
+            label_key: string;
+            /** Labelled */
+            labelled: number;
+            /** Unlabelled */
+            unlabelled: number;
+            /** Values */
+            values: string[];
+        };
+        /** EvalDrawRequest */
+        EvalDrawRequest: {
+            /**
+             * Limit
+             * @default 10
+             */
+            limit: number;
+        };
+        /** EvalDrawResult */
+        EvalDrawResult: {
+            /** Drawn */
+            drawn: number;
+        };
+        /** EvalExampleBlind */
+        EvalExampleBlind: {
+            /** Area */
+            area: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Snapshot */
+            snapshot: {
+                [key: string]: unknown;
+            };
+        };
+        /** EvalExampleRevealed */
+        EvalExampleRevealed: {
+            /** Area */
+            area: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Decision */
+            decision: {
+                [key: string]: unknown;
+            };
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Label */
+            label: {
+                [key: string]: unknown;
+            } | null;
+            /** Labelled At */
+            labelled_at: string | null;
+            /** Note */
+            note: string | null;
+            /** Snapshot */
+            snapshot: {
+                [key: string]: unknown;
+            };
+        };
+        /** EvalLabelRequest */
+        EvalLabelRequest: {
+            /** Label */
+            label: {
+                [key: string]: unknown;
+            };
+            /** Note */
+            note?: string | null;
+        };
         /**
          * ExportFileRead
          * @description One uploaded file, and where to download it (S61).
@@ -4803,6 +4975,162 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConceptLinkReviewRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    eval_areas_api_v1_admin_eval_areas_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalAreaCounts"][];
+                };
+            };
+        };
+    };
+    eval_label_api_v1_admin_eval_examples__example_id__label_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                example_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvalLabelRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalExampleRevealed"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    eval_draw_api_v1_admin_eval__area__draw_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                area: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvalDrawRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalDrawResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    eval_labelled_api_v1_admin_eval__area__labelled_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                area: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalExampleRevealed"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    eval_next_api_v1_admin_eval__area__next_get: {
+        parameters: {
+            query?: {
+                skip?: string[] | null;
+            };
+            header?: never;
+            path: {
+                area: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalExampleBlind"] | null;
                 };
             };
             /** @description Validation Error */

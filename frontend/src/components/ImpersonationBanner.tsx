@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Eye } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { endVisit, useVisit } from "../api/impersonation";
 
@@ -15,6 +16,7 @@ import { endVisit, useVisit } from "../api/impersonation";
 export function ImpersonationBanner() {
   const visit = useVisit();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   if (!visit) return null;
 
@@ -27,13 +29,20 @@ export function ImpersonationBanner() {
     // the administrator's own.
     const { impersonationId } = visit;
     endVisit();
-    await api.DELETE("/api/v1/admin/impersonations/{impersonation_id}", {
-      params: { path: { impersonation_id: impersonationId } },
-    });
-    // Everything cached was fetched as somebody else. Clearing beats invalidating: a stale
-    // read of another learner's data rendering for a moment is the exact confusion the banner
-    // exists to prevent.
-    queryClient.clear();
+    // Off the learner's pages and onto fresh reads before the request, not after it: the page
+    // on screen is the learner's, and with the banner gone it reads as the administrator's own.
+    // Reset rather than clear — clearing empties the cache but leaves mounted pages showing
+    // what they last read; resetting refetches them as the administrator. Back to the portal,
+    // because the learner's URLs mean nothing to the administrator's account (S58).
+    navigate("/app/admin");
+    void queryClient.resetQueries();
+    try {
+      await api.DELETE("/api/v1/admin/impersonations/{impersonation_id}", {
+        params: { path: { impersonation_id: impersonationId } },
+      });
+    } catch {
+      // The visit expires on its own (`expires_at`); this browser has already dropped its token.
+    }
   }
 
   return (
