@@ -28,6 +28,8 @@ def create_engine(settings: Settings) -> AsyncEngine:
         settings.database_url,
         echo=settings.db_echo,
         pool_pre_ping=True,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
     )
 
 
