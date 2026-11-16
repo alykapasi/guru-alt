@@ -28,6 +28,7 @@ from app.models.learner import Learner
 from app.models.learning import LearningEvent
 from app.services import removal, retention, turn_lock
 from app.services import workflow as workflow_svc
+from app.services.llm_log import accounting_session
 from app.storage.memory import InMemoryBlobStore
 from tests.checkpoint_helpers import has_checkpoint
 from tests.test_workflow import (
@@ -157,7 +158,11 @@ async def test_deleting_a_conversation_mid_answer_ends_the_turn_cleanly(
         resume=True,
     )
     events = [await anext(stream)]  # graded, and the feedback has started streaming
-    await removal.delete_conversation(db_session, conv.learner_id, conv.id, forget=False)
+    # The delete is another request, so it has its own session. Tests share one connection, and
+    # accounting sessions on it take turns — this one takes its turn with them rather than
+    # interleaving with the running turn's bookkeeping.
+    async with accounting_session() as other_request:
+        await removal.delete_conversation(other_request, conv.learner_id, conv.id, forget=False)
     events += [e async for e in stream]
 
     assert events[-1].type == "error"

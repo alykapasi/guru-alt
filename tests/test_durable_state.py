@@ -304,7 +304,7 @@ async def test_a_claim_does_not_sit_in_an_open_transaction(
             text(
                 "SELECT count(*) FROM pg_stat_activity "
                 "WHERE state = 'idle in transaction' AND application_name = current_setting("
-                "'application_name')"
+                "'application_name') AND datname = current_database()"
             )
         )
         assert idle_in_transaction == 0

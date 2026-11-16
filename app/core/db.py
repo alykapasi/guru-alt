@@ -45,6 +45,19 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         yield session
 
 
+async def release_before_model_wait(session: AsyncSession) -> None:
+    """End ``session``'s transaction, so it holds no pool connection while a model streams.
+
+    A transaction keeps its connection until it ends, and a streamed reply can run until the
+    turn's deadline: each learner waiting on one would hold a connection the rest of the app
+    needs. What was written so far is committed, so it stays even if the learner presses Stop.
+    Loaded objects stay usable (``expire_on_commit=False``), and the next query starts a new
+    transaction on a fresh connection.
+    """
+    if session.in_transaction():
+        await session.commit()
+
+
 def engine_of(session: AsyncSession) -> AsyncEngine:
     """The engine behind ``session``, for work that needs its own connection to the same
     database (advisory locks: ingestion slots, turn claims)."""

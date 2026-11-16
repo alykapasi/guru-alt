@@ -19,6 +19,7 @@ from app.agent.refinement import (
     build_refinement_graph,
     refinement_config,
 )
+from app.core.db import release_before_model_wait
 from app.llm.attribution import metered
 from app.llm.meter import CallRefused
 from app.llm.registry import LLMClient
@@ -96,6 +97,7 @@ async def run_refinement_turn(
 
     spec = llm.spec(ModelRole.FAST)
     proposal = ""
+    await release_before_model_wait(session)
     try:
         async for mode, payload in graph.astream(
             run_input, config, stream_mode=["custom", "values"]

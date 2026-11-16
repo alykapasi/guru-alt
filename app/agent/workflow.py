@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import checkpointing
 from app.agent.state import WorkflowState
+from app.core.db import release_before_model_wait
 from app.learning import feedback, mastery
 from app.llm.registry import LLMClient
 from app.llm.types import ChatMessage, ChatRole, ModelRole, Usage
@@ -63,7 +64,12 @@ def build_workflow_graph(
     subject_id: uuid.UUID | None = None,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
     async def _stream(messages: list[ChatMessage], system: str, max_tokens: int) -> dict[str, Any]:
-        """Shared body for ``present``/``respond`` — one SMART call, streamed."""
+        """Shared body for ``present``/``respond`` — one SMART call, streamed.
+
+        Both follow database work (the turn's setup; grading and its reads), so the
+        transaction ends here rather than staying open, holding a connection, for the reply.
+        """
+        await release_before_model_wait(session)
         writer = get_stream_writer()
         parts: list[str] = []
         usage = Usage()
