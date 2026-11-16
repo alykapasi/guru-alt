@@ -763,6 +763,11 @@ still a claim made in the product's name, so write a reason you would stand behi
 - **Order:** undecided pairs first. Opening the queue also picks up any new curated candidates.
 - **Endorse / Reject:** both need a reason.
 - **A verdict is final.** A second verdict on the same pair gets a 409.
+- **Withdraw endorsement:** an endorsed pair can be withdrawn once, with a reason. It stops
+  being a suggestion and is no longer in effect for anyone. Each learner who accepted it loses
+  the head start only where they have not answered on it yet; where they have, the estimate
+  rests on those answers and stands. Another link still in effect can take over the head start.
+  A withdrawn pair cannot be endorsed again.
 
 ### The judge
 

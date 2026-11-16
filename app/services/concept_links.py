@@ -29,7 +29,7 @@ from app.schemas.concept_links import ConceptLinkReviewRead
 log = structlog.get_logger(__name__)
 
 CURATED, PRIVATE = "curated", "private"
-ENDORSED, REJECTED = "endorsed", "rejected"
+ENDORSED, REJECTED, WITHDRAWN = "endorsed", "rejected", "withdrawn"
 ACCEPTED, DECLINED, REVOKED = "accepted", "declined", "revoked"
 
 
@@ -43,6 +43,10 @@ class LinkAlreadyDecided(Exception):
 
 class LinkConflict(Exception):
     """The learner's decision does not follow from the one they already made."""
+
+
+class LinkNotEndorsed(Exception):
+    """Only an endorsed link can have its endorsement withdrawn."""
 
 
 async def sync_candidates(session: AsyncSession, learner_id: uuid.UUID | None) -> int:
@@ -168,6 +172,42 @@ async def set_admin_verdict(
     link.decided_by_admin_id = admin_id
     link.reason = reason
     link.decided_at = datetime.now(UTC)
+    await session.flush()
+    return link
+
+
+async def withdraw_endorsement(
+    session: AsyncSession, link_id: uuid.UUID, admin_id: uuid.UUID, *, reason: str
+) -> ConceptLink:
+    """Take back an administrator's endorsement of a curated link (S24). Final, like a verdict.
+
+    Every learner who accepted it is treated as though they had revoked it: a head start nobody
+    has answered on yet is withdrawn and handed to any other link still in effect, and one that
+    answers have built on stands. Their ``accepted`` rows stay as history; nothing counts them,
+    because a link is in effect only while it is endorsed.
+    """
+    link = await session.get(ConceptLink, link_id, with_for_update=True, populate_existing=True)
+    if link is None or link.scope != CURATED:
+        raise LinkNotFound(str(link_id))
+    if link.verdict != ENDORSED:
+        raise LinkNotEndorsed(str(link_id))
+    link.verdict = WITHDRAWN
+    link.decided_by_admin_id = admin_id
+    link.reason = reason
+    link.decided_at = datetime.now(UTC)
+    await session.flush()  # so the reseed below no longer finds this link in effect
+    accepted = await session.scalars(
+        select(ConceptLinkDecision.learner_id).where(
+            ConceptLinkDecision.link_id == link.id, ConceptLinkDecision.decision == ACCEPTED
+        )
+    )
+    pairs = ((link.kc_a_id, link.kc_b_id), (link.kc_b_id, link.kc_a_id))
+    for learner_id in list(accepted):
+        for target_kc, source_kc in pairs:
+            if await mastery.revoke_transfer(
+                session, learner_id, target_kc_id=target_kc, source_kc_id=source_kc, link_id=link.id
+            ):
+                await _reseed_from_remaining_links(session, learner_id, target_kc)
     await session.flush()
     return link
 
@@ -542,7 +582,7 @@ async def review_rows(session: AsyncSession) -> list[ConceptLinkReviewRead]:
             # `verdict` is `str | None` on the row (curated_queue's own where-clause is what
             # actually narrows it) — cast to the response's closed vocabulary rather than
             # widen the schema to match the column.
-            verdict=cast('Literal["endorsed", "rejected"] | None', link.verdict),
+            verdict=cast('Literal["endorsed", "rejected", "withdrawn"] | None', link.verdict),
             reason=link.reason,
             decided_at=link.decided_at,
         )

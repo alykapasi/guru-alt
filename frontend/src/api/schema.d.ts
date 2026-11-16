@@ -61,6 +61,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/concept-links/{link_id}/withdraw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Withdraw Concept Link
+         * @description Take back an endorsement, once. Learners' unanswered head starts over it go with it.
+         */
+        post: operations["withdraw_concept_link_api_v1_admin_concept_links__link_id__withdraw_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/eval/areas": {
         parameters: {
             query?: never;
@@ -2765,7 +2785,7 @@ export interface components {
             /** Subject B Name */
             subject_b_name: string;
             /** Verdict */
-            verdict: ("endorsed" | "rejected") | null;
+            verdict: ("endorsed" | "rejected" | "withdrawn") | null;
         };
         /**
          * ConceptLinkSuggestionRead
@@ -2790,6 +2810,11 @@ export interface components {
         ConceptLinkVerdictSubmit: {
             /** Endorse */
             endorse: boolean;
+            /** Reason */
+            reason: string;
+        };
+        /** ConceptLinkWithdrawSubmit */
+        ConceptLinkWithdrawSubmit: {
             /** Reason */
             reason: string;
         };
@@ -4967,6 +4992,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ConceptLinkVerdictSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConceptLinkReviewRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    withdraw_concept_link_api_v1_admin_concept_links__link_id__withdraw_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                link_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConceptLinkWithdrawSubmit"];
             };
         };
         responses: {

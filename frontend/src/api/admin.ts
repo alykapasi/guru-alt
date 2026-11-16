@@ -234,3 +234,19 @@ export function useConceptLinkVerdict() {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["admin", "concept-links"] }),
   });
 }
+
+/** Take back an endorsement (S24). Final; learners' unanswered head starts over it go too. */
+export function useConceptLinkWithdraw() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ linkId, reason }: { linkId: string; reason: string }) => {
+      const { data, error } = await api.POST("/api/v1/admin/concept-links/{link_id}/withdraw", {
+        params: { path: { link_id: linkId } },
+        body: { reason },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["admin", "concept-links"] }),
+  });
+}

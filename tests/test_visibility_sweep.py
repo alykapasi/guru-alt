@@ -767,6 +767,17 @@ CASES: list[Case] = [
         owner_exempt="every caller without the admin tier gets the same 403, whether the link exists or not — these are review routes, not learner routes",
         refusal=403,
     ),
+    Case(
+        "POST",
+        "/api/v1/admin/concept-links/{link_id}/withdraw",
+        "link_id",
+        ("link",),
+        lambda c, t, o: c.post(
+            f"{API}/admin/concept-links/{t.link}/withdraw", json={"reason": "x"}
+        ),
+        owner_exempt="every caller without the admin tier gets the same 403, whether the link exists or not — these are review routes, not learner routes",
+        refusal=403,
+    ),
 ]
 
 
