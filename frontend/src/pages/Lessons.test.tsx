@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { Lessons } from "./Lessons";
@@ -56,5 +56,17 @@ describe("adding a subject", () => {
     renderPage([]);
     const link = await screen.findByRole("link", { name: /first subject/ });
     expect(link).toHaveAttribute("href", "/app/subjects/new");
+  });
+});
+
+describe("a subject of one's own", () => {
+  const OWNED = { ...SUBJECT, id: "s-2", owner_learner_id: "me" };
+
+  it("keeps sources and sharing folded away until asked for", async () => {
+    renderPage([OWNED]);
+    const section = await screen.findByText("Sources and sharing");
+    expect(screen.getByRole("button", { name: "Request publication" })).not.toBeVisible();
+    fireEvent.click(section);
+    expect(screen.getByRole("button", { name: "Request publication" })).toBeVisible();
   });
 });

@@ -71,13 +71,20 @@ export function Lessons() {
           showing a door that answers 404. */}
       {selected && selected.owner_learner_id !== null && (
         <>
-          <SubjectSources key={`sources-${selected.id}`} subject={selected} />
           <CurriculumIssuesPanel key={`issues-${selected.id}`} subjectId={selected.id} />
-          <PublishPanel
-            key={selected.id}
-            subjectId={selected.id}
-            sourceDerived={selected.private_source_derived}
-          />
+          {/* Set once and rarely revisited, so folded under the plan rather than competing with
+              it. */}
+          <details className="border-base-300 rounded-box border px-4 py-2">
+            <summary className="text-body cursor-pointer">Sources and sharing</summary>
+            <div className="flex flex-col gap-6 pt-3">
+              <SubjectSources key={`sources-${selected.id}`} subject={selected} />
+              <PublishPanel
+                key={selected.id}
+                subjectId={selected.id}
+                sourceDerived={selected.private_source_derived}
+              />
+            </div>
+          </details>
         </>
       )}
     </div>
