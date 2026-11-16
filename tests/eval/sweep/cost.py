@@ -54,9 +54,15 @@ class CostTrackingClient(LLMClient):
         system: str | None = None,
         max_tokens: int = 1024,
         tools: Sequence[ToolDef] | None = None,
+        json_output: bool = False,
     ) -> ChatResponse:
         resp = await super().complete(
-            role, messages, system=system, max_tokens=max_tokens, tools=tools
+            role,
+            messages,
+            system=system,
+            max_tokens=max_tokens,
+            tools=tools,
+            json_output=json_output,
         )
         self._record(role, resp.model, resp.usage)
         return resp

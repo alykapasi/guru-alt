@@ -297,17 +297,21 @@ async def test_a_claim_does_not_sit_in_an_open_transaction(
 ) -> None:
     """The connection is held for the whole turn. Left in a transaction it pins a snapshot and
     blocks vacuum for as long as the learner takes to answer."""
+    # Only connections the claim adds count: one another test left idle in a transaction on
+    # this database is not the claim's doing, and made this test fail depending on order.
+    idle_in_transaction = text(
+        "SELECT pid FROM pg_stat_activity "
+        "WHERE state = 'idle in transaction' AND application_name = current_setting("
+        "'application_name') AND datname = current_database()"
+    )
+    before = set(await db_session.scalars(idle_in_transaction))
     claim = await turn_lock.claim(engine, uuid.uuid4())
     assert claim is not None
     try:
-        idle_in_transaction = await db_session.scalar(
-            text(
-                "SELECT count(*) FROM pg_stat_activity "
-                "WHERE state = 'idle in transaction' AND application_name = current_setting("
-                "'application_name') AND datname = current_database()"
-            )
-        )
-        assert idle_in_transaction == 0
+        # Activity statistics are a snapshot taken once per transaction; without clearing it,
+        # this second look would only repeat the first.
+        await db_session.execute(text("SELECT pg_stat_clear_snapshot()"))
+        assert set(await db_session.scalars(idle_in_transaction)) - before == set()
     finally:
         await claim.release()
 

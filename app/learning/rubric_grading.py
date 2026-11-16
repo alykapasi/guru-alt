@@ -155,6 +155,7 @@ async def grade_open(
         ],
         system=used_system,
         max_tokens=max_tokens,
+        json_output=True,
     )
     grade = _parse_grade(completion.content, response_text=answer)
     component_scores = (

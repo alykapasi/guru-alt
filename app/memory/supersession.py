@@ -70,6 +70,7 @@ async def judge(llm: LLMClient, candidates: Sequence[Candidate]) -> tuple[list[J
             [ChatMessage(role=ChatRole.USER, content=_build_prompt(candidates))],
             system=_SYSTEM_PROMPT,
             max_tokens=64 + 48 * len(candidates),
+            json_output=True,
         )
     except CallRefused:
         raise  # refused, not "coexists": the write-back defers, keeping its watermark (S47)

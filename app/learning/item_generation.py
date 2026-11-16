@@ -91,6 +91,7 @@ async def generate_mcq_item(
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
         system=_SYSTEM_PROMPT + _pitch(target_difficulty) + transfer.prompt_line(setting),
         max_tokens=max_tokens,
+        json_output=True,
     )
     parsed = _parse_mcq(completion.content)
     if parsed is None:
@@ -138,6 +139,7 @@ async def generate_fill_blank_item(
         + _pitch(target_difficulty)
         + transfer.prompt_line(setting),
         max_tokens=max_tokens,
+        json_output=True,
     )
     parsed = _parse_fill_blank(completion.content)
     if parsed is None:
@@ -198,6 +200,7 @@ async def generate_short_item(
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
         system=_SHORT_SYSTEM_PROMPT + _pitch(target_difficulty) + transfer.prompt_line(setting),
         max_tokens=max_tokens,
+        json_output=True,
     )
     parsed = _parse_short(completion.content)
     if parsed is None:
@@ -257,6 +260,7 @@ async def generate_flashcard_item(
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(kc))],
         system=_FLASHCARD_SYSTEM_PROMPT + _pitch(target_difficulty) + transfer.prompt_line(setting),
         max_tokens=max_tokens,
+        json_output=True,
     )
     parsed = _parse_flashcard(completion.content)
     if parsed is None:
@@ -393,6 +397,7 @@ async def write_criteria(
         ],
         system=CRITERIA_SYSTEM_PROMPT,
         max_tokens=max_tokens,
+        json_output=True,
     )
     criteria, level = _parse_criteria(completion.content)
     return criteria, level, completion.usage

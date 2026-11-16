@@ -294,6 +294,7 @@ async def _generate(
         [ChatMessage(role=ChatRole.USER, content=user)],
         system=system,
         max_tokens=1024,
+        json_output=True,
     )
     return _parse(completion.content), completion.usage
 

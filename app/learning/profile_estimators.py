@@ -338,6 +338,7 @@ async def _estimate_error_type(
         [ChatMessage(role=ChatRole.USER, content=_build_error_type_prompt(candidates))],
         system=_ERROR_TYPE_SYSTEM_PROMPT,
         max_tokens=512,
+        json_output=True,
     )
     counts = _parse_error_types(completion.content, len(candidates))
     total = sum(counts.values())
@@ -467,6 +468,7 @@ async def _estimate_goal_orientation(
         [ChatMessage(role=ChatRole.USER, content=prompt)],
         system=_GOAL_ORIENTATION_SYSTEM_PROMPT,
         max_tokens=128,
+        json_output=True,
     )
     parsed = _parse_goal_orientation(completion.content)
     if parsed is None:
@@ -529,6 +531,7 @@ async def _estimate_interests(ctx: EstimatorContext) -> tuple[DimensionEstimate 
         [ChatMessage(role=ChatRole.USER, content=f"Learner's messages:\n{text}")],
         system=_INTERESTS_SYSTEM_PROMPT,
         max_tokens=128,
+        json_output=True,
     )
     interests = _parse_interests(completion.content)
     if not interests:

@@ -297,6 +297,7 @@ async def distill(
         [ChatMessage(role=ChatRole.USER, content=prompt)],
         system=DISTILL_SYSTEM_PROMPT,
         max_tokens=4096,
+        json_output=True,
     )
     data = parse_atoms_payload(completion.content)
     if data is None:
@@ -336,6 +337,7 @@ async def absorb(
         [ChatMessage(role=ChatRole.USER, content=prompt)],
         system=ABSORB_SYSTEM_PROMPT,
         max_tokens=4096,
+        json_output=True,
     )
     data = parse_atoms_payload(completion.content)
     if data is None or data.get("no_change"):
