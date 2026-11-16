@@ -82,6 +82,7 @@ async def judge_pair(client: LLMClient, a: Side, b: Side) -> tuple[Verdict | Non
             ],
             system=_SYSTEM_PROMPT,
             max_tokens=200,
+            json_output=True,
         )
     except CallRefused:
         raise  # refused, not undecided: the task defers (S47)

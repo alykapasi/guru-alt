@@ -65,6 +65,7 @@ async def infer_levels(
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(background, candidates))],
         system=_SYSTEM_PROMPT,
         max_tokens=max_tokens,
+        json_output=True,
     )
     return _parse_levels(completion.content, candidates), completion.usage
 

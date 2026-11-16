@@ -114,6 +114,7 @@ async def classify_intent(
             [ChatMessage(role=ChatRole.USER, content=_build_prompt(question, message))],
             system=_SYSTEM_PROMPT,
             max_tokens=max_tokens,
+            json_output=True,
         )
     except Exception:
         return TurnIntent.DEFERRAL, Usage()

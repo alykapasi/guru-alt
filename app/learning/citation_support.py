@@ -143,6 +143,7 @@ async def check_support(
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(text, passages))],
         system=_SYSTEM_PROMPT,
         max_tokens=max_tokens,
+        json_output=True,
     )
     return _parse(completion.content, n_passages=len(passages)), completion.usage
 

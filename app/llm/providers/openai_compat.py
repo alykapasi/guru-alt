@@ -84,6 +84,7 @@ def refusal(exc: Exception) -> ProviderUnavailable | None:
 
 class OpenAICompatProvider:
     supports_embeddings = True
+    supports_json_output = True
 
     def __init__(
         self, *, name: str, base_url: str, api_key: str, timeout: float, max_retries: int
@@ -190,13 +191,19 @@ class OpenAICompatProvider:
         system: str | None = None,
         max_tokens: int = 1024,
         tools: Sequence[ToolDef] | None = None,
+        json_output: bool = False,
     ) -> ChatResponse:
+        # Ollama and OpenRouter both constrain the reply to one valid JSON object when asked.
+        json_mode: dict[str, Any] = (
+            {"response_format": {"type": "json_object"}} if json_output else {}
+        )
         with translated(refusal):
             resp = await self._client.chat.completions.create(
                 model=model,
                 messages=cast(Any, self._payload(messages, system)),
                 max_tokens=max_tokens,
                 **self._tools_payload(tools),
+                **json_mode,
             )
         usage = Usage()
         if resp.usage is not None:

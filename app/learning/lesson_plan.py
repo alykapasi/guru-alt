@@ -323,6 +323,7 @@ async def select_objectives(
         [ChatMessage(role=ChatRole.USER, content=_build_objective_prompt(goal, candidates))],
         system=_OBJECTIVE_SYSTEM_PROMPT,
         max_tokens=max_tokens,
+        json_output=True,
     )
     return _parse_objectives(completion.content, candidates), completion.usage
 

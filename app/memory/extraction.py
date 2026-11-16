@@ -54,6 +54,7 @@ async def extract_memories(
         [ChatMessage(role=ChatRole.USER, content=_build_prompt(messages))],
         system=_SYSTEM_PROMPT,
         max_tokens=max_tokens,
+        json_output=True,
     )
     return _parse_memories(completion.content), completion.usage
 

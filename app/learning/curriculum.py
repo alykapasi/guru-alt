@@ -105,6 +105,7 @@ async def generate_curriculum(
         [ChatMessage(role=ChatRole.USER, content=prompt)],
         system=CURRICULUM_SYSTEM_PROMPT,
         max_tokens=2048,
+        json_output=True,
     )
     reply, usage = completion.content, completion.usage
 
