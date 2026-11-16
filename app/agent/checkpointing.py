@@ -161,7 +161,7 @@ async def start(settings: Settings | None = None) -> None:
         except Exception as exc:
             # Chat still works; paused conversations still will not survive a restart. Both
             # halves of that are true and both are reported rather than one being assumed.
-            log.error("checkpointer.durable_start_failed", error=str(exc))
+            log.error("checkpointer.durable_start_failed", error=str(exc), exc_info=True)
             _saver, _pool = _VOLATILE, None
             return
         expected = expected_schema_version()
@@ -215,7 +215,9 @@ async def discard_thread(thread_id: str) -> bool:
     try:
         await saver.adelete_thread(thread_id)
     except Exception as exc:
-        log.warning("checkpointer.discard_failed", thread_id=thread_id, error=str(exc))
+        log.warning(
+            "checkpointer.discard_failed", thread_id=thread_id, error=str(exc), exc_info=True
+        )
         return False
     return True
 
@@ -237,7 +239,9 @@ async def erase_threads(thread_ids: Iterable[str]) -> list[str]:
         try:
             await delete_thread(thread_id)
         except Exception as exc:
-            log.warning("checkpointer.erase_failed", thread_id=thread_id, error=str(exc))
+            log.warning(
+                "checkpointer.erase_failed", thread_id=thread_id, error=str(exc), exc_info=True
+            )
             failed.append(thread_id)
     return failed
 

@@ -100,7 +100,7 @@ async def _deployment_total(session: AsyncSession) -> float | None:
             or 0.0
         )
     except Exception:
-        log.warning("budget.deployment_total_unreadable")
+        log.warning("budget.deployment_total_unreadable", exc_info=True)
         return _cache[1] if _cache is not None else None
     _cache = (time.monotonic(), total)
     return total

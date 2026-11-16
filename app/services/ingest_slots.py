@@ -47,7 +47,7 @@ class IngestSlots:
         try:
             await self.connection.execute(text("SELECT pg_advisory_unlock_all()"))
         except Exception:
-            log.warning("ingest_slots.unlock_failed")
+            log.warning("ingest_slots.unlock_failed", exc_info=True)
         finally:
             await self.connection.close()
 

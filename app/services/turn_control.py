@@ -93,7 +93,12 @@ class TurnControl:
 
             self._unlisten = unlisten
         except Exception as exc:
-            log.warning("turn_control.listen_failed", turn_id=str(self.turn_id), error=str(exc))
+            log.warning(
+                "turn_control.listen_failed",
+                turn_id=str(self.turn_id),
+                error=str(exc),
+                exc_info=True,
+            )
 
     async def run[T](self, events: AsyncIterator[T]) -> AsyncIterator[T | Interrupted]:
         loop = asyncio.get_running_loop()

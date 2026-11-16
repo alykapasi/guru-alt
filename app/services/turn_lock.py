@@ -102,7 +102,9 @@ class TurnClaim:
                 },
             )
         except Exception:
-            log.warning("turn_lock.unlock_failed", conversation_id=str(self.conversation_id))
+            log.warning(
+                "turn_lock.unlock_failed", conversation_id=str(self.conversation_id), exc_info=True
+            )
         finally:
             await self.connection.close()
 
@@ -120,7 +122,7 @@ async def claim(engine: AsyncEngine, conversation_id: uuid.UUID) -> TurnClaim | 
         connection = await engine.connect()
         connection = await connection.execution_options(isolation_level="AUTOCOMMIT")
     except Exception as exc:
-        log.error("turn_lock.no_connection", error=str(exc))
+        log.error("turn_lock.no_connection", error=str(exc), exc_info=True)
         if conversation_id in _fallback:
             return None
         _fallback.add(conversation_id)
@@ -132,7 +134,7 @@ async def claim(engine: AsyncEngine, conversation_id: uuid.UUID) -> TurnClaim | 
         )
     except Exception as exc:
         await connection.close()
-        log.error("turn_lock.claim_failed", error=str(exc))
+        log.error("turn_lock.claim_failed", error=str(exc), exc_info=True)
         return None
     if not taken:
         await connection.close()
@@ -163,6 +165,6 @@ async def is_active(session: AsyncSession, conversation_id: uuid.UUID) -> bool:
     except Exception as exc:
         # Unknown, so say "active": reaping marks a turn CANCELLED, and reporting a running
         # turn as abandoned is the more damaging of the two possible errors.
-        log.error("turn_lock.liveness_unknown", error=str(exc))
+        log.error("turn_lock.liveness_unknown", error=str(exc), exc_info=True)
         return True
     return held is not None

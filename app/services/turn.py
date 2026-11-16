@@ -165,7 +165,9 @@ async def close_turn(
         )
         await session.commit()
     except Exception:
-        log.warning("turn.status_not_recorded", turn_id=str(turn_id), status=status.value)
+        log.warning(
+            "turn.status_not_recorded", turn_id=str(turn_id), status=status.value, exc_info=True
+        )
 
 
 async def recent_turns(

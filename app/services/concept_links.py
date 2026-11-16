@@ -297,7 +297,10 @@ async def dispatch_judge(
         return True
     except Exception as exc:
         log.warning(
-            "concept_links.judge_enqueue_failed", learner_id=str(learner_id), error=str(exc)
+            "concept_links.judge_enqueue_failed",
+            learner_id=str(learner_id),
+            error=str(exc),
+            exc_info=True,
         )
         return False
 

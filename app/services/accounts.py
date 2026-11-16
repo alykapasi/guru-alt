@@ -183,6 +183,7 @@ async def invite(
                 "accounts.invite.provider_invitation_abandoned",
                 email=address,
                 provider_invitation_id=provider_invitation_id,
+                exc_info=True,
             )
         raise
     await session.refresh(invitation)

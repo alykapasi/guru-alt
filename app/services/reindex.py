@@ -259,7 +259,12 @@ async def apply(
             await _reembed(session, llm, stale, space=space, settings=settings)
         except Exception as exc:  # reported, and the next run retries it
             await session.rollback()
-            log.warning("reindex.reembed_failed", source_id=str(stale.source_id), error=str(exc))
+            log.warning(
+                "reindex.reembed_failed",
+                source_id=str(stale.source_id),
+                error=str(exc),
+                exc_info=True,
+            )
             result.failed[stale.source_id] = str(exc)
             continue
         result.reembedded.append(stale.source_id)

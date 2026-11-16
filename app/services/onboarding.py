@@ -113,7 +113,7 @@ async def run_goal_refinement_turn(
     except CallRefused:
         raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
-        log.error("onboarding.refinement_failed", error=str(exc))
+        log.error("onboarding.refinement_failed", error=str(exc), exc_info=True)
         yield TurnEvent(type="error", detail="generation failed")
         return
 

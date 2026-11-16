@@ -362,7 +362,10 @@ async def _resolve_check(
             return item, None
         except Exception as exc:
             log.warning(
-                "check.criteria_unavailable", item_id=str(item.id), error=type(exc).__name__
+                "check.criteria_unavailable",
+                item_id=str(item.id),
+                error=type(exc).__name__,
+                exc_info=True,
             )
 
     # Read before grading: `answer_item` returns the posterior, and a posterior with nothing
@@ -394,7 +397,7 @@ async def _resolve_check(
         log.warning("chat.check_not_answerable", item_id=str(item.id))
         return item, None
     except Exception as exc:
-        log.error("chat.check_grading_failed", item_id=str(item.id), error=str(exc))
+        log.error("chat.check_grading_failed", item_id=str(item.id), error=str(exc), exc_info=True)
         return item, None
     return None, CheckOutcome(
         item=item, result=result, priors=priors, states=states, prior_kinds=prior_kinds
@@ -644,7 +647,7 @@ async def run_tutor_turn(
     except CallRefused:
         raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
-        log.error("tutor.stream_failed", error=str(exc), model=spec.model)
+        log.error("tutor.stream_failed", error=str(exc), model=spec.model, exc_info=True)
         yield TurnEvent(type="error", detail="generation failed")
         return
 
@@ -715,4 +718,4 @@ async def record_phase(
         conversation.active_item_id = active_item_id
         await session.commit()
     except Exception:
-        log.warning("chat.phase_not_recorded", conversation_id=str(conversation_id))
+        log.warning("chat.phase_not_recorded", conversation_id=str(conversation_id), exc_info=True)

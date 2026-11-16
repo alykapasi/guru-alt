@@ -92,4 +92,4 @@ async def record_decision(
             )
             await session.commit()
     except Exception as exc:  # bookkeeping must not fail the turn it accounts for
-        log.error("decision.call_not_recorded", question=question, error=str(exc))
+        log.error("decision.call_not_recorded", question=question, error=str(exc), exc_info=True)
