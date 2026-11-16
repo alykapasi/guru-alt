@@ -19,6 +19,7 @@ paused practice and grade one answer twice, and a negotiation whose ownership re
 the process can only ever be refused, which discards it exactly as surely as losing it did.
 """
 
+import asyncio
 import uuid
 from typing import Any, TypedDict
 
@@ -30,7 +31,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.agent import checkpointing
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.readiness import readiness
 from app.models.learner import Learner
 from app.services import onboarding_sessions, turn_lock
@@ -190,6 +191,52 @@ async def test_an_unreachable_database_degrades_loudly_rather_than_refusing_to_s
         assert isinstance(checkpointing.checkpointer(), InMemorySaver)
     finally:
         await checkpointing.stop()
+
+
+async def test_a_database_that_comes_back_is_picked_up_without_a_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A process that started while the database was away (paused, restarting) used to stay
+    volatile until someone restarted it, warning every minute. It now keeps trying."""
+    await checkpointing.stop()
+    real_connect = checkpointing._connect
+    attempts = 0
+
+    async def away_at_first(settings: Settings) -> tuple[object, int | None]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("database is paused")
+        return await real_connect(settings)
+
+    monkeypatch.setattr(checkpointing, "_connect", away_at_first)
+    settings = get_settings().model_copy(update={"checkpointer_retry_seconds": 0.01})
+    try:
+        await checkpointing.start(settings)
+        assert checkpointing.is_durable() is False
+        for _ in range(500):
+            if checkpointing.is_durable():
+                break
+            await asyncio.sleep(0.01)
+        assert checkpointing.is_durable() is True
+        assert attempts == 2
+    finally:
+        await checkpointing.stop()
+
+
+async def test_stopping_ends_the_retries() -> None:
+    await checkpointing.stop()
+    broken = get_settings().model_copy(
+        update={
+            "database_url": "postgresql+asyncpg://nobody:nobody@127.0.0.1:1/nothing",
+            "checkpointer_connect_timeout_seconds": 0.2,
+            "checkpointer_retry_seconds": 0.01,
+        }
+    )
+    await checkpointing.start(broken)
+    await checkpointing.stop()
+    assert checkpointing.retrying() is False
+    assert checkpointing.is_durable() is False
 
 
 async def test_readiness_reports_durability_without_withholding_traffic(

@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     checkpointer_pool_min_size: int = 1
     checkpointer_pool_max_size: int = 4
     checkpointer_connect_timeout_seconds: float = 10.0
+    # A process that could not reach the database at startup retries, doubling the wait.
+    checkpointer_retry_seconds: float = 5.0
+    checkpointer_retry_max_seconds: float = 60.0
     ingest_lease_grace_seconds: int = 120
     ingest_max_attempts: int = 3
     ingest_max_concurrent_jobs: int = 4
