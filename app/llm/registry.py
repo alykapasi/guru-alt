@@ -23,6 +23,7 @@ from app.llm.types import (
     ChatMessage,
     ChatResponse,
     EmbedResult,
+    JsonSchema,
     ModelRole,
     ToolDef,
     text_of,
@@ -118,17 +119,19 @@ class LLMClient:
         system: str | None = None,
         max_tokens: int = 1024,
         tools: Sequence[ToolDef] | None = None,
-        json_output: bool = False,
+        json_output: bool | JsonSchema = False,
     ) -> ChatResponse:
         """One completion. ``json_output`` is for a caller that parses the reply as one JSON
-        object: a provider that can enforce that (``supports_json_output``) is asked to, so a
-        small model cannot answer with something unparseable. Others are not asked — their
-        reply is parsed as before, tolerantly, and a failure is still the caller's to handle.
+        object — ``True`` for any object, a :class:`JsonSchema` for an exact shape: a provider
+        that can enforce that (``supports_json_output``) is asked to, so a small model cannot
+        answer with something unparseable, or (with a schema) leave out what the caller needs.
+        Others are not asked — their reply is parsed as before, tolerantly, and a failure is
+        still the caller's to handle.
         """
         spec = self._roles[role]
         provider = self._providers[spec.provider]
         json_mode = (
-            {"json_output": True}
+            {"json_output": json_output}
             if json_output and getattr(provider, "supports_json_output", False)
             else {}
         )
