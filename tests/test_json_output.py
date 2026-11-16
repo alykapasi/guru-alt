@@ -123,11 +123,18 @@ def test_the_curriculum_schema_requires_what_the_parser_rejects_without() -> Non
     assert {"subject_name", "topics"} <= set(root["required"])
     assert {"name", "kcs"} <= set(topic["required"])
     assert "name" in kc["required"]
-    assert root["properties"]["topics"]["minItems"] == 1
-    assert topic["properties"]["kcs"]["minItems"] == 1
     for name in (root["properties"]["subject_name"], topic["properties"]["name"]):
         assert name["minLength"] == 1
     assert kc["properties"]["name"]["minLength"] == 1
+
+
+def test_a_curriculum_has_at_least_two_topics_of_two_concepts() -> None:
+    """A floor, not the aim (the prompt still asks for 3-5 topics of 2-4): without it a 3B model
+    returned one topic of two concepts in 3 runs of 8, which is not a curriculum to study."""
+    root = CURRICULUM_SCHEMA.schema
+    topic = root["properties"]["topics"]["items"]
+    assert root["properties"]["topics"]["minItems"] == 2
+    assert topic["properties"]["kcs"]["minItems"] == 2
 
 
 async def test_grading_requires_a_json_reply() -> None:
