@@ -7,6 +7,8 @@ plain string (the text-path regression).
 
 import base64
 
+import pytest
+
 from app.core.config import Settings
 from app.llm import (
     ChatMessage,
@@ -100,8 +102,11 @@ def test_anthropic_split_keeps_string_and_hoists_system() -> None:
 # --- role wiring + fake provider --------------------------------------------
 
 
-def test_registry_includes_vision_role() -> None:
-    client = build_llm_client(Settings())
+def test_registry_includes_vision_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The shipped default, not this machine's: a developer pointing VISION at another local
+    # model in .env must not fail the suite.
+    monkeypatch.delenv("GURU_MODEL_VISION", raising=False)
+    client = build_llm_client(Settings(_env_file=None))  # ty: ignore[unknown-argument]
     assert client.spec(ModelRole.VISION).model == "llama3.2-vision"
     assert fake_llm_client().spec(ModelRole.VISION).provider == "fake"
 

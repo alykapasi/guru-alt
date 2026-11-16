@@ -1,3 +1,4 @@
+import { lazy } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useParams } from "react-router-dom";
 import { PageShell } from "./components/PageShell";
 import { RequireLearner } from "./components/RequireLearner";
@@ -8,18 +9,25 @@ import { Landing } from "./pages/Landing";
 import { SignIn } from "./pages/SignIn";
 import { SignUp } from "./pages/SignUp";
 import { clerkEnabled } from "./auth/mode";
-import { Chat } from "./pages/Chat";
-import { ChatIndex } from "./pages/ChatIndex";
-import { Lessons } from "./pages/Lessons";
-import { Session } from "./pages/Session";
-import { Dashboard } from "./pages/Dashboard";
-import { Uploads } from "./pages/Uploads";
-import { Notes } from "./pages/Notes";
-import { NoteView } from "./pages/NoteView";
-import { Memory } from "./pages/Memory";
-import { Account } from "./pages/Account";
-import { SubjectWizard } from "./pages/SubjectWizard";
-import { Admin } from "./pages/Admin";
+import { HOME } from "./lib/home";
+
+/** Everything behind sign-in loads on demand, a page at a time, so the landing and sign-in
+ * pages do not carry the app — and a learner never downloads the admin portal. The shells
+ * hold the loading boundary (`LazyOutlet`). */
+const page = <K extends string>(load: () => Promise<Record<K, React.ComponentType>>, name: K) =>
+  lazy(() => load().then((m) => ({ default: m[name] })));
+const Chat = page(() => import("./pages/Chat"), "Chat");
+const ChatIndex = page(() => import("./pages/ChatIndex"), "ChatIndex");
+const Lessons = page(() => import("./pages/Lessons"), "Lessons");
+const Session = page(() => import("./pages/Session"), "Session");
+const Dashboard = page(() => import("./pages/Dashboard"), "Dashboard");
+const Uploads = page(() => import("./pages/Uploads"), "Uploads");
+const Notes = page(() => import("./pages/Notes"), "Notes");
+const NoteView = page(() => import("./pages/NoteView"), "NoteView");
+const Memory = page(() => import("./pages/Memory"), "Memory");
+const Account = page(() => import("./pages/Account"), "Account");
+const SubjectWizard = page(() => import("./pages/SubjectWizard"), "SubjectWizard");
+const Admin = page(() => import("./pages/Admin"), "Admin");
 
 /** Keys Chat on conversationId so switching conversations remounts it fresh — its local
  * in-flight-turn state (see useChatConversation) must not carry over between conversations. */
@@ -55,7 +63,7 @@ function App() {
             <Route path=":conversationId" element={<SessionRoute />} />
           </Route>
           <Route path="/app" element={<PageShell />}>
-            <Route index element={<Navigate to="chat" replace />} />
+            <Route index element={<Navigate to={HOME} replace />} />
             <Route path="lessons" element={<Lessons />} />
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="uploads" element={<Uploads />} />

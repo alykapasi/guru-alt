@@ -7,9 +7,10 @@ by a ``SourceScope`` (``app.rag.scope``) via the chunk → source join.
 """
 
 import uuid
+from typing import Any
 
 from pydantic import BaseModel
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import ColumnElement, Select, Text, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -29,6 +30,19 @@ class RetrievalHit(BaseModel):
     text: str
     provenance: dict
     score: float
+
+
+def keyword_tsquery(query: str) -> ColumnElement[Any]:
+    """The question's terms, any of which may match.
+
+    ``plainto_tsquery`` alone ANDs every term, so a question matched only passages holding each
+    of its words, and the keyword arm returned almost nothing for ordinary questions. Its output
+    is reused for what it does well — stemming and dropping stopwords — with ``&`` turned into
+    ``|``; ranking by cover density (``ts_rank_cd``) then puts passages sharing more terms first.
+    A question of only stopwords yields an empty query, which matches nothing.
+    """
+    terms = func.plainto_tsquery("english", query).cast(Text)
+    return func.to_tsquery("english", func.replace(terms, " & ", " | "))
 
 
 async def retrieve(
@@ -74,7 +88,7 @@ async def retrieve(
         return stmt
 
     query_vec = (await llm.embed(ModelRole.EMBED, [query])).vectors[0]
-    tsquery = func.plainto_tsquery("english", query)
+    tsquery = keyword_tsquery(query)
 
     # Only vectors from the query's own space are comparable to it. Chunks embedded by a
     # previous model are excluded rather than ranked — a wrong answer that looks right is
@@ -88,7 +102,7 @@ async def retrieve(
     keyword_q = (
         scoped(select(Chunk))
         .where(Chunk.tsv.op("@@")(tsquery))
-        .order_by(func.ts_rank(Chunk.tsv, tsquery).desc())
+        .order_by(func.ts_rank_cd(Chunk.tsv, tsquery).desc())
         .limit(candidates)
     )
 

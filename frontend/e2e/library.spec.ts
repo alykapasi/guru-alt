@@ -77,12 +77,12 @@ test("an ingested document can be built into a subject, and is filed under it", 
   // The wizard is the only thing uploads currently feed, so "the upload worked" and "the
   // upload is usable" are the same claim only if it can be picked here.
   await page.goto("/app/subjects/new");
-  await page.getByRole("checkbox").first().check();
-  await page.getByRole("button", { name: "Next" }).click();
-
   await page.getByPlaceholder(/Learn Python for data analysis/).fill("Understand photosynthesis");
   await page.getByRole("button", { name: "Send" }).click();
   await page.getByRole("button", { name: "Looks good" }).click();
+
+  await page.getByRole("checkbox").first().check();
+  await page.getByRole("button", { name: "Next" }).click();
   await expect(page.getByRole("heading", { name: "Review your curriculum" })).toBeVisible();
   const subject = await page.getByPlaceholder("Subject name").inputValue();
 

@@ -29,8 +29,12 @@ vi.mock("../components/chat/MessageList", () => ({
 }));
 vi.mock("../components/chat/CitationPane", () => ({ CitationPane: () => <p>citation</p> }));
 vi.mock("../components/lessons/ItemPanel", () => ({
-  ItemPanel: ({ ratingDisabled }: { ratingDisabled?: boolean }) => (
-    <div data-testid="item-panel" data-rating-disabled={String(!!ratingDisabled)} />
+  ItemPanel: ({ ratingDisabled, finished }: { ratingDisabled?: boolean; finished?: boolean }) => (
+    <div
+      data-testid="item-panel"
+      data-rating-disabled={String(!!ratingDisabled)}
+      data-finished={String(!!finished)}
+    />
   ),
 }));
 
@@ -67,6 +71,15 @@ function renderSession() {
 
 beforeEach(() => {
   practice.mutate.mockReset();
+});
+
+describe("a finished practice round", () => {
+  it("stays finished when reopened: no second answer is taken", () => {
+    conversation({ practiceEnded: true });
+    renderSession();
+    expect(screen.getByRole("textbox")).toBeDisabled();
+    expect(screen.getByTestId("item-panel")).toHaveAttribute("data-finished", "true");
+  });
 });
 
 describe("Session while practice is paused", () => {

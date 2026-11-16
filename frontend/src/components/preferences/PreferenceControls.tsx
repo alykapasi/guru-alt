@@ -2,13 +2,19 @@ import { usePreferences, useSetPreference } from "../../api/hooks";
 import { VALUE_CAPTIONS, optionLabel } from "./preferenceCopy";
 
 /** One control per setting (S02, V09). Without `subjectId` it edits the learner's defaults;
- * with one, that subject's overrides — each showing the default it would otherwise use. */
+ * with one, that subject's overrides. A setting following the default needs no note (its
+ * select already shows the value); one changed for the subject says so and names the default. */
 export function PreferenceControls({ subjectId }: { subjectId?: string }) {
   const { data } = usePreferences(subjectId);
   const set = useSetPreference(subjectId);
   if (!data) return null;
   return (
     <div className="flex flex-col gap-3">
+      {subjectId !== undefined && (
+        <p className="text-caption text-base-content/70">
+          These follow your defaults on the Account page until you change one here.
+        </p>
+      )}
       {data.map((pref) => {
         const overridden = subjectId !== undefined && pref.source === "subject";
         return (
@@ -33,8 +39,8 @@ export function PreferenceControls({ subjectId }: { subjectId?: string }) {
               <p className="text-caption text-base-content/70">{VALUE_CAPTIONS[pref.value]}</p>
             )}
             <p className="text-caption text-base-content/70">
-              {subjectId !== undefined && !overridden && pref.global_value !== null
-                ? `Using your default (${optionLabel(pref.global_value)}).`
+              {overridden
+                ? `Changed for this subject — your default is ${optionLabel(pref.global_value ?? "auto")}.`
                 : pref.value === "auto" && pref.inferred
                   ? `Adapting to you: ${optionLabel(pref.inferred).toLowerCase()} for now.`
                   : null}

@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     # PostgreSQL (async driver). Host port 5433 — see docker-compose.yml.
     database_url: str = "postgresql+asyncpg://guru:guru@localhost:5433/guru"
     db_echo: bool = False
+    # Per process (the API and each worker build their own engine). A streamed tutor turn holds
+    # two connections — its turn lock and its request session — so the library default of
+    # 5 + 10 capped the API near seven concurrent turns. Keep the total across processes under
+    # Postgres's max_connections.
+    db_pool_size: int = 10
+    db_max_overflow: int = 10
 
     # Redis — declared now, used from Phase 4 (background jobs).
     redis_url: str = "redis://localhost:6379/0"

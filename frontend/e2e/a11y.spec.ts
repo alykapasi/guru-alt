@@ -102,7 +102,7 @@ test("on a phone the navigation is a menu", async ({ page }) => {
   await signIn(page);
   await page.goto("/app/dashboard");
   // A <summary> is a disclosure control, not a button, to the accessibility tree.
-  await page.getByRole("group", { name: "Menu" }).locator("summary").click();
+  await page.getByRole("group", { name: "Menu", exact: true }).locator("summary").click();
   await page.getByRole("link", { name: "Notes" }).click();
   await expect(page).toHaveURL(/\/app\/notes/);
   await noSidewaysScroll(page);

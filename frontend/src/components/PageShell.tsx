@@ -1,4 +1,4 @@
-import { Outlet } from "react-router-dom";
+import { LazyOutlet } from "./layout/LazyOutlet";
 import { ImpersonationBanner } from "./ImpersonationBanner";
 import { NavBar } from "./NavBar";
 import { SkipLink } from "./layout/SkipLink";
@@ -18,7 +18,7 @@ export function PageShell() {
         tabIndex={-1}
         className="outline-none mx-auto max-w-[1280px] px-4 py-12 sm:px-6"
       >
-        <Outlet />
+        <LazyOutlet />
       </main>
     </div>
   );

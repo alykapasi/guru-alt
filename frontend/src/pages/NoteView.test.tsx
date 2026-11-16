@@ -9,6 +9,7 @@ const authored = "# 私の notes 🧠\n\n```unclosed\nliteral";
 const generated = "## Automatic additions\n\n**New learning**";
 const note = {
   topic_id: "topic",
+  topic_name: "Trigonometry",
   content_md: authored + "\n\n" + generated,
   learner_authored_md: authored,
   generated_md: generated,
@@ -32,6 +33,21 @@ function renderPage() {
   );
 }
 beforeEach(() => vi.restoreAllMocks());
+it("is headed by the topic it is the note for", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(note), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    ),
+  );
+  renderPage();
+  expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Trigonometry");
+});
 it("keeps automatic additions outside an unclosed learner code fence", async () => {
   vi.stubGlobal(
     "fetch",

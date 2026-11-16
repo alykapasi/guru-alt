@@ -15,7 +15,7 @@ export function SourceSettingsPanel({
 }) {
   return (
     <section className="flex max-w-2xl flex-col gap-3">
-      <h2 className="text-h3">Sources</h2>
+      <h3 className="text-h3">Sources</h3>
       <label className="flex items-start gap-3">
         <input
           type="checkbox"

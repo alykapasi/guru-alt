@@ -9,6 +9,7 @@ export type NoteFormat = "outline" | "narrative" | "mnemonic" | "worked_examples
 
 export interface NoteRead {
   topic_id: string;
+  topic_name: string;
   content_md: string | null;
   learner_authored_md: string | null;
   generated_md: string | null;

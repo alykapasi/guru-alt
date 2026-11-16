@@ -1,8 +1,9 @@
 import { Navigate } from "react-router-dom";
 import { useConversations } from "../api/hooks";
 
-/** Bare /app/chat — resumes the most recent conversation, or shows an empty prompt if the
- * learner has none yet. Conversations already come back newest-first from the backend. */
+/** Bare /app/chat — resumes the most recent chat, or shows an empty prompt if the learner has
+ * none yet. Conversations come back newest-first; a practice session is the Lessons page's, so
+ * the Chat tab never opens one. */
 export function ChatIndex() {
   const { data: conversations, isLoading } = useConversations();
 
@@ -18,8 +19,9 @@ export function ChatIndex() {
     );
   }
 
-  if (conversations && conversations.length > 0) {
-    return <Navigate to={`/app/chat/${conversations[0].id}`} replace />;
+  const latest = conversations?.find((c) => c.kind === "chat");
+  if (latest) {
+    return <Navigate to={`/app/chat/${latest.id}`} replace />;
   }
 
   return (

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ItemPanel } from "./ItemPanel";
@@ -90,5 +91,82 @@ describe("ItemPanel", () => {
     expect(screen.getByRole("button", { name: /reveal/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^good$/i })).not.toBeInTheDocument();
     expect(screen.queryByText("cos x")).not.toBeInTheDocument();
+  });
+});
+
+describe("after a round ends", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function renderFinished(plan: unknown, calls: Request[] = []) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const request = input instanceof Request ? input : new Request(String(input));
+        calls.push(request);
+        const body = request.url.includes("/lesson-plan")
+          ? plan
+          : request.method === "POST"
+            ? { id: "next-1" }
+            : {};
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MemoryRouter initialEntries={["/app/lessons/session/c-1"]}>
+        <QueryClientProvider client={queryClient}>
+          <Routes>
+            <Route
+              path="/app/lessons/session/c-1"
+              element={
+                <ItemPanel
+                  item={null}
+                  detail="mastered"
+                  finished
+                  subjectId="s-1"
+                  onRate={vi.fn()}
+                />
+              }
+            />
+            <Route path="/app/lessons/session/:id" element={<p>next session</p>} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    return calls;
+  }
+
+  const DUE = {
+    goal: null,
+    steps: [{ order: 1, kc_id: "k-1", status: "active", step_type: "kc" }],
+  };
+
+  it("offers the next question and starts it in the same subject", async () => {
+    const calls = renderFinished(DUE);
+    await userEvent.click(await screen.findByRole("button", { name: "Next question" }));
+    expect(await screen.findByText("next session")).toBeInTheDocument();
+    const created = calls.find((c) => c.method === "POST")!;
+    expect(await created.clone().json()).toMatchObject({ subject_id: "s-1", kind: "session" });
+  });
+
+  it("says when nothing else is due instead of offering a next question", async () => {
+    renderFinished({ goal: null, steps: [] });
+    expect(await screen.findByText("Nothing else is due right now.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Next question" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Back to lesson plan" })).toBeInTheDocument();
+  });
+
+  it("does not claim to be preparing a question once the round is over", async () => {
+    renderFinished(DUE);
+    await waitFor(() => expect(screen.queryByText("Preparing your practice…")).toBeNull());
+  });
+
+  it("drops the question heading when reopened with no question left to show", async () => {
+    renderFinished(DUE);
+    await screen.findByRole("button", { name: "Next question" });
+    expect(screen.queryByRole("heading", { name: "Practice item" })).toBeNull();
   });
 });

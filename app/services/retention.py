@@ -568,7 +568,9 @@ async def erase_learner(
             try:
                 await provider.delete_user(subject)
             except Exception as exc:
-                log.warning("retention.identity_not_deleted", learner_id=str(learner_id))
+                log.warning(
+                    "retention.identity_not_deleted", learner_id=str(learner_id), exc_info=True
+                )
                 await queue_erasure(session, ErasureKind.IDENTITY, subject, str(exc))
     return report
 

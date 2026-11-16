@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { UserRound } from "lucide-react";
 import { useMemorySetting, useRequestDeletion, useSetMemorySetting } from "../api/hooks";
 import { useSignOutEverywhere } from "../auth/session";
 import { YourData } from "../components/account/YourData";
@@ -19,13 +18,8 @@ export function Account() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-6 py-8">
-      <header className="flex flex-col gap-2">
-        <h1 className="text-h1 flex items-center gap-2">
-          <UserRound size={20} className="text-primary" aria-hidden />
-          Your account
-        </h1>
-      </header>
+    <div className="flex max-w-3xl flex-col gap-8">
+      <h1 className="text-h1">Account</h1>
 
       <section className="flex flex-col gap-2">
         <h2 className="text-h2">Your data</h2>
@@ -38,8 +32,8 @@ export function Account() {
       <section className="flex flex-col gap-2">
         <h2 className="text-h2">Preferences</h2>
         <p className="text-body text-base-content/70">
-          How Guru teaches you everywhere. You can override any of these for a single subject from
-          its lesson plan.
+          How Guru teaches you everywhere. You can override any of these for one subject under
+          Subject settings on its Lessons page.
         </p>
         <PreferenceControls />
         <MemorySwitch />

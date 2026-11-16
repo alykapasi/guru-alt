@@ -37,15 +37,30 @@ describe("PreferenceControls", () => {
     expect(setPref).toHaveBeenCalledWith({ key: "pace", value: "unhurried" });
   });
 
-  it("per subject, shows the default until overridden, then offers to go back to it", () => {
-    rows = [pace({ value: "brisk", source: "global", global_value: "brisk" })];
-    const { rerender } = render(<PreferenceControls subjectId="s1" />);
-    expect(screen.getByText(/Using your default/i)).toBeInTheDocument();
+  it("per subject, says once that settings follow the defaults, not under every setting", () => {
+    rows = [
+      pace({ value: "brisk", source: "global", global_value: "brisk" }),
+      pace({ key: "hints", label: "Hints", value: "auto", source: "default", inferred: null }),
+    ];
+    render(<PreferenceControls subjectId="s1" />);
+    expect(screen.getAllByText(/follow your defaults/i)).toHaveLength(1);
+    expect(screen.queryByText(/Using your default/i)).toBeNull();
+  });
 
+  it("per subject, marks a changed setting and offers to go back to the default", () => {
     rows = [pace({ value: "unhurried", source: "subject", global_value: "brisk" })];
-    rerender(<PreferenceControls subjectId="s1" />);
+    render(<PreferenceControls subjectId="s1" />);
+    expect(
+      screen.getByText(/Changed for this subject — your default is Brisk/),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Use my default for Pace/i }));
     expect(setPref).toHaveBeenCalledWith({ key: "pace", value: null });
+  });
+
+  it("does not say settings follow defaults on the defaults themselves", () => {
+    rows = [pace({})];
+    render(<PreferenceControls />);
+    expect(screen.queryByText(/follow your defaults/i)).toBeNull();
   });
 
   it("explains what each guidance mode does", () => {

@@ -40,6 +40,15 @@ beforeEach(() => {
 });
 
 describe("seeing what is remembered", () => {
+  it("is headed by the name it has in the menu", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse([]))),
+    );
+    renderPage();
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent(/^Memory$/);
+  });
+
   it("shows each entry so a wrong one can be recognised", async () => {
     vi.stubGlobal(
       "fetch",

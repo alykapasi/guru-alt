@@ -1,0 +1,126 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
+import { Lessons } from "./Lessons";
+
+/** Adding a subject must not depend on having none: the shared library is visible to everyone,
+ * so a list that is never empty used to leave no way in at all. */
+
+const SUBJECT = {
+  id: "s-1",
+  slug: "financial-machine-learning",
+  name: "Financial Machine Learning",
+  description: null,
+  owner_learner_id: null,
+  private_source_derived: false,
+};
+
+function json(body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function renderPage(subjects: unknown[], plan: unknown = []) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.includes("/lesson-plan")) return Promise.resolve(json(plan));
+      return Promise.resolve(json(url.match(/\/subjects(\?|$)/) ? subjects : []));
+    }),
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <Lessons />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+}
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("adding a subject", () => {
+  it("is offered when subjects already exist", async () => {
+    renderPage([SUBJECT]);
+    const link = await screen.findByRole("link", { name: /New subject/ });
+    expect(link).toHaveAttribute("href", "/app/subjects/new");
+  });
+
+  it("is offered when there are none", async () => {
+    renderPage([]);
+    const link = await screen.findByRole("link", { name: /first subject/ });
+    expect(link).toHaveAttribute("href", "/app/subjects/new");
+  });
+});
+
+describe("a subject of one's own", () => {
+  const OWNED = { ...SUBJECT, id: "s-2", owner_learner_id: "me" };
+
+  it("keeps its settings, sources and sharing in one section, folded until asked for", async () => {
+    renderPage([OWNED]);
+    const section = await screen.findByText("Subject settings");
+    expect(screen.queryByText("Settings for this subject")).toBeNull();
+    expect(screen.queryByText("Sources and sharing")).toBeNull();
+    expect(screen.getByRole("button", { name: "Request publication" })).not.toBeVisible();
+    fireEvent.click(section);
+    expect(screen.getByRole("button", { name: "Request publication" })).toBeVisible();
+  });
+
+  it("still offers a curated subject's teaching settings, without sharing", async () => {
+    renderPage([SUBJECT]);
+    expect(await screen.findByText("Subject settings")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Request publication" })).toBeNull();
+  });
+
+  it("heads each part of the settings the same way", async () => {
+    renderPage([OWNED]);
+    const summary = await screen.findByText("Subject settings");
+    fireEvent.click(summary);
+    const section = summary.closest("details")!;
+    expect(
+      within(section)
+        .getAllByRole("heading")
+        .map((h) => [h.tagName, h.textContent]),
+    ).toEqual([
+      ["H3", "Teaching"],
+      ["H3", "Sources"],
+      ["H3", "Sharing"],
+    ]);
+  });
+});
+
+describe("the plan's goal", () => {
+  const plan = (goal: string) => ({
+    goal,
+    goal_status: {
+      achieved_at: null,
+      achieved_kc_count: 0,
+      closed_at: null,
+      current_kc_count: 0,
+      objective_kc_count: 1,
+      stale_kc_count: 0,
+    },
+    deferred_kc_count: 0,
+    steps: [{ order: 1, kc_id: "k-1", status: "active", step_type: "kc" }],
+  });
+
+  it("is not repeated when it is the subject's own name", async () => {
+    renderPage([SUBJECT], plan("Financial Machine Learning"));
+    await screen.findByRole("button", { name: /Start practice/ });
+    expect(screen.queryByText(/^Goal:/)).toBeNull();
+  });
+
+  it("is shown when it says more than the name", async () => {
+    renderPage([SUBJECT], plan("Price options with gradient-boosted trees"));
+    expect(
+      await screen.findByText("Goal: Price options with gradient-boosted trees"),
+    ).toBeInTheDocument();
+  });
+});

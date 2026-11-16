@@ -16,10 +16,16 @@ export function SubjectPicker({
   /** Renders a leading pill that selects `null` — e.g. "All" (Uploads' unscoped filter). */
   allLabel?: string;
 }) {
+  // A choice of one is not a choice: name the subject so the page still says what it shows.
+  if (!allLabel && subjects.length === 1) {
+    return <p className="text-h3">{subjects[0].name}</p>;
+  }
   return (
     <div className="flex flex-wrap gap-2">
       {allLabel && (
         <button
+          type="button"
+          aria-pressed={selectedId === null}
           onClick={() => onSelect(null)}
           className={`text-body rounded-field border px-3 py-1.5 transition-colors ${
             selectedId === null
@@ -33,6 +39,8 @@ export function SubjectPicker({
       {subjects.map((s) => (
         <button
           key={s.id}
+          type="button"
+          aria-pressed={s.id === selectedId}
           onClick={() => onSelect(s.id)}
           className={`text-body rounded-field border px-3 py-1.5 transition-colors ${
             s.id === selectedId

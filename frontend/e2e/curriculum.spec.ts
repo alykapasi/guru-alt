@@ -33,11 +33,15 @@ const PROPOSED_KCS = ["Core vocabulary", "First principles", "Worked examples", 
 
 async function openWizardAtTheGoalStep(page: Page): Promise<void> {
   await page.goto("/app/subjects/new");
-  await expect(page.getByRole("heading", { name: "Add learning materials" })).toBeVisible();
-  // Straight past materials: an empty library is the state a first user is in, and grounding
-  // the curriculum in an upload is the upload journey's business, not this one's.
-  await page.getByRole("button", { name: "Next" }).click();
   await expect(page.getByRole("heading", { name: "What's your learning goal?" })).toBeVisible();
+}
+
+/** Straight past materials: an empty library is the state a first user is in, and grounding
+ * the curriculum in an upload is the upload journey's business, not this one's. Next is what
+ * starts generation. */
+async function skipMaterials(page: Page): Promise<void> {
+  await expect(page.getByRole("heading", { name: "Add learning materials" })).toBeVisible();
+  await page.getByRole("button", { name: "Next" }).click();
 }
 
 test("a goal becomes a curriculum, and the curriculum becomes a subject", async ({ page }) => {
@@ -54,6 +58,7 @@ test("a goal becomes a curriculum, and the curriculum becomes a subject", async 
   await expect(page.getByText("Hello from the fake tutor.")).toBeVisible();
 
   await page.getByRole("button", { name: "Looks good" }).click();
+  await skipMaterials(page);
 
   // Generation is a single blocking call behind a spinner, so the wait is for the step to
   // change rather than for a stream to end.
@@ -100,6 +105,7 @@ test("the curriculum the learner edits is the curriculum that gets created", asy
   await page.getByPlaceholder(/Learn Python for data analysis/).fill(goal);
   await page.getByRole("button", { name: "Send" }).click();
   await page.getByRole("button", { name: "Looks good" }).click();
+  await skipMaterials(page);
   await expect(page.getByRole("heading", { name: "Review your curriculum" })).toBeVisible();
 
   // The review step exists so the learner can disagree with the model. An edit that is

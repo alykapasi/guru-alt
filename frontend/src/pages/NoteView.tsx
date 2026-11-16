@@ -46,10 +46,11 @@ export function NoteView() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <Link to="/app/notes" className="btn btn-ghost btn-sm">
-          <ArrowLeft size={16} /> All notes
-        </Link>
+      <Link to="/app/notes" className="btn btn-ghost btn-sm w-fit">
+        <ArrowLeft size={16} /> All notes
+      </Link>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-h1">{note.topic_name}</h1>
         <div className="flex items-center gap-2">
           <select
             aria-label="Note format"

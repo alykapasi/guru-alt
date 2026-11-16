@@ -128,7 +128,7 @@ async def run_agentic_turn(
     except CallRefused:
         raise  # the turn ends with its reason: refusal_ends_turn
     except Exception as exc:
-        log.error("agentic.stream_failed", error=str(exc), model=spec.model)
+        log.error("agentic.stream_failed", error=str(exc), model=spec.model, exc_info=True)
         yield TurnEvent(type="error", detail="generation failed")
         return
 

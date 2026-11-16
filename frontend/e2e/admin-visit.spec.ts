@@ -1,6 +1,6 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 
-import { grantAdmin } from "./admin";
+import { grantAdmin, openAdmin } from "./admin";
 import { api, apiGet, signIn } from "./journey";
 import { expectAccessible } from "./a11y";
 
@@ -41,7 +41,7 @@ test("an administrator views a learner's account for a stated reason, and it is 
   const account = await signIn(admin);
   grantAdmin(account.email);
   await admin.goto("/app/chat");
-  await admin.getByRole("link", { name: "Admin" }).click();
+  await openAdmin(admin);
 
   const row = admin.getByRole("row").filter({ hasText: learnerAccount.email });
   await row.getByRole("button", { name: "View as" }).click();
@@ -72,7 +72,8 @@ test("an administrator views a learner's account for a stated reason, and it is 
   await banner.getByRole("button", { name: "Stop viewing" }).click();
   await expect(banner).toHaveCount(0);
   await expect(admin).toHaveURL(/\/app\/admin$/);
-  await expect(admin.getByRole("link", { name: "Admin" })).toBeVisible();
+  // The bar is the administrator's own again: Admin is back in their account menu.
+  await expect(admin.locator('a[href="/app/admin"]')).toHaveCount(1);
   const visit = admin.getByRole("row").filter({ hasText: reason });
   await expect(visit).toBeVisible();
   await visit.getByRole("button", { name: "Action log" }).click();

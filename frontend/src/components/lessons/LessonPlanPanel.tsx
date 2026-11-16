@@ -12,7 +12,6 @@ import {
 } from "../../api/hooks";
 import type { components } from "../../api/schema";
 import { GoalStatusBar } from "./GoalStatusBar";
-import { PreferenceControls } from "../preferences/PreferenceControls";
 import { LessonStepRow } from "./LessonStepRow";
 
 type PlacementResult = components["schemas"]["PlacementResultRead"];
@@ -90,7 +89,14 @@ function NoPlanCard({ subjectId }: { subjectId: string }) {
   );
 }
 
-export function LessonPlanPanel({ subjectId }: { subjectId: string }) {
+export function LessonPlanPanel({
+  subjectId,
+  subjectName,
+}: {
+  subjectId: string;
+  /** The goal line is left out when it only repeats this — a subject is usually named after it. */
+  subjectName?: string;
+}) {
   const { data: plan, isLoading } = useLessonPlan(subjectId);
   const navigate = useNavigate();
   const createConversation = useCreateConversation();
@@ -122,7 +128,11 @@ export function LessonPlanPanel({ subjectId }: { subjectId: string }) {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between gap-4">
         <p className="text-caption text-base-content/70">
-          {plan.goal ? `Goal: ${plan.goal}` : "No specific goal set."}
+          {plan.goal
+            ? plan.goal.trim().toLowerCase() === subjectName?.trim().toLowerCase()
+              ? ""
+              : `Goal: ${plan.goal}`
+            : "No specific goal set."}
         </p>
         {activeStep ? (
           <button
@@ -139,12 +149,6 @@ export function LessonPlanPanel({ subjectId }: { subjectId: string }) {
           </p>
         )}
       </div>
-      <details className="border-base-300 rounded-box border px-4 py-2">
-        <summary className="text-body cursor-pointer">Settings for this subject</summary>
-        <div className="pt-3">
-          <PreferenceControls subjectId={subjectId} />
-        </div>
-      </details>
       <GoalStatusBar status={plan.goal_status} deferredCount={plan.deferred_kc_count} />
       <div className="flex flex-col gap-1">
         {plan.steps.map((step) =>

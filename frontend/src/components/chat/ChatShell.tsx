@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Outlet, useLocation } from "react-router-dom";
+import { useLocation } from "react-router-dom";
+import { LazyOutlet } from "../layout/LazyOutlet";
 import { PanelLeft } from "lucide-react";
 import { ImpersonationBanner } from "../ImpersonationBanner";
 import { NavBar } from "../NavBar";
@@ -52,7 +53,7 @@ export function ChatShell() {
         >
           <ConversationSidebar />
         </SidePanel>
-        <Outlet />
+        <LazyOutlet />
       </div>
     </div>
   );

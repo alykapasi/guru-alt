@@ -10,7 +10,7 @@ function TopicMasteryRow({ topic }: { topic: TopicMastery }) {
   const assessed = topic.assessed_kcs > 0;
   const percent = assessed ? expectedScorePercent(topic.ability) : 0;
   return (
-    <div className="flex flex-col gap-2">
+    <div role="group" aria-label={topic.topic_name} className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
         <p className="text-body">{topic.topic_name}</p>
         <p className="text-caption text-base-content/70">
@@ -22,19 +22,25 @@ function TopicMasteryRow({ topic }: { topic: TopicMastery }) {
       <div className="bg-base-300 h-2 w-full overflow-hidden rounded-full">
         <div className="bg-primary h-full rounded-full" style={{ width: `${percent}%` }} />
       </div>
-      <p className="text-caption text-base-content/70 pl-4">
-        {coverageLabel(topic.assessed_kcs, topic.total_kcs)}
-      </p>
+      {/* Untouched topics already say "not assessed" above; the count only adds something
+          once some of the topic has evidence. */}
+      {assessed && (
+        <p className="text-caption text-base-content/70 pl-4">
+          {coverageLabel(topic.assessed_kcs, topic.total_kcs)}
+        </p>
+      )}
       <div className="flex flex-col gap-1 pl-4">
         {topic.kcs.map((kc) => (
           <div key={kc.kc_id} className="flex flex-col gap-0.5">
             <div className="flex items-center justify-between">
               <span className="text-caption text-base-content/70">{kc.kc_name}</span>
-              <span className="text-caption text-base-content/70">
-                {kc.assessed
-                  ? `${Math.round(expectedScorePercent(kc.ability))}%${kc.mastered ? " · mastered" : ""}`
-                  : "not assessed"}
-              </span>
+              {/* A component with no answers yet shows no figure, rather than repeating the
+                  topic's "not assessed" on every line. */}
+              {kc.assessed && (
+                <span className="text-caption text-base-content/70">
+                  {`${Math.round(expectedScorePercent(kc.ability))}%${kc.mastered ? " · mastered" : ""}`}
+                </span>
+              )}
             </div>
             {/* What the number rests on. "Mastered" is doing the most work exactly where the
                 evidence is thinnest, so the evidence goes next to it (S14). */}
@@ -72,8 +78,9 @@ export function SubjectMasteryView({ subjectId }: { subjectId: string }) {
             On a question of average difficulty — not the share of the subject covered.
           </p>
           <p className="text-caption text-base-content/70">
-            {data.topics.length} topic{data.topics.length === 1 ? "" : "s"} ·{" "}
-            {coverageLabel(data.assessed_kcs, data.total_kcs)}
+            {data.topics.length} topic{data.topics.length === 1 ? "" : "s"}
+            {/* The ring already says "not assessed"; the count adds something once some is. */}
+            {data.assessed_kcs > 0 && ` · ${coverageLabel(data.assessed_kcs, data.total_kcs)}`}
           </p>
         </div>
       </div>

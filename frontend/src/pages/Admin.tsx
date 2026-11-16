@@ -2,7 +2,6 @@ import { useState } from "react";
 import { ReviewExamples } from "../components/admin/ReviewExamples";
 import { PublicationQueue } from "../components/PublicationQueue";
 import { ConceptLinkQueue } from "../components/ConceptLinkQueue";
-import { Gauge } from "lucide-react";
 import {
   useAdminActions,
   useImpersonations,
@@ -474,16 +473,13 @@ export function Admin() {
   const roster = useLearnerRoster(hours);
 
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-8">
+    <div className="flex flex-col gap-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex flex-col gap-2">
-          <h1 className="text-h1 flex items-center gap-2">
-            <Gauge size={20} className="text-primary" aria-hidden />
-            What this deployment is doing
-          </h1>
+          <h1 className="text-h1">Admin</h1>
           <p className="text-body text-base-content/70">
-            Cost, model latency and who is here. Every number is over the window you pick, and
-            refreshes on its own each minute.
+            What this deployment is doing: cost, model latency and who is here. Every number is over
+            the window you pick, and refreshes on its own each minute.
           </p>
         </div>
         <select

@@ -57,5 +57,10 @@ def load_kc_tagging_program() -> KCTaggingProgram:
         try:
             program.load(str(ARTIFACT_PATH))
         except Exception as exc:  # corrupt/incompatible artifact — fall back, never fail ingest
-            log.warning("kc_tagging.artifact_load_failed", path=str(ARTIFACT_PATH), error=str(exc))
+            log.warning(
+                "kc_tagging.artifact_load_failed",
+                path=str(ARTIFACT_PATH),
+                error=str(exc),
+                exc_info=True,
+            )
     return program

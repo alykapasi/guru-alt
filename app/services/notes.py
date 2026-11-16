@@ -41,6 +41,7 @@ class NoteView:
     """What the API returns for a note in any state (including 'no note yet')."""
 
     topic_id: uuid.UUID
+    topic_name: str
     content_md: str | None
     format: str | None
     effective_format: str
@@ -235,6 +236,7 @@ async def _view(
             )
     return NoteView(
         topic_id=topic.id,
+        topic_name=topic.name,
         content_md=content,
         format=note.format if note is not None else None,
         effective_format=fmt,
@@ -442,7 +444,7 @@ async def _render_and_cache(
         refused = True
     except Exception as exc:
         # A provider outage must not cost the learner the revision this render belongs to.
-        log.warning("notes.render_failed", note_id=str(note.id), error=str(exc))
+        log.warning("notes.render_failed", note_id=str(note.id), error=str(exc), exc_info=True)
     if content is None:
         content = note_distill.mechanical_render(note.substrate)
     render_row = NoteRender(
@@ -526,7 +528,7 @@ async def refresh_note(
     except CallRefused:
         raise  # the learner is told why (429), rather than shown the old note in silence
     except Exception as exc:
-        log.warning("notes.distill_failed", topic_id=str(topic.id), error=str(exc))
+        log.warning("notes.distill_failed", topic_id=str(topic.id), error=str(exc), exc_info=True)
         if note is not None:
             await session.refresh(note)
         return await _view(session, learner_id, topic, note)
