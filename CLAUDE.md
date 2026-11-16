@@ -190,7 +190,8 @@ See MASTERPLAN §7 for the full decision table + rationale. The load-bearing one
 - **A cross-subject link needs two agreements** (S24) — an endorsement (admin for curated
   pairs, the `SMART` judge for private ones) and the learner's own acceptance. A shared name
   never links anything, and an accepted link gives only a provisional head start that real
-  answers must confirm. `links_in_effect` in `app/services/concept_links.py` is the one rule;
+  answers must confirm. An admin can withdraw a curated endorsement, and unanswered head starts
+  go with it. `links_in_effect` in `app/services/concept_links.py` is the one rule;
   see [docs/RUNBOOK.md](docs/RUNBOOK.md) §13.
 - **Jev is a first pass, never an author** (S78–S83) — TypeSafe's System One model answers
   typed questions about a turn (`intent`, `fully_correct`) in front of the FAST gate and the

@@ -31,9 +31,8 @@ Stateless functions (most of `app/`) have no machine worth drawing and are not c
   - **6:** a retag goes through `request_retag` and the ordinary claim.
   - **7:** a cut-off reply records its turn (`messages.turn_id`), and a retry drops every
     earlier attempt's from its history.
-  - **8:** the admin verdict is locked and re-read.
+  - **8:** the admin verdict is locked and re-read, and an endorsement can be withdrawn.
 - **Open, for a product decision:**
-  - **8:** whether a verdict can ever be withdrawn.
   - **9:** suspension during a pending deletion.
 
 Checked and sound: LLM call settlement, achievement and transfer milestones, lesson-plan steps,
@@ -154,6 +153,7 @@ stateDiagram-v2
         [*] --> candidate
         candidate --> endorsed: admin / judge
         candidate --> rejected: admin / judge
+        endorsed --> withdrawn: admin (curated only)
     }
     state "decision (per learner, endorsed links only)" as D {
         [*] --> undecided

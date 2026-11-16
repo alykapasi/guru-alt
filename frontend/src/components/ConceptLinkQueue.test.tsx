@@ -101,6 +101,34 @@ describe("the concept-link queue", () => {
     expect(screen.queryByRole("button", { name: "Endorse" })).toBeNull();
   });
 
+  it("lets an endorsement be withdrawn, with a reason", async () => {
+    const calls = stub([
+      { ...row, verdict: "endorsed", reason: "Same object.", decided_at: "2026-09-25T10:00:00Z" },
+    ]);
+    renderQueue();
+    expect(await screen.findByText("Endorsed — Same object.")).toBeInTheDocument();
+    const withdraw = screen.getByRole("button", { name: "Withdraw endorsement" });
+    expect(withdraw).toBeDisabled();
+    await userEvent.type(screen.getByLabelText("Reason"), "Different notation.");
+    await userEvent.click(withdraw);
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) => c.method === "POST" && c.url.endsWith("/admin/concept-links/l-1/withdraw"),
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("shows a withdrawn link as final", async () => {
+    stub([
+      { ...row, verdict: "withdrawn", reason: "Not the same.", decided_at: "2026-09-25T10:00:00Z" },
+    ]);
+    renderQueue();
+    expect(await screen.findByText("Withdrawn — Not the same.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Withdraw endorsement" })).toBeNull();
+  });
+
   it("shows an alert if a verdict fails to save", async () => {
     stub([row], 409);
     renderQueue();

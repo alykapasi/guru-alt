@@ -161,3 +161,31 @@ async def test_admin_can_list_and_decide_the_curated_queue(
     )
     assert r.status_code == 200
     assert r.json()["verdict"] == "endorsed"
+
+
+async def test_admin_can_withdraw_an_endorsement_once(
+    admin_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    link, _a, _b = await _endorsed_curated(db_session)
+    await db_session.commit()
+    path = f"{API}/admin/concept-links/{link.id}/withdraw"
+
+    r = await admin_client.post(path, json={"reason": "Different notation entirely."})
+    again = await admin_client.post(path, json={"reason": "Twice."})
+
+    assert r.status_code == 200, r.text
+    assert (r.json()["verdict"], r.json()["reason"]) == (
+        "withdrawn",
+        "Different notation entirely.",
+    )
+    assert again.status_code == 409
+
+
+async def test_a_non_admin_cannot_withdraw_an_endorsement(
+    api_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    link, _a, _b = await _endorsed_curated(db_session)
+
+    r = await api_client.post(f"{API}/admin/concept-links/{link.id}/withdraw", json={"reason": "x"})
+
+    assert r.status_code == 403

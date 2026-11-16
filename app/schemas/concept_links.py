@@ -43,11 +43,15 @@ class ConceptLinkReviewRead(BaseModel):
     kc_b_name: str
     subject_a_name: str
     subject_b_name: str
-    verdict: Literal["endorsed", "rejected"] | None
+    verdict: Literal["endorsed", "rejected", "withdrawn"] | None
     reason: str | None
     decided_at: datetime | None
 
 
 class ConceptLinkVerdictSubmit(BaseModel):
     endorse: bool
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class ConceptLinkWithdrawSubmit(BaseModel):
     reason: str = Field(min_length=1, max_length=500)

@@ -36,7 +36,11 @@ from app.schemas.admin import (
     ReinstateRequest,
     SuspendRequest,
 )
-from app.schemas.concept_links import ConceptLinkReviewRead, ConceptLinkVerdictSubmit
+from app.schemas.concept_links import (
+    ConceptLinkReviewRead,
+    ConceptLinkVerdictSubmit,
+    ConceptLinkWithdrawSubmit,
+)
 from app.schemas.eval_examples import (
     EvalAreaCounts,
     EvalDrawRequest,
@@ -399,6 +403,21 @@ async def decide_concept_link(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such curated link") from exc
     except concept_links_svc.LinkAlreadyDecided as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, "this link has already been decided") from exc
+    await session.commit()
+    return next(r for r in await concept_links_svc.review_rows(session) if r.id == link_id)
+
+
+@router.post("/concept-links/{link_id}/withdraw", response_model=ConceptLinkReviewRead)
+async def withdraw_concept_link(
+    link_id: uuid.UUID, body: ConceptLinkWithdrawSubmit, admin: CurrentAdmin, session: SessionDep
+):
+    """Take back an endorsement, once. Learners' unanswered head starts over it go with it."""
+    try:
+        await concept_links_svc.withdraw_endorsement(session, link_id, admin.id, reason=body.reason)
+    except concept_links_svc.LinkNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such curated link") from exc
+    except concept_links_svc.LinkNotEndorsed as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, "this link is not endorsed") from exc
     await session.commit()
     return next(r for r in await concept_links_svc.review_rows(session) if r.id == link_id)
 

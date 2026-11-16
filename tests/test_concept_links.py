@@ -300,3 +300,99 @@ async def test_revoking_one_link_reseeds_the_target_from_another_still_in_effect
     assert await mastery.provisional_kc_ids(db_session, learner.id, [t.id]) == {t.id}
     await db_session.refresh(state)
     assert state.transferred_from_kc_id == b.id
+
+
+# --- an administrator withdraws an endorsement -----------------------------------------------
+
+
+async def _accepted_by(db_session, link, a):
+    """A learner measured on ``a`` who accepted ``link``, so ``b`` holds a head start."""
+    learner = await _learner(db_session)
+    db_session.add(
+        LearnerKCState(
+            learner_id=learner.id,
+            kc_id=a.id,
+            ability=2.0,
+            uncertainty=0.3,
+            last_seen_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+    await svc.decide(db_session, learner.id, link.id, "accept")
+    return learner
+
+
+async def test_withdrawing_an_endorsement_takes_the_link_out_of_effect(db_session):
+    link, a, _b = await _endorsed_curated(db_session)
+    learner = await _accepted_by(db_session, link, a)
+    admin = await _learner(db_session)
+
+    await svc.withdraw_endorsement(db_session, link.id, admin.id, reason="Different notation.")
+
+    assert await svc.links_in_effect(db_session, learner.id, [a.id]) == {}
+    assert await svc.suggestions(db_session, learner.id) == []
+    assert (link.verdict, link.reason, link.decided_by_admin_id) == (
+        "withdrawn",
+        "Different notation.",
+        admin.id,
+    )
+
+
+async def test_withdrawing_removes_a_head_start_nobody_has_answered_on(db_session):
+    link, a, b = await _endorsed_curated(db_session)
+    learner = await _accepted_by(db_session, link, a)
+    assert await mastery.provisional_kc_ids(db_session, learner.id, [b.id]) == {b.id}
+
+    admin = await _learner(db_session)
+    await svc.withdraw_endorsement(db_session, link.id, admin.id, reason="Not the same.")
+
+    assert await mastery.provisional_kc_ids(db_session, learner.id, [b.id]) == set()
+    state = await db_session.scalar(
+        select(LearnerKCState).where(
+            LearnerKCState.learner_id == learner.id, LearnerKCState.kc_id == b.id
+        )
+    )
+    assert state is not None and state.transferred_from_kc_id is None
+
+
+async def test_withdrawing_leaves_an_estimate_real_answers_have_built_on(db_session):
+    """Like a learner's own revoke: once answered on, the estimate rests on the answers."""
+    link, a, b = await _endorsed_curated(db_session)
+    learner = await _accepted_by(db_session, link, a)
+    state = await db_session.scalar(
+        select(LearnerKCState).where(
+            LearnerKCState.learner_id == learner.id, LearnerKCState.kc_id == b.id
+        )
+    )
+    assert state is not None
+    state.last_seen_at = datetime.now(UTC)  # an answer landed here
+    await db_session.flush()
+
+    admin = await _learner(db_session)
+    await svc.withdraw_endorsement(db_session, link.id, admin.id, reason="Not the same.")
+
+    assert state.transferred_from_kc_id == a.id
+
+
+async def test_only_an_endorsed_curated_link_can_be_withdrawn(db_session):
+    admin = await _learner(db_session)
+    concept = await _concept(db_session, "rings")
+    await _kc(db_session, await _subject(db_session, name="A"), "Rings", concept)
+    await _kc(db_session, await _subject(db_session, name="B"), "Rings", concept)
+    await svc.sync_candidates(db_session, None)
+    (undecided,) = await svc.curated_queue(db_session)
+    with pytest.raises(svc.LinkNotEndorsed):
+        await svc.withdraw_endorsement(db_session, undecided.id, admin.id, reason="x")
+    with pytest.raises(svc.LinkNotFound):
+        await svc.withdraw_endorsement(db_session, uuid.uuid4(), admin.id, reason="x")
+
+
+async def test_a_withdrawn_link_stays_withdrawn(db_session):
+    link, _a, _b = await _endorsed_curated(db_session)
+    admin = await _learner(db_session)
+    await svc.withdraw_endorsement(db_session, link.id, admin.id, reason="Not the same.")
+
+    with pytest.raises(svc.LinkAlreadyDecided):
+        await svc.set_admin_verdict(db_session, link.id, admin.id, endorse=True, reason="Again.")
+    with pytest.raises(svc.LinkNotEndorsed):
+        await svc.withdraw_endorsement(db_session, link.id, admin.id, reason="Twice.")
