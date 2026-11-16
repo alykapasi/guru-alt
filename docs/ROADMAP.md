@@ -39,8 +39,8 @@
 > the existing-data ownership migration against production data all remain open.
 
 > **Learning evidence, goals and guidance implemented, 2026-09-26:** V0 workstream 2 landed in
-> four slices (tracker items S56/S54, S01/S14/S63, S11/S52, S34/S23/S24; designs and plans under
-> [docs/superpowers/](./superpowers/)). A flashcard self-rating now updates review scheduling
+> four slices (tracker items S56/S54, S01/S14/S63, S11/S52, S34/S23/S24; designs under
+> [docs/superpowers/specs/](./superpowers/specs/)). A flashcard self-rating now updates review scheduling
 > only; mastery is judged on ability − 2·uncertainty ≥ 0.5 over measured evidence, achievement is
 > recorded per component and kept, and goal status reports closure, current, achieved and stale
 > separately. Detours follow a per-plan guidance setting and can be taken, skipped, or disproved by
@@ -52,8 +52,8 @@
 > the next note).
 
 > **V0 workstreams 2 (remainder) through 5 implemented, 2026-09-29 to 2026-10-10:** tracker items,
-> designs and plans are in [the tracker](./guru-suggestions-tracker.md#completed) and
-> [docs/superpowers/](./superpowers/).
+> and designs are in [the tracker](./guru-suggestions-tracker.md#completed) and
+> [docs/superpowers/specs/](./superpowers/specs/).
 > - *Evidence (rest of workstream 2):* every grade records what measured it and `poe regrade`
 >   re-checks past answers without changing them; a component owed a second unaided answer gets
 >   a cold retention check, and transfer to a new setting is shown as evidence.

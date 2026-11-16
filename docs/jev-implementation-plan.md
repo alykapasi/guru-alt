@@ -1,8 +1,7 @@
 # Jev integration implementation plan
 
 > **Superseded, 2026-09-26.** Implemented instead as
-> [the Jev turn read](superpowers/specs/2026-09-26-jev-turn-read-design.md), with plan
-> `docs/superpowers/plans/2026-09-26-jev-turn-read.md`:
+> [the Jev turn read](superpowers/specs/2026-09-26-jev-turn-read-design.md):
 > - Phase 1 is done as specified.
 > - Phase 2's offline labelled comparison is replaced by the shadow report on real founder
 >   traffic.
