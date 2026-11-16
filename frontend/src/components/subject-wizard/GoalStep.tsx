@@ -90,13 +90,6 @@ export function GoalStep({ sessionId, onGoalCommitted }: GoalStepProps) {
             </div>
           </div>
         )}
-
-        {/* Initial prompt if no proposal yet */}
-        {!proposal && !error && !isStreaming && (
-          <div className="flex justify-end">
-            <p className="text-caption text-base-content/70">Share your goal to get started.</p>
-          </div>
-        )}
       </div>
 
       {/* Input and controls */}
@@ -105,13 +98,19 @@ export function GoalStep({ sessionId, onGoalCommitted }: GoalStepProps) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="E.g., 'Learn Python for data analysis' or 'Improve my algebra skills'…"
-          className="textarea textarea-bordered text-body resize-none"
+          aria-label="Your goal"
+          // Once there is a proposal the box is for refining it, not starting over.
+          placeholder={
+            proposal
+              ? "Or say what to change…"
+              : "E.g., 'Learn Python for data analysis' or 'Improve my algebra skills'…"
+          }
+          className="textarea textarea-bordered text-body w-full resize-none"
           rows={3}
           disabled={isStreaming || !!committedGoal || !sessionId}
         />
 
-        <div className="flex justify-end gap-3">
+        <div className="flex justify-end">
           <div className="flex gap-3">
             {proposal && !committedGoal && (
               <button
