@@ -98,7 +98,7 @@
   --duration-panel: 250ms;
 }
 
-/* Type scale (docs/superpowers plan §0) — semantic classes so components reach for a role,
+/* Type scale — semantic classes so components reach for a role,
    not a raw Tailwind text-* utility picked by feel.
 
    Declared with `@utility`, not `@layer components`: a plain component class cannot be composed

@@ -40,10 +40,6 @@ LAST_USED_RESOLUTION = timedelta(minutes=5)
 _HANDLE_MAX = 32
 
 
-class AuthError(Exception):
-    """Base for the failures a caller is expected to turn into a status code."""
-
-
 def normalise_email(email: str) -> str:
     """The stored form of an address: trimmed and lower-cased.
 

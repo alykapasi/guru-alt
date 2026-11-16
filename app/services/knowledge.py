@@ -566,23 +566,6 @@ async def require_visible_kc(
     return row[0], row[1]
 
 
-async def subject_of_topic(session: AsyncSession, topic_id: uuid.UUID) -> Subject | None:
-    """The subject a topic belongs to — the unit ownership is decided at."""
-    return await session.scalar(
-        select(Subject).join(Topic, Topic.subject_id == Subject.id).where(Topic.id == topic_id)
-    )
-
-
-async def subject_of_kc(session: AsyncSession, kc_id: uuid.UUID) -> Subject | None:
-    """The subject a component belongs to, through its topic."""
-    return await session.scalar(
-        select(Subject)
-        .join(Topic, Topic.subject_id == Subject.id)
-        .join(KC, KC.topic_id == Topic.id)
-        .where(KC.id == kc_id)
-    )
-
-
 # --- Topics -----------------------------------------------------------------
 
 
@@ -604,10 +587,6 @@ async def list_topics(session: AsyncSession, subject_id: uuid.UUID) -> Sequence[
         select(Topic).where(Topic.subject_id == subject_id).order_by(Topic.slug)
     )
     return result.all()
-
-
-async def get_topic(session: AsyncSession, topic_id: uuid.UUID) -> Topic | None:
-    return await session.get(Topic, topic_id)
 
 
 # --- KCs --------------------------------------------------------------------

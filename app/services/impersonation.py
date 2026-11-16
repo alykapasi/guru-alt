@@ -152,13 +152,3 @@ async def history(session: AsyncSession, *, limit: int = 100) -> list[Impersonat
         .limit(limit)
     )
     return list(result)
-
-
-async def for_learner(session: AsyncSession, learner_id: uuid.UUID) -> list[Impersonation]:
-    """The visits made to one learner's account, newest first — their half of the record."""
-    result = await session.scalars(
-        select(Impersonation)
-        .where(Impersonation.learner_id == learner_id)
-        .order_by(Impersonation.created_at.desc(), Impersonation.id)
-    )
-    return list(result)

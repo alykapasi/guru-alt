@@ -15,7 +15,6 @@ maintained unused.
 """
 
 import hashlib
-import hmac
 import secrets
 
 _TOKEN_BYTES = 32  # 256 bits.
@@ -29,8 +28,3 @@ def new_session_token() -> str:
 def token_fingerprint(token: str) -> str:
     """The stored form of a session token."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def tokens_equal(left: str, right: str) -> bool:
-    """Constant-time comparison, for the places a fingerprint is compared rather than queried."""
-    return hmac.compare_digest(left, right)

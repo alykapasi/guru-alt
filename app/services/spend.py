@@ -26,7 +26,6 @@ count is a number that looks like it describes everything.
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel
@@ -239,14 +238,3 @@ async def stale_pending(session: AsyncSession, *, older_than: timedelta) -> int:
         )
         or 0
     )
-
-
-async def learner_spend(session: AsyncSession, learner_id: uuid.UUID, *, hours: int) -> float:
-    """One learner's priced spend over a window. Used by the per-learner cap (S47)."""
-    since = (datetime.now(UTC) - timedelta(hours=hours)).replace(tzinfo=None)
-    total = await session.scalar(
-        select(func.coalesce(func.sum(LLMCall.cost_usd), 0.0)).where(
-            LLMCall.learner_id == learner_id, LLMCall.created_at >= since
-        )
-    )
-    return float(total or 0.0)
