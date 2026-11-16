@@ -206,6 +206,33 @@ async def test_a_retry_does_not_show_the_model_its_own_cut_off_reply(
     assert [m.content for m in seen[0]] == []
 
 
+async def test_a_second_retry_does_not_show_the_model_the_first_cut_off_reply(
+    api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, monkeypatch
+) -> None:
+    """Each attempt keeps its own partial reply; a retry used to forget all but the latest."""
+    cid = await _conversation(api_client, db_session)
+    key = str(uuid.uuid4())
+    _short_deadline(monkeypatch)
+    monkeypatch.setattr("app.services.chat.run_tutor_turn", _slow_flow())
+    for _ in range(2):
+        await api_client.post(
+            f"{API}/conversations/{cid}/messages", json={"content": "Hi", "client_turn_id": key}
+        )
+    assert len(await _assistant(db_session, cid)) == 2
+    seen: list = []
+
+    async def capture(*args, **kwargs) -> AsyncIterator[TurnEvent]:
+        seen.append(kwargs["history"])
+        yield TurnEvent(type="done")
+
+    monkeypatch.setattr("app.services.chat.run_tutor_turn", capture)
+    await api_client.post(
+        f"{API}/conversations/{cid}/messages", json={"content": "Hi", "client_turn_id": key}
+    )
+
+    assert [m.content for m in seen[0]] == []
+
+
 async def test_the_next_turn_sees_a_stopped_reply(
     api_client: AsyncClient, db_session: AsyncSession, fake_llm: None, monkeypatch
 ) -> None:

@@ -214,6 +214,11 @@ class Message(UUIDPrimaryKeyMixin, Base):
     # How this reply was cut short (S47): ``stopped`` by the learner or ``timed_out`` by the turn
     # deadline. NULL is a reply that finished. The text is what the learner saw, kept as is.
     interrupted: Mapped[str | None] = mapped_column(Text, default=None)
+    # The turn whose attempt kept this cut-off reply. Recorded because a retry relinks its
+    # turn, and every earlier attempt's partial has to stay out of the retry's history; their
+    # order is no guide, since ``created_at`` is transaction time. No FK, like the actor
+    # snapshots: turns go only with their conversation, and these rows go with it.
+    turn_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     # The learner-facing grade for an answer this turn marked, if it marked one (S15) — a
     # ``CheckResultRead`` dumped to JSON. It lives on the message rather than only in the
     # stream because the stream is gone the moment the page reloads: the grade moved the

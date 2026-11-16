@@ -26,6 +26,7 @@ from app.learning import conversation_evidence, item_generation
 from app.learning.conversation_evidence import TurnIntent, classify_intent, parse_intent
 from app.learning.diagnosis import Diagnosis, FailureKind
 from app.learning.grading import GradeResult
+from app.llm.meter import ProviderUnavailable
 from app.llm.providers import FakeProvider
 from app.llm.registry import LLMClient, ModelSpec, fake_llm_client
 from app.llm.types import ChatChunk, ChatMessage, ChatResponse, ModelRole, ToolDef, Usage
@@ -942,6 +943,51 @@ async def test_the_graded_result_reaches_the_client_on_the_stream(
     assert done[0]["check_result"] is not None
     assert done[0]["check_result"]["item_id"] == str(item.id)
     assert done[0]["check_result"]["correct"] is True
+
+
+class _FailingStream(_RoleProvider):
+    """The gate answers; the tutor's reply breaks partway, the way a provider drop does."""
+
+    async def stream(self, **kwargs) -> AsyncIterator[ChatChunk]:  # type: ignore[override]
+        yield ChatChunk(text="Let me")
+        raise ProviderUnavailable("down")
+
+
+async def test_a_failed_turn_leaves_the_open_check_open(
+    api_client: AsyncClient, db_session: AsyncSession, api_learner: Learner
+) -> None:
+    """A turn that fails has decided nothing, so the question the learner was on stays posed —
+    otherwise the retried answer reaches the tutor as conversation and is never graded."""
+    kc = await _kc(db_session)
+    item, _ = await item_generation.generate_short_item(
+        db_session, fake_llm_client(SHORT_REPLY), kc, owner_learner_id=api_learner.id
+    )
+    assert item is not None
+    conversation = Conversation(
+        learner_id=api_learner.id,
+        goal="Understand velocity",
+        phase=ConversationPhase.AWAITING_ANSWER,
+        active_item_id=item.id,
+    )
+    db_session.add(conversation)
+    await db_session.commit()
+
+    provider = _FailingStream({"m-fast": '{"intent": "question"}', "m-smart": ""})
+    specs = {r: ModelSpec("fake", "m-smart") for r in ModelRole}
+    specs[ModelRole.FAST] = ModelSpec("fake", "m-fast")
+    app.dependency_overrides[get_llm_client] = lambda: LLMClient({"fake": provider}, specs)
+    try:
+        r = await api_client.post(
+            f"/api/v1/conversations/{conversation.id}/messages",
+            json={"content": "What does direction mean here?"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_llm_client, None)
+
+    assert any(f["type"] == "error" for f in _frames(r.text)), r.text
+    await db_session.refresh(conversation)
+    assert conversation.phase == ConversationPhase.AWAITING_ANSWER
+    assert conversation.active_item_id == item.id
 
 
 async def test_a_turn_that_grades_nothing_carries_no_result(

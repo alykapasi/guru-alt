@@ -224,6 +224,29 @@ describe("the operator's portal", () => {
     expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
   });
 
+  it("shows a visit still inside its window as in progress, not expired", async () => {
+    // Nobody ended it and it has not run out: someone is in that account right now.
+    const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+    serve(SPEND, ROSTER, [
+      {
+        id: "imp-live",
+        admin_learner_id: "a-1",
+        admin_handle: "root",
+        learner_id: "l-1",
+        learner_handle: "active",
+        reason: "looking at a stuck lesson",
+        created_at: minutesAgo(2).replace("Z", ""),
+        expires_at: minutesAgo(-28),
+        ended_at: null,
+      },
+    ]);
+    renderPortal();
+
+    expect(await screen.findByText("looking at a stuck lesson")).toBeInTheDocument();
+    expect(screen.getByText("in progress")).toBeInTheDocument();
+    expect(screen.queryByText("expired")).not.toBeInTheDocument();
+  });
+
   it("does not claim truncation when every account is shown", async () => {
     serve();
     renderPortal();

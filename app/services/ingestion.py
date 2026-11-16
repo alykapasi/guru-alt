@@ -599,6 +599,25 @@ async def release_duplicates(
     return ids
 
 
+async def request_retag(session: AsyncSession, source_id: uuid.UUID) -> bool:
+    """Put a finished source back in line for its tag stage (after its subject changed, S55).
+
+    The tag stage then runs under the claim like any other, so it cannot overlap one already
+    in flight: a live lease still makes the claim refuse. A source not yet DONE is left alone,
+    since its own tag stage is still to run and reads the subject as it stands then.
+    """
+    result = await session.execute(
+        update(Source)
+        .where(Source.id == source_id, Source.status == SourceStatus.DONE)
+        .values(stage=SourceStage.TAG, attempts=0, error=None)
+        .returning(Source.id)
+        .execution_options(synchronize_session="fetch")
+    )
+    marked = result.scalar_one_or_none() is not None
+    await session.commit()
+    return marked
+
+
 async def reset_for_reingest(session: AsyncSession, source_id: uuid.UUID) -> Source | None:
     """Put a finished or failed source back within the claim's reach, clearing its attempts.
 
@@ -746,6 +765,11 @@ async def _ingest_claimed(
     return await _tag_stage(session, llm, source, settings)
 
 
+TAGGING_ABANDONED = (
+    "Searchable, but its concept tags could not be written. Re-process it to try again."
+)
+
+
 async def _tag_stage(
     session: AsyncSession, llm: LLMClient, source: Source, settings: Settings
 ) -> Source:
@@ -764,6 +788,8 @@ async def _tag_stage(
         source = refreshed
         if source.attempts >= settings.ingest_max_attempts:
             logger.warning("ingest.tagging_abandoned source=%s", source_id)
+            # Nothing will try again, and a DONE source otherwise looks finished.
+            source.error = TAGGING_ABANDONED
         else:
             logger.info("ingest.tagging_deferred source=%s", source_id, exc_info=True)
     source.lease_expires_at = None

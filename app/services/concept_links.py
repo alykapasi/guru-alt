@@ -154,8 +154,11 @@ async def curated_queue(session: AsyncSession) -> list[ConceptLink]:
 async def set_admin_verdict(
     session: AsyncSession, link_id: uuid.UUID, admin_id: uuid.UUID, *, endorse: bool, reason: str
 ) -> ConceptLink:
-    """An administrator's ruling on a curated link. Once only; private links are the judge's."""
-    link = await session.get(ConceptLink, link_id)
+    """An administrator's ruling on a curated link. Once only; private links are the judge's.
+
+    Locked and re-read, like ``_write_verdict``'s guard: two admins deciding at once must not
+    both see "undecided" and let the second commit overwrite the first."""
+    link = await session.get(ConceptLink, link_id, with_for_update=True, populate_existing=True)
     if link is None or link.scope != CURATED:
         raise LinkNotFound(str(link_id))
     if link.verdict is not None:

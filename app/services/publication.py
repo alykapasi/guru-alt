@@ -215,10 +215,21 @@ async def request_publication(
     return publication
 
 
+async def _lock_pending(session: AsyncSession, publication: Publication, refusal: str) -> None:
+    """Lock the row and re-read it, refusing unless it is still pending.
+
+    The caller's copy was read before this request decided anything, so a cancel racing an
+    approval could each see ``pending`` and both commit — a cancelled request with a published
+    copy. Under the lock the second one waits, then reads the first one's decision.
+    """
+    await session.refresh(publication, with_for_update=True)
+    if publication.status != PublicationStatus.PENDING:
+        raise CannotPublish(refusal)
+
+
 async def cancel(session: AsyncSession, publication: Publication) -> Publication:
     """Withdraw a request before it is reviewed. The caller has established ownership."""
-    if publication.status != PublicationStatus.PENDING:
-        raise CannotPublish(NOT_PENDING_REFUSAL)
+    await _lock_pending(session, publication, NOT_PENDING_REFUSAL)
     publication.status = PublicationStatus.CANCELLED
     publication.reviewed_at = datetime.now(UTC)
     await session.commit()
@@ -285,8 +296,7 @@ async def approve(
     (S24 owns concept identity, and a copy that skipped it would be invisible to every query
     that reasons about what a learner already knows).
     """
-    if publication.status != PublicationStatus.PENDING:
-        raise CannotPublish(NOT_PENDING_REVIEW_REFUSAL)
+    await _lock_pending(session, publication, NOT_PENDING_REVIEW_REFUSAL)
 
     excluded = {str(item_id) for item_id in (excluded_item_ids or [])}
     snapshot = publication.snapshot
@@ -412,8 +422,7 @@ async def reject(
     only that somebody looked — they cannot fix what they are not told about, and the next
     request will be the same one.
     """
-    if publication.status != PublicationStatus.PENDING:
-        raise CannotPublish(NOT_PENDING_REVIEW_REFUSAL)
+    await _lock_pending(session, publication, NOT_PENDING_REVIEW_REFUSAL)
     if len(note.strip()) < REJECTION_NOTE_MIN:
         raise CannotPublish(SHORT_NOTE_REFUSAL)
 

@@ -44,12 +44,13 @@ def history_without(history: Sequence[Message], turn: Turn | None) -> Sequence[M
     the "is this conversation empty?" test that routes a first turn to the refinement gate
     would route the retry of that same first turn somewhere else. A reply the earlier attempt
     kept when it was cut off (S47) goes too: left in, the model would see an answer ahead of
-    the question it answers.
+    the question it answers. That means every earlier attempt's, not only the one still linked:
+    each retry relinks the turn, so a kept reply carries the turn it came from.
     """
     if turn is None:
         return history
     written = {turn.user_message_id, turn.assistant_message_id} - {None}
-    return [m for m in history if m.id not in written]
+    return [m for m in history if m.id not in written and m.turn_id != turn.id]
 
 
 def attempt_id_for_turn(client_turn_id: uuid.UUID | None) -> uuid.UUID | None:
