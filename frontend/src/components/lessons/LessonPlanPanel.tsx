@@ -12,7 +12,6 @@ import {
 } from "../../api/hooks";
 import type { components } from "../../api/schema";
 import { GoalStatusBar } from "./GoalStatusBar";
-import { PreferenceControls } from "../preferences/PreferenceControls";
 import { LessonStepRow } from "./LessonStepRow";
 
 type PlacementResult = components["schemas"]["PlacementResultRead"];
@@ -139,12 +138,6 @@ export function LessonPlanPanel({ subjectId }: { subjectId: string }) {
           </p>
         )}
       </div>
-      <details className="border-base-300 rounded-box border px-4 py-2">
-        <summary className="text-body cursor-pointer">Settings for this subject</summary>
-        <div className="pt-3">
-          <PreferenceControls subjectId={subjectId} />
-        </div>
-      </details>
       <GoalStatusBar status={plan.goal_status} deferredCount={plan.deferred_kc_count} />
       <div className="flex flex-col gap-1">
         {plan.steps.map((step) =>

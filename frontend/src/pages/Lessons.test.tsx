@@ -62,11 +62,19 @@ describe("adding a subject", () => {
 describe("a subject of one's own", () => {
   const OWNED = { ...SUBJECT, id: "s-2", owner_learner_id: "me" };
 
-  it("keeps sources and sharing folded away until asked for", async () => {
+  it("keeps its settings, sources and sharing in one section, folded until asked for", async () => {
     renderPage([OWNED]);
-    const section = await screen.findByText("Sources and sharing");
+    const section = await screen.findByText("Subject settings");
+    expect(screen.queryByText("Settings for this subject")).toBeNull();
+    expect(screen.queryByText("Sources and sharing")).toBeNull();
     expect(screen.getByRole("button", { name: "Request publication" })).not.toBeVisible();
     fireEvent.click(section);
     expect(screen.getByRole("button", { name: "Request publication" })).toBeVisible();
+  });
+
+  it("still offers a curated subject's teaching settings, without sharing", async () => {
+    renderPage([SUBJECT]);
+    expect(await screen.findByText("Subject settings")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Request publication" })).toBeNull();
   });
 });

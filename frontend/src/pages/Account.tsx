@@ -32,8 +32,8 @@ export function Account() {
       <section className="flex flex-col gap-2">
         <h2 className="text-h2">Preferences</h2>
         <p className="text-body text-base-content/70">
-          How Guru teaches you everywhere. You can override any of these for a single subject from
-          its lesson plan.
+          How Guru teaches you everywhere. You can override any of these for one subject under
+          Subject settings on its Lessons page.
         </p>
         <PreferenceControls />
         <MemorySwitch />

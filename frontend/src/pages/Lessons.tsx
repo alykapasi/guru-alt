@@ -10,6 +10,7 @@ import { ConnectionsPanel } from "../components/lessons/ConnectionsPanel";
 import { SourceSettingsPanel } from "../components/lessons/SourceSettingsPanel";
 import { EmptyPage } from "../components/EmptyPage";
 import { SubjectPicker } from "../components/SubjectPicker";
+import { PreferenceControls } from "../components/preferences/PreferenceControls";
 
 type Subject = components["schemas"]["SubjectRead"];
 
@@ -65,26 +66,32 @@ export function Lessons() {
       {selectedId && <LessonPlanPanel key={selectedId} subjectId={selectedId} />}
       {/* Every selected subject, not only owned ones — a curated subject can be linked too. */}
       {selectedId && <ConnectionsPanel key={`links-${selectedId}`} subjectId={selectedId} />}
-      {/* Only on a subject that is theirs. A curated one is the shared library, which is
-          nobody's to publish — offering the action there and letting the API refuse would be
-          showing a door that answers 404. */}
       {selected && selected.owner_learner_id !== null && (
-        <>
-          <CurriculumIssuesPanel key={`issues-${selected.id}`} subjectId={selected.id} />
-          {/* Set once and rarely revisited, so folded under the plan rather than competing with
-              it. */}
-          <details className="border-base-300 rounded-box border px-4 py-2">
-            <summary className="text-body cursor-pointer">Sources and sharing</summary>
-            <div className="flex flex-col gap-6 pt-3">
-              <SubjectSources key={`sources-${selected.id}`} subject={selected} />
-              <PublishPanel
-                key={selected.id}
-                subjectId={selected.id}
-                sourceDerived={selected.private_source_derived}
-              />
-            </div>
-          </details>
-        </>
+        <CurriculumIssuesPanel key={`issues-${selected.id}`} subjectId={selected.id} />
+      )}
+      {/* Set once and rarely revisited, so folded under the plan rather than competing with it.
+          Sources and sharing only on a subject that is the learner's own: a curated one is the
+          shared library, which is nobody's to publish — offering the action there and letting
+          the API refuse would be showing a door that answers 404. */}
+      {selected && (
+        <details
+          key={`settings-${selected.id}`}
+          className="border-base-300 rounded-box border px-4 py-2"
+        >
+          <summary className="text-body cursor-pointer">Subject settings</summary>
+          <div className="flex flex-col gap-6 pt-3">
+            <PreferenceControls subjectId={selected.id} />
+            {selected.owner_learner_id !== null && (
+              <>
+                <SubjectSources subject={selected} />
+                <PublishPanel
+                  subjectId={selected.id}
+                  sourceDerived={selected.private_source_derived}
+                />
+              </>
+            )}
+          </div>
+        </details>
       )}
     </div>
   );
