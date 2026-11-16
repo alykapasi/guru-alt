@@ -1,3 +1,4 @@
+import type { Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 
 /** Making an account an administrator from outside the API, as a deployment must (P10).
@@ -38,4 +39,10 @@ export function markEligible(email: string): void {
     encoding: "utf8",
     env: { ...process.env, GURU_DATABASE_URL: e2eDatabaseUrl() },
   });
+}
+
+/** Admin sits in the account menu under the learner's name, out of the main bar. */
+export async function openAdmin(page: Page): Promise<void> {
+  await page.getByRole("group", { name: "Account menu" }).locator("summary").click();
+  await page.getByRole("link", { name: "Admin" }).click();
 }

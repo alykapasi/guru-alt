@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { grantAdmin } from "./admin";
+import { grantAdmin, openAdmin } from "./admin";
 import { apiGet, signIn } from "./journey";
 import { expectAccessible } from "./a11y";
 
@@ -36,7 +36,7 @@ test("an administrator reads what the deployment costs and who is on it", async 
   grantAdmin(account.email);
   await page.reload();
 
-  await page.getByRole("link", { name: "Admin" }).click();
+  await openAdmin(page);
   await expect(page).toHaveURL(/\/app\/admin/);
 
   await expect(page.getByRole("heading", { name: "What this deployment is doing" })).toBeVisible();

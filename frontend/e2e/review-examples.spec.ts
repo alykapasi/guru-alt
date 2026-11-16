@@ -1,6 +1,6 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 
-import { grantAdmin, markEligible } from "./admin";
+import { grantAdmin, markEligible, openAdmin } from "./admin";
 import { seedSubjectWithPlan, signIn } from "./journey";
 import { expectAccessible } from "./a11y";
 
@@ -36,7 +36,7 @@ test("an eligible learner's graded answer is labelled blind in the portal", asyn
   const founder = await signIn(admin);
   grantAdmin(founder.email);
   await admin.goto("/app/chat");
-  await admin.getByRole("link", { name: "Admin" }).click();
+  await openAdmin(admin);
 
   await admin.getByRole("button", { name: /^Grading/ }).click();
   await admin.getByRole("button", { name: "Draw 10" }).click();

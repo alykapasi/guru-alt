@@ -3,6 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import {
   BookOpen,
   Brain,
+  ChevronDown,
   Gauge,
   LayoutDashboard,
   LogOut,
@@ -19,12 +20,17 @@ import { ClerkUserButton } from "../auth/ClerkPanels";
 import { clerkEnabled } from "../auth/mode";
 import { useSignOutEverywhere } from "../auth/session";
 
+/** Where a learner works, in the order they use it. */
 const LINKS = [
-  { to: "/app/chat", label: "Chat", icon: MessageSquare },
   { to: "/app/lessons", label: "Lessons", icon: NotebookText },
+  { to: "/app/chat", label: "Chat", icon: MessageSquare },
   { to: "/app/notes", label: "Notes", icon: BookOpen },
-  { to: "/app/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/app/uploads", label: "Uploads", icon: Upload },
+  { to: "/app/dashboard", label: "Dashboard", icon: LayoutDashboard },
+];
+
+/** About the learner rather than their learning — under their name, out of the main bar. */
+const ACCOUNT_LINKS = [
   { to: "/app/memory", label: "Memory", icon: Brain },
   { to: "/app/account", label: "Account", icon: UserRound },
 ];
@@ -47,7 +53,8 @@ export function NavBar() {
   const signOutEverywhere = useSignOutEverywhere();
   const [busy, setBusy] = useState(false);
   const menuRef = useRef<HTMLDetailsElement>(null);
-  const links = [...LINKS, ...(learner?.is_admin ? [ADMIN_LINK] : [])];
+  const accountRef = useRef<HTMLDetailsElement>(null);
+  const accountLinks = [...ACCOUNT_LINKS, ...(learner?.is_admin ? [ADMIN_LINK] : [])];
 
   async function signOut() {
     setBusy(true);
@@ -72,7 +79,7 @@ export function NavBar() {
             <Menu size={18} />
           </summary>
           <ul className="dropdown-content menu bg-base-100 rounded-box border-base-300 z-50 mt-2 w-52 border p-2 shadow">
-            {links.map(({ to, label, icon: Icon }) => (
+            {LINKS.map(({ to, label, icon: Icon }) => (
               <li key={to}>
                 <NavLink
                   to={to}
@@ -87,7 +94,7 @@ export function NavBar() {
           </ul>
         </details>
         <nav aria-label="Main" className="hidden items-center gap-1 sm:flex">
-          {links.map(({ to, label, icon: Icon }) => (
+          {LINKS.map(({ to, label, icon: Icon }) => (
             <NavLink key={to} to={to} className={linkClass}>
               <Icon size={16} />
               {label}
@@ -95,29 +102,48 @@ export function NavBar() {
           ))}
         </nav>
         <div className="flex items-center gap-2">
-          {learner && (
-            <span className="text-caption text-base-content/70 hidden sm:inline">
-              {learner.display_name || learner.handle}
-            </span>
-          )}
           <ThemeToggle />
-          {/* Clerk's menu carries sign-out and account management together, so showing Guru's
-              button beside it would offer the same action twice and disagree about what it
-              does. `ClerkSessionWatcher` ends Guru's session when Clerk's ends (S21). */}
-          {clerkEnabled ? (
-            <ClerkUserButton />
-          ) : (
-            <button
-              type="button"
-              onClick={signOut}
-              disabled={busy}
-              aria-label="Sign out"
-              title="Sign out"
-              className="text-base-content/70 hover:bg-base-200 hover:text-base-content rounded-field p-2 transition-colors"
-            >
-              <LogOut size={16} />
-            </button>
-          )}
+          <details ref={accountRef} aria-label="Account menu" className="dropdown dropdown-end">
+            <summary className="text-base-content/70 hover:bg-base-200 hover:text-base-content rounded-field flex cursor-pointer list-none items-center gap-1 px-2 py-2 text-caption transition-colors">
+              <UserRound size={16} aria-hidden />
+              <span className="sr-only sm:hidden">Account</span>
+              <span className="hidden max-w-40 truncate sm:inline">
+                {learner ? learner.display_name || learner.handle : "Account"}
+              </span>
+              <ChevronDown size={14} aria-hidden />
+            </summary>
+            <ul className="dropdown-content menu bg-base-100 rounded-box border-base-300 z-50 mt-2 w-52 border p-2 shadow">
+              {accountLinks.map(({ to, label, icon: Icon }) => (
+                <li key={to}>
+                  <NavLink
+                    to={to}
+                    className={linkClass}
+                    onClick={() => accountRef.current?.removeAttribute("open")}
+                  >
+                    <Icon size={16} />
+                    {label}
+                  </NavLink>
+                </li>
+              ))}
+              {/* Clerk's own menu carries sign-out and account management together, so Guru's
+                  button would offer the same action twice and disagree about what it does.
+                  `ClerkSessionWatcher` ends Guru's session when Clerk's ends (S21). */}
+              {!clerkEnabled && (
+                <li>
+                  <button
+                    type="button"
+                    onClick={signOut}
+                    disabled={busy}
+                    className="text-base-content/70 hover:bg-base-200 hover:text-base-content rounded-field flex items-center gap-2 px-3 py-2 text-caption"
+                  >
+                    <LogOut size={16} />
+                    Sign out
+                  </button>
+                </li>
+              )}
+            </ul>
+          </details>
+          {clerkEnabled && <ClerkUserButton />}
         </div>
       </div>
     </header>
