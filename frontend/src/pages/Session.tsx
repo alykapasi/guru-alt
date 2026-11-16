@@ -40,7 +40,9 @@ export function Session() {
     sessionDetail,
     awaitingReply,
     practicePaused,
+    practiceEnded,
     applyPracticeState,
+    conversation,
     send,
   } = useChatConversation(conversationId);
   const practiceAction = usePracticeAction(conversationId);
@@ -70,7 +72,12 @@ export function Session() {
   // two ways a workflow run ends on its own (see app/services/workflow.py::run_workflow_turn);
   // a stale resume and an explicit skip are the two the learner's own controls can cause (S52).
   const ended =
-    sessionDetail === "mastered" || sessionDetail === "capped" || endedNotice !== null || skipped;
+    sessionDetail === "mastered" ||
+    sessionDetail === "capped" ||
+    endedNotice !== null ||
+    skipped ||
+    // What the server recorded, so a finished round reopened later is still finished.
+    !!practiceEnded;
   const practiceBusy = practiceAction.isPending || !!pending;
 
   // A flashcard's rating rides the same turn request every other reply does (ChatTurnRequest.
@@ -122,6 +129,8 @@ export function Session() {
       item={item}
       detail={sessionDetail}
       onRate={handleRate}
+      finished={ended}
+      subjectId={conversation?.subject_id ?? null}
       // While paused a rating would go to the tutor, not the grader (spec §4.2), so the
       // learner must go back to the question before rating it.
       ratingDisabled={!!pending || practicePaused}

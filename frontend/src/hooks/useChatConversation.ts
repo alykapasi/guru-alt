@@ -86,6 +86,7 @@ export function useChatConversation(conversationId: string | undefined) {
   // hook invents, and it goes false the moment a turn is streaming — the same "SSE events are
   // ahead of the server read" reasoning `awaitingReply` already applies.
   const practicePaused = !pending && conversation?.phase === "practice_paused";
+  const practiceEnded = practiceOver(conversation, messages.length, !!pending);
 
   // On reload there is no live item, only the id the phase points at — fetch it so a paused
   // session comes back showing the question it was actually on rather than an empty panel.
@@ -233,8 +234,25 @@ export function useChatConversation(conversationId: string | undefined) {
     sessionDetail,
     awaitingReply,
     practicePaused,
+    practiceEnded,
     applyPracticeState,
     send,
     stop,
   };
+}
+
+/** Whether a practice round has finished, read from what the server recorded rather than from
+ * this page's memory, so it survives a reload. A graded or skipped round leaves the session
+ * "chatting" with nothing in play; before its first turn, or while one runs, it is not over. */
+export function practiceOver(
+  conversation: { kind: string; phase: string } | undefined,
+  messageCount: number,
+  pending: boolean,
+): boolean {
+  return (
+    !pending &&
+    messageCount > 0 &&
+    conversation?.kind === "session" &&
+    conversation.phase === "chatting"
+  );
 }
