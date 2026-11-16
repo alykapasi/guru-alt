@@ -1,3 +1,4 @@
+import { HOME } from "../lib/home";
 import { useState } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useCurrentLearner, useDevLogin } from "../api/auth";
@@ -25,7 +26,7 @@ export function SignIn() {
 
   // Where they were headed before being sent here, so signing in resumes rather than dumps
   // them on a default page.
-  const next = (location.state as { from?: string } | null)?.from ?? "/app/chat";
+  const next = (location.state as { from?: string } | null)?.from ?? HOME;
 
   if (isPending) return <Centered>Checking your session…</Centered>;
   if (learner) return <Navigate to={next} replace />;

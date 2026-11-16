@@ -1,3 +1,4 @@
+import { HOME } from "../lib/home";
 import { Navigate } from "react-router-dom";
 import { useCurrentLearner } from "../api/auth";
 import { AuthLayout } from "../auth/AuthLayout";
@@ -24,7 +25,7 @@ export function SignUp() {
       </div>
     );
   }
-  if (learner) return <Navigate to="/app/chat" replace />;
+  if (learner) return <Navigate to={HOME} replace />;
 
   return (
     <AuthLayout

@@ -9,6 +9,7 @@ import { Landing } from "./pages/Landing";
 import { SignIn } from "./pages/SignIn";
 import { SignUp } from "./pages/SignUp";
 import { clerkEnabled } from "./auth/mode";
+import { HOME } from "./lib/home";
 
 /** Everything behind sign-in loads on demand, a page at a time, so the landing and sign-in
  * pages do not carry the app — and a learner never downloads the admin portal. The shells
@@ -62,7 +63,7 @@ function App() {
             <Route path=":conversationId" element={<SessionRoute />} />
           </Route>
           <Route path="/app" element={<PageShell />}>
-            <Route index element={<Navigate to="chat" replace />} />
+            <Route index element={<Navigate to={HOME} replace />} />
             <Route path="lessons" element={<Lessons />} />
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="uploads" element={<Uploads />} />
