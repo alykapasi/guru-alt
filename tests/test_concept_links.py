@@ -4,10 +4,10 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.learning import mastery
-from app.models.knowledge import KC, Concept, ConceptLinkDecision, Subject, Topic
+from app.models.knowledge import KC, Concept, ConceptLink, ConceptLinkDecision, Subject, Topic
 from app.models.learner import Learner
 from app.models.learning import LearnerKCState
 from app.services import concept_links as svc
@@ -129,6 +129,26 @@ async def test_an_admin_decides_a_curated_link_once_and_never_a_private_one(db_s
     )
     with pytest.raises(svc.LinkAlreadyDecided):
         await svc.set_admin_verdict(db_session, curated.id, admin.id, endorse=True, reason="y")
+
+
+async def test_a_second_admin_cannot_overwrite_a_verdict_committed_meanwhile(db_session):
+    """This session's copy still reads undecided; another admin's verdict has landed."""
+    admin = await _learner(db_session)
+    concept = await _concept(db_session, "matrices")
+    await _kc(db_session, await _subject(db_session, name="A"), "Matrices", concept)
+    await _kc(db_session, await _subject(db_session, name="B"), "Matrices", concept)
+    await svc.sync_candidates(db_session, None)
+    (link,) = await svc.curated_queue(db_session)
+    await db_session.execute(
+        update(ConceptLink)
+        .where(ConceptLink.id == link.id)
+        .values(verdict="endorsed", endorsed_by="admin")
+        .execution_options(synchronize_session=False)
+    )
+    assert link.verdict is None  # the stale copy
+
+    with pytest.raises(svc.LinkAlreadyDecided):
+        await svc.set_admin_verdict(db_session, link.id, admin.id, endorse=False, reason="No.")
 
 
 async def _endorsed_curated(db_session):

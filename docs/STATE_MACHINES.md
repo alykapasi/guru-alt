@@ -20,6 +20,22 @@ Stateless functions (most of `app/`) have no machine worth drawing and are not c
 | 8 | Concept link | `set_admin_verdict` still checks-then-writes, while the judge's path was fixed to a conditional update. Two admins can both decide; the last write wins. Also, a verdict is final: a curated link an admin endorsed in error cannot be withdrawn, only revoked one learner at a time. | `app/services/concept_links.py` `set_admin_verdict` vs `_write_verdict`. |
 | 9 | Learner account | An admin can suspend an account whose deletion is pending. Suspension blocks the recovery routes too, so the learner cannot cancel the deletion during the 7 days, and the account is erased. Probably acceptable, but nobody has decided it. | `accounts.suspend` checks only `suspended_at`; `identity.py` refuses a suspended account at sign-in, before any route (recovery included). |
 
+**Status (2026-11-16):**
+
+- **Fixed, each with a regression test:**
+  - **1:** only a completed turn records the phase.
+  - **2:** approve, reject and cancel lock the row and re-read it.
+  - **3:** a visit is "in progress" until `expires_at`.
+  - **4:** Undo's restore is a conditional update.
+  - **5:** an abandoned tag stage sets an error telling the learner to re-process.
+  - **6:** a retag goes through `request_retag` and the ordinary claim.
+  - **7:** a cut-off reply records its turn (`messages.turn_id`), and a retry drops every
+    earlier attempt's from its history.
+  - **8:** the admin verdict is locked and re-read.
+- **Open, for a product decision:**
+  - **8:** whether a verdict can ever be withdrawn.
+  - **9:** suspension during a pending deletion.
+
 Checked and sound: LLM call settlement, achievement and transfer milestones, lesson-plan steps,
 invitations, and pending erasures. Notes under each entity below.
 

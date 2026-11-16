@@ -284,9 +284,21 @@ async def undo_replacement(
     old = (await replaced_by(session, [memory_id])).get(memory_id)
     if old is None:
         raise NotAReplacement(str(memory_id))
-    old.status = MemoryStatus.CURRENT
-    old.superseded_by_id = None
-    await session.flush()
+    # Conditional in the database, like ``_supersede``: a Forget that lands after the read above
+    # must stay a Forget, not be overwritten back to current.
+    restored = await session.execute(
+        update(Memory)
+        .where(
+            Memory.id == old.id,
+            Memory.status == MemoryStatus.SUPERSEDED,
+            Memory.superseded_by_id == memory_id,
+        )
+        .values(status=MemoryStatus.CURRENT, superseded_by_id=None)
+        .execution_options(synchronize_session=False)
+    )
+    if cast("CursorResult[Any]", restored).rowcount != 1:
+        await session.commit()  # nothing written; releases the lock on ``memory``
+        raise NotAReplacement(str(memory_id))
     memory.status = MemoryStatus.SUPERSEDED
     memory.superseded_by_id = old.id
     await session.commit()

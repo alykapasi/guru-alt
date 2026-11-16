@@ -38,6 +38,7 @@ async def add_message(
     check_result: CheckResultRead | None = None,
     grounding_count: int | None = None,
     interrupted: str | None = None,
+    turn_id: uuid.UUID | None = None,
 ) -> Message:
     actor = session.info.get("admin_actor_id")
     action = session.info.get("admin_action_id")
@@ -54,6 +55,7 @@ async def add_message(
         check_result=check_result.model_dump(mode="json") if check_result is not None else None,
         grounding_count=grounding_count,
         interrupted=interrupted,
+        turn_id=turn_id,
     )
     session.add(message)
     await session.flush()

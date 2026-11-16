@@ -64,6 +64,11 @@ function ago(iso: string | null): string {
   return `${Math.round(minutes / (60 * 24))}d ago`;
 }
 
+/** A visit nobody ended is still open until its session runs out. */
+function stillOpen(expiresAt: string): boolean {
+  return Date.parse(expiresAt) > Date.now();
+}
+
 /** A timing and the calls behind it. The count is shown even when it is zero: "no completions
  * were measured" and "completions were instant" are different facts and only one is true. */
 function Timing({ label, latency }: { label: string; latency: Latency }) {
@@ -230,8 +235,8 @@ function ViewAsDialog({ learner, onClose }: { learner: LearnerUsage; onClose: ()
  *
  * Shown on the same page as the button that creates the rows, deliberately: an audit an
  * administrator has to go somewhere else to read is one they do not read. `ended_at` is blank
- * for a visit nobody closed — it expired instead, which is what `expires_at` bounds, and
- * printing a wall-clock end nobody performed would be inventing an event. */
+ * for a visit nobody closed: it is in progress until `expires_at`, then expired, and printing a
+ * wall-clock end nobody performed would be inventing an event. */
 function ActionLog({ visitId }: { visitId: string }) {
   const [expanded, setExpanded] = useState(false);
   const actions = useAdminActions(visitId, expanded);
@@ -299,6 +304,8 @@ function AccessLog() {
               <td className="py-2 tabular-nums">
                 {row.ended_at ? (
                   ago(row.ended_at)
+                ) : stillOpen(row.expires_at) ? (
+                  <span className="font-medium">in progress</span>
                 ) : (
                   <span className="text-base-content/70">expired</span>
                 )}

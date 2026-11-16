@@ -23,8 +23,6 @@ from app.llm import build_llm_client
 from app.llm.attribution import attributed
 from app.llm.meter import CallRefused
 from app.models.learner import Learner
-from app.models.source import Source, SourceStage
-from app.rag import pipeline
 from app.rag.demux import build_demuxer
 from app.rag.transcription import build_transcriber
 from app.services import (
@@ -120,24 +118,15 @@ async def _enqueue_ingestion(source_id: uuid.UUID) -> None:
 
 
 async def _retag_source_task(source_id: str) -> None:
-    """Rebuild one source's KC tags after its subject changed (enqueued by S55's reassign)."""
-    settings = get_settings()
-    llm = build_llm_client(settings)
+    """Rebuild one source's KC tags after its subject changed (enqueued by S55's reassign).
+
+    Through the ordinary claim, so it cannot overlap a tag stage already running; a refusal
+    leaves the source waiting to be tagged, and the sweep retries it (S37).
+    """
     async with SessionFactory() as session:
-        source = await session.get(Source, uuid.UUID(source_id))
-        if source is None:
-            return
-        try:
-            await pipeline.retag_source(session, llm, source, settings=settings)
-        except CallRefused as exc:
-            # Deferred, not dropped (S37): the sweep retries a source waiting to be tagged.
-            await session.rollback()
-            source = await session.get(Source, uuid.UUID(source_id), populate_existing=True)
-            if source is not None:
-                source.stage = SourceStage.TAG
-                source.attempts = 0
-                await session.commit()
-            logger.info("%s.deferred task=retag_source", exc.reason)
+        if not await ingestion.request_retag(session, uuid.UUID(source_id)):
+            return  # gone, or still being ingested: its own tag stage reads the new subject
+    await _ingest_source_task(source_id)
 
 
 async def _reconcile_once() -> None:

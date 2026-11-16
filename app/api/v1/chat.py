@@ -727,6 +727,7 @@ async def send_message(
                             "assistant",
                             text_so_far,
                             interrupted=ev.value,
+                            turn_id=turn_id,
                         )
                         assistant_message_id = message.id
                     if ev is Interrupted.STOPPED:
@@ -798,20 +799,22 @@ async def send_message(
                 elif ev.type == "tool_call":
                     yield _sse({"type": "tool_call", "detail": ev.detail})
 
-        # Record the phase only after the stream drains, so an interrupted turn leaves the
-        # previous phase standing rather than a half-decided one.
-        await svc.record_phase(
-            session,
-            conversation_id,
-            _phase_after(
-                choice.flow,
-                awaiting_reply=awaiting_reply,
-                workflow_paused=choice.workflow_paused,
-                check_open=check_open,
-                practice_paused=choice.practice_paused,
-            ),
-            active_item_id=choice.paused_item_id if choice.practice_paused else active_item,
-        )
+        # Only a completed turn decides what the conversation waits for. A failed, stopped or
+        # cut-off one leaves the previous phase standing: an open check stays open, so the
+        # learner's retried answer is still graded.
+        if outcome is TurnStatus.COMPLETED:
+            await svc.record_phase(
+                session,
+                conversation_id,
+                _phase_after(
+                    choice.flow,
+                    awaiting_reply=awaiting_reply,
+                    workflow_paused=choice.workflow_paused,
+                    check_open=check_open,
+                    practice_paused=choice.practice_paused,
+                ),
+                active_item_id=choice.paused_item_id if choice.practice_paused else active_item,
+            )
         await turn_svc.close_turn(
             session,
             turn_id,

@@ -10,7 +10,7 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import AssessmentVisibility, Item, ItemKC, ItemOrigin, ItemType, Rubric
@@ -427,3 +427,55 @@ async def test_an_ordinary_learner_is_refused_on_every_review_route(
     response = await (api_client.get(path) if method == "get" else api_client.post(path, json=body))
 
     assert response.status_code == 403, f"{method.upper()} {path} answered {response.status_code}"
+
+
+# --- a decision made elsewhere first wins --------------------------------------------------
+
+
+async def _decided_elsewhere(
+    session: AsyncSession, publication: Publication, status: PublicationStatus
+) -> None:
+    """Commit a decision the way a concurrent request would: under this session's copy, which
+    still reads ``pending``."""
+    await session.execute(
+        update(Publication)
+        .where(Publication.id == publication.id)
+        .values(status=status)
+        .execution_options(synchronize_session=False)
+    )
+    assert publication.status == PublicationStatus.PENDING  # the stale copy
+
+
+async def test_approving_a_request_the_author_just_cancelled_is_refused(
+    db_session: AsyncSession,
+) -> None:
+    author, _subject, publication, _items = await _author_with_pending(db_session)
+    await _decided_elsewhere(db_session, publication, PublicationStatus.CANCELLED)
+
+    with pytest.raises(svc.CannotPublish):
+        await svc.approve(db_session, publication, author)
+
+    copies = await db_session.scalar(
+        select(func.count()).select_from(Subject).where(Subject.publication_id == publication.id)
+    )
+    assert copies == 0, "a cancelled request must not ship"
+
+
+async def test_rejecting_a_request_another_admin_approved_is_refused(
+    db_session: AsyncSession,
+) -> None:
+    author, _subject, publication, _items = await _author_with_pending(db_session)
+    await _decided_elsewhere(db_session, publication, PublicationStatus.APPROVED)
+
+    with pytest.raises(svc.CannotPublish):
+        await svc.reject(db_session, publication, author, "Needs more worked examples.")
+
+
+async def test_cancelling_a_request_an_admin_just_approved_is_refused(
+    db_session: AsyncSession,
+) -> None:
+    _author, _subject, publication, _items = await _author_with_pending(db_session)
+    await _decided_elsewhere(db_session, publication, PublicationStatus.APPROVED)
+
+    with pytest.raises(svc.CannotPublish):
+        await svc.cancel(db_session, publication)

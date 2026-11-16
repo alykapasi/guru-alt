@@ -316,6 +316,8 @@ async def test_tagging_that_runs_out_of_tries_leaves_the_source_done(
     assert again is not None
     assert (again.status, again.stage, again.attempts) == (SourceStatus.DONE, "tag", 1)
     assert await ingestion.claim_source(db_session, source.id, settings=settings) is None
+    # Searchable but never tagged, and nothing will try again: the source has to say so.
+    assert again.error is not None and "re-process" in again.error.lower()
 
 
 async def test_deleting_a_half_ingested_source_removes_what_it_saved(
@@ -380,6 +382,40 @@ async def test_a_source_being_tagged_is_not_claimed_twice(db_session: AsyncSessi
     assert source.id not in queued
     assert await ingestion.claim_source(db_session, source.id, settings=Settings()) is None
     assert await ingestion.reset_for_reingest(db_session, source.id) is None
+
+
+async def test_a_retag_runs_under_the_claim_like_any_tag_stage(db_session: AsyncSession) -> None:
+    """A subject change retags through the claim, so it cannot overlap a tag stage in flight."""
+    store = InMemoryBlobStore()
+    source = await _scoped_source(db_session, store)
+    await ingestion.ingest_source(db_session, store, fake_llm_client(TAGS), source.id)
+
+    assert await ingestion.request_retag(db_session, source.id) is True
+    assert (source.status, source.stage) == (SourceStatus.DONE, "tag")
+
+    done = await ingestion.ingest_source(db_session, store, fake_llm_client(TAGS), source.id)
+    assert done is not None and (done.status, done.stage) == (SourceStatus.DONE, None)
+    assert await _tags(db_session, source.id) > 0
+
+
+async def test_a_retag_waits_out_a_tag_stage_already_running(db_session: AsyncSession) -> None:
+    store = InMemoryBlobStore()
+    source = await _tagging_in_progress(db_session, store)
+
+    await ingestion.request_retag(db_session, source.id)
+
+    assert await ingestion.claim_source(db_session, source.id, settings=Settings()) is None
+
+
+async def test_a_retag_leaves_a_source_still_being_ingested_alone(db_session: AsyncSession) -> None:
+    """Its own tag stage runs at the end and reads the subject as it stands then."""
+    store = InMemoryBlobStore()
+    learner, _ = await _two_learners(db_session)
+    source = await _running(db_session, store, learner)
+
+    assert await ingestion.request_retag(db_session, source.id) is False
+    await db_session.refresh(source)
+    assert (source.status, source.stage) == (SourceStatus.PROCESSING, None)
 
 
 async def _waiting(session: AsyncSession, store: InMemoryBlobStore, learner_id: uuid.UUID):

@@ -12,7 +12,7 @@ import uuid
 from typing import cast
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -482,6 +482,35 @@ async def test_undo_refuses_what_is_not_a_replacement(db_session: AsyncSession) 
     with pytest.raises(svc.NotAReplacement):
         await svc.undo_replacement(db_session, learner.id, only.id)
     assert await svc.undo_replacement(db_session, uuid.uuid4(), only.id) is None
+
+
+async def test_undo_cannot_bring_back_a_memory_forgotten_while_it_ran(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Forget of the old memory that lands between Undo's read and its write stays a Forget."""
+    learner = await _learner(db_session)
+    old_id, new_id = await _replaced_pair(db_session, learner)
+    real_replaced_by = svc.replaced_by
+
+    async def forgotten_just_after_the_read(session, ids):
+        found = await real_replaced_by(session, ids)
+        await session.execute(
+            update(Memory)
+            .where(Memory.id == old_id)
+            .values(status=MemoryStatus.DELETED)
+            .execution_options(synchronize_session=False)
+        )
+        return found
+
+    monkeypatch.setattr(svc, "replaced_by", forgotten_just_after_the_read)
+
+    with pytest.raises(svc.NotAReplacement):
+        await svc.undo_replacement(db_session, learner.id, new_id)
+
+    old = await db_session.get(Memory, old_id, populate_existing=True)
+    new = await db_session.get(Memory, new_id, populate_existing=True)
+    assert old is not None and old.status == MemoryStatus.DELETED
+    assert new is not None and new.status == MemoryStatus.CURRENT
 
 
 async def test_undo_refuses_once_the_old_memory_has_changed(db_session: AsyncSession) -> None:
