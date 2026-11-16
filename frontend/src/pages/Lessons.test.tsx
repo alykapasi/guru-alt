@@ -23,11 +23,12 @@ function json(body: unknown) {
   });
 }
 
-function renderPage(subjects: unknown[]) {
+function renderPage(subjects: unknown[], plan: unknown = []) {
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL) => {
       const url = input instanceof Request ? input.url : String(input);
+      if (url.includes("/lesson-plan")) return Promise.resolve(json(plan));
       return Promise.resolve(json(url.match(/\/subjects(\?|$)/) ? subjects : []));
     }),
   );
@@ -92,5 +93,34 @@ describe("a subject of one's own", () => {
       ["H3", "Sources"],
       ["H3", "Sharing"],
     ]);
+  });
+});
+
+describe("the plan's goal", () => {
+  const plan = (goal: string) => ({
+    goal,
+    goal_status: {
+      achieved_at: null,
+      achieved_kc_count: 0,
+      closed_at: null,
+      current_kc_count: 0,
+      objective_kc_count: 1,
+      stale_kc_count: 0,
+    },
+    deferred_kc_count: 0,
+    steps: [{ order: 1, kc_id: "k-1", status: "active", step_type: "kc" }],
+  });
+
+  it("is not repeated when it is the subject's own name", async () => {
+    renderPage([SUBJECT], plan("Financial Machine Learning"));
+    await screen.findByRole("button", { name: /Start practice/ });
+    expect(screen.queryByText(/^Goal:/)).toBeNull();
+  });
+
+  it("is shown when it says more than the name", async () => {
+    renderPage([SUBJECT], plan("Price options with gradient-boosted trees"));
+    expect(
+      await screen.findByText("Goal: Price options with gradient-boosted trees"),
+    ).toBeInTheDocument();
   });
 });

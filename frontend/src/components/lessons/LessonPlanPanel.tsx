@@ -89,7 +89,14 @@ function NoPlanCard({ subjectId }: { subjectId: string }) {
   );
 }
 
-export function LessonPlanPanel({ subjectId }: { subjectId: string }) {
+export function LessonPlanPanel({
+  subjectId,
+  subjectName,
+}: {
+  subjectId: string;
+  /** The goal line is left out when it only repeats this — a subject is usually named after it. */
+  subjectName?: string;
+}) {
   const { data: plan, isLoading } = useLessonPlan(subjectId);
   const navigate = useNavigate();
   const createConversation = useCreateConversation();
@@ -121,7 +128,11 @@ export function LessonPlanPanel({ subjectId }: { subjectId: string }) {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between gap-4">
         <p className="text-caption text-base-content/70">
-          {plan.goal ? `Goal: ${plan.goal}` : "No specific goal set."}
+          {plan.goal
+            ? plan.goal.trim().toLowerCase() === subjectName?.trim().toLowerCase()
+              ? ""
+              : `Goal: ${plan.goal}`
+            : "No specific goal set."}
         </p>
         {activeStep ? (
           <button

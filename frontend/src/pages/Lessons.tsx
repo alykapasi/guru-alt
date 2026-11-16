@@ -63,7 +63,9 @@ export function Lessons() {
         </Link>
       </div>
       <SubjectPicker subjects={subjects} selectedId={selectedId} onSelect={setPickedId} />
-      {selectedId && <LessonPlanPanel key={selectedId} subjectId={selectedId} />}
+      {selectedId && (
+        <LessonPlanPanel key={selectedId} subjectId={selectedId} subjectName={selected?.name} />
+      )}
       {/* Every selected subject, not only owned ones — a curated subject can be linked too. */}
       {selectedId && <ConnectionsPanel key={`links-${selectedId}`} subjectId={selectedId} />}
       {selected && selected.owner_learner_id !== null && (
