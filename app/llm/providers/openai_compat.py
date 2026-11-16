@@ -22,6 +22,7 @@ from app.llm.types import (
     ChatRole,
     EmbedResult,
     ImagePart,
+    JsonSchema,
     TextPart,
     ToolCall,
     ToolDef,
@@ -183,6 +184,23 @@ class OpenAICompatProvider:
             ]
         }
 
+    @staticmethod
+    def _json_payload(json_output: bool | JsonSchema) -> dict[str, Any]:
+        """Ollama and OpenRouter both constrain the reply: to one valid JSON object, or to a
+        given schema (``strict``: nothing outside it)."""
+        if isinstance(json_output, JsonSchema):
+            return {
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": json_output.name,
+                        "schema": json_output.schema,
+                        "strict": True,
+                    },
+                }
+            }
+        return {"response_format": {"type": "json_object"}} if json_output else {}
+
     async def complete(
         self,
         *,
@@ -191,19 +209,15 @@ class OpenAICompatProvider:
         system: str | None = None,
         max_tokens: int = 1024,
         tools: Sequence[ToolDef] | None = None,
-        json_output: bool = False,
+        json_output: bool | JsonSchema = False,
     ) -> ChatResponse:
-        # Ollama and OpenRouter both constrain the reply to one valid JSON object when asked.
-        json_mode: dict[str, Any] = (
-            {"response_format": {"type": "json_object"}} if json_output else {}
-        )
         with translated(refusal):
             resp = await self._client.chat.completions.create(
                 model=model,
                 messages=cast(Any, self._payload(messages, system)),
                 max_tokens=max_tokens,
                 **self._tools_payload(tools),
-                **json_mode,
+                **self._json_payload(json_output),
             )
         usage = Usage()
         if resp.usage is not None:

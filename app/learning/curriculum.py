@@ -12,7 +12,7 @@ import structlog
 from app.core.redact import fingerprint
 from app.learning import prerequisites
 from app.llm import ChatMessage, ChatRole, LLMClient
-from app.llm.types import ModelRole, Usage
+from app.llm.types import JsonSchema, ModelRole, Usage
 
 log = structlog.get_logger(__name__)
 
@@ -25,6 +25,54 @@ CURRICULUM_SYSTEM_PROMPT = (
     "this curriculum, and make sure the result has no cycles — if A requires B then B must not "
     "require A, directly or through any chain. Leave `requires` empty for a starting point. "
     "Return a JSON object only, no other text."
+)
+
+
+_NAME = {"type": "string", "minLength": 1}
+_TEXT = {"type": "string"}
+
+# The shape the parser below accepts, as a schema the provider holds the model to: every field
+# whose absence fails the parse is required and non-empty, so a reply the model is allowed to
+# write is one the learner gets. JSON mode alone left a 3B model free to drop a topic's
+# concepts or name, and the wizard then failed.
+CURRICULUM_SCHEMA = JsonSchema(
+    name="curriculum",
+    schema={
+        "type": "object",
+        "properties": {
+            "subject_name": _NAME,
+            "subject_description": _TEXT,
+            "topics": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": _NAME,
+                        "description": _TEXT,
+                        "kcs": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": _NAME,
+                                    "description": _TEXT,
+                                    "requires": {"type": "array", "items": {"type": "string"}},
+                                },
+                                "required": ["name", "description", "requires"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": ["name", "description", "kcs"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["subject_name", "subject_description", "topics"],
+        "additionalProperties": False,
+    },
 )
 
 
@@ -105,7 +153,7 @@ async def generate_curriculum(
         [ChatMessage(role=ChatRole.USER, content=prompt)],
         system=CURRICULUM_SYSTEM_PROMPT,
         max_tokens=2048,
-        json_output=True,
+        json_output=CURRICULUM_SCHEMA,
     )
     reply, usage = completion.content, completion.usage
 

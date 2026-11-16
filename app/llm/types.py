@@ -1,5 +1,6 @@
 """Provider-agnostic message, usage, and role types."""
 
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -72,6 +73,18 @@ class ToolDef(BaseModel):
     name: str
     description: str
     parameters: dict[str, Any]  # JSON schema for the tool's input
+
+
+@dataclass(frozen=True)
+class JsonSchema:
+    """The exact shape a JSON reply must take, for a provider that can hold the model to it.
+
+    Plain JSON mode guarantees only that the reply parses; a small model still leaves out
+    fields the caller needs. A schema makes the provider generate only replies that fit it.
+    """
+
+    name: str
+    schema: dict[str, Any]
 
 
 class ToolCall(BaseModel):

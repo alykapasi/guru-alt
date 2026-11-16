@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app.llm import LLMClient
 from app.llm.pricing import price_usd
-from app.llm.types import ChatMessage, ChatResponse, ModelRole, ToolDef, Usage
+from app.llm.types import ChatMessage, ChatResponse, JsonSchema, ModelRole, ToolDef, Usage
 
 
 class RoleCost(BaseModel):
@@ -54,7 +54,7 @@ class CostTrackingClient(LLMClient):
         system: str | None = None,
         max_tokens: int = 1024,
         tools: Sequence[ToolDef] | None = None,
-        json_output: bool = False,
+        json_output: bool | JsonSchema = False,
     ) -> ChatResponse:
         resp = await super().complete(
             role,

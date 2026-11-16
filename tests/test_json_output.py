@@ -10,11 +10,11 @@ from collections.abc import Sequence
 from types import SimpleNamespace
 from typing import Any
 
-from app.learning.curriculum import generate_curriculum
+from app.learning.curriculum import CURRICULUM_SCHEMA, generate_curriculum
 from app.learning.rubric_grading import grade_open
 from app.llm.providers import FakeProvider, OpenAICompatProvider
 from app.llm.registry import LLMClient, ModelSpec
-from app.llm.types import ChatMessage, ChatResponse, ChatRole, ModelRole, ToolDef
+from app.llm.types import ChatMessage, ChatResponse, ChatRole, JsonSchema, ModelRole, ToolDef
 
 CURRICULUM = (
     '{"subject_name": "S", "subject_description": "", "topics": [{"name": "T", '
@@ -52,6 +52,20 @@ async def test_the_openai_compatible_provider_asks_for_a_json_object_when_told()
     assert "response_format" not in sent[1]
 
 
+async def test_the_openai_compatible_provider_sends_a_schema_when_given_one() -> None:
+    provider, sent = _stub_openai()
+    schema = JsonSchema(name="thing", schema={"type": "object"})
+
+    await provider.complete(
+        model="m", messages=[ChatMessage(role=ChatRole.USER, content="go")], json_output=schema
+    )
+
+    assert sent[0]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "thing", "schema": {"type": "object"}, "strict": True},
+    }
+
+
 class _Recording(FakeProvider):
     """A fake that can enforce JSON, and records whether each call asked it to."""
 
@@ -59,7 +73,7 @@ class _Recording(FakeProvider):
 
     def __init__(self, reply: str) -> None:
         super().__init__(reply=reply)
-        self.json_requested: list[bool] = []
+        self.json_requested: list[bool | JsonSchema] = []
 
     async def complete(
         self,
@@ -69,7 +83,7 @@ class _Recording(FakeProvider):
         system: str | None = None,
         max_tokens: int = 1024,
         tools: Sequence[ToolDef] | None = None,
-        json_output: bool = False,
+        json_output: bool | JsonSchema = False,
     ) -> ChatResponse:
         self.json_requested.append(json_output)
         return await super().complete(
@@ -90,13 +104,30 @@ async def test_a_provider_without_json_enforcement_is_not_asked_for_it() -> None
     assert response.content == "{}"
 
 
-async def test_curriculum_design_requires_a_json_reply() -> None:
+async def test_curriculum_design_requires_its_own_shape() -> None:
+    """Valid JSON was not enough: a 3B model still left out a topic's concepts or name."""
     provider = _Recording(CURRICULUM)
 
     proposal, _ = await generate_curriculum(_client(provider), "learn S", None)
 
     assert proposal is not None
-    assert provider.json_requested == [True]
+    assert provider.json_requested == [CURRICULUM_SCHEMA]
+
+
+def test_the_curriculum_schema_requires_what_the_parser_rejects_without() -> None:
+    """Every field whose absence fails the parse is required, and can't be empty, in the
+    schema the model is held to — so a reply the model is allowed to write is one we accept."""
+    root = CURRICULUM_SCHEMA.schema
+    topic = root["properties"]["topics"]["items"]
+    kc = topic["properties"]["kcs"]["items"]
+    assert {"subject_name", "topics"} <= set(root["required"])
+    assert {"name", "kcs"} <= set(topic["required"])
+    assert "name" in kc["required"]
+    assert root["properties"]["topics"]["minItems"] == 1
+    assert topic["properties"]["kcs"]["minItems"] == 1
+    for name in (root["properties"]["subject_name"], topic["properties"]["name"]):
+        assert name["minLength"] == 1
+    assert kc["properties"]["name"]["minLength"] == 1
 
 
 async def test_grading_requires_a_json_reply() -> None:
