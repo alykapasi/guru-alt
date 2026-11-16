@@ -163,4 +163,10 @@ describe("after a round ends", () => {
     renderFinished(DUE);
     await waitFor(() => expect(screen.queryByText("Preparing your practice…")).toBeNull());
   });
+
+  it("drops the question heading when reopened with no question left to show", async () => {
+    renderFinished(DUE);
+    await screen.findByRole("button", { name: "Next question" });
+    expect(screen.queryByRole("heading", { name: "Practice item" })).toBeNull();
+  });
 });

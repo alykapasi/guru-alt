@@ -71,25 +71,35 @@ export function ItemPanel({
 
   return (
     <div className="bg-base-100 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
-      <h3 className="text-h3 flex items-center gap-2">
-        <CircleCheck size={16} className="text-primary" />
-        Practice item
-      </h3>
-      {!item ? (
-        !finished && <p className="text-caption text-base-content/70">Preparing your practice…</p>
-      ) : (
-        <div className="flex flex-col gap-3">
-          <p className="text-caption text-base-content/70">{kc?.name ?? "…"}</p>
-          {item.item_type === "flashcard" ? (
-            // Keyed on item.id so a new flashcard remounts FlashcardPanel fresh — its local
-            // `back`/`busy` state (see FlashcardPanel) must not survive a prop change, or the
-            // next card renders beside the previous one's revealed answer with the reveal step
-            // already skipped (same remount-on-id rationale as App.tsx's ChatRoute/SessionRoute).
-            <FlashcardPanel key={item.id} item={item} onRate={onRate} disabled={ratingDisabled} />
+      {/* Reopened after it ended there is no question left to show, only what comes next. */}
+      {(item || !finished) && (
+        <>
+          <h3 className="text-h3 flex items-center gap-2">
+            <CircleCheck size={16} className="text-primary" />
+            Practice item
+          </h3>
+          {!item ? (
+            <p className="text-caption text-base-content/70">Preparing your practice…</p>
           ) : (
-            <RichText content={item.stem} className="text-base-content/90" />
+            <div className="flex flex-col gap-3">
+              <p className="text-caption text-base-content/70">{kc?.name ?? "…"}</p>
+              {item.item_type === "flashcard" ? (
+                // Keyed on item.id so a new flashcard remounts FlashcardPanel fresh — its local
+                // `back`/`busy` state must not survive a prop change, or the next card renders
+                // beside the previous one's revealed answer (same remount-on-id rationale as
+                // App.tsx's ChatRoute/SessionRoute).
+                <FlashcardPanel
+                  key={item.id}
+                  item={item}
+                  onRate={onRate}
+                  disabled={ratingDisabled}
+                />
+              ) : (
+                <RichText content={item.stem} className="text-base-content/90" />
+              )}
+            </div>
           )}
-        </div>
+        </>
       )}
       {(outcome || finished) && (
         <div className="border-base-300 mt-auto flex flex-col gap-3 border-t pt-4">
