@@ -33,6 +33,7 @@ async def _topic_404(session: SessionDep, topic_id: uuid.UUID, learner_id: uuid.
 def _read(view: notes_svc.NoteView) -> NoteRead:
     return NoteRead(
         topic_id=view.topic_id,
+        topic_name=view.topic_name,
         content_md=view.content_md,
         learner_authored_md=view.learner_authored_md,
         generated_md=view.generated_md,

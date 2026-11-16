@@ -106,6 +106,14 @@ async def test_get_note_empty_not_stale(api_client: AsyncClient) -> None:
     assert data["effective_format"] == "outline"
 
 
+async def test_a_note_says_which_topic_it_is(api_client: AsyncClient) -> None:
+    # The note page heads itself with the topic, so a deep link or reload still says where
+    # the learner is.
+    _, topic_id, _ = await _subject_topic_kc(api_client)
+    r = await api_client.get(f"{API}/topics/{topic_id}/note")
+    assert r.json()["topic_name"] == "Trig"
+
+
 async def test_refresh_distills_and_renders(
     api_client: AsyncClient, db_session: AsyncSession, fake_llm_refresh: None, api_learner: Learner
 ) -> None:

@@ -41,6 +41,7 @@ class NoteView:
     """What the API returns for a note in any state (including 'no note yet')."""
 
     topic_id: uuid.UUID
+    topic_name: str
     content_md: str | None
     format: str | None
     effective_format: str
@@ -235,6 +236,7 @@ async def _view(
             )
     return NoteView(
         topic_id=topic.id,
+        topic_name=topic.name,
         content_md=content,
         format=note.format if note is not None else None,
         effective_format=fmt,

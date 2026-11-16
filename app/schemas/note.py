@@ -11,6 +11,7 @@ NoteFormat = Literal["outline", "narrative", "mnemonic", "worked_examples"]
 
 class NoteRead(BaseModel):
     topic_id: uuid.UUID
+    topic_name: str
     content_md: str | None
     learner_authored_md: str | None = None
     generated_md: str | None = None

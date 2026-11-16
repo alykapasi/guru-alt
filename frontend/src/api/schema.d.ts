@@ -4053,6 +4053,8 @@ export interface components {
              * Format: uuid
              */
             topic_id: string;
+            /** Topic Name */
+            topic_name: string;
             /** Updated At */
             updated_at: string | null;
         };
