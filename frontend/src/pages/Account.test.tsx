@@ -18,6 +18,11 @@ import { Account } from "./Account";
 describe("Account", () => {
   beforeEach(() => request.mockClear());
 
+  it("is headed by the name it has in the menu", () => {
+    render(<Account />);
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(/^Account$/);
+  });
+
   it("explains the window and deletes only after confirming", () => {
     render(<Account />);
     expect(screen.getByText(/erased after 7 days/)).toBeInTheDocument();

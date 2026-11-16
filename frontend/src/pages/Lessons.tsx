@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { NotebookText, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useSubjects, useUpdateSourceSettings } from "../api/hooks";
 import type { components } from "../api/schema";
 import { PublishPanel } from "../components/PublishPanel";
@@ -8,7 +8,7 @@ import { LessonPlanPanel } from "../components/lessons/LessonPlanPanel";
 import { CurriculumIssuesPanel } from "../components/lessons/CurriculumIssuesPanel";
 import { ConnectionsPanel } from "../components/lessons/ConnectionsPanel";
 import { SourceSettingsPanel } from "../components/lessons/SourceSettingsPanel";
-import { PlaceholderPage } from "../components/PlaceholderPage";
+import { EmptyPage } from "../components/EmptyPage";
 import { SubjectPicker } from "../components/SubjectPicker";
 
 type Subject = components["schemas"]["SubjectRead"];
@@ -39,12 +39,11 @@ export function Lessons() {
   if (!subjects || subjects.length === 0) {
     return (
       <div className="flex flex-col gap-4">
-        <PlaceholderPage
-          icon={NotebookText}
+        <EmptyPage
           title="Lessons"
           description="No subjects yet — add one to get a personalized lesson plan and guided practice."
         />
-        <div className="max-w-2xl">
+        <div>
           <Link to="/app/subjects/new" className="btn btn-primary">
             Create your first subject
           </Link>

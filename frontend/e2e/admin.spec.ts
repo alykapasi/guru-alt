@@ -39,7 +39,7 @@ test("an administrator reads what the deployment costs and who is on it", async 
   await openAdmin(page);
   await expect(page).toHaveURL(/\/app\/admin/);
 
-  await expect(page.getByRole("heading", { name: "What this deployment is doing" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Admin", level: 1 })).toBeVisible();
   await expect(page.getByRole("heading", { name: "By role and model" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Who is here" })).toBeVisible();
 

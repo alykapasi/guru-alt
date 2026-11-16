@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Brain, Check, Pencil, Trash2, X } from "lucide-react";
+import { Check, Pencil, Trash2, X } from "lucide-react";
 import {
   useCorrectMemory,
   useForgetAllMemory,
@@ -187,16 +187,13 @@ export function Memory() {
   const [confirming, setConfirming] = useState(false);
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-6 py-8">
+    <div className="flex max-w-3xl flex-col gap-5">
       <header className="flex flex-col gap-2">
-        <h1 className="text-h1 flex items-center gap-2">
-          <Brain size={20} className="text-primary" aria-hidden />
-          What Guru remembers about you
-        </h1>
+        <h1 className="text-h1">Memory</h1>
         <p className="text-body text-base-content/70">
-          These are carried into every conversation, whichever mode you are in. If one is wrong,
-          correcting it works better than deleting it — Guru keeps the correction and stops drawing
-          the old conclusion from the same conversation.
+          What Guru remembers about you. These are carried into every conversation, whichever mode
+          you are in. If one is wrong, correcting it works better than deleting it — Guru keeps the
+          correction and stops drawing the old conclusion from the same conversation.
         </p>
       </header>
 

@@ -122,6 +122,12 @@ beforeEach(() => {
 });
 
 describe("the operator's portal", () => {
+  it("is headed by the name it has in the menu", async () => {
+    serve();
+    renderPortal();
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent(/^Admin$/);
+  });
+
   it("shows the spend and both timings", async () => {
     serve();
     renderPortal();

@@ -4,7 +4,7 @@ import { BookOpen } from "lucide-react";
 import { useSubjects } from "../api/hooks";
 import { useNotesIndex } from "../api/notes";
 import { SubjectPicker } from "../components/SubjectPicker";
-import { PlaceholderPage } from "../components/PlaceholderPage";
+import { EmptyPage } from "../components/EmptyPage";
 
 export function Notes() {
   const { data: subjects, isLoading } = useSubjects();
@@ -18,8 +18,7 @@ export function Notes() {
 
   if (!subjects || subjects.length === 0) {
     return (
-      <PlaceholderPage
-        icon={BookOpen}
+      <EmptyPage
         title="Notes"
         description="Your notes grow automatically as you study — add a subject to begin."
       />
