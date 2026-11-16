@@ -12,8 +12,6 @@ from alembic import op
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects import postgresql
 
-from app.core.config import get_settings
-
 revision: str = "0076_resumable_ingestion"
 down_revision: str | Sequence[str] | None = "0075_profile_messages_since"
 branch_labels = None
@@ -33,7 +31,9 @@ def upgrade() -> None:
         ),
         sa.Column("ordinal", sa.Integer(), nullable=False),
         sa.Column("text", sa.Text(), nullable=False),
-        sa.Column("embedding", Vector(get_settings().embed_dim), nullable=False),
+        # 768, as chunks.embedding (0007) and memories.embedding (0014): fixed here, not read
+        # from settings, so this revision builds the same table everywhere.
+        sa.Column("embedding", Vector(768), nullable=False),
         sa.Column("embedding_space", sa.String(), nullable=False),
         sa.Column("pipeline_version", sa.Integer(), nullable=False),
         sa.Column("provenance", postgresql.JSONB(), nullable=False),
