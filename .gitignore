@@ -53,3 +53,6 @@ tests/eval/datasets/*.json
 # Founder-labelled evaluation exports (S59) — learner text, never committed
 tests/eval/datasets/private/
 .playwright-mcp/
+
+# Claude Code per-machine settings (local paths, permissions)
+.claude/settings.local.json
