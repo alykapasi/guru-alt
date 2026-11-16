@@ -1,4 +1,4 @@
-import { Outlet } from "react-router-dom";
+import { LazyOutlet } from "../layout/LazyOutlet";
 import { ImpersonationBanner } from "../ImpersonationBanner";
 import { NavBar } from "../NavBar";
 import { SkipLink } from "../layout/SkipLink";
@@ -13,7 +13,7 @@ export function SessionShell() {
       <ImpersonationBanner />
       <NavBar />
       <div className="flex min-h-0 flex-1">
-        <Outlet />
+        <LazyOutlet />
       </div>
     </div>
   );
