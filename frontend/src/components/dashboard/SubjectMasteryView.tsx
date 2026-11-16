@@ -78,8 +78,9 @@ export function SubjectMasteryView({ subjectId }: { subjectId: string }) {
             On a question of average difficulty — not the share of the subject covered.
           </p>
           <p className="text-caption text-base-content/70">
-            {data.topics.length} topic{data.topics.length === 1 ? "" : "s"} ·{" "}
-            {coverageLabel(data.assessed_kcs, data.total_kcs)}
+            {data.topics.length} topic{data.topics.length === 1 ? "" : "s"}
+            {/* The ring already says "not assessed"; the count adds something once some is. */}
+            {data.assessed_kcs > 0 && ` · ${coverageLabel(data.assessed_kcs, data.total_kcs)}`}
           </p>
         </div>
       </div>

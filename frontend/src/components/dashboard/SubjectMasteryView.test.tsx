@@ -60,4 +60,10 @@ describe("mastery by topic", () => {
     const row = screen.getByRole("group", { name: "Foundations" });
     expect(within(row).getByText("1 of 2 assessed")).toBeInTheDocument();
   });
+
+  it("leaves the subject's 'not assessed' to the ring, not the line beside it too", () => {
+    renderView([topic("Foundations", [kc("Core vocabulary", false)])]);
+    expect(screen.getByText("1 topic")).toBeInTheDocument();
+    expect(screen.queryByText(/not assessed yet/)).toBeNull();
+  });
 });
