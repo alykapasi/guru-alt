@@ -15,6 +15,7 @@ from sqlalchemy.orm import selectinload
 
 from app.agent.tutor import TutorState, build_tutor_graph
 from app.core.config import get_settings
+from app.core.db import release_before_model_wait
 from app.learning import declared_check, difficulty, feedback, mastery
 from app.learning import prerequisites as prereq_index
 from app.learning.conversation_evidence import TurnIntent
@@ -635,6 +636,8 @@ async def run_tutor_turn(
 
     reply = ""
     usage = Usage()
+    # A posed check or a help count written above is kept even if the learner stops the reply.
+    await release_before_model_wait(session)
     try:
         async for mode, payload in build_tutor_graph(llm).astream(
             initial, stream_mode=["custom", "values"]

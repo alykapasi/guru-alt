@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.agentic import AgenticState, build_agentic_graph
 from app.agent.tools import CitationAccumulator, build_tools
 from app.core.config import get_settings
+from app.core.db import release_before_model_wait
 from app.llm.attribution import metered
 from app.llm.meter import CallRefused
 from app.llm.pricing import price_usd
@@ -112,6 +113,7 @@ async def run_agentic_turn(
     reply = ""
     usage = Usage()
     pending_tool_calls: list[ToolCall] = []
+    await release_before_model_wait(session)
     try:
         async for mode, payload in build_agentic_graph(llm, tools).astream(
             initial, stream_mode=["custom", "values"]

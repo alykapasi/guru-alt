@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.egress import carries_retrieved_text
 from app.agent.untrusted import as_untrusted
 from app.core.config import get_settings
+from app.core.db import release_before_model_wait
 from app.llm import LLMClient, ToolDef
 from app.rag.fetch import Fetcher, FetchError
 from app.rag.retrieval import RetrievalHit, retrieve
@@ -115,6 +116,9 @@ def _search_materials_tool(
         if scope is None:
             return ToolResult(content=NO_SCOPE_RESULT)
         hits = await retrieve(session, llm, query, scope=scope)
+        # The model is called again with these results; the search's transaction must not
+        # still be holding a connection while it streams.
+        await release_before_model_wait(session)
         citations.add(hits)
         # The full accumulated set, not just this call's hits — keeps [N] numbering stable and
         # consistent across every search_materials call in this turn (see CitationAccumulator).
