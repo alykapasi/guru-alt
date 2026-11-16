@@ -32,6 +32,7 @@ survivable; the old behaviour arriving unannounced is not.
 """
 
 import asyncio
+import contextlib
 import sys
 from collections.abc import Iterable
 from typing import Any
@@ -49,6 +50,7 @@ _VOLATILE = InMemorySaver()
 
 _saver: BaseCheckpointSaver | None = None
 _pool: object | None = None
+_retry: asyncio.Task[None] | None = None
 _lock = asyncio.Lock()
 
 MIGRATE_LOCK = (0x47555255, 0x43484B50)
@@ -134,53 +136,116 @@ def psycopg_dsn(database_url: str) -> str:
     return f"{scheme.partition('+')[0]}://{rest}"
 
 
-async def start(settings: Settings | None = None) -> None:
-    """Open the checkpointer's pool and check its schema version. Idempotent."""
+async def _connect(settings: Settings) -> tuple[Any, int | None]:
+    """Open a pool and read the schema version through it; a pool that fails to open is closed,
+    so it does not go on trying to connect in the background."""
+    from psycopg.rows import dict_row
+    from psycopg_pool import AsyncConnectionPool
+
+    pool = AsyncConnectionPool(
+        conninfo=psycopg_dsn(settings.database_url),
+        min_size=settings.checkpointer_pool_min_size,
+        max_size=settings.checkpointer_pool_max_size,
+        # LangGraph's Postgres saver requires all three: it runs its own transactions,
+        # and pipelines statements that a prepared-statement cache would break.
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        open=False,
+    )
+    try:
+        await pool.open(wait=True, timeout=settings.checkpointer_connect_timeout_seconds)
+        async with pool.connection() as conn:
+            found = await schema_version(conn)
+    except BaseException:
+        await pool.close()
+        raise
+    return pool, found
+
+
+async def _attempt(settings: Settings, *, first: bool) -> str:
+    """Try to go durable. Returns ``"durable"``, ``"unreachable"`` (worth another try) or
+    ``"schema"`` (not: only ``poe db-upgrade`` fixes it). Called holding ``_lock``."""
     global _saver, _pool
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+    try:
+        pool, found = await _connect(settings)
+    except Exception as exc:
+        # Chat still works; paused conversations still will not survive a restart. Both
+        # halves of that are true and both are reported rather than one being assumed. The
+        # traceback once; each retry after that is one line.
+        if first:
+            log.error("checkpointer.durable_start_failed", error=str(exc), exc_info=True)
+        else:
+            log.warning("checkpointer.retry_failed", error=str(exc))
+        return "unreachable"
+    expected = expected_schema_version()
+    if found is None or found < expected:
+        # Deployed without `poe db-upgrade` after a LangGraph upgrade, or never migrated.
+        log.error("checkpointer.schema_behind", expected=expected, found=found)
+        await pool.close()
+        return "schema"
+    if found > expected:
+        log.warning("checkpointer.schema_ahead", expected=expected, found=found)
+    _saver = AsyncPostgresSaver(pool)
+    _pool = pool
+    log.info("checkpointer.durable", min_size=pool.min_size, max_size=pool.max_size)
+    return "durable"
+
+
+async def _keep_trying(settings: Settings) -> None:
+    """Retry an unreachable database until it answers, backing off to a ceiling.
+
+    A process that started while the database was away — paused, restarting, not up yet —
+    otherwise stayed volatile for its whole life, and only a restart nobody knew to do fixed
+    it. Paused state held in memory meanwhile is not carried over: it was never durable, and a
+    learner resuming it after the switch is told it is gone, as after a restart.
+    """
+    delay = settings.checkpointer_retry_seconds
+    while True:
+        await asyncio.sleep(delay)
+        async with _lock:
+            if _saver is not _VOLATILE:  # stopped, or something else succeeded
+                return
+            outcome = await _attempt(settings, first=False)
+        if outcome != "unreachable":
+            if outcome == "durable":
+                log.info("checkpointer.recovered")
+            return
+        delay = min(delay * 2, settings.checkpointer_retry_max_seconds)
+
+
+async def start(settings: Settings | None = None) -> None:
+    """Open the checkpointer's pool and check its schema version. Idempotent.
+
+    If the database cannot be reached, the process serves on the volatile saver and keeps
+    trying in the background (:func:`_keep_trying`); a schema problem is not retried.
+    """
+    global _saver, _retry
     settings = settings or get_settings()
     async with _lock:
         if _saver is not None:
             return
-        try:
-            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-            from psycopg.rows import dict_row
-            from psycopg_pool import AsyncConnectionPool
+        outcome = await _attempt(settings, first=True)
+        if outcome == "durable":
+            return
+        _saver = _VOLATILE
+        if outcome == "unreachable":
+            _retry = asyncio.create_task(_keep_trying(settings))
 
-            pool = AsyncConnectionPool(
-                conninfo=psycopg_dsn(settings.database_url),
-                min_size=settings.checkpointer_pool_min_size,
-                max_size=settings.checkpointer_pool_max_size,
-                # LangGraph's Postgres saver requires all three: it runs its own transactions,
-                # and pipelines statements that a prepared-statement cache would break.
-                kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
-                open=False,
-            )
-            await pool.open(wait=True, timeout=settings.checkpointer_connect_timeout_seconds)
-            async with pool.connection() as conn:
-                found = await schema_version(conn)
-        except Exception as exc:
-            # Chat still works; paused conversations still will not survive a restart. Both
-            # halves of that are true and both are reported rather than one being assumed.
-            log.error("checkpointer.durable_start_failed", error=str(exc), exc_info=True)
-            _saver, _pool = _VOLATILE, None
-            return
-        expected = expected_schema_version()
-        if found is None or found < expected:
-            # Deployed without `poe db-upgrade` after a LangGraph upgrade, or never migrated.
-            log.error("checkpointer.schema_behind", expected=expected, found=found)
-            await pool.close()
-            _saver, _pool = _VOLATILE, None
-            return
-        if found > expected:
-            log.warning("checkpointer.schema_ahead", expected=expected, found=found)
-        _saver = AsyncPostgresSaver(pool)  # ty: ignore[invalid-argument-type]
-        _pool = pool
-        log.info("checkpointer.durable", min_size=pool.min_size, max_size=pool.max_size)
+
+def retrying() -> bool:
+    """Whether a background retry is waiting for the database."""
+    return _retry is not None and not _retry.done()
 
 
 async def stop() -> None:
-    """Close the pool. Safe to call when :func:`start` never ran or fell back."""
-    global _saver, _pool
+    """End any retry and close the pool. Safe to call when :func:`start` never ran or fell back."""
+    global _saver, _pool, _retry
+    retry, _retry = _retry, None
+    if retry is not None:
+        retry.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await retry
     async with _lock:
         pool = _pool
         _saver, _pool = None, None

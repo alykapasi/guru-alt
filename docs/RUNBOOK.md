@@ -99,6 +99,9 @@ CI runs it, so a drifted model is caught before it reaches anyone else's databas
 that DDL: a process whose checkpoint schema is missing or behind serves chat on volatile paused
 state and logs `checkpointer.schema_behind` (and `/ready` shows `durable_checkpoints: false`).
 **A LangGraph upgrade may need `poe db-upgrade` before it is deployed.**
+A process that cannot *reach* the database at startup (paused, restarting) also serves on
+volatile state, but keeps retrying — every 5 s, doubling to 60 s (`checkpointer.retry_failed`)
+— and goes durable by itself when it answers (`checkpointer.recovered`); no restart needed.
 
 **Open a psql shell:**
 

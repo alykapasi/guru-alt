@@ -34,7 +34,9 @@ _TEXT = {"type": "string"}
 # The shape the parser below accepts, as a schema the provider holds the model to: every field
 # whose absence fails the parse is required and non-empty, so a reply the model is allowed to
 # write is one the learner gets. JSON mode alone left a 3B model free to drop a topic's
-# concepts or name, and the wizard then failed.
+# concepts or name, and the wizard then failed. It also sets a floor of two topics of two
+# concepts: a smaller reply (one topic, two concepts, in 3 of 8 local runs) is not a
+# curriculum to study. The prompt's aim stays 3-5 topics of 2-4.
 CURRICULUM_SCHEMA = JsonSchema(
     name="curriculum",
     schema={
@@ -44,7 +46,7 @@ CURRICULUM_SCHEMA = JsonSchema(
             "subject_description": _TEXT,
             "topics": {
                 "type": "array",
-                "minItems": 1,
+                "minItems": 2,
                 "items": {
                     "type": "object",
                     "properties": {
@@ -52,7 +54,7 @@ CURRICULUM_SCHEMA = JsonSchema(
                         "description": _TEXT,
                         "kcs": {
                             "type": "array",
-                            "minItems": 1,
+                            "minItems": 2,
                             "items": {
                                 "type": "object",
                                 "properties": {
