@@ -6,10 +6,9 @@ export interface GoalStepProps {
   /** Undefined while the server-issued session id is still in flight. */
   sessionId: string | undefined;
   onGoalCommitted: (goal: string) => void;
-  onBack: () => void;
 }
 
-export function GoalStep({ sessionId, onGoalCommitted, onBack }: GoalStepProps) {
+export function GoalStep({ sessionId, onGoalCommitted }: GoalStepProps) {
   const { proposal, committedGoal, isStreaming, error, tokens, send } =
     useGoalRefinement(sessionId);
   const [input, setInput] = useState("");
@@ -112,11 +111,7 @@ export function GoalStep({ sessionId, onGoalCommitted, onBack }: GoalStepProps) 
           disabled={isStreaming || !!committedGoal || !sessionId}
         />
 
-        <div className="flex justify-between gap-3">
-          <button onClick={onBack} className="btn btn-ghost">
-            Back
-          </button>
-
+        <div className="flex justify-end gap-3">
           <div className="flex gap-3">
             {proposal && !committedGoal && (
               <button

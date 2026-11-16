@@ -5,12 +5,14 @@ import { UploadForm } from "../uploads/UploadForm";
 import { LoadMore } from "../LoadMore";
 
 export interface MaterialsStepProps {
+  /** The goal settled in the step before, shown so the learner picks materials for it. */
+  goal?: string;
   value: string[];
   onChange: (sourceIds: string[]) => void;
   onNext: () => void;
 }
 
-export function MaterialsStep({ value, onChange, onNext }: MaterialsStepProps) {
+export function MaterialsStep({ goal, value, onChange, onNext }: MaterialsStepProps) {
   // `useAllSources`, not `useSources`. The two differ in what they mean by `undefined`: the
   // New Chat picker's hook reads it as "no subject chosen yet" and disables itself, so passing
   // it here meant the query never ran. The step rendered neither the list nor its own "no
@@ -32,8 +34,9 @@ export function MaterialsStep({ value, onChange, onNext }: MaterialsStepProps) {
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-6 py-8">
       <div className="flex flex-col gap-2">
         <h2 className="text-h2">Add learning materials</h2>
+        {goal && <p className="text-body">Goal: {goal}</p>}
         <p className="text-caption text-base-content/70">
-          Select sources to personalize your learning path (optional).
+          Optional. Pick files to build the curriculum from, or press Next to go without.
         </p>
       </div>
 
