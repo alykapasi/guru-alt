@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { NotebookText } from "lucide-react";
+import { NotebookText, Plus } from "lucide-react";
 import { useSubjects, useUpdateSourceSettings } from "../api/hooks";
 import type { components } from "../api/schema";
 import { PublishPanel } from "../components/PublishPanel";
@@ -55,7 +55,13 @@ export function Lessons() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-h1">Lessons</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-h1">Lessons</h1>
+        <Link to="/app/subjects/new" className="btn btn-primary btn-sm">
+          <Plus size={16} aria-hidden />
+          New subject
+        </Link>
+      </div>
       <SubjectPicker subjects={subjects} selectedId={selectedId} onSelect={setPickedId} />
       {selectedId && <LessonPlanPanel key={selectedId} subjectId={selectedId} />}
       {/* Every selected subject, not only owned ones — a curated subject can be linked too. */}
