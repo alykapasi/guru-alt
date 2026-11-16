@@ -80,7 +80,10 @@ export function Lessons() {
         >
           <summary className="text-body cursor-pointer">Subject settings</summary>
           <div className="flex flex-col gap-6 pt-3">
-            <PreferenceControls subjectId={selected.id} />
+            <section className="flex flex-col gap-3">
+              <h3 className="text-h3">Teaching</h3>
+              <PreferenceControls subjectId={selected.id} />
+            </section>
             {selected.owner_learner_id !== null && (
               <>
                 <SubjectSources subject={selected} />

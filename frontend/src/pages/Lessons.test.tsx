@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { Lessons } from "./Lessons";
@@ -76,5 +76,21 @@ describe("a subject of one's own", () => {
     renderPage([SUBJECT]);
     expect(await screen.findByText("Subject settings")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Request publication" })).toBeNull();
+  });
+
+  it("heads each part of the settings the same way", async () => {
+    renderPage([OWNED]);
+    const summary = await screen.findByText("Subject settings");
+    fireEvent.click(summary);
+    const section = summary.closest("details")!;
+    expect(
+      within(section)
+        .getAllByRole("heading")
+        .map((h) => [h.tagName, h.textContent]),
+    ).toEqual([
+      ["H3", "Teaching"],
+      ["H3", "Sources"],
+      ["H3", "Sharing"],
+    ]);
   });
 });

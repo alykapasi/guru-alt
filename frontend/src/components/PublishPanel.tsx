@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Share2 } from "lucide-react";
 import {
   useCancelPublication,
   usePublications,
@@ -49,10 +48,7 @@ export function PublishPanel({ subjectId, sourceDerived }: PublishPanelProps) {
 
   return (
     <section className="flex flex-col gap-3">
-      <div className="flex items-center gap-2">
-        <Share2 size={18} className="text-primary shrink-0" />
-        <h2 className="text-h2">Share this subject</h2>
-      </div>
+      <h3 className="text-h3">Sharing</h3>
 
       {sourceDerived ? (
         <p className="text-body text-base-content/70">
